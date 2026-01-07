@@ -1,0 +1,23 @@
+.mud-table-cell {
+    font-size: 16px;
+}
+
+.mud-table-container {
+    overscroll-behavior: none;
+    width: 100% !important;
+    overflow: auto !important;
+}
+
+.mud-table-cell.sticky-left {
+    z-index: 3 !important;
+    background-color: lightgray !important;
+}
+
+.mud-table-cell[data-label="Description"] {
+    background-color: whitesmoke !important;
+    z-index: 2 !important;
+}
+
+.mud-dialog-content {
+    white-space: pre-line;
+} 
