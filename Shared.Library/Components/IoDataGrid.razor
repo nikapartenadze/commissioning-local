@@ -1,0 +1,269 @@
+@if (ShowDataGrid)
+{
+    <MudDataGrid 
+        T="Io"
+        ColumnResizeMode="ResizeMode.Container" 
+        Virtualize="true" 
+        Filterable="true" 
+        FilterMode="@DataGridFilterMode.ColumnFilterRow" 
+        FilterCaseSensitivity="@DataGridFilterCaseSensitivity.CaseInsensitive" 
+        Bordered="true" 
+        Dense="true" 
+        Items="@Items" 
+        Height="94dvh" 
+        Breakpoint="Breakpoint.None" 
+        FixedHeader 
+        QuickFilter="@QuickFilter" 
+        RowStyleFunc="@RowStyleFunc" 
+        style="font-size: 30px;">
+        <Columns>
+            <PropertyColumn Property="x => x.Description" Comparer="new MudBlazor.Utilities.NaturalComparer()" StickyLeft CellStyle="width: 20%;" />
+            <PropertyColumn Property="x => x.Name" Comparer="new MudBlazor.Utilities.NaturalComparer()" Title="I/O Point" CellStyle="width: 15%;" />
+
+            @if (ShowSubsystemColumn)
+            {
+                <PropertyColumn Property="x => SubsystemNameFunc != null ? SubsystemNameFunc(x) : string.Empty" Title="Subsystem">
+                    <FilterTemplate>
+                        <MudIconButton OnClick="() => OnOpenSubsystemFilter.InvokeAsync()" Icon="@SubsystemFilterIcon" Size="@Size.Small" title="Filter by Subsystem" />
+                        <MudIconButton OnClick="@(() => OnResetSubsystemFilter.InvokeAsync())" Icon="@Icons.Material.Filled.FilterAltOff" Size="@Size.Small" Style="margin-left:10px" title="Reset Subsystem Filter" />
+                        <MudOverlay AutoClose Visible="@ShowSubsystemFilter" OnClosed="@(() => OnCloseSubsystemFilter.InvokeAsync())" />
+                        <MudPopover Open="@ShowSubsystemFilter" AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft" Style="width:200px">
+                            <MudStack Spacing="0">
+                                <MudStack Spacing="0" Style="overflow-y:auto;max-height:250px">
+                                    <MudButton Size="@Size.Small" Color="Color.Secondary" OnClick="@(() => OnUncheckAllSubsystems.InvokeAsync())" Style="margin-bottom:5px; height:32px; padding:6px 12px;">
+                                        Uncheck All
+                                    </MudButton>
+                                    @foreach (var item in SubsystemFilterItems.Keys)
+                                    {
+                                        <MudCheckBox T="bool" 
+                                                    Label="@($"{item}")" 
+                                                    Size="@Size.Small" 
+                                                    Value="@SubsystemFilterItems[item]" 
+                                                    ValueChanged="@((value) => OnSubsystemFilterChanged.InvokeAsync((value, item)))" />
+                                    }
+                                </MudStack>
+                            </MudStack>
+                        </MudPopover>
+                    </FilterTemplate>
+                </PropertyColumn>
+            }
+            
+            @if (ShowOrderColumn)
+            {
+                <PropertyColumn Property="x => x.Order" Filterable="false" />
+            }
+            
+            <PropertyColumn @ref="_stateColumn" Property="x => x.State" CellStyle="width: 10%;">
+                <CellTemplate>
+                    @{
+                        var stateText = context.Item.State ?? "UNKNOWN";
+                    }
+                    @if (stateText == "TRUE")
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" Style="font-size: 2rem;" title="TRUE" />
+                    }
+                    else if (stateText == "FALSE")
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.Cancel" Color="Color.Error" Style="font-size: 2rem;" title="FALSE" />
+                    }
+                    else
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.Help" Color="Color.Default" Style="font-size: 2rem; color: gray;" title="UNKNOWN" />
+                    }
+                </CellTemplate>
+                <FilterTemplate>
+                    <MudIconButton OnClick="() => OnOpenStateFilter.InvokeAsync()" Icon="@StateFilterIcon" Size="@Size.Small" title="Filter by State" />
+                    <MudIconButton OnClick="@(() => OnResetStateFilter.InvokeAsync())" Icon="@Icons.Material.Filled.FilterAltOff" Size="@Size.Small" Style="margin-left:10px" title="Clear Filter" />
+                    <MudOverlay AutoClose Visible="@ShowStateFilter" OnClosed="@(() => OnCloseStateFilter.InvokeAsync())" />
+                    <MudPopover Open="@ShowStateFilter" AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft" Style="width:150px">
+                        <MudStack Spacing="0">
+                            <MudStack Spacing="0" Style="overflow-y:auto;max-height:250px">
+                                @foreach (var item in StateFilterItems.Keys)
+                                {
+                                    <MudCheckBox T="bool" 
+                                                Label="@($"{item}")" 
+                                                Size="@Size.Small" 
+                                                Value="@StateFilterItems[item]" 
+                                                ValueChanged="@((value) => OnStateFilterChanged.InvokeAsync((value, item)))" />
+                                }
+                            </MudStack>
+                        </MudStack>
+                    </MudPopover>
+                </FilterTemplate>
+            </PropertyColumn>
+            
+            <PropertyColumn @ref="_resultColumn" Property="x => x.Result" Title="Result" CellStyle="width: 15%;">
+                <CellTemplate>
+                    @if (context.Item.Result == Shared.Library.Constants.TestConstants.RESULT_PASSED)
+                    {
+                        <MudChip Color="Color.Success" Size="Size.Small">@context.Item.Result</MudChip>
+                    }
+                    else if (context.Item.Result == Shared.Library.Constants.TestConstants.RESULT_FAILED)
+                    {
+                        <MudChip Color="Color.Error" Size="Size.Small">@context.Item.Result</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip Color="Color.Default" Size="Size.Small">@(context.Item.Result ?? "Not Tested")</MudChip>
+                    }
+                </CellTemplate>
+                <FilterTemplate>
+                    <MudIconButton OnClick="() => OnOpenResultFilter.InvokeAsync()" Icon="@ResultFilterIcon" Size="@Size.Small" title="Filter by Result" />
+                    <MudIconButton OnClick="@(() => OnResetResultFilter.InvokeAsync())" Icon="@Icons.Material.Filled.FilterAltOff" Size="@Size.Small" Style="margin-left:10px" title="Reset Filter" />
+                    <MudOverlay AutoClose Visible="@ShowResultFilter" OnClosed="@(() => OnCloseResultFilter.InvokeAsync())" />
+                                            <MudPopover Open="@ShowResultFilter" AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft" Style="width:150px">
+                        <MudStack Spacing="0">
+                            <MudStack Spacing="0" Style="overflow-y:auto;max-height:250px">
+                                @foreach (var item in ResultFilterItems.Keys)
+                                {
+                                    <MudCheckBox T="bool" 
+                                                Label="@($"{item}")" 
+                                                Size="@Size.Small" 
+                                                Value="@ResultFilterItems[item]" 
+                                                ValueChanged="@((value) => OnResultFilterChanged.InvokeAsync((value, item)))" />
+                                }
+                            </MudStack>
+                        </MudStack>
+                    </MudPopover>
+                </FilterTemplate>
+            </PropertyColumn>
+            
+            <PropertyColumn @ref="_timestampColumn" Property="@(x => DateTime.Parse(x.Timestamp!).ToLocalTime().ToString(Shared.Library.Constants.TestConstants.TIMESTAMP_DISPLAY_FORMAT))" Title="Timestamp&nbsp;" SortBy="@TimestampSortBy" CellStyle="width: 10%;" />
+            
+            <PropertyColumn Property="x => x.Comments" Title="Comments">
+                <CellTemplate>
+                    @if (AllowCommentEditing)
+                    {
+                        <MudTextField @bind-Value="context.Item.Comments" Variant="Variant.Text" OnBlur="() => OnCommentChanged.InvokeAsync(context)"> </MudTextField>
+                    }
+                    else
+                    {
+                        @context.Item.Comments
+                    }
+                </CellTemplate>
+            </PropertyColumn>
+            
+            <TemplateColumn @ref="_historyColumn" Sortable="false" Filterable="false" Title="History" CellStyle="width: 0%;">
+                <CellTemplate>
+                    <MudIconButton Icon="@Icons.Material.Filled.History" Size="Size.Medium" Color="Color.Dark" @onclick="() => OnShowHistory.InvokeAsync(context.Item)" title="Show Test History"></MudIconButton>
+                </CellTemplate>
+            </TemplateColumn>
+            
+            @if (ShowCustomActions)
+            {
+                @CustomActionsTemplate
+            }
+        </Columns>
+    </MudDataGrid>
+}
+
+@code {
+    // Column references for visibility control
+    private PropertyColumn<Io, string?>? _stateColumn;
+    private PropertyColumn<Io, string?>? _resultColumn;
+    private PropertyColumn<Io, string>? _timestampColumn;
+    private TemplateColumn<Io>? _historyColumn;
+
+    // Core parameters
+    [Parameter] public bool ShowDataGrid { get; set; } = true;
+    [Parameter] public IEnumerable<Io> Items { get; set; } = Enumerable.Empty<Io>();
+    [Parameter] public Func<Io, bool>? QuickFilter { get; set; }
+    [Parameter] public Func<Io, int, string>? RowStyleFunc { get; set; }
+    [Parameter] public Func<Io, object>? TimestampSortBy { get; set; }
+
+    // Column visibility
+    [Parameter] public bool ShowSubsystemColumn { get; set; } = false;
+    [Parameter] public bool ShowOrderColumn { get; set; } = false;
+    [Parameter] public bool ShowStateColumn { get; set; } = true;
+    [Parameter] public bool ShowResultColumn { get; set; } = true;
+    [Parameter] public bool ShowTimestampColumn { get; set; } = true;
+    [Parameter] public bool ShowHistoryColumn { get; set; } = true;
+    [Parameter] public bool AllowCommentEditing { get; set; } = false;
+    [Parameter] public bool ShowCustomActions { get; set; } = false;
+
+    // Functions for additional data
+    [Parameter] public Func<Io, string>? SubsystemNameFunc { get; set; }
+
+    // Filter state for State column
+    [Parameter] public bool ShowStateFilter { get; set; }
+    [Parameter] public string StateFilterIcon { get; set; } = Icons.Material.Filled.FilterAlt;
+    [Parameter] public Dictionary<string, bool> StateFilterItems { get; set; } = new();
+    [Parameter] public EventCallback OnOpenStateFilter { get; set; }
+    [Parameter] public EventCallback OnCloseStateFilter { get; set; }
+    [Parameter] public EventCallback OnResetStateFilter { get; set; }
+    [Parameter] public EventCallback<(bool value, string item)> OnStateFilterChanged { get; set; }
+
+    // Filter state for Result column
+    [Parameter] public bool ShowResultFilter { get; set; }
+    [Parameter] public string ResultFilterIcon { get; set; } = Icons.Material.Filled.FilterAlt;
+    [Parameter] public Dictionary<string, bool> ResultFilterItems { get; set; } = new();
+    [Parameter] public EventCallback OnOpenResultFilter { get; set; }
+    [Parameter] public EventCallback OnCloseResultFilter { get; set; }
+    [Parameter] public EventCallback OnResetResultFilter { get; set; }
+    [Parameter] public EventCallback<(bool value, string item)> OnResultFilterChanged { get; set; }
+
+    // Filter state for Subsystem column
+    [Parameter] public bool ShowSubsystemFilter { get; set; }
+    [Parameter] public string SubsystemFilterIcon { get; set; } = Icons.Material.Filled.FilterAlt;
+    [Parameter] public Dictionary<string, bool> SubsystemFilterItems { get; set; } = new();
+    [Parameter] public EventCallback OnOpenSubsystemFilter { get; set; }
+    [Parameter] public EventCallback OnCloseSubsystemFilter { get; set; }
+    [Parameter] public EventCallback OnResetSubsystemFilter { get; set; }
+    [Parameter] public EventCallback OnUncheckAllSubsystems { get; set; }
+    [Parameter] public EventCallback<(bool value, string item)> OnSubsystemFilterChanged { get; set; }
+
+    // Action events
+    [Parameter] public EventCallback<CellContext<Io>> OnCommentChanged { get; set; }
+    [Parameter] public EventCallback<Io> OnShowHistory { get; set; }
+
+    // Custom actions template for app-specific buttons
+    [Parameter] public RenderFragment? CustomActionsTemplate { get; set; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await UpdateColumnVisibility();
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await UpdateColumnVisibility();
+    }
+
+    private async Task UpdateColumnVisibility()
+    {
+        if (_stateColumn != null)
+        {
+            if (ShowStateColumn)
+                await _stateColumn.ShowAsync();
+            else
+                await _stateColumn.HideAsync();
+        }
+
+        if (_resultColumn != null)
+        {
+            if (ShowResultColumn)
+                await _resultColumn.ShowAsync();
+            else
+                await _resultColumn.HideAsync();
+        }
+
+        if (_timestampColumn != null)
+        {
+            if (ShowTimestampColumn)
+                await _timestampColumn.ShowAsync();
+            else
+                await _timestampColumn.HideAsync();
+        }
+
+        if (_historyColumn != null)
+        {
+            if (ShowHistoryColumn)
+                await _historyColumn.ShowAsync();
+            else
+                await _historyColumn.HideAsync();
+        }
+    }
+} 

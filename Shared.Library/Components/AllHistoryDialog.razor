@@ -1,0 +1,190 @@
+@using MudBlazor
+@using Shared.Library.Models
+@using Shared.Library.Components
+@inject IJSRuntime JS
+
+<MudDialog DefaultFocus="DefaultFocus.None" DisableFocusTrap="true" Class="all-history-dialog">
+    <DialogContent>
+        @if (_displayHistories != null && _displayHistories.Any())
+        {
+            <MudDataGrid Items="@_displayHistories" 
+                         Virtualize="true" 
+                         Filterable="true" 
+                         FilterMode="DataGridFilterMode.ColumnFilterRow" 
+                         FilterCaseSensitivity="DataGridFilterCaseSensitivity.CaseInsensitive" 
+                         Dense="true" 
+                         Height="calc(70vh - 200px)" 
+                         FixedHeader="true">
+                <Columns>
+                    <PropertyColumn Property="x => x.IoDescription" Title="I/O Description" />
+                    <PropertyColumn Property="x => x.IoName" Title="I/O Point" />
+                    <PropertyColumn Property="x => x.Timestamp" Title="Date/Time">
+                        <CellTemplate>
+                            @{
+                                var timestamp = DateTime.TryParse(context.Item.Timestamp, out var dt) 
+                                    ? dt.ToLocalTime().ToString(Shared.Library.Constants.TestConstants.TIMESTAMP_DISPLAY_FORMAT) 
+                                    : context.Item.Timestamp;
+                            }
+                            @timestamp
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.Result" Title="Result">
+                        <CellTemplate>
+                            <MudText Style="@GetTextStyle(context.Item.Result)">@context.Item.Result</MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.State" Title="State">
+                        <CellTemplate>
+                            @{
+                                var stateText = context.Item.State ?? "UNKNOWN";
+                            }
+                            @if (stateText == "TRUE")
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" title="TRUE" />
+                            }
+                            else if (stateText == "FALSE")
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.Cancel" Color="Color.Error" title="FALSE" />
+                            }
+                            else
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.Help" Color="Color.Default" Style="color: gray;" title="UNKNOWN" />
+                            }
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.Comments" Title="Comments">
+                        <CellTemplate>
+                            @{
+                                var comment = context.Item.Comments ?? "";
+                                if (comment.Contains("(Previous:"))
+                                {
+                                    var parts = comment.Split("(Previous:");
+                                    var newComment = parts[0].Replace("New: ", "").Trim();
+                                    var previousComment = parts[1].Replace(")", "").Trim();
+                                    <div class="comment-container">
+                                        <div class="new-comment">@newComment</div>
+                                        <div class="previous-comment">Previous: @previousComment</div>
+                                    </div>
+                                }
+                                else if (comment.StartsWith("Previous comment:"))
+                                {
+                                    var previousComment = comment.Replace("Previous comment:", "").Trim();
+                                    <div class="comment-container">
+                                        <div class="previous-comment">Previous: @previousComment</div>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="comment-container">
+                                        <div class="single-comment">@comment</div>
+                                    </div>
+                                }
+                            }
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <TemplateColumn Sortable="false" Filterable="false" Title="History" CellStyle="width: 0%;">
+                        <CellTemplate>
+                            <MudIconButton Icon="@Icons.Material.Filled.History" 
+                                         Size="Size.Medium" 
+                                         Color="Color.Dark" 
+                                         @onclick="() => ShowIoHistory(context.Item)" 
+                                         title="Show IO History">
+                            </MudIconButton>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+            </MudDataGrid>
+        }
+        else
+        {
+            <MudText>No test history available.</MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" OnClick="ExportHistory">Export to CSV</MudButton>
+        <MudButton Color="Color.Primary" OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .all-history-dialog .mud-data-grid {
+        margin-top: -150px !important;
+    }
+</style>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public List<TestHistoryWithIoInfo>? AllHistories { get; set; }
+    [Parameter] public EventCallback<List<TestHistoryWithIoInfo>> OnRefresh { get; set; }
+    [Parameter] public EventCallback<TestHistoryWithIoInfo> OnShowHistory { get; set; }
+    
+    private List<TestHistoryWithIoInfo>? _displayHistories;
+    
+    protected override void OnInitialized()
+    {
+        _displayHistories = AllHistories?.ToList();
+    }
+    
+    protected override void OnParametersSet()
+    {
+        // Update the display list when parameters change
+        if (AllHistories != null)
+        {
+            _displayHistories = AllHistories.ToList();
+            StateHasChanged();
+        }
+    }
+    
+    public void UpdateHistories(List<TestHistoryWithIoInfo> newHistories)
+    {
+        _displayHistories = newHistories.ToList();
+        StateHasChanged();
+    }
+
+    private async Task ShowIoHistory(TestHistoryWithIoInfo historyItem)
+    {
+        if (OnShowHistory.HasDelegate)
+        {
+            await OnShowHistory.InvokeAsync(historyItem);
+        }
+    }
+
+    public class TestHistoryWithIoInfo : TestHistory
+    {
+        public string? IoName { get; set; }
+        public string? IoDescription { get; set; }
+    }
+
+    private string GetTextStyle(string? result)
+    {
+        return result switch
+        {
+            TestConstants.RESULT_PASSED => "color: green; font-weight: bold;",
+            TestConstants.RESULT_FAILED => "color: red; font-weight: bold;",
+            TestConstants.RESULT_CLEARED => "color: orange;",
+            TestConstants.RESULT_COMMENT_ADDED or TestConstants.RESULT_COMMENT_MODIFIED or TestConstants.RESULT_COMMENT_REMOVED => "color: blue;",
+            _ => ""
+        };
+    }
+
+    private async Task ExportHistory()
+    {
+        if (_displayHistories == null || !_displayHistories.Any())
+            return;
+
+        var csv = "I/O Description,I/O Point,Date/Time,Result,State,Comments\n";
+        foreach (var history in _displayHistories)
+        {
+            var ioDescription = history.IoDescription ?? "Unknown";
+            var ioName = history.IoName ?? "Unknown";
+            var comments = history.Comments?.Replace("\"", "\"\"") ?? "";
+            csv += $"\"{ioDescription}\",\"{ioName}\",\"{history.Timestamp}\",\"{history.Result}\",\"{history.State}\",\"{comments}\"\n";
+        }
+
+        var bytes = System.Text.Encoding.UTF8.GetBytes(csv);
+        var fileName = $"complete_test_history_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+        await JS.InvokeVoidAsync("BlazorDownloadFile", fileName, "text/csv", bytes);
+    }
+
+    void Close() => MudDialog.Close();
+} 

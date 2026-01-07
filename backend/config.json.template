@@ -1,0 +1,11 @@
+{
+  "ip": "192.168.1.100",
+  "path": "1,0",
+  "remoteUrl": "",
+  "ApiPassword": "",
+  "subsystemId": "1",
+  "orderMode": "0",
+  "syncBatchSize": 50,
+  "syncBatchDelayMs": 500,
+  "disableWatchdog": false
+} 

@@ -1,0 +1,66 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id         Int         @id @default(autoincrement())
+  name       String      @unique
+  apiKey     String?     @map("api_key") @db.VarChar(255)
+  subsystems Subsystem[]
+
+  @@map("projects")
+}
+
+model Subsystem {
+  id        Int     @id @default(autoincrement())
+  projectId Int     @map("project_id")
+  name      String?
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ios       Io[]
+
+  @@index([projectId])
+  @@map("subsystems")
+}
+
+model Io {
+  id           Int           @id @default(autoincrement())
+  subsystemId  Int           @map("subsystemid")
+  name         String        @db.VarChar(100)
+  description  String?       @db.VarChar(500)
+  result       String?       @db.VarChar(50)
+  timestamp    String?
+  comments     String?       @db.VarChar(1000)
+  order        Int?          @map("Order")
+  version      BigInt        @default(0)
+  subsystem    Subsystem     @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
+  testHistories TestHistory[]
+
+  @@index([subsystemId], name: "idx_ios_subsystemid")
+  @@index([name], name: "idx_ios_name")
+  @@index([version], name: "idx_ios_version")
+  @@map("ios")
+}
+
+model TestHistory {
+  id        Int      @id @default(autoincrement())
+  ioId      Int      @map("ioid")
+  result    String?  @db.VarChar(50)
+  state     String?  @db.VarChar(50)
+  comments  String?  @db.VarChar(1000)
+  testedBy  String?  @map("testedby") @db.VarChar(100)
+  timestamp String
+  io        Io       @relation(fields: [ioId], references: [id], onDelete: Cascade)
+
+  @@index([ioId], name: "idx_testhistories_ioid")
+  @@index([timestamp], name: "idx_testhistories_timestamp")
+  @@map("testhistories")
+}
+
