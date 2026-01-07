@@ -1,0 +1,120 @@
+@using IO_Checkout_Tool.Services.Interfaces
+
+<IoDataGrid 
+    ShowDataGrid="@ShowDataGrid"
+    Items="@Items"
+    QuickFilter="@QuickFilter"
+    RowStyleFunc="@RowStyleFunc"
+    TimestampSortBy="@TimestampSortBy"
+    ShowOrderColumn="@ShowOrderColumn"
+    ShowStateColumn="@ShowStateColumn"
+    ShowResultColumn="@ShowResultColumn"
+    ShowTimestampColumn="@ShowTimestampColumn"
+    ShowHistoryColumn="@ShowHistoryColumn"
+    AllowCommentEditing="true"
+    ShowCustomActions="true"
+    ShowStateFilter="@ShowStateFilter"
+    ShowResultFilter="@ShowResultFilter"
+    StateFilterIcon="@StateFilterIcon"
+    ResultFilterIcon="@ResultFilterIcon"
+    StateFilterItems="@StateFilterItems"
+    ResultFilterItems="@ResultFilterItems"
+    OnOpenStateFilter="@OnOpenStateFilter"
+    OnCloseStateFilter="@OnCloseStateFilter"
+    OnResetStateFilter="@OnResetStateFilter"
+    OnStateFilterChanged="@OnStateFilterChanged"
+    OnOpenResultFilter="@OnOpenResultFilter"
+    OnCloseResultFilter="@OnCloseResultFilter"
+    OnResetResultFilter="@OnResetResultFilter"
+    OnResultFilterChanged="@OnResultFilterChanged"
+    OnCommentChanged="@OnCommentChanged"
+    OnShowHistory="@OnShowHistory">
+    
+    <CustomActionsTemplate>
+        <TemplateColumn T="Io" Sortable="false" Filterable="false" Title="Failed" CellStyle="width: 0%;">
+            <CellTemplate>
+                @if (TestingStarted)
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.Report" Size="Size.Medium" Color="Color.Dark" @onclick="() => OnManualFail.InvokeAsync(context.Item)" title="Mark as failed" Disabled="@(!TestingStarted)"></MudIconButton>
+                }
+                else
+                {
+                    <div title="Mark as failed (Testing hasn't started yet)">
+                        <MudIconButton Icon="@Icons.Material.Filled.Report" Size="Size.Medium" Color="Color.Dark" Disabled="true"></MudIconButton>
+                    </div>
+                }
+            </CellTemplate>
+        </TemplateColumn>
+        <TemplateColumn T="Io" Sortable="false" Filterable="false" Title="Clear" CellStyle="width: 0%;">
+            <CellTemplate>
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Medium" Color="Color.Dark" @onclick="() => OnClearRow.InvokeAsync(context)" title="Clear row"></MudIconButton>
+            </CellTemplate>
+        </TemplateColumn>
+        @if (ShowOutputColumn)
+        {
+            <TemplateColumn T="Io" Title="Output" Sortable="false" Filterable="false" CellStyle="width: 0%;">
+                <CellTemplate>
+                    @if (context.Item.Id != null && context.Item.Name!.Contains(":O."))
+                    {
+                        @if (TestingStarted)
+                        {
+                            <MudIconButton Icon="@Icons.Material.Filled.Outbound" Size="Size.Medium" Color="Color.Dark" @onclick="() => OnEnableOutput.InvokeAsync(context)" title="Enable output"></MudIconButton>
+                        }
+                        else
+                        {
+                            <div title="Enable output (Testing hasn't started yet)">
+                                <MudIconButton Disabled="true" Icon="@Icons.Material.Filled.Outbound" Size="Size.Medium" Color="Color.Dark"></MudIconButton>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div title="Not an output">
+                            <MudIconButton Disabled="true" Icon="@Icons.Material.Filled.Close" Size="Size.Medium" Color="Color.Dark"></MudIconButton>
+                        </div>
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+        }
+    </CustomActionsTemplate>
+</IoDataGrid>
+
+@code {
+    [Parameter] public bool ShowDataGrid { get; set; }
+    [Parameter] public bool ShowOrderColumn { get; set; }
+    [Parameter] public bool ShowOutputColumn { get; set; }
+    [Parameter] public bool ShowStateColumn { get; set; } = true;
+    [Parameter] public bool ShowResultColumn { get; set; } = true;
+    [Parameter] public bool ShowTimestampColumn { get; set; } = true;
+    [Parameter] public bool ShowHistoryColumn { get; set; } = true;
+    [Parameter] public bool TestingStarted { get; set; }
+    [Parameter] public IEnumerable<Io> Items { get; set; } = Enumerable.Empty<Io>();
+    [Parameter] public Func<Io, bool>? QuickFilter { get; set; }
+    [Parameter] public Func<Io, int, string>? RowStyleFunc { get; set; }
+    [Parameter] public Func<Io, object>? TimestampSortBy { get; set; }
+
+    // Filter state
+    [Parameter] public bool ShowStateFilter { get; set; }
+    [Parameter] public bool ShowResultFilter { get; set; }
+    [Parameter] public string StateFilterIcon { get; set; } = Icons.Material.Filled.FilterAlt;
+    [Parameter] public string ResultFilterIcon { get; set; } = Icons.Material.Filled.FilterAlt;
+    [Parameter] public Dictionary<string, bool> StateFilterItems { get; set; } = new();
+    [Parameter] public Dictionary<string, bool> ResultFilterItems { get; set; } = new();
+
+    // Events
+    [Parameter] public EventCallback OnOpenStateFilter { get; set; }
+    [Parameter] public EventCallback OnCloseStateFilter { get; set; }
+    [Parameter] public EventCallback OnResetStateFilter { get; set; }
+    [Parameter] public EventCallback<(bool value, string item)> OnStateFilterChanged { get; set; }
+    
+    [Parameter] public EventCallback OnOpenResultFilter { get; set; }
+    [Parameter] public EventCallback OnCloseResultFilter { get; set; }
+    [Parameter] public EventCallback OnResetResultFilter { get; set; }
+    [Parameter] public EventCallback<(bool value, string item)> OnResultFilterChanged { get; set; }
+    
+    [Parameter] public EventCallback<CellContext<Io>> OnCommentChanged { get; set; }
+    [Parameter] public EventCallback<Io> OnManualFail { get; set; }
+    [Parameter] public EventCallback<CellContext<Io>> OnClearRow { get; set; }
+    [Parameter] public EventCallback<Io> OnShowHistory { get; set; }
+    [Parameter] public EventCallback<CellContext<Io>> OnEnableOutput { get; set; }
+} 

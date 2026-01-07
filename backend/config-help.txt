@@ -1,0 +1,43 @@
+IO Checkout Tool Configuration Help
+=====================================
+
+The config.json file contains the following settings that can be modified:
+
+ip: 
+  - The IP address of the PLC (Programmable Logic Controller)
+  - Example: "192.168.5.12"
+  - Ask your network administrator for the correct PLC IP address
+
+path: 
+  - The communication path to the PLC
+  - Example: "1,8" 
+  - This is usually provided by your PLC programmer or system integrator
+
+remoteUrl: 
+  - The web address for uploading test data to a remote server
+  - Example: "https://www.commissioning.autstand.comx/"
+  - Leave empty ("") if you don't want to upload data remotely
+
+subsystemId: 
+  - A unique identifier for this testing system
+  - Example: "6"
+  - Use a different number for each testing station
+
+orderMode: 
+  - Controls whether tests must be done in a specific order
+  - "0" = Tests can be done in any order
+  - "1" = Tests must be done in the specified order
+
+disableWatchdog:
+  - Controls whether the watchdog PLC tag communication is enabled
+  - false = Watchdog button controls both UI state AND PLC watchdog tag communication (default)
+  - true = Watchdog button only controls UI state, no PLC watchdog tag is read/written
+
+How to modify settings:
+1. Close the IO Checkout Tool application
+2. Open config.json in any text editor (like Notepad)
+3. Change the values inside the quotes
+4. Save the file
+5. Restart the IO Checkout Tool application
+
+Important: Keep the quotes around text values and commas between settings! 

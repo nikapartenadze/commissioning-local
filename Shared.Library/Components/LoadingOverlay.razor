@@ -1,0 +1,23 @@
+@if (IsLoading)
+{
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: @ZIndex;">
+        <MudProgressCircular 
+            Color="@Color" 
+            Style="@($"height:{Size}px;width:{Size}px;")" 
+            Indeterminate="true" />
+        @if (!string.IsNullOrEmpty(LoadingText))
+        {
+            <div style="text-align: center; margin-top: 10px;">
+                <MudText Typo="Typo.body1">@LoadingText</MudText>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public Color Color { get; set; } = Color.Primary;
+    [Parameter] public int Size { get; set; } = 70;
+    [Parameter] public string? LoadingText { get; set; }
+    [Parameter] public int ZIndex { get; set; } = 9999;
+} 

@@ -1,0 +1,79 @@
+﻿@using MudBlazor
+@using IO_Checkout_Tool.Services.Interfaces
+@inject IDialogCoordinatorService DialogCoordinator
+@implements IDisposable
+
+<MudDialog DefaultFocus="DefaultFocus.None" DisableFocusTrap="true" Style="width:300px">
+    <DialogContent >
+        <MudText> Tag: <b>@Tag</b> Description: <b>@Description</b> has changed to <b>@Value</b></MudText>
+    </DialogContent>
+    <DialogActions>
+        @if(!Tag.Contains("SPARE") && Tag != "INPUT" && Tag != "OUTPUT")
+        {
+            <button @onclick="Yes" Style="margin-right:10px">Yes</button>
+        }
+        <button @onclick="No" Style="margin-right:10px">No</button>
+        <button @onclick="Cancel">Cancel</button>
+    </DialogActions>
+</MudDialog>
+@code {
+    [CascadingParameter] IMudDialogInstance? MudDialog { get; set; }
+
+    [Parameter] public string? Tag { get; set; }
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public string? Value { get; set; }
+
+    private string _dialogId = Guid.NewGuid().ToString();
+
+    protected override void OnInitialized()
+    {
+        DialogCoordinator.RegisterDialog(_dialogId, CloseDialog);
+    }
+
+    private async Task CloseDialog()
+    {
+        await InvokeAsync(() =>
+        {
+            MudDialog?.Close(DialogResult.Cancel());
+        });
+    }
+
+    async Task Yes() 
+    {
+        await DialogCoordinator.CloseAllDialogsExceptAsync(_dialogId);
+        MudDialog!.Close(DialogResult.Ok(0));
+    }
+    
+    async Task No() 
+    {
+        await DialogCoordinator.CloseAllDialogsExceptAsync(_dialogId);
+        MudDialog!.Close(DialogResult.Ok(1));
+    }
+    
+    async Task Cancel() 
+    {
+        await DialogCoordinator.CloseAllDialogsExceptAsync(_dialogId);
+        MudDialog!.Close(DialogResult.Ok(2));
+    }
+
+    public void Dispose()
+    {
+        DialogCoordinator.UnregisterDialog(_dialogId);
+    }
+}
+
+<style>
+    button{
+        font-size:18px;
+    }
+
+    @@media (pointer: fine) {
+        a span {
+            display: none;
+        }
+
+        a:hover span {
+            display: inline-block;
+        }
+    }
+</style>
