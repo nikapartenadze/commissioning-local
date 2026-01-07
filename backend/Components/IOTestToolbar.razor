@@ -1,0 +1,89 @@
+@using IO_Checkout_Tool.Services.Interfaces
+
+<MudPaper>
+    <MudToolBar>
+        <MudButton HtmlTag="label"
+                   Variant="Variant.Text"
+                   Color="Color.Primary"
+                   Style="@WatchdogColor"
+                   StartIcon="@Icons.Material.Filled.Start"
+                   Size="MudBlazor.Size.Large"
+                   Disabled="@DisableTesting"
+                   title="@(TestingStarted ? "Stop Testing" : "Start Testing")"
+                   @onclick="OnToggleWatchdog">
+        </MudButton>
+        <MudButton HtmlTag="label"
+                   Variant="Variant.Text"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.PieChart"
+                   Size="MudBlazor.Size.Large"
+                   title="Show Graph"
+                   @onclick="OnShowGraph">
+        </MudButton>
+        <MudButton HtmlTag="label"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.CloudDownload"
+                   Size="MudBlazor.Size.Large"
+                   title="Export Table as CSV"
+                   @onclick="OnDownloadCsv">
+        </MudButton>
+        <MudButton HtmlTag="label"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.History"
+                   Size="MudBlazor.Size.Large"
+                   title="Show Test History"
+                   @onclick="OnShowHistory">
+        </MudButton>
+        @if (ShowOrderModeButton)
+        {
+            <MudButton HtmlTag="label"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.TableChart"
+                       Size="MudBlazor.Size.Large"
+                       title="Toggle Table"
+                       @onclick="OnToggleTable"
+                       Style="margin-right:1%">
+            </MudButton>
+        }
+        <MudIcon Icon="@Icons.Material.Filled.ThumbUp" 
+                 Color="Color.Success" 
+                 Size="MudBlazor.Size.Medium" 
+                 Style="@PassAnimation">
+        </MudIcon>
+        <MudButton Variant="Variant.Text"
+                   Color="@(IsPlcConnected ? Color.Success : Color.Error)"
+                   StartIcon="@(IsPlcConnected ? Icons.Material.Filled.DeveloperBoard : Icons.Material.Filled.DeveloperBoardOff)"
+                   Size="Size.Medium"
+                   Style="margin-left: auto; margin-right: 8px; min-width: 40px;"
+                   title="@(IsPlcConnected ? "PLC Connected - Click to edit config" : "PLC Disconnected - Click to edit config")"
+                   @onclick="OnPlcIconClick">
+        </MudButton>
+        <MudButton Variant="Variant.Text"
+                   Color="@(IsCloudConnected ? Color.Success : Color.Error)"
+                   StartIcon="@(IsCloudConnected ? Icons.Material.Filled.CloudQueue : Icons.Material.Filled.CloudOff)"
+                   Size="Size.Medium"
+                   Style="margin-right: 8px; min-width: 40px;"
+                   title="@(IsCloudConnected ? "Connected to cloud - Click to sync" : "Offline - syncing locally")"
+                   @onclick="OnCloudIconClick"
+                   Disabled="@(!IsCloudConnected)">
+        </MudButton>
+    </MudToolBar>
+</MudPaper>
+
+@code {
+    [Parameter] public bool TestingStarted { get; set; }
+    [Parameter] public string WatchdogColor { get; set; } = "";
+    [Parameter] public bool DisableTesting { get; set; }
+    [Parameter] public bool ShowOrderModeButton { get; set; }
+    [Parameter] public string PassAnimation { get; set; } = "";
+    [Parameter] public bool IsCloudConnected { get; set; }
+    [Parameter] public bool IsPlcConnected { get; set; }
+    
+    [Parameter] public EventCallback OnToggleWatchdog { get; set; }
+    [Parameter] public EventCallback OnShowGraph { get; set; }
+    [Parameter] public EventCallback OnDownloadCsv { get; set; }
+    [Parameter] public EventCallback OnShowHistory { get; set; }
+    [Parameter] public EventCallback OnToggleTable { get; set; }
+    [Parameter] public EventCallback OnPlcIconClick { get; set; }
+    [Parameter] public EventCallback OnCloudIconClick { get; set; }
+} 

@@ -1,0 +1,121 @@
+﻿@inject IHostEnvironment Env
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+    <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+    <link href="css/datagrid.css" rel="stylesheet" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+<body>
+    <Routes @rendermode="InteractiveServer" />
+
+    <div id="blazor-error-ui">
+        @if (Env.IsDevelopment())
+        {
+            <text>
+                An unhandled exception has occurred. See browser dev tools for details.
+            </text>
+        }
+        else
+        {
+            <text>
+                An error has occurred. This app may no longer respond until reloaded.
+            </text>
+        }
+        <a href="" class="reload">Reload</a>
+        <a class="dismiss">🗙</a>
+    </div>
+    <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+    <script src="_framework/blazor.web.js" autostart="false"></script>
+    <script>
+        Blazor.start({
+            configureSignalR: function (builder) {
+                let c = builder.build();
+                c.serverTimeoutInMilliseconds = 5000;
+                c.keepAliveIntervalInMilliseconds = 2000;
+                builder.build = () => {
+                    return c;
+                };
+            }
+        });
+
+        // Handle JavaScript errors more gracefully
+        window.addEventListener('error', function(event) {
+            if (event.error && event.error.message && 
+                (event.error.message.includes('Unable to focus') || 
+                 event.error.message.includes('No interop methods'))) {
+                // Suppress these common Blazor disposal errors
+                console.debug('Suppressed focus/interop error:', event.error.message);
+                event.preventDefault();
+                return false;
+            }
+        });
+
+        // Handle focus errors specifically
+        window.addEventListener('unhandledrejection', function(event) {
+            if (event.reason && event.reason.message && 
+                event.reason.message.includes('Unable to focus')) {
+                // Suppress focus-related promise rejections
+                console.debug('Suppressed focus rejection:', event.reason.message);
+                event.preventDefault();
+            }
+        });
+
+        // Override the focus method to handle invalid elements gracefully
+        const originalFocus = Element.prototype.focus;
+        Element.prototype.focus = function(options) {
+            try {
+                // Check if element is connected to DOM and focusable
+                if (this.isConnected && this.offsetParent !== null) {
+                    originalFocus.call(this, options);
+                }
+            } catch (e) {
+                // Silently handle focus errors
+                console.debug('Focus error suppressed:', e.message);
+            }
+        };
+
+        // Override Blazor's focus method specifically
+        window.focus = function(elementSelector) {
+            try {
+                const element = document.querySelector(elementSelector);
+                if (element && element.isConnected && element.offsetParent !== null) {
+                    element.focus();
+                }
+            } catch (e) {
+                // Silently handle focus errors
+                console.debug('Blazor focus error suppressed:', e.message);
+            }
+        };
+    </script>
+
+    <script>
+        // Use it for .NET 6+
+        function BlazorDownloadFile(filename, contentType, content) {
+            // Create the URL
+            const file = new File([content], filename, { type: contentType });
+            const exportUrl = URL.createObjectURL(file);
+
+            // Create the <a> element and click on it
+            const a = document.createElement("a");
+            document.body.appendChild(a);
+            a.href = exportUrl;
+            a.download = filename;
+            a.target = "_self";
+            a.click();
+
+            // We don't need to keep the object URL, let's release the memory
+            // On older versions of Safari, it seems you need to comment this line...
+            URL.revokeObjectURL(exportUrl);
+        }
+    </script>
+</body>
+</html>
+
+
