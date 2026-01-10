@@ -15,7 +15,9 @@ import {
   Cloud,
   CloudOff,
   Cpu,
-  Monitor
+  Monitor,
+  Zap,
+  ZapOff
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -33,6 +35,9 @@ interface PlcToolbarProps {
   onShowHistory: () => void
   onShowConfig: () => void
   onCloudSync: () => void
+  currentUser?: { isAdmin: boolean; fullName: string } | null
+  onToggleSimulator?: () => void
+  isSimulatorEnabled?: boolean
 }
 
 export function PlcToolbar({
@@ -48,7 +53,10 @@ export function PlcToolbar({
   onDownloadCsv,
   onShowHistory,
   onShowConfig,
-  onCloudSync
+  onCloudSync,
+  currentUser,
+  onToggleSimulator,
+  isSimulatorEnabled = false
 }: PlcToolbarProps) {
   const [watchdogColor, setWatchdogColor] = useState("")
 
@@ -136,6 +144,32 @@ export function PlcToolbar({
 
         {/* Right Side - Connection Status */}
         <div className="flex items-center space-x-2">
+          {/* Simulator Control - ADMIN ONLY */}
+          {currentUser?.isAdmin && onToggleSimulator && (
+            <Button
+              variant={isSimulatorEnabled ? "default" : "outline"}
+              size="sm"
+              onClick={onToggleSimulator}
+              className={cn(
+                "transition-all",
+                isSimulatorEnabled && "bg-purple-600 hover:bg-purple-700 text-white"
+              )}
+              title={isSimulatorEnabled ? "Disable PLC Simulator" : "Enable PLC Simulator (Testing Mode)"}
+            >
+              {isSimulatorEnabled ? (
+                <>
+                  <ZapOff className="w-4 h-4 mr-1" />
+                  <span className="hidden sm:inline">Simulator ON</span>
+                </>
+              ) : (
+                <>
+                  <Zap className="w-4 h-4 mr-1" />
+                  <span className="hidden sm:inline">Simulator</span>
+                </>
+              )}
+            </Button>
+          )}
+
           {/* PLC Connection Status */}
           <Button
             variant="ghost"

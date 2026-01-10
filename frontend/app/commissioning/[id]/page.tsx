@@ -76,6 +76,23 @@ export default function CommissioningPage() {
       router.push('/')
     }
   }, [currentUser, userLoading, router])
+
+  // Check simulator status on mount
+  useEffect(() => {
+    const checkSimulatorStatus = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/simulator/status')
+        if (response.ok) {
+          const data = await response.json()
+          setIsSimulatorEnabled(data.enabled)
+        }
+      } catch (error) {
+        console.error('Error checking simulator status:', error)
+      }
+    }
+    
+    checkSimulatorStatus()
+  }, [])
   
   // State management
   const [ios, setIos] = useState<IoItem[]>([])
@@ -104,6 +121,7 @@ export default function CommissioningPage() {
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
+  const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false)
   
 
   // Helper function to check if an IO is an output
@@ -514,7 +532,7 @@ export default function CommissioningPage() {
     }
   }
 
-  const handleMarkFailed = async (io: IoItem, comments: string) => {
+  const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
     try {
       // Optimistically update UI immediately for better UX
       setIos(prevIos => prevIos.map(i => 
@@ -522,14 +540,15 @@ export default function CommissioningPage() {
       ))
       
       if (process.env.NODE_ENV === 'development') {
-        console.log('🚀 Calling C# backend to mark IO as failed:', io.id, io.name, comments)
+        console.log('🚀 Calling C# backend to mark IO as failed:', io.id, io.name, comments, failureMode)
       }
       const response = await fetch(`http://localhost:5000/api/ios/${io.id}/fail`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           comments,
-          currentUser: currentUser?.fullName || 'Unknown'
+          currentUser: currentUser?.fullName || 'Unknown',
+          failureMode
         })
       })
       
@@ -606,12 +625,12 @@ export default function CommissioningPage() {
     setCurrentDialogIo(null)
   }
 
-  const handleFailCommentSubmit = (io: IoItem, comment: string) => {
-    // Mark as failed with the provided comment
+  const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string) => {
+    // Mark as failed with the provided comment and failure mode
     if (process.env.NODE_ENV === 'development') {
-      console.log('🎯 Marking as failed with comment:', io.name, comment)
+      console.log('🎯 Marking as failed with comment:', io.name, comment, 'Failure mode:', failureMode)
     }
-    handleMarkFailed(io, comment)
+    handleMarkFailed(io, comment, failureMode)
     setPendingFailIo(null)
   }
 
@@ -659,6 +678,24 @@ export default function CommissioningPage() {
   const handleCloudSync = () => {
     // Just open the cloud sync dialog - it handles everything
     setShowCloudSyncDialog(true)
+  }
+
+  const handleToggleSimulator = async () => {
+    try {
+      const endpoint = isSimulatorEnabled ? 'disable' : 'enable'
+      const response = await fetch(`http://localhost:5000/api/simulator/${endpoint}`, {
+        method: 'POST'
+      })
+      
+      if (response.ok) {
+        setIsSimulatorEnabled(!isSimulatorEnabled)
+        console.log(`🎮 Simulator ${!isSimulatorEnabled ? 'enabled' : 'disabled'}`)
+      } else {
+        console.error('Failed to toggle simulator')
+      }
+    } catch (error) {
+      console.error('Error toggling simulator:', error)
+    }
   }
 
   const handleConfigChange = async (newConfig: PlcConfig) => {
@@ -815,6 +852,9 @@ export default function CommissioningPage() {
                onShowHistory={() => setShowHistoryDialog(true)}
                onShowConfig={() => setShowConfigDialog(true)}
                onCloudSync={handleCloudSync}
+               currentUser={currentUser}
+               onToggleSimulator={handleToggleSimulator}
+               isSimulatorEnabled={isSimulatorEnabled}
              />
 
         {/* Main Content */}

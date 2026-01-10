@@ -245,7 +245,8 @@ public class ApiController : ControllerBase
                 Timestamp = io.Timestamp,
                 Comments = io.Comments,
                 State = io.State,
-                TestedBy = request?.CurrentUser ?? "Unknown"
+                TestedBy = request?.CurrentUser ?? "Unknown",
+                FailureMode = request?.FailureMode
             };
             await _testHistoryRepository.AddAsync(testHistory);
             await _testHistoryRepository.SaveChangesAsync();
@@ -619,6 +620,7 @@ public class TestResultRequest
 {
     public string? Comments { get; set; }
     public string? CurrentUser { get; set; }
+    public string? FailureMode { get; set; }
 }
 
 public class FireOutputRequest
