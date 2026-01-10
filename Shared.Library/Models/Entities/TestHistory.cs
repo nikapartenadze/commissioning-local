@@ -23,6 +23,9 @@ public class TestHistory
     [StringLength(50)]
     public string? State { get; set; }
     
+    [StringLength(100)]
+    public string? FailureMode { get; set; }
+    
     public Io? Io { get; set; }
 
     public DateTime? TimestampAsDateTime => 
