@@ -177,6 +177,31 @@ public class TagsContext : DbContext
             }
         }
         
+        // Add new columns for diagnostic system
+        try
+        {
+            this.Database.ExecuteSqlRaw("ALTER TABLE Ios ADD COLUMN TagType TEXT;");
+        }
+        catch { /* Column already exists */ }
+        
+        try
+        {
+            this.Database.ExecuteSqlRaw("ALTER TABLE TestHistories ADD COLUMN FailureMode TEXT;");
+        }
+        catch { /* Column already exists */ }
+        
+        // Create TagTypeDiagnostics table
+        this.Database.ExecuteSqlRaw(@"
+            CREATE TABLE IF NOT EXISTS TagTypeDiagnostics (
+                TagType TEXT NOT NULL,
+                FailureMode TEXT NOT NULL,
+                DiagnosticSteps TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                UpdatedAt TEXT,
+                PRIMARY KEY (TagType, FailureMode)
+            );
+        ");
+        
         // Ensure Users table exists
         try
         {
@@ -227,6 +252,7 @@ public class TagsContext : DbContext
     public DbSet<PendingSync> PendingSyncs { get; set; }
     public DbSet<SubsystemConfiguration> SubsystemConfigurations { get; set; }
     public DbSet<User> Users { get; set; }
+    public DbSet<TagTypeDiagnostic> TagTypeDiagnostics { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -241,6 +267,7 @@ public class TagsContext : DbContext
             entity.Ignore(e => e.Subsystem);
             entity.Property(e => e.Comments).HasMaxLength(1000);
             entity.Property(e => e.Version).IsRequired().HasDefaultValue(0L);
+            entity.Property(e => e.TagType).HasMaxLength(100);
         });
 
         modelBuilder.Entity<TestHistory>(entity =>
@@ -253,6 +280,7 @@ public class TagsContext : DbContext
             entity.Property(e => e.State).HasMaxLength(50);
             entity.Property(e => e.Comments).HasMaxLength(1000);
             entity.Property(e => e.TestedBy).HasMaxLength(100);
+            entity.Property(e => e.FailureMode).HasMaxLength(100);
         });
 
         modelBuilder.Entity<PendingSync>(entity =>
@@ -292,6 +320,15 @@ public class TagsContext : DbContext
             entity.Property(e => e.CreatedAt).IsRequired();
             entity.Property(e => e.LastUsedAt);
             entity.HasIndex(e => e.FullName).IsUnique();
+        });
+
+        modelBuilder.Entity<TagTypeDiagnostic>(entity =>
+        {
+            entity.HasKey(e => new { e.TagType, e.FailureMode });
+            entity.Property(e => e.TagType).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.FailureMode).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.DiagnosticSteps).IsRequired();
+            entity.Property(e => e.CreatedAt).IsRequired();
         });
 
         base.OnModelCreating(modelBuilder);

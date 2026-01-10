@@ -69,6 +69,10 @@ public class Io
     [MessagePack.Key(9)]
     public long Version { get; set; } = 0;
 
+    [MessagePack.Key(10)]
+    [StringLength(100)]
+    public string? TagType { get; set; }
+
     // Navigation properties
     [IgnoreMember]
     public Subsystem? Subsystem { get; set; }
