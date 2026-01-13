@@ -132,6 +132,11 @@ export default function CommissioningPage() {
 
   // Auto-show next dialog from queue
   useEffect(() => {
+    // Don't advance queue if FailCommentDialog is open
+    if (showFailCommentDialog) {
+      return
+    }
+
     if (!currentDialogIo && dialogQueue.length > 0) {
       // Show next dialog from queue
       const nextIo = dialogQueue[0]
@@ -145,7 +150,7 @@ export default function CommissioningPage() {
       // Close dialog when queue is empty
       setShowValueChangeDialog(false)
     }
-  }, [dialogQueue, currentDialogIo])
+  }, [dialogQueue, currentDialogIo, showFailCommentDialog])
 
   // Add IO to dialog queue
   const addToDialogQueue = useCallback((io: IoItem) => {
@@ -621,8 +626,9 @@ export default function CommissioningPage() {
     }
     setPendingFailIo(io)
     setShowFailCommentDialog(true)
-    // Clear current dialog and show next in queue
-    setCurrentDialogIo(null)
+    // DON'T clear currentDialogIo here - wait for FailCommentDialog to complete
+    // The queue will advance when FailCommentDialog submits or cancels
+    setShowValueChangeDialog(false) // Hide ValueChangeDialog but keep currentDialogIo set
   }
 
   const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string) => {
@@ -632,6 +638,8 @@ export default function CommissioningPage() {
     }
     handleMarkFailed(io, comment, failureMode)
     setPendingFailIo(null)
+    // NOW clear currentDialogIo to advance the queue
+    setCurrentDialogIo(null)
   }
 
   const handleFailCommentCancel = () => {
@@ -640,6 +648,8 @@ export default function CommissioningPage() {
       console.log('🚫 Fail comment cancelled - not marking as failed')
     }
     setPendingFailIo(null)
+    // NOW clear currentDialogIo to advance the queue
+    setCurrentDialogIo(null)
   }
 
   const handleValueChangeCancel = (io: IoItem) => {

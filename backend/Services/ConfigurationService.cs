@@ -4,6 +4,7 @@ using IO_Checkout_Tool.Constants;
 using System.Text.Json;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using Shared.Library.Repositories.Interfaces;
 
 namespace IO_Checkout_Tool.Services;
 
@@ -17,6 +18,9 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
     // Reinitialization lock to prevent concurrent attempts
     private readonly SemaphoreSlim _reinitializationLock = new(1, 1);
     private volatile bool _isReinitializing = false;
+
+    // Track previous subsystem to detect changes
+    private string _previousSubsystemId = string.Empty;
 
     public string Ip { get; private set; } = string.Empty;
     public string Path { get; private set; } = string.Empty;
@@ -207,21 +211,32 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
 
             _isReinitializing = true;
             _logger.LogInformation("Starting application reinitialization...");
-            
+
             // 1. Wait a moment to ensure file write is complete
             await Task.Delay(100);
-            
+
+            // Save previous subsystem ID to detect changes
+            var previousSubsystem = SubsystemId;
+
             // 2. Reload configuration from the updated file
             ((IConfigurationRoot)_configuration).Reload();
             var configReloaded = LoadConfiguration();
-            
+
             if (!configReloaded)
             {
                 _logger.LogError("Failed to reload configuration - stopping reinitialization");
                 return;
             }
-            
-            _logger.LogInformation("Configuration reloaded successfully. IP={Ip}, Path={Path}, DisableWatchdog={DisableWatchdog}, OrderMode={OrderMode}", 
+
+            // Check if subsystem changed
+            var subsystemChanged = !string.Equals(previousSubsystem, SubsystemId, StringComparison.OrdinalIgnoreCase);
+            if (subsystemChanged)
+            {
+                _logger.LogInformation("Subsystem changed from {OldSubsystem} to {NewSubsystem} - will fetch fresh data from cloud",
+                    previousSubsystem, SubsystemId);
+            }
+
+            _logger.LogInformation("Configuration reloaded successfully. IP={Ip}, Path={Path}, DisableWatchdog={DisableWatchdog}, OrderMode={OrderMode}",
                 Ip, Path, DisableWatchdog, OrderMode);
 
             // 3. Get services needed for reinitialization
@@ -268,23 +283,54 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             if (cloudSyncService != null)
             {
                 _logger.LogInformation("Reinitializing cloud sync service with updated configuration...");
-                
+
                 // Check if this is the ResilientCloudSyncService which supports ForceReconnectAsync
                 if (cloudSyncService is ResilientCloudSyncService resilientService)
                 {
                     await resilientService.ForceReconnectAsync();
                     _logger.LogInformation("Cloud sync service reconnection initiated");
 
-                    // Test the new connection
+                    // Test the new connection - wait for SignalR to establish
                     _logger.LogInformation("Testing new cloud connection with updated configuration...");
-                    var connectionRestored = await cloudSyncService.IsCloudAvailable();
+
+                    // Wait up to 10 seconds for SignalR connection to establish
+                    var connectionRestored = false;
+                    for (int attempt = 0; attempt < 5 && !connectionRestored; attempt++)
+                    {
+                        connectionRestored = await cloudSyncService.IsCloudAvailable();
+                        if (!connectionRestored && attempt < 4)
+                        {
+                            _logger.LogDebug("Waiting for cloud connection... attempt {Attempt}/5", attempt + 1);
+                            await Task.Delay(2000); // Wait 2 seconds between attempts
+                        }
+                    }
+
                     if (connectionRestored)
                     {
                         _logger.LogInformation("Cloud connection restored successfully - real-time updates active");
+
+                        // 6. Always fetch fresh IOs from cloud on config save
+                        // This ensures data is loaded even if startup was skipped
+                        _logger.LogInformation("Fetching fresh IOs from cloud for subsystem {SubsystemId}...", SubsystemId);
+                        var cloudFetchSuccess = await FetchAndSyncCloudData(cloudSyncService, plcCommunicationService);
+
+                        // If cloud fetch failed (e.g., 401 auth error), fall back to local database
+                        if (!cloudFetchSuccess && plcCommunicationService != null)
+                        {
+                            _logger.LogInformation("Cloud fetch failed - loading existing IOs from local database...");
+                            await plcCommunicationService.ReloadDataAsync();
+                        }
                     }
                     else
                     {
-                        _logger.LogWarning("Failed to restore cloud connection - check configuration and cloud availability");
+                        _logger.LogWarning("Failed to restore cloud connection - will try to load from local database");
+
+                        // Try to load from local database if cloud fails
+                        if (plcCommunicationService != null)
+                        {
+                            _logger.LogInformation("Loading IOs from local database...");
+                            await plcCommunicationService.ReloadDataAsync();
+                        }
                     }
                 }
                 else
@@ -295,8 +341,8 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             else
             {
                 _logger.LogInformation("Cloud sync not available - reloading local data only");
-                
-                // 6. If no cloud sync, just reload local data
+
+                // If no cloud sync, just reload local data
                 if (plcCommunicationService != null)
                 {
                     await plcCommunicationService.ReloadDataAfterCloudSyncAsync();
@@ -415,6 +461,67 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to switch configuration");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Fetches IOs from cloud for the current subsystem and syncs to local database
+    /// </summary>
+    /// <returns>True if IOs were successfully fetched and synced, false otherwise</returns>
+    private async Task<bool> FetchAndSyncCloudData(ICloudSyncService cloudSyncService, IPlcCommunicationService? plcCommunicationService)
+    {
+        try
+        {
+            var subsystemId = int.Parse(SubsystemId);
+
+            // 1. Fetch IOs from cloud
+            _logger.LogInformation("Fetching IOs from cloud for subsystem {SubsystemId}...", subsystemId);
+            var cloudIos = await cloudSyncService.GetSubsystemIosAsync(subsystemId);
+
+            if (cloudIos == null || !cloudIos.Any())
+            {
+                _logger.LogWarning("No IOs retrieved from cloud for subsystem {SubsystemId} - will use local data", subsystemId);
+                return false;
+            }
+
+            _logger.LogInformation("Retrieved {Count} IOs from cloud", cloudIos.Count);
+
+            // 2. Get repository and clear old data
+            using var scope = _serviceProvider.CreateScope();
+            var ioRepository = scope.ServiceProvider.GetRequiredService<IIoRepository>();
+
+            // Clear ALL local IOs (we're switching subsystems, so old data is irrelevant)
+            _logger.LogInformation("Clearing local database for subsystem switch...");
+            var existingIos = await ioRepository.GetAllAsync();
+            foreach (var io in existingIos)
+            {
+                await ioRepository.DeleteAsync(io.Id);
+            }
+
+            // 3. Save new IOs to local database
+            _logger.LogInformation("Saving {Count} IOs to local database...", cloudIos.Count);
+            foreach (var io in cloudIos)
+            {
+                // Clear any state/result since this is fresh data
+                io.State = null;
+                await ioRepository.AddAsync(io);
+            }
+
+            _logger.LogInformation("Successfully synced {Count} IOs from cloud to local database", cloudIos.Count);
+
+            // 4. Reload PLC with new data
+            if (plcCommunicationService != null)
+            {
+                _logger.LogInformation("Reinitializing PLC with new IO data...");
+                await plcCommunicationService.ReloadDataAsync();
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to fetch and sync cloud data for subsystem {SubsystemId}", SubsystemId);
             return false;
         }
     }

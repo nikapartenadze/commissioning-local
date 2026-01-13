@@ -7,9 +7,10 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { TestHistoryDialog } from "@/components/test-history-dialog"
+import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, Square, AlertTriangle, CheckCircle } from "lucide-react"
+import { Search, History, X, Play, Square, AlertTriangle, CheckCircle, HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type IoItem = {
@@ -21,6 +22,8 @@ type IoItem = {
   comments: string | null
   state: string | null
   subsystemName: string
+  tagType?: string | null
+  failureMode?: string | null
 }
 
 type TestHistory = {
@@ -55,6 +58,7 @@ const COLUMN_WIDTHS = {
   timestamp: 170,
   comments: 180,
   history: 80,
+  help: 80,
   failed: 80,
   clear: 80,
   output: 80
@@ -82,6 +86,8 @@ export function EnhancedIoDataGrid({
   const [showStateColumn, setShowStateColumn] = useState(true)
   const [showResultColumn, setShowResultColumn] = useState(true)
   const [showTimestampColumn, setShowTimestampColumn] = useState(true)
+  const [showDiagnosticDialog, setShowDiagnosticDialog] = useState(false)
+  const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
 
   const handleShowHistory = async (io: IoItem) => {
     setSelectedIo(io)
@@ -189,8 +195,31 @@ export function EnhancedIoDataGrid({
 
   const isOutput = (ioName: string) => ioName.includes(':O.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.toLowerCase().includes('output')
 
+  const handleShowDiagnostic = async (io: IoItem) => {
+    // If IO doesn't have failureMode, fetch it from history
+    if (!io.failureMode && io.id) {
+      try {
+        const response = await fetch(`http://localhost:5000/api/ios/${io.id}/history`)
+        if (response.ok) {
+          const history = await response.json()
+          // Find the most recent failed entry with a failureMode
+          const failedEntry = history.find((h: any) => h.result === 'Failed' && h.failureMode)
+          if (failedEntry) {
+            setDiagnosticIo({ ...io, failureMode: failedEntry.failureMode })
+            setShowDiagnosticDialog(true)
+            return
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching history for diagnostic:', error)
+      }
+    }
+    setDiagnosticIo(io)
+    setShowDiagnosticDialog(true)
+  }
+
   // Calculate total width based on visible columns
-  const totalWidth = 
+  const totalWidth =
     COLUMN_WIDTHS.description +
     COLUMN_WIDTHS.ioPoint +
     (showStateColumn ? COLUMN_WIDTHS.state : 0) +
@@ -198,6 +227,7 @@ export function EnhancedIoDataGrid({
     (showTimestampColumn ? COLUMN_WIDTHS.timestamp : 0) +
     COLUMN_WIDTHS.comments +
     COLUMN_WIDTHS.history +
+    COLUMN_WIDTHS.help +
     COLUMN_WIDTHS.failed +
     COLUMN_WIDTHS.clear +
     COLUMN_WIDTHS.output
@@ -303,13 +333,19 @@ export function EnhancedIoDataGrid({
             >
               Comments
             </div>
-            <div 
+            <div
               className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.history}px` }}
             >
               History
             </div>
-            <div 
+            <div
+              className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+              style={{ width: `${COLUMN_WIDTHS.help}px` }}
+            >
+              Help
+            </div>
+            <div
               className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.failed}px` }}
             >
@@ -407,11 +443,11 @@ export function EnhancedIoDataGrid({
                      </div>
                    </div>
                   {/* History Column */}
-                  <div 
+                  <div
                     className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
                     style={{ width: `${COLUMN_WIDTHS.history}px` }}
                   >
-                    <Button 
+                    <Button
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7"
@@ -423,6 +459,28 @@ export function EnhancedIoDataGrid({
                     >
                       <History className="h-3 w-3" />
                     </Button>
+                  </div>
+                  {/* Help Column - shown for failed IOs with tagType */}
+                  <div
+                    className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                    style={{ width: `${COLUMN_WIDTHS.help}px` }}
+                  >
+                    {io.result === TEST_CONSTANTS.RESULT_FAILED && io.tagType ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleShowDiagnostic(io)
+                        }}
+                        title="Show Troubleshooting Guide"
+                      >
+                        <HelpCircle className="h-4 w-4" />
+                      </Button>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
                   </div>
                   {/* Failed Column */}
                   <div 
@@ -515,6 +573,16 @@ export function EnhancedIoDataGrid({
         ioName={selectedIo.name}
         ioDescription={selectedIo.description}
         history={loadingHistory ? [] : historyData}
+      />
+    )}
+
+    {diagnosticIo && diagnosticIo.tagType && (
+      <DiagnosticStepsDialog
+        open={showDiagnosticDialog}
+        onOpenChange={setShowDiagnosticDialog}
+        tagType={diagnosticIo.tagType}
+        failureMode={diagnosticIo.failureMode || 'No response'}
+        tagName={diagnosticIo.name}
       />
     )}
   </>
