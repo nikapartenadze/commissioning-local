@@ -6,6 +6,7 @@ namespace IO_Checkout_Tool.Models;
 public class TagsContext : DbContext
 {
     private static bool _versionMigrationCompleted = false;
+    private static bool _diagnosticMigrationCompleted = false;
     private static readonly object _migrationLock = new object();
     
     public TagsContext(DbContextOptions<TagsContext> options) : base(options)
@@ -177,18 +178,29 @@ public class TagsContext : DbContext
             }
         }
         
-        // Add new columns for diagnostic system
-        try
+        // Add new columns for diagnostic system (only run once per app lifetime)
+        if (!_diagnosticMigrationCompleted)
         {
-            this.Database.ExecuteSqlRaw("ALTER TABLE Ios ADD COLUMN TagType TEXT;");
+            lock (_migrationLock)
+            {
+                if (!_diagnosticMigrationCompleted)
+                {
+                    try
+                    {
+                        this.Database.ExecuteSqlRaw("ALTER TABLE Ios ADD COLUMN TagType TEXT;");
+                    }
+                    catch { /* Column already exists */ }
+
+                    try
+                    {
+                        this.Database.ExecuteSqlRaw("ALTER TABLE TestHistories ADD COLUMN FailureMode TEXT;");
+                    }
+                    catch { /* Column already exists */ }
+
+                    _diagnosticMigrationCompleted = true;
+                }
+            }
         }
-        catch { /* Column already exists */ }
-        
-        try
-        {
-            this.Database.ExecuteSqlRaw("ALTER TABLE TestHistories ADD COLUMN FailureMode TEXT;");
-        }
-        catch { /* Column already exists */ }
         
         // Create TagTypeDiagnostics table
         this.Database.ExecuteSqlRaw(@"

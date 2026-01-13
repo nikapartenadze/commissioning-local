@@ -25,20 +25,28 @@ const UserContext = createContext<UserContextType>({
 export function UserProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUserState] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isMounted, setIsMounted] = useState(false)
+
+  // Handle hydration - only run on client
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
 
   // Load from localStorage on mount and check for auto-logout
   useEffect(() => {
+    if (!isMounted) return
+
     const stored = localStorage.getItem('currentUser')
     const loginTime = localStorage.getItem('loginTime')
-    
+
     if (stored && loginTime) {
       try {
         const user = JSON.parse(stored)
         const loginDate = new Date(loginTime)
-        
+
         // Check if 8 hours have passed (auto-logout)
         const hoursSinceLogin = (Date.now() - loginDate.getTime()) / (1000 * 60 * 60)
-        
+
         if (hoursSinceLogin < 8) {
           setCurrentUserState({
             ...user,
@@ -56,9 +64,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem('loginTime')
       }
     }
-    
+
     setIsLoading(false)
-  }, [])
+  }, [isMounted])
 
   const setCurrentUser = (user: User | null) => {
     setCurrentUserState(user)

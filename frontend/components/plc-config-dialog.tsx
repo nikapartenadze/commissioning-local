@@ -50,6 +50,7 @@ export function PlcConfigDialog({
   })
   const [isSaving, setIsSaving] = useState(false)
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
 
   // Load actual config from C# backend when dialog opens
   useEffect(() => {
@@ -101,16 +102,10 @@ export function PlcConfigDialog({
   const handleSave = async () => {
     try {
       setIsSaving(true)
+      setSaveStatus({ type: 'loading', message: 'Saving configuration and connecting...' })
       console.log('💾 Saving configuration with values:', localConfig)
-      
-      // Close dialog immediately for fast UX
-      onOpenChange(false)
-      
-      // Notify parent to refresh data immediately (don't await to keep dialog fast)
-      onConfigChange(localConfig)
-      
-      // Save to C# backend and show feedback
-      fetch('http://localhost:5000/api/configuration/update-config-json', {
+
+      const response = await fetch('http://localhost:5000/api/configuration/update-config-json', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -121,25 +116,36 @@ export function PlcConfigDialog({
           apiPassword: localConfig.apiPassword || "",
           remoteUrl: localConfig.remoteUrl || ""
         })
-      }).then(async response => {
-        if (response.ok) {
-          const result = await response.json()
-          console.log('✅ Configuration updated successfully:', result)
-          // Show success message
-          alert('✅ PLC Configuration saved successfully!\n\nThe backend will reload the configuration. Check the backend window for connection status.')
-        } else {
-          const error = await response.text()
-          console.error('❌ Failed to update configuration:', response.status, error)
-          alert(`❌ Failed to save configuration:\n\nStatus: ${response.status}\nError: ${error}\n\nCheck the backend window for details.`)
-        }
-      }).catch(error => {
-        console.error('❌ Error updating configuration:', error)
-        alert(`❌ Error saving configuration:\n\n${error.message}\n\nMake sure the backend is running on port 5000.`)
       })
-      
-      console.log('✅ Configuration saved and dialog closed immediately')
-    } catch (error) {
+
+      if (response.ok) {
+        const result = await response.json()
+        console.log('✅ Configuration updated successfully:', result)
+
+        // Show success with details
+        const ioCount = result.ioCount || 0
+        const message = ioCount > 0
+          ? `Configuration saved! Loaded ${ioCount} IOs from cloud.`
+          : 'Configuration saved! Check backend logs for connection status.'
+
+        setSaveStatus({ type: 'success', message })
+
+        // Notify parent to refresh data
+        onConfigChange(localConfig)
+
+        // Auto-close after showing success for 2 seconds
+        setTimeout(() => {
+          setSaveStatus({ type: null, message: '' })
+          onOpenChange(false)
+        }, 2000)
+      } else {
+        const error = await response.text()
+        console.error('❌ Failed to update configuration:', response.status, error)
+        setSaveStatus({ type: 'error', message: `Failed: ${error || response.statusText}` })
+      }
+    } catch (error: any) {
       console.error('❌ Error updating configuration:', error)
+      setSaveStatus({ type: 'error', message: `Error: ${error.message}. Is backend running?` })
     } finally {
       setIsSaving(false)
     }
@@ -257,6 +263,24 @@ export function PlcConfigDialog({
           </Card>
 
         </div>
+
+        {/* Status Message */}
+        {saveStatus.type && (
+          <div className={`p-4 rounded-lg border-2 ${
+            saveStatus.type === 'loading' ? 'bg-blue-50 border-blue-200 text-blue-800' :
+            saveStatus.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
+            'bg-red-50 border-red-200 text-red-800'
+          }`}>
+            <div className="flex items-center gap-2">
+              {saveStatus.type === 'loading' && (
+                <div className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
+              )}
+              {saveStatus.type === 'success' && <span>✅</span>}
+              {saveStatus.type === 'error' && <span>❌</span>}
+              <span className="font-medium">{saveStatus.message}</span>
+            </div>
+          </div>
+        )}
 
         <DialogFooter className="mt-6 border-t border-primary/10 pt-4">
           <Button variant="outline" onClick={handleCancel} className="border-primary/30 hover:bg-muted/50" disabled={isSaving}>
