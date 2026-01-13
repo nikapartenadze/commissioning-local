@@ -75,54 +75,28 @@ public class PlcSimulatorService : BackgroundService
             return; // No I/O points to simulate
         }
 
-        // Simulate 1-3 random tag changes per cycle
-        var numberOfChanges = _random.Next(1, 4);
-        var iosToChange = allIos.OrderBy(x => _random.Next()).Take(numberOfChanges);
-
-        foreach (var io in iosToChange)
+        // Pick one random untested IO to pulse
+        var untestedIos = allIos.Where(io => string.IsNullOrEmpty(io.Result)).ToList();
+        if (!untestedIos.Any())
         {
-            // Skip if already tested (don't change tested points)
-            if (!string.IsNullOrEmpty(io.Result))
-            {
-                continue;
-            }
-
-            // Determine if this is an input or output
-            bool isOutput = io.IsOutput;
-
-            if (isOutput)
-            {
-                // Outputs: Simulate activation (e.g., when user fires output)
-                // For simulation, randomly activate outputs
-                if (_random.Next(100) < 10) // 10% chance per cycle
-                {
-                    io.State = "TRUE";
-                    _logger.LogDebug("🎮 Simulated OUTPUT activation: {Name} -> TRUE", io.Name);
-                    await signalRService.SendIOUpdateAsync(io);
-                }
-            }
-            else
-            {
-                // Inputs: Simulate state changes (sensor triggers, button presses, etc.)
-                var shouldChange = _random.Next(100) < 15; // 15% chance per cycle
-
-                if (shouldChange)
-                {
-                    // Toggle state or set to TRUE
-                    var newState = io.State == "TRUE" ? "FALSE" : "TRUE";
-                    
-                    // Bias towards TRUE for testing (70% TRUE, 30% FALSE)
-                    if (_random.Next(100) < 70)
-                    {
-                        newState = "TRUE";
-                    }
-
-                    io.State = newState;
-                    _logger.LogDebug("🎮 Simulated INPUT change: {Name} -> {State}", io.Name, newState);
-                    await signalRService.SendIOUpdateAsync(io);
-                }
-            }
+            _logger.LogDebug("🎮 All IOs have been tested, nothing to simulate");
+            return;
         }
+
+        var io = untestedIos[_random.Next(untestedIos.Count)];
+
+        // Pulse: TRUE -> brief delay -> FALSE (simulates button press or sensor trigger)
+        io.State = "TRUE";
+        _logger.LogDebug("🎮 Simulated PULSE: {Name} -> TRUE", io.Name);
+        await signalRService.SendIOUpdateAsync(io);
+
+        // Brief delay to simulate the pulse duration (150ms)
+        await Task.Delay(150);
+
+        // Return to FALSE
+        io.State = "FALSE";
+        _logger.LogDebug("🎮 Simulated PULSE: {Name} -> FALSE", io.Name);
+        await signalRService.SendIOUpdateAsync(io);
     }
 }
 
