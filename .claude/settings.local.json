@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(git -C \"C:\\\\Users\\\\nika.fartenadze\\\\Desktop\\\\MyPartner\\\\commissioning-local\" log --oneline -5)",
+      "Bash(git -C \"C:\\\\Users\\\\nika.fartenadze\\\\Desktop\\\\MyPartner\\\\commissioning-local\" show 2a8d6eb --stat)",
+      "Bash(npm run build:*)",
+      "Bash(npx next build)",
+      "Bash(./node_modules/.bin/next build:*)",
+      "Bash(dotnet build:*)",
+      "Bash(npm install)",
+      "Bash(curl:*)",
+      "Bash(powershell:*)",
+      "Bash(taskkill:*)",
+      "Bash(ping:*)",
+      "Bash(dotnet run:*)",
+      "Bash(tasklist:*)",
+      "Bash(npx shadcn@latest add:*)",
+      "Bash(pkill:*)"
+    ]
+  }
+}

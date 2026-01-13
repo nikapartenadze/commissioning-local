@@ -48,6 +48,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 Pop-Location
 
+# Copy config template for factory setup
+Write-Host "Copying configuration template..." -ForegroundColor Cyan
+Copy-Item -Path "$backendSource\config.json.template" -Destination "$distributionFolder\backend\config.json.template" -Force
+Copy-Item -Path "$backendSource\config-help.txt" -Destination "$distributionFolder\backend\config-help.txt" -Force
+
 # Step 3: Build Next.js frontend
 Write-Host "[3/5] Building Next.js frontend..." -ForegroundColor Yellow
 Push-Location $frontendSource
@@ -286,34 +291,202 @@ $readme = @"
 IO CHECKOUT TOOL - PORTABLE VERSION
 ====================================
 
-QUICK START:
+BEFORE FIRST USE:
+1. Open the backend folder
+2. Rename config.json.template to config.json
+3. Edit config.json with Notepad - set the PLC IP address and path
+4. See FACTORY-SETUP.txt for detailed instructions
+
+STARTING:
 1. Double-click START.bat
-2. Wait for both servers to start
-3. Browser will open automatically
+2. Wait for both servers to start (about 10 seconds)
+3. Browser opens automatically to http://localhost:3000
+4. Default admin PIN: 852963
 
 STOPPING:
-- Double-click STOP.bat to stop both servers
+- Double-click STOP.bat
 
-NETWORK ACCESS:
-- The application will be accessible on your network
-- Backend: http://YOUR_IP:5000
-- Frontend: http://YOUR_IP:3000
+ACCESS FROM OTHER COMPUTERS:
+- Find this computer's IP address (run: ipconfig)
+- On tablets/other PCs, open browser to: http://THIS_COMPUTER_IP:3000
+- Example: http://192.168.1.50:3000
 
-TROUBLESHOOTING:
-- If backend fails to start, check config.json in backend folder
-- If frontend fails, ensure Node.js is available (portable or installed)
-- Check Windows Firewall if network access doesn't work
+MULTIPLE USERS:
+- Multiple people can test the same subsystem at the same time
+- All browsers show live updates when someone marks a point passed/failed
+- Each person should log in with their own PIN
+
+FIREWALL:
+If other computers cannot connect, run these commands as Administrator:
+  netsh advfirewall firewall add rule name="IO Checkout 5000" dir=in action=allow protocol=tcp localport=5000
+  netsh advfirewall firewall add rule name="IO Checkout 3000" dir=in action=allow protocol=tcp localport=3000
 
 FILES:
-- backend/ - C# .NET application (includes runtime)
-- frontend/ - Next.js application
-- nodejs/ - Portable Node.js runtime (if included)
+- backend/           - Application server
+- backend/config.json - PLC connection settings (you must create this)
+- backend/database.db - Test data (created automatically)
+- frontend/          - Web interface
+- nodejs/            - Node.js runtime
+- FACTORY-SETUP.txt  - Detailed setup instructions
 
-SUPPORT:
-Contact your IT department for assistance.
+TROUBLESHOOTING:
+- Backend fails: Check config.json exists and has correct PLC IP
+- Cannot connect to PLC: Verify network connection and IP address
+- Other computers cannot access: Check firewall rules above
+- See config-help.txt in backend folder for configuration details
 "@
 
 $readme | Out-File -FilePath "$distributionFolder\README.txt" -Encoding ASCII
+
+# FACTORY-SETUP.txt
+$factorySetup = @"
+IO CHECKOUT TOOL - FACTORY SETUP GUIDE
+=======================================
+
+This guide is for the person setting up the IO Checkout Tool on a factory
+server or computer. Follow these steps in order.
+
+
+STEP 1: COPY FILES TO SERVER
+-----------------------------
+Copy the entire IO-Checkout-Tool-Portable folder to the server.
+Recommended location: C:\IOCheckout
+
+Do not rename the internal folders (backend, frontend, nodejs).
+
+
+STEP 2: CREATE CONFIGURATION FILE
+----------------------------------
+A. Open the backend folder
+B. Find the file: config.json.template
+C. Make a copy and rename it to: config.json
+D. Open config.json with Notepad
+
+E. Change these values:
+
+   "ip": "192.168.1.100"
+   Change to your PLC IP address.
+   Example: "ip": "192.168.5.12"
+
+   "path": "1,0"
+   Change to your PLC slot path.
+   This is provided by the controls engineer.
+   Common values: "1,0" or "1,8"
+
+   "subsystemId": "1"
+   Change if running multiple test stations.
+   Each station needs a unique number.
+
+F. Save the file
+
+
+STEP 3: OPEN FIREWALL PORTS
+---------------------------
+Other computers need to connect to ports 5000 and 3000.
+
+A. Open Command Prompt as Administrator
+   (Right-click Start, select "Command Prompt (Admin)" or "Terminal (Admin)")
+
+B. Run these two commands:
+
+   netsh advfirewall firewall add rule name="IO Checkout Backend" dir=in action=allow protocol=tcp localport=5000
+
+   netsh advfirewall firewall add rule name="IO Checkout Frontend" dir=in action=allow protocol=tcp localport=3000
+
+
+STEP 4: TEST THE APPLICATION
+----------------------------
+A. Double-click START.bat
+B. Wait about 10 seconds
+C. Browser should open to http://localhost:3000
+D. Log in with PIN: 852963 (this is the default admin)
+E. Verify you can see the project and I/O points
+
+
+STEP 5: FIND SERVER IP ADDRESS
+------------------------------
+A. Open Command Prompt
+B. Type: ipconfig
+C. Look for "IPv4 Address" under your network adapter
+   Example: 192.168.1.50
+D. Write this down - electricians will use it
+
+
+STEP 6: TEST FROM ANOTHER COMPUTER
+-----------------------------------
+A. On a tablet or another PC on the same network
+B. Open a web browser
+C. Go to: http://SERVER_IP:3000
+   Example: http://192.168.1.50:3000
+D. You should see the login screen
+
+
+STEP 7: CREATE USER ACCOUNTS
+----------------------------
+A. Log in as admin (PIN: 852963)
+B. Click the user icon in the top right
+C. Select "Admin Panel"
+D. Create accounts for each electrician
+   - Enter their name
+   - Create a 6-digit PIN for them
+   - They will use this PIN to log in
+
+
+DAILY OPERATION
+===============
+- Server must be running START.bat before electricians can use the system
+- Electricians open browser and go to http://SERVER_IP:3000
+- Log in with their PIN
+- Select project and subsystem to test
+- Mark points as Passed or Failed
+- Multiple people can test at the same time - all browsers update live
+
+
+STOPPING THE APPLICATION
+========================
+Double-click STOP.bat to shut down both servers.
+
+
+CONFIGURATION REFERENCE
+=======================
+The config.json file settings:
+
+  ip            PLC IP address (required)
+  path          PLC communication path (required)
+  subsystemId   Unique ID for this test station (required)
+  orderMode     "0" = test in any order, "1" = must follow order
+  remoteUrl     Cloud sync URL (leave empty if not using)
+  disableWatchdog  Set to true if PLC has no watchdog tag
+
+See config-help.txt for more details.
+
+
+COMMON PROBLEMS
+===============
+
+Problem: Backend fails to start
+Solution: Check that config.json exists and has valid JSON format.
+          Make sure IP address is correct.
+
+Problem: Cannot connect to PLC
+Solution: Verify PLC is powered on and network cable connected.
+          Ping the PLC IP from command prompt: ping 192.168.x.x
+          Check the path value with controls engineer.
+
+Problem: Other computers cannot access the application
+Solution: Run the firewall commands from Step 3.
+          Check that server and clients are on same network.
+
+Problem: Application is slow
+Solution: Close other programs on the server.
+          Check network connection quality.
+
+Problem: Test results not saving
+Solution: Check that database.db file is not read-only.
+          Ensure disk has free space.
+"@
+
+$factorySetup | Out-File -FilePath "$distributionFolder\FACTORY-SETUP.txt" -Encoding ASCII
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green

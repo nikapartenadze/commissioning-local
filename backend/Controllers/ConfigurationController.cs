@@ -390,15 +390,25 @@ public class ConfigurationController : ControllerBase
             // Reinitialize the application with new settings
             await _configurationService.ReinitializeApplicationAsync();
 
-            _logger.LogInformation("Updated config.json and reinitialized application. IP={Ip}, Path={Path}, SubsystemId={SubsystemId}", 
-                request.Ip, request.Path, request.SubsystemId);
+            // Get IO count after reinitialization
+            int ioCount = 0;
+            try
+            {
+                var plcService = HttpContext.RequestServices.GetService<IPlcCommunicationService>();
+                ioCount = plcService?.TagList?.Count ?? 0;
+            }
+            catch { /* Ignore errors getting IO count */ }
 
-            return Ok(new { 
+            _logger.LogInformation("Updated config.json and reinitialized application. IP={Ip}, Path={Path}, SubsystemId={SubsystemId}, IOs={IoCount}",
+                request.Ip, request.Path, request.SubsystemId, ioCount);
+
+            return Ok(new {
                 message = "Configuration updated and application reinitialized successfully",
                 ip = request.Ip,
                 path = request.Path,
                 subsystemId = request.SubsystemId,
-                disableWatchdog = request.DisableWatchdog
+                disableWatchdog = request.DisableWatchdog,
+                ioCount = ioCount
             });
         }
         catch (Exception ex)
