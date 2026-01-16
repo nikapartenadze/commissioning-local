@@ -2,6 +2,7 @@ import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import { ProjectDashboard } from "@/components/project-dashboard"
 import { DataGridSkeleton } from "@/components/data-grid-skeleton"
+import { getBackendUrl } from "@/lib/api-config"
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 60 // Cache for 60 seconds
@@ -34,7 +35,7 @@ async function getProjectWithIos(projectId: number) {
     
     // For Test project (ID 6), fetch real data from C# backend
     if (projectId === 6) {
-      const response = await fetch('http://localhost:5000/api/ios', {
+      const response = await fetch(`${getBackendUrl()}/api/ios`, {
         cache: 'no-store'
       })
       

@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { TestTube } from "lucide-react"
+import { API_ENDPOINTS } from "@/lib/api-config"
 
 interface PlcConfig {
   ip: string
@@ -73,7 +74,7 @@ export function PlcConfigDialog({
     try {
       setIsLoadingConfig(true)
       console.log('🔄 Loading actual config from C# backend...')
-      const response = await fetch('http://localhost:5000/api/status')
+      const response = await fetch(API_ENDPOINTS.status)
       if (response.ok) {
         const status = await response.json()
         console.log('📡 Raw status response from C# backend:', status)
@@ -105,7 +106,7 @@ export function PlcConfigDialog({
       setSaveStatus({ type: 'loading', message: 'Saving configuration and connecting...' })
       console.log('💾 Saving configuration with values:', localConfig)
 
-      const response = await fetch('http://localhost:5000/api/configuration/update-config-json', {
+      const response = await fetch(API_ENDPOINTS.configurationUpdate, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

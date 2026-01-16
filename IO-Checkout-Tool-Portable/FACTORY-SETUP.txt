@@ -40,7 +40,7 @@ F. Save the file
 
 STEP 3: OPEN FIREWALL PORTS
 ---------------------------
-Other computers need to connect to ports 5000 and 3000.
+Other computers need to connect to ports 5000 and 3002.
 
 A. Open Command Prompt as Administrator
    (Right-click Start, select "Command Prompt (Admin)" or "Terminal (Admin)")
@@ -49,14 +49,14 @@ B. Run these two commands:
 
    netsh advfirewall firewall add rule name="IO Checkout Backend" dir=in action=allow protocol=tcp localport=5000
 
-   netsh advfirewall firewall add rule name="IO Checkout Frontend" dir=in action=allow protocol=tcp localport=3000
+   netsh advfirewall firewall add rule name="IO Checkout Frontend" dir=in action=allow protocol=tcp localport=3002
 
 
 STEP 4: TEST THE APPLICATION
 ----------------------------
 A. Double-click START.bat
 B. Wait about 10 seconds
-C. Browser should open to http://localhost:3000
+C. Browser should open to http://localhost:3002
 D. Log in with PIN: 852963 (this is the default admin)
 E. Verify you can see the project and I/O points
 
@@ -74,8 +74,8 @@ STEP 6: TEST FROM ANOTHER COMPUTER
 -----------------------------------
 A. On a tablet or another PC on the same network
 B. Open a web browser
-C. Go to: http://SERVER_IP:3000
-   Example: http://192.168.1.50:3000
+C. Go to: http://SERVER_IP:3002
+   Example: http://192.168.1.50:3002
 D. You should see the login screen
 
 
@@ -93,7 +93,7 @@ D. Create accounts for each electrician
 DAILY OPERATION
 ===============
 - Server must be running START.bat before electricians can use the system
-- Electricians open browser and go to http://SERVER_IP:3000
+- Electricians open browser and go to http://SERVER_IP:3002
 - Log in with their PIN
 - Select project and subsystem to test
 - Mark points as Passed or Failed
