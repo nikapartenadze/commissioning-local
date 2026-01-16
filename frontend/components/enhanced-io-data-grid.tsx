@@ -12,6 +12,7 @@ import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
 import { Search, History, X, Play, Square, AlertTriangle, CheckCircle, HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { API_ENDPOINTS } from "@/lib/api-config"
 
 type IoItem = {
   id: number
@@ -95,7 +96,7 @@ export function EnhancedIoDataGrid({
     setShowHistoryDialog(true)
     
     try {
-      const response = await fetch(`http://localhost:5000/api/ios/${io.id}/history`)
+      const response = await fetch(API_ENDPOINTS.ioHistory(io.id))
       if (response.ok) {
         const data = await response.json()
         setHistoryData(data)
@@ -199,7 +200,7 @@ export function EnhancedIoDataGrid({
     // If IO doesn't have failureMode, fetch it from history
     if (!io.failureMode && io.id) {
       try {
-        const response = await fetch(`http://localhost:5000/api/ios/${io.id}/history`)
+        const response = await fetch(API_ENDPOINTS.ioHistory(io.id))
         if (response.ok) {
           const history = await response.json()
           // Find the most recent failed entry with a failureMode

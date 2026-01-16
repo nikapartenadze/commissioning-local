@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AlertCircle } from "lucide-react"
+import { API_ENDPOINTS } from "@/lib/api-config"
 
 interface IoItem {
   id: number
@@ -57,7 +58,7 @@ export function FailCommentDialog({
     try {
       // If tag has a type, load specific failure modes
       if (io.tagType) {
-        const response = await fetch(`http://localhost:5000/api/diagnostics/failure-modes?tagType=${encodeURIComponent(io.tagType)}`)
+        const response = await fetch(`${API_ENDPOINTS.diagnosticFailureModes}?tagType=${encodeURIComponent(io.tagType)}`)
         if (response.ok) {
           const modes = await response.json()
           setFailureModes([...modes, 'Other'])

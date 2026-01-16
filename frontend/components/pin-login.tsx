@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label'
 import { useUser } from '@/lib/user-context'
 import { Loader2, Delete, Check, Eye, EyeOff } from 'lucide-react'
+import { API_ENDPOINTS } from '@/lib/api-config'
 
 export function PinLogin() {
   const [pin, setPin] = useState('')
@@ -37,7 +38,7 @@ export function PinLogin() {
       setError('')
 
       // First, get all users and try to match by PIN
-      const usersResponse = await fetch('http://localhost:5000/api/users/active')
+      const usersResponse = await fetch(API_ENDPOINTS.usersActive)
       if (!usersResponse.ok) {
         setError('Cannot connect to server')
         setPin('')
@@ -50,7 +51,7 @@ export function PinLogin() {
       // Try to login with each user's name until we find a match
       let loggedIn = false
       for (const user of users) {
-        const response = await fetch('http://localhost:5000/api/auth/login', {
+        const response = await fetch(API_ENDPOINTS.authLogin, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fullName: user.fullName, pin })
