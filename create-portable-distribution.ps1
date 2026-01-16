@@ -161,6 +161,13 @@ $startBat = @"
 title IO Checkout Tool Launcher
 color 0A
 
+REM =============================================
+REM   CONFIGURATION - Change ports here if needed
+REM =============================================
+set BACKEND_PORT=5000
+set FRONTEND_PORT=3002
+REM =============================================
+
 echo ========================================
 echo   IO Checkout Tool - Starting...
 echo ========================================
@@ -177,7 +184,7 @@ if "%ERRORLEVEL%"=="0" (
 )
 
 REM Start backend
-echo [1/3] Starting backend server...
+echo [1/3] Starting backend server on port %BACKEND_PORT%...
 cd /d "%SCRIPT_DIR%backend"
 start /MIN "IO-Checkout-Backend" "IO Checkout Tool.exe"
 if errorlevel 1 (
@@ -193,7 +200,7 @@ timeout /t 5 /nobreak >nul
 REM Check if backend is responding (simple check)
 for /L %%i in (1,1,10) do (
     timeout /t 2 /nobreak >nul
-    netstat -an | find "5000" >nul
+    netstat -an | find "%BACKEND_PORT%" >nul
     if not errorlevel 1 goto :backend_ready
 )
 :backend_ready
@@ -213,14 +220,18 @@ if not exist "%NODE_EXE%" (
     set NODE_EXE=node
 )
 
-REM Start frontend
-echo [3/3] Starting frontend server...
+REM Start frontend on configured port
+echo [3/3] Starting frontend server on port %FRONTEND_PORT%...
 cd /d "%SCRIPT_DIR%frontend"
+
+REM Set PORT environment variable for Next.js
+set PORT=%FRONTEND_PORT%
+
 if exist "server.js" (
-    start /MIN "IO-Checkout-Frontend" "%NODE_EXE%" server.js
+    start /MIN "IO-Checkout-Frontend" cmd /c "set PORT=%FRONTEND_PORT% && "%NODE_EXE%" server.js"
 ) else if exist ".next\standalone\server.js" (
     cd .next\standalone
-    start /MIN "IO-Checkout-Frontend" "%NODE_EXE%" server.js
+    start /MIN "IO-Checkout-Frontend" cmd /c "set PORT=%FRONTEND_PORT% && "%NODE_EXE%" server.js"
 ) else (
     echo ERROR: Frontend server.js not found!
     pause
@@ -235,13 +246,13 @@ echo.
 echo ========================================
 echo   Application Started Successfully!
 echo ========================================
-echo   Backend:  http://localhost:5000
-echo   Frontend: http://localhost:3000
+echo   Backend:  http://localhost:%BACKEND_PORT%
+echo   Frontend: http://localhost:%FRONTEND_PORT%
 echo ========================================
 echo.
 echo Opening browser in 3 seconds...
 timeout /t 3 /nobreak >nul
-start http://localhost:3000
+start http://localhost:%FRONTEND_PORT%
 
 echo.
 echo Press any key to close this window (applications will keep running)...
@@ -300,7 +311,7 @@ BEFORE FIRST USE:
 STARTING:
 1. Double-click START.bat
 2. Wait for both servers to start (about 10 seconds)
-3. Browser opens automatically to http://localhost:3000
+3. Browser opens automatically to http://localhost:3002
 4. Default admin PIN: 852963
 
 STOPPING:
@@ -308,8 +319,8 @@ STOPPING:
 
 ACCESS FROM OTHER COMPUTERS:
 - Find this computer's IP address (run: ipconfig)
-- On tablets/other PCs, open browser to: http://THIS_COMPUTER_IP:3000
-- Example: http://192.168.1.50:3000
+- On tablets/other PCs, open browser to: http://THIS_COMPUTER_IP:3002
+- Example: http://192.168.1.50:3002
 
 MULTIPLE USERS:
 - Multiple people can test the same subsystem at the same time
@@ -319,7 +330,7 @@ MULTIPLE USERS:
 FIREWALL:
 If other computers cannot connect, run these commands as Administrator:
   netsh advfirewall firewall add rule name="IO Checkout 5000" dir=in action=allow protocol=tcp localport=5000
-  netsh advfirewall firewall add rule name="IO Checkout 3000" dir=in action=allow protocol=tcp localport=3000
+  netsh advfirewall firewall add rule name="IO Checkout 3000" dir=in action=allow protocol=tcp localport=3002
 
 FILES:
 - backend/           - Application server
@@ -382,7 +393,7 @@ F. Save the file
 
 STEP 3: OPEN FIREWALL PORTS
 ---------------------------
-Other computers need to connect to ports 5000 and 3000.
+Other computers need to connect to ports 5000 and 3002.
 
 A. Open Command Prompt as Administrator
    (Right-click Start, select "Command Prompt (Admin)" or "Terminal (Admin)")
@@ -391,14 +402,14 @@ B. Run these two commands:
 
    netsh advfirewall firewall add rule name="IO Checkout Backend" dir=in action=allow protocol=tcp localport=5000
 
-   netsh advfirewall firewall add rule name="IO Checkout Frontend" dir=in action=allow protocol=tcp localport=3000
+   netsh advfirewall firewall add rule name="IO Checkout Frontend" dir=in action=allow protocol=tcp localport=3002
 
 
 STEP 4: TEST THE APPLICATION
 ----------------------------
 A. Double-click START.bat
 B. Wait about 10 seconds
-C. Browser should open to http://localhost:3000
+C. Browser should open to http://localhost:3002
 D. Log in with PIN: 852963 (this is the default admin)
 E. Verify you can see the project and I/O points
 
@@ -416,8 +427,8 @@ STEP 6: TEST FROM ANOTHER COMPUTER
 -----------------------------------
 A. On a tablet or another PC on the same network
 B. Open a web browser
-C. Go to: http://SERVER_IP:3000
-   Example: http://192.168.1.50:3000
+C. Go to: http://SERVER_IP:3002
+   Example: http://192.168.1.50:3002
 D. You should see the login screen
 
 
@@ -435,7 +446,7 @@ D. Create accounts for each electrician
 DAILY OPERATION
 ===============
 - Server must be running START.bat before electricians can use the system
-- Electricians open browser and go to http://SERVER_IP:3000
+- Electricians open browser and go to http://SERVER_IP:3002
 - Log in with their PIN
 - Select project and subsystem to test
 - Mark points as Passed or Failed

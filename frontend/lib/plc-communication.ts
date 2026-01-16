@@ -4,6 +4,8 @@
  * Simulates the C# app's PLC communication functionality
  */
 
+import { API_ENDPOINTS } from './api-config'
+
 export interface PlcConfig {
   ip: string
   path: string
@@ -80,7 +82,7 @@ export class PlcCommunicationService {
   // Test network connectivity to PLC
   private async testNetworkConnectivity(): Promise<boolean> {
     try {
-      const response = await fetch(`http://localhost:5000/api/plc/test-connection`, {
+      const response = await fetch(API_ENDPOINTS.plcTestConnection, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -235,7 +237,7 @@ export class PlcCommunicationService {
   // Toggle testing mode
   public async toggleTesting(): Promise<boolean> {
     try {
-      const response = await fetch('http://localhost:5000/api/testing/toggle', {
+      const response = await fetch(API_ENDPOINTS.testingToggle, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
@@ -257,7 +259,7 @@ export class PlcCommunicationService {
   // Fire an output (simulate PLC write)
   public async fireOutput(ioId: number): Promise<boolean> {
     try {
-      const response = await fetch(`http://localhost:5000/api/ios/${ioId}/fire-output`, {
+      const response = await fetch(API_ENDPOINTS.ioFireOutput(ioId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'start' })
@@ -273,7 +275,7 @@ export class PlcCommunicationService {
   // Mark test as failed
   public async markTestFailed(ioId: number, comments: string): Promise<boolean> {
     try {
-      const response = await fetch(`http://localhost:5000/api/ios/${ioId}/fail`, {
+      const response = await fetch(API_ENDPOINTS.ioFail(ioId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ comments })
@@ -289,7 +291,7 @@ export class PlcCommunicationService {
   // Mark test as passed
   public async markTestPassed(ioId: number): Promise<boolean> {
     try {
-      const response = await fetch(`http://localhost:5000/api/ios/${ioId}/pass`, {
+      const response = await fetch(API_ENDPOINTS.ioPass(ioId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ comments: '' })

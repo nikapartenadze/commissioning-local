@@ -18,7 +18,13 @@
       "Bash(dotnet run:*)",
       "Bash(tasklist:*)",
       "Bash(npx shadcn@latest add:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(start-dev.bat)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\nika.fartenadze\\\\Desktop\\\\MyPartner\\\\commissioning-local && start-dev.bat\")",
+      "Bash(cmd.exe /c \"timeout /t 8 /nobreak >nul && netstat -an | findstr /R \"\"5000 3002\"\"\")",
+      "Bash(cmd.exe /c \"netstat -an | findstr LISTENING\")",
+      "Bash(PORT=3002 npm run dev:*)",
+      "Bash(ipconfig:*)"
     ]
   }
 }
