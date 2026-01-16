@@ -2,6 +2,7 @@
 
 import { HubConnection, HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { useEffect, useRef, useState } from 'react'
+import { getSignalRHubUrl } from './api-config'
 
 export interface IOUpdate {
   Id: number
@@ -20,7 +21,9 @@ export interface SignalRConnection {
   offIOUpdate: (callback: (update: IOUpdate) => void) => void
 }
 
-export function useSignalR(hubUrl: string = 'http://localhost:5000/hub'): SignalRConnection {
+export function useSignalR(hubUrl?: string): SignalRConnection {
+  // Use dynamic URL if not provided
+  const effectiveHubUrl = hubUrl || (typeof window !== 'undefined' ? getSignalRHubUrl() : 'http://localhost:5000/hub')
   const [connection, setConnection] = useState<HubConnection | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const connectionRef = useRef<HubConnection | null>(null)
@@ -33,7 +36,7 @@ export function useSignalR(hubUrl: string = 'http://localhost:5000/hub'): Signal
 
     try {
       const newConnection = new HubConnectionBuilder()
-        .withUrl(hubUrl, {
+        .withUrl(effectiveHubUrl, {
           withCredentials: false,
         })
         .configureLogging(process.env.NODE_ENV === 'production' ? LogLevel.Warning : LogLevel.Information)
@@ -182,7 +185,7 @@ export class SignalRService {
   private callbacks: Set<(update: IOUpdate) => void> = new Set()
   private isConnected = false
 
-  constructor(private hubUrl: string = 'http://localhost:5000/hub') {}
+  constructor(private hubUrl: string = typeof window !== 'undefined' ? getSignalRHubUrl() : 'http://localhost:5000/hub') {}
 
   async connect(): Promise<void> {
     if (this.connection?.state === 'Connected') {

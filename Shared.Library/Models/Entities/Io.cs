@@ -73,6 +73,13 @@ public class Io
     [StringLength(100)]
     public string? TagType { get; set; }
 
+    /// <summary>
+    /// Tracks when this IO was last successfully synced to cloud.
+    /// Used to prevent duplicate uploads - only sync IOs that have changed since last sync.
+    /// </summary>
+    [MessagePack.Key(11)]
+    public DateTime? CloudSyncedAt { get; set; }
+
     // Navigation properties
     [IgnoreMember]
     public Subsystem? Subsystem { get; set; }

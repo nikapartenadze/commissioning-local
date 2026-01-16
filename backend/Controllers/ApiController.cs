@@ -495,7 +495,7 @@ public class ApiController : ControllerBase
     }
 
     /// <summary>
-    /// Upload local test data to remote cloud - simple upload only
+    /// Upload local test data to remote cloud - only uploads changed IOs to prevent duplicates
     /// </summary>
     [HttpPost("cloud/sync")]
     public async Task<ActionResult<object>> UploadToCloud()
@@ -513,23 +513,62 @@ public class ApiController : ControllerBase
             // Get all local IOs with test results
             var localIos = await _ioRepository.GetBySubsystemIdAsync(subsystemId);
             var testResults = localIos.Where(io => !string.IsNullOrEmpty(io.Result) || !string.IsNullOrEmpty(io.Comments)).ToList();
-            
+
             if (!testResults.Any())
             {
-                return Ok(new { 
-                    success = true, 
+                return Ok(new {
+                    success = true,
                     message = "No test results to upload",
                     subsystemId = subsystemId,
-                    uploadedCount = 0
+                    uploadedCount = 0,
+                    skippedCount = 0
                 });
             }
 
+            // Filter to only IOs that have changed since last sync
+            // An IO needs syncing if:
+            // 1. It has never been synced (CloudSyncedAt is null), OR
+            // 2. It was modified after the last sync (Timestamp > CloudSyncedAt)
+            var needsSync = testResults.Where(io =>
+            {
+                // Never synced before
+                if (!io.CloudSyncedAt.HasValue)
+                    return true;
+
+                // Check if modified since last sync
+                if (!string.IsNullOrEmpty(io.Timestamp))
+                {
+                    if (DateTime.TryParse(io.Timestamp, out var ioTimestamp))
+                    {
+                        return ioTimestamp > io.CloudSyncedAt.Value;
+                    }
+                }
+
+                return false;
+            }).ToList();
+
+            var skippedCount = testResults.Count - needsSync.Count;
+
+            if (!needsSync.Any())
+            {
+                _logger.LogInformation("All {TotalCount} test results already synced - nothing new to upload", testResults.Count);
+                return Ok(new {
+                    success = true,
+                    message = $"All test results already synced to cloud (checked {testResults.Count} IOs)",
+                    subsystemId = subsystemId,
+                    uploadedCount = 0,
+                    skippedCount = skippedCount
+                });
+            }
+
+            _logger.LogInformation("Found {NeedsSyncCount} IOs to sync, {SkippedCount} already synced", needsSync.Count, skippedCount);
+
             // Upload test results to cloud - get TestedBy from most recent TestHistory
             var updates = new List<IoUpdateDto>();
-            foreach (var io in testResults)
+            foreach (var io in needsSync)
             {
                 if (io.Id <= 0) continue; // Skip if ID is invalid
-                
+
                 // Get the most recent test history for this IO to get the TestedBy field
                 var history = await _testHistoryRepository.GetByIoIdAsync(io.Id, limit: 1);
                 var testedBy = history.FirstOrDefault()?.TestedBy ?? "Unknown";
@@ -547,33 +586,43 @@ public class ApiController : ControllerBase
             }
 
             var uploadSuccess = await _cloudSyncService.SyncIoUpdatesAsync(updates);
-            
+
             if (uploadSuccess)
             {
-                _logger.LogInformation("Successfully uploaded {Count} test results to cloud for subsystem {SubsystemId}", testResults.Count, subsystemId);
-                
-                return Ok(new { 
-                    success = true, 
-                    message = $"Successfully uploaded {testResults.Count} test results to cloud",
+                // Mark these IOs as synced to prevent duplicate uploads
+                var syncTime = DateTime.UtcNow;
+                foreach (var io in needsSync)
+                {
+                    io.CloudSyncedAt = syncTime;
+                    await _ioRepository.UpdateAsync(io);
+                }
+                await _ioRepository.SaveChangesAsync();
+
+                _logger.LogInformation("Successfully uploaded {Count} test results to cloud for subsystem {SubsystemId}", needsSync.Count, subsystemId);
+
+                return Ok(new {
+                    success = true,
+                    message = $"Successfully uploaded {needsSync.Count} test results to cloud",
                     subsystemId = subsystemId,
-                    uploadedCount = testResults.Count
+                    uploadedCount = needsSync.Count,
+                    skippedCount = skippedCount
                 });
             }
             else
             {
                 _logger.LogWarning("Failed to upload test results to cloud for subsystem {SubsystemId}", subsystemId);
-                return StatusCode(500, new { 
-                    success = false, 
-                    message = "Failed to upload test results to cloud" 
+                return StatusCode(500, new {
+                    success = false,
+                    message = "Failed to upload test results to cloud"
                 });
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error uploading to cloud");
-            return StatusCode(500, new { 
-                success = false, 
-                message = "Internal server error during upload" 
+            return StatusCode(500, new {
+                success = false,
+                message = "Internal server error during upload"
             });
         }
     }
