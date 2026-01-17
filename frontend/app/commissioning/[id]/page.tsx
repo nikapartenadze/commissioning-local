@@ -24,7 +24,7 @@ import {
   PlcConnectionStatus,
   IoState
 } from "@/lib/plc-communication"
-import { useSignalR, IOUpdate } from "@/lib/signalr-client"
+import { useSignalR, IOUpdate, CommentUpdate } from "@/lib/signalr-client"
 import { API_ENDPOINTS, getSignalRHubUrl } from "@/lib/api-config"
 
 interface IoItem {
@@ -338,6 +338,45 @@ export default function CommissioningPage() {
   useEffect(() => {
     previousStatesRef.current = previousStates
   }, [previousStates])
+
+  // Handle SignalR testing state changes
+  useEffect(() => {
+    const handleTestingStateChange = (newIsTesting: boolean) => {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 SignalR TestingStateChanged:', newIsTesting)
+      }
+      setPlcStatus(prev => ({
+        ...prev,
+        isTesting: newIsTesting
+      }))
+    }
+
+    signalR.onTestingStateChange(handleTestingStateChange)
+
+    return () => {
+      signalR.offTestingStateChange(handleTestingStateChange)
+    }
+  }, [signalR.onTestingStateChange, signalR.offTestingStateChange])
+
+  // Handle SignalR comment updates
+  useEffect(() => {
+    const handleCommentUpdate = (update: CommentUpdate) => {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 SignalR CommentUpdate:', update)
+      }
+      setIos(prevIos =>
+        prevIos.map(io =>
+          io.id === update.ioId ? { ...io, comments: update.comments } : io
+        )
+      )
+    }
+
+    signalR.onCommentUpdate(handleCommentUpdate)
+
+    return () => {
+      signalR.offCommentUpdate(handleCommentUpdate)
+    }
+  }, [signalR.onCommentUpdate, signalR.offCommentUpdate])
 
   // Handle SignalR real-time updates
   useEffect(() => {
@@ -662,6 +701,36 @@ export default function CommissioningPage() {
     setCurrentDialogIo(null)
   }
 
+  const handleCommentChange = async (io: IoItem, comment: string) => {
+    try {
+      // Optimistically update UI
+      setIos(prevIos => prevIos.map(i =>
+        i.id === io.id ? { ...i, comments: comment } : i
+      ))
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log('💬 Updating comment for IO:', io.id, io.name, comment)
+      }
+
+      const response = await fetch(API_ENDPOINTS.ioComment(io.id), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comments: comment })
+      })
+
+      if (response.ok) {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('✅ Comment updated via backend')
+        }
+        // SignalR will broadcast the update to other clients
+      } else {
+        console.error('❌ Failed to update comment:', response.status)
+      }
+    } catch (error) {
+      console.error('❌ Error updating comment:', error)
+    }
+  }
+
   const handleClearTesting = async () => {
     try {
       // Clear all test results
@@ -886,6 +955,7 @@ export default function CommissioningPage() {
             onClearResult={handleClearResult}
             onRowClick={handleRowClick}
             onShowFireOutputDialog={handleShowFireOutputDialog}
+            onCommentChange={handleCommentChange}
           />
         </div>
 

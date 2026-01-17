@@ -22,7 +22,31 @@ public class NativeTag : IDisposable
     private volatile sbyte _currentValue;
     private volatile bool _hasValue;
     private bool _disposed;
-    
+
+    // Global cancellation for aborting all pending tag operations
+    private static volatile bool _globalAbort = false;
+
+    /// <summary>
+    /// Signal all NativeTag operations to abort immediately
+    /// </summary>
+    public static void AbortAllOperations()
+    {
+        _globalAbort = true;
+    }
+
+    /// <summary>
+    /// Reset the global abort flag (call before starting new operations)
+    /// </summary>
+    public static void ResetAbort()
+    {
+        _globalAbort = false;
+    }
+
+    /// <summary>
+    /// Check if operations should be aborted
+    /// </summary>
+    public static bool ShouldAbort => _globalAbort;
+
     // Events
     public event EventHandler? ValueChanged;
     
@@ -331,28 +355,34 @@ public class NativeTag : IDisposable
         var sw = new SpinWait();
         var startTime = Environment.TickCount;
         int status;
-        
+
         while (true)
         {
+            // Check for global abort (disconnect was requested) - silent return
+            if (_globalAbort)
+            {
+                return LibPlcTag.PLCTAG_ERR_ABORT;
+            }
+
             status = LibPlcTag.plc_tag_status(_tagHandle);
             if (status != LibPlcTag.PLCTAG_STATUS_PENDING)
                 break;
-                
+
             if (Environment.TickCount - startTime > timeoutMs)
             {
                 status = LibPlcTag.PLCTAG_ERR_TIMEOUT;
                 break;
             }
-            
+
             sw.SpinOnce();
-            
+
             // Only yield if we've been spinning for a while
             if (sw.NextSpinWillYield)
             {
                 Thread.Yield();
             }
         }
-        
+
         return status;
     }
     
@@ -364,28 +394,34 @@ public class NativeTag : IDisposable
         var sw = new SpinWait();
         var startTime = Environment.TickCount;
         int status;
-        
+
         while (true)
         {
+            // Check for global abort (disconnect was requested)
+            if (_globalAbort)
+            {
+                return LibPlcTag.PLCTAG_ERR_ABORT;
+            }
+
             status = LibPlcTag.plc_tag_status(_tagHandle);
             if (status != LibPlcTag.PLCTAG_STATUS_PENDING)
                 break;
-                
+
             if (Environment.TickCount - startTime > timeoutMs)
             {
                 status = LibPlcTag.PLCTAG_ERR_TIMEOUT;
                 break;
             }
-            
+
             sw.SpinOnce();
-            
+
             // Only yield if we've been spinning for a while
             if (sw.NextSpinWillYield)
             {
                 Thread.Yield();
             }
         }
-        
+
         return status;
     }
     

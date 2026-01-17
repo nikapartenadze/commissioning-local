@@ -81,4 +81,70 @@ public class SignalRService : ISignalRService
             _logger.LogError(ex, "SignalR: Error sending state update for {TagName}", io.Name);
         }
     }
+
+    public async Task BroadcastConfigurationReloading()
+    {
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("ConfigurationReloading");
+            _logger.LogInformation("SignalR: Broadcasted ConfigurationReloading to all clients");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR: Error broadcasting ConfigurationReloading");
+        }
+    }
+
+    public async Task BroadcastConfigurationReloaded()
+    {
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("ConfigurationReloaded");
+            _logger.LogInformation("SignalR: Broadcasted ConfigurationReloaded to all clients");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR: Error broadcasting ConfigurationReloaded");
+        }
+    }
+
+    public async Task BroadcastConfiguration(int backendPort, string subsystemId, string plcIp, bool cloudConnected)
+    {
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("ConfigurationUpdate", backendPort, subsystemId, plcIp, cloudConnected);
+            _logger.LogDebug("SignalR: Broadcasted configuration - Port: {Port}, Subsystem: {Subsystem}, PLC: {PlcIp}, Cloud: {Cloud}",
+                backendPort, subsystemId, plcIp, cloudConnected);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR: Error broadcasting configuration");
+        }
+    }
+
+    public async Task BroadcastTestingStateChanged(bool isTesting)
+    {
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("TestingStateChanged", isTesting);
+            _logger.LogInformation("SignalR: Broadcasted TestingStateChanged - isTesting: {IsTesting}", isTesting);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR: Error broadcasting TestingStateChanged");
+        }
+    }
+
+    public async Task BroadcastCommentUpdate(int ioId, string? comments)
+    {
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("CommentUpdate", ioId, comments ?? "");
+            _logger.LogDebug("SignalR: Broadcasted CommentUpdate for IO {IoId}", ioId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR: Error broadcasting CommentUpdate for IO {IoId}", ioId);
+        }
+    }
 } 
