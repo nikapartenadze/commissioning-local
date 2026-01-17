@@ -11,12 +11,139 @@
  * This eliminates CORS issues because:
  * 1. Browser only talks to Next.js (same origin)
  * 2. Next.js server talks to backend (server-to-server, no CORS)
+ *
+ * Hot-Reload Support:
+ * The frontend can now fetch runtime configuration dynamically from the backend
+ * via the /api/configuration/runtime endpoint. This eliminates the need for
+ * environment variables that are fixed at startup.
  */
 
 /**
+ * Runtime configuration fetched from backend.
+ * Allows frontend to dynamically adapt to backend configuration changes.
+ */
+export interface RuntimeConfig {
+  backendPort: number
+  subsystemId: string
+  plcIp: string
+  cloudConnected: boolean
+  isReloading: boolean
+  showStateColumn: boolean
+  showResultColumn: boolean
+  showTimestampColumn: boolean
+  showHistoryColumn: boolean
+  orderMode: boolean
+  signalRHubUrl: string
+}
+
+// Cache for runtime config
+let cachedRuntimeConfig: RuntimeConfig | null = null
+let runtimeConfigFetchPromise: Promise<RuntimeConfig> | null = null
+
+/**
+ * Fetches runtime configuration from the backend.
+ * Caches the result to avoid repeated API calls.
+ * Use refreshRuntimeConfig() to force a refresh.
+ */
+export async function getRuntimeConfig(): Promise<RuntimeConfig> {
+  // Return cached config if available
+  if (cachedRuntimeConfig) {
+    return cachedRuntimeConfig
+  }
+
+  // Deduplicate concurrent requests
+  if (runtimeConfigFetchPromise) {
+    return runtimeConfigFetchPromise
+  }
+
+  runtimeConfigFetchPromise = fetchRuntimeConfigInternal()
+
+  try {
+    const config = await runtimeConfigFetchPromise
+    cachedRuntimeConfig = config
+    return config
+  } finally {
+    runtimeConfigFetchPromise = null
+  }
+}
+
+/**
+ * Forces a refresh of the runtime configuration cache.
+ * Call this when you know configuration has changed.
+ */
+export async function refreshRuntimeConfig(): Promise<RuntimeConfig> {
+  cachedRuntimeConfig = null
+  return getRuntimeConfig()
+}
+
+/**
+ * Clears the runtime configuration cache.
+ * Next call to getRuntimeConfig() will fetch fresh data.
+ */
+export function clearRuntimeConfigCache(): void {
+  cachedRuntimeConfig = null
+}
+
+async function fetchRuntimeConfigInternal(): Promise<RuntimeConfig> {
+  try {
+    // Use the proxy path to avoid CORS issues
+    const apiBaseUrl = getApiBaseUrl()
+    const response = await fetch(`${apiBaseUrl}/api/backend/configuration/runtime`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    })
+
+    if (!response.ok) {
+      console.warn('Failed to fetch runtime config, using defaults')
+      return getDefaultRuntimeConfig()
+    }
+
+    const data = await response.json()
+    return {
+      backendPort: data.backendPort || 5000,
+      subsystemId: data.subsystemId || '',
+      plcIp: data.plcIp || '',
+      cloudConnected: data.cloudConnected || false,
+      isReloading: data.isReloading || false,
+      showStateColumn: data.showStateColumn ?? true,
+      showResultColumn: data.showResultColumn ?? true,
+      showTimestampColumn: data.showTimestampColumn ?? true,
+      showHistoryColumn: data.showHistoryColumn ?? true,
+      orderMode: data.orderMode || false,
+      signalRHubUrl: data.signalRHubUrl || getSignalRHubUrl(),
+    }
+  } catch (error) {
+    console.warn('Error fetching runtime config, using defaults:', error)
+    return getDefaultRuntimeConfig()
+  }
+}
+
+function getDefaultRuntimeConfig(): RuntimeConfig {
+  return {
+    backendPort: 5000,
+    subsystemId: '',
+    plcIp: '',
+    cloudConnected: false,
+    isReloading: false,
+    showStateColumn: true,
+    showResultColumn: true,
+    showTimestampColumn: true,
+    showHistoryColumn: true,
+    orderMode: false,
+    signalRHubUrl: getSignalRHubUrl(),
+  }
+}
+
+// ===========================================
+// HARDCODED PORTS - No .env configuration needed
+// ===========================================
+const BACKEND_PORT = 5000
+const FRONTEND_PORT = 3002
+// ===========================================
+
+/**
  * Get the base URL for API calls from the browser.
- * This should always return the Next.js server URL (same origin).
- * The actual backend URL is only used server-side in API routes.
+ * Returns empty string for relative URLs (same origin).
  */
 export function getApiBaseUrl(): string {
   // In the browser, use relative URLs (same origin as the page)
@@ -24,7 +151,7 @@ export function getApiBaseUrl(): string {
     return '' // Relative to current origin
   }
   // Server-side, use the full URL
-  return process.env.NEXT_PUBLIC_APP_URL || ''
+  return ''
 }
 
 /**
@@ -32,7 +159,7 @@ export function getApiBaseUrl(): string {
  * This is the actual C# backend URL, only used in Next.js API routes.
  */
 export function getBackendUrl(): string {
-  return process.env.BACKEND_URL || process.env.NEXT_PUBLIC_CSHARP_API_URL || 'http://localhost:5000'
+  return `http://localhost:${BACKEND_PORT}`
 }
 
 /**
@@ -42,10 +169,9 @@ export function getBackendUrl(): string {
 export function getSignalRHubUrl(): string {
   if (typeof window !== 'undefined') {
     // Use the same hostname as the page, but with backend port
-    const backendPort = process.env.NEXT_PUBLIC_BACKEND_PORT || '5000'
-    return `${window.location.protocol}//${window.location.hostname}:${backendPort}/hub`
+    return `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}/hub`
   }
-  return 'http://localhost:5000/hub'
+  return `http://localhost:${BACKEND_PORT}/hub`
 }
 
 /**
@@ -53,11 +179,17 @@ export function getSignalRHubUrl(): string {
  */
 export function getSignalRWsUrl(): string {
   if (typeof window !== 'undefined') {
-    const backendPort = process.env.NEXT_PUBLIC_BACKEND_PORT || '5000'
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${wsProtocol}//${window.location.hostname}:${backendPort}/hub`
+    return `${wsProtocol}//${window.location.hostname}:${BACKEND_PORT}/hub`
   }
-  return 'ws://localhost:5000/hub'
+  return `ws://localhost:${BACKEND_PORT}/hub`
+}
+
+/**
+ * Get the configured ports for reference.
+ */
+export function getPorts() {
+  return { backend: BACKEND_PORT, frontend: FRONTEND_PORT }
 }
 
 // API endpoint paths (relative to API base)
@@ -65,6 +197,7 @@ export const API_ENDPOINTS = {
   // Status & Connection
   status: '/api/backend/status',
   plcTestConnection: '/api/backend/plc/test-connection',
+  plcDisconnect: '/api/backend/plc/disconnect',
 
   // IOs
   ios: '/api/backend/ios',
@@ -74,6 +207,7 @@ export const API_ENDPOINTS = {
   ioFail: (id: number) => `/api/backend/ios/${id}/fail`,
   ioClear: (id: number) => `/api/backend/ios/${id}/clear`,
   ioFireOutput: (id: number) => `/api/backend/ios/${id}/fire-output`,
+  ioComment: (id: number) => `/api/backend/ios/${id}/comment`,
 
   // Testing
   testingToggle: '/api/backend/testing/toggle',
@@ -89,6 +223,7 @@ export const API_ENDPOINTS = {
   // Configuration
   configuration: '/api/backend/configuration',
   configurationUpdate: '/api/backend/configuration/update-config-json',
+  configurationRuntime: '/api/backend/configuration/runtime',
 
   // Cloud Sync
   cloudSync: '/api/backend/cloud/sync',

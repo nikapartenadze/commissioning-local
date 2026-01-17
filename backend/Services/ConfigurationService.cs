@@ -115,6 +115,9 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             };
 
             var jsonString = JsonSerializer.Serialize(configData, options);
+
+            // Notify file watcher that this is an internal write (prevent triggering reinitialization)
+            ConfigFileWatcherService.NotifyInternalWrite();
             await File.WriteAllTextAsync("config.json", jsonString);
 
             // Update local properties
@@ -182,6 +185,9 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             };
 
             var jsonString = JsonSerializer.Serialize(currentConfig, options);
+
+            // Notify file watcher that this is an internal write (prevent triggering reinitialization)
+            ConfigFileWatcherService.NotifyInternalWrite();
             await File.WriteAllTextAsync("config.json", jsonString);
         }
         catch (Exception ex)

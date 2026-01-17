@@ -163,6 +163,30 @@ public class ApiController : ControllerBase
     }
 
     /// <summary>
+    /// Disconnect from PLC - stops all tag reading and allows configuration changes
+    /// </summary>
+    [HttpPost("plc/disconnect")]
+    public async Task<ActionResult<object>> DisconnectPlc()
+    {
+        try
+        {
+            _logger.LogInformation("Received PLC disconnect request from UI");
+            await _plcCommunication.DisconnectPlcAsync();
+
+            return Ok(new
+            {
+                success = true,
+                message = "PLC disconnected successfully. You can now change configuration."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error disconnecting from PLC");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Mark an IO as passed
     /// </summary>
     [HttpPost("ios/{id}/pass")]
@@ -373,20 +397,23 @@ public class ApiController : ControllerBase
     }
 
     /// <summary>
-    /// Toggle testing mode
+    /// Toggle testing mode - broadcasts to all connected clients via SignalR
     /// </summary>
     [HttpPost("testing/toggle")]
-    public ActionResult<object> ToggleTesting()
+    public async Task<ActionResult<object>> ToggleTesting()
     {
         try
         {
             // Toggle the testing state
             _isTesting = !_isTesting;
-            
+
             _logger.LogInformation("Testing mode toggled to: {IsTesting}", _isTesting);
-            
-            return Ok(new { 
-                success = true, 
+
+            // Broadcast to all connected clients so they see the state change immediately
+            await _signalRService.BroadcastTestingStateChanged(_isTesting);
+
+            return Ok(new {
+                success = true,
                 message = "Testing mode toggled",
                 isTesting = _isTesting
             });
@@ -394,6 +421,44 @@ public class ApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error toggling testing mode");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Update comment for an IO (can be used anytime, not just on fail)
+    /// </summary>
+    [HttpPost("ios/{id}/comment")]
+    public async Task<ActionResult<object>> UpdateIoComment(int id, [FromBody] UpdateCommentRequest request)
+    {
+        try
+        {
+            var io = await _ioRepository.GetByIdAsync(id);
+            if (io == null)
+            {
+                return NotFound($"IO with ID {id} not found");
+            }
+
+            // Update the comment
+            io.Comments = request.Comments;
+            await _ioRepository.UpdateAsync(io);
+
+            _logger.LogInformation("Comment updated for IO {Id}: {Comments}", id, request.Comments);
+
+            // Broadcast comment update to all connected clients
+            await _signalRService.BroadcastCommentUpdate(id, request.Comments);
+
+            return Ok(new
+            {
+                success = true,
+                message = "Comment updated",
+                id = io.Id,
+                comments = io.Comments
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating comment for IO {Id}", id);
             return StatusCode(500, "Internal server error");
         }
     }
@@ -675,4 +740,9 @@ public class TestResultRequest
 public class FireOutputRequest
 {
     public string Action { get; set; } = string.Empty; // "start" or "stop"
+}
+
+public class UpdateCommentRequest
+{
+    public string? Comments { get; set; }
 }

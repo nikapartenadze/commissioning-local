@@ -138,11 +138,14 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<PlcInitializationHostedService>();   // Run PLC init AFTER cloud sync
         services.AddHostedService<OfflineSyncHostedService>();
         services.AddHostedService<CloudReconnectionHostedService>();
-        
+
+        // Config file watcher for auto-reinitialization on external config.json changes
+        services.AddHostedService<ConfigFileWatcherService>();
+
         // PLC Simulator (for testing without physical PLC)
         services.AddSingleton<PlcSimulatorService>();
         services.AddHostedService(sp => sp.GetRequiredService<PlcSimulatorService>());
-        
+
         return services;
     }
 
