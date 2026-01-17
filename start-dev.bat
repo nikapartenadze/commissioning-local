@@ -2,12 +2,9 @@
 echo Starting IO Checkout Tool Development Environment...
 echo.
 
-REM =============================================
-REM   CONFIGURATION - Change ports here if needed
-REM =============================================
+REM Hardcoded ports (must match frontend/lib/api-config.ts)
 set BACKEND_PORT=5000
 set FRONTEND_PORT=3002
-REM =============================================
 
 echo Stopping any existing IO Checkout processes...
 taskkill /f /im "IO Checkout Tool.exe" 2>nul

@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { TestTube } from "lucide-react"
+import { TestTube, Unplug } from "lucide-react"
 import { API_ENDPOINTS } from "@/lib/api-config"
 
 interface PlcConfig {
@@ -50,6 +50,7 @@ export function PlcConfigDialog({
     remoteUrl: ""
   })
   const [isSaving, setIsSaving] = useState(false)
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
 
@@ -152,6 +153,44 @@ export function PlcConfigDialog({
     }
   }
 
+  const handleDisconnect = async () => {
+    try {
+      setIsDisconnecting(true)
+      const wasSaving = isSaving
+      setSaveStatus({ type: 'loading', message: wasSaving ? 'Cancelling connection attempt...' : 'Disconnecting from PLC...' })
+      console.log('🔌 Disconnecting from PLC...')
+
+      const response = await fetch(API_ENDPOINTS.plcDisconnect, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+
+      // Reset saving state since we're cancelling
+      if (wasSaving) {
+        setIsSaving(false)
+      }
+
+      if (response.ok) {
+        const result = await response.json()
+        console.log('✅ PLC disconnected successfully:', result)
+        setSaveStatus({ type: 'success', message: wasSaving ? 'Connection cancelled. You can now change configuration.' : 'PLC disconnected. You can now change configuration.' })
+
+        // Clear status after 3 seconds
+        setTimeout(() => {
+          setSaveStatus({ type: null, message: '' })
+        }, 3000)
+      } else {
+        const error = await response.text()
+        console.error('❌ Failed to disconnect:', response.status, error)
+        setSaveStatus({ type: 'error', message: `Failed to disconnect: ${error || response.statusText}` })
+      }
+    } catch (error: any) {
+      console.error('❌ Error disconnecting from PLC:', error)
+      setSaveStatus({ type: 'error', message: `Error: ${error.message}` })
+    } finally {
+      setIsDisconnecting(false)
+    }
+  }
 
   const handleCancel = () => {
     // Reset to empty values - will be reloaded when dialog opens again
@@ -283,13 +322,24 @@ export function PlcConfigDialog({
           </div>
         )}
 
-        <DialogFooter className="mt-6 border-t border-primary/10 pt-4">
-          <Button variant="outline" onClick={handleCancel} className="border-primary/30 hover:bg-muted/50" disabled={isSaving}>
-            Cancel
+        <DialogFooter className="mt-6 border-t border-primary/10 pt-4 flex justify-between">
+          <Button
+            variant="destructive"
+            onClick={handleDisconnect}
+            className="mr-auto"
+            disabled={isDisconnecting}
+          >
+            <Unplug className="w-4 h-4 mr-2" />
+            {isDisconnecting ? "Disconnecting..." : isSaving ? "Cancel Connection" : "Disconnect PLC"}
           </Button>
-          <Button onClick={handleSave} className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold" disabled={isSaving}>
-            {isSaving ? "Saving & Reconnecting..." : "Save & Reconnect"}
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleCancel} className="border-primary/30 hover:bg-muted/50" disabled={isSaving || isDisconnecting}>
+              Cancel
+            </Button>
+            <Button onClick={handleSave} className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold" disabled={isSaving || isDisconnecting}>
+              {isSaving ? "Saving & Reconnecting..." : "Save & Reconnect"}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

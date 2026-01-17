@@ -2,7 +2,7 @@
 
 import { HubConnection, HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { useEffect, useRef, useState } from 'react'
-import { getSignalRHubUrl } from './api-config'
+import { getSignalRHubUrl, refreshRuntimeConfig, clearRuntimeConfigCache } from './api-config'
 
 export interface IOUpdate {
   Id: number
@@ -12,13 +12,30 @@ export interface IOUpdate {
   Comments?: string
 }
 
+export interface ConfigurationEvent {
+  type: 'reloading' | 'reloaded'
+}
+
+export interface CommentUpdate {
+  ioId: number
+  comments: string
+}
+
 export interface SignalRConnection {
   connection: HubConnection | null
   isConnected: boolean
+  isConfigReloading: boolean
+  isTesting: boolean
   connect: () => Promise<void>
   disconnect: () => Promise<void>
   onIOUpdate: (callback: (update: IOUpdate) => void) => void
   offIOUpdate: (callback: (update: IOUpdate) => void) => void
+  onConfigurationChange: (callback: (event: ConfigurationEvent) => void) => void
+  offConfigurationChange: (callback: (event: ConfigurationEvent) => void) => void
+  onTestingStateChange: (callback: (isTesting: boolean) => void) => void
+  offTestingStateChange: (callback: (isTesting: boolean) => void) => void
+  onCommentUpdate: (callback: (update: CommentUpdate) => void) => void
+  offCommentUpdate: (callback: (update: CommentUpdate) => void) => void
 }
 
 export function useSignalR(hubUrl?: string): SignalRConnection {
@@ -26,8 +43,13 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
   const effectiveHubUrl = hubUrl || (typeof window !== 'undefined' ? getSignalRHubUrl() : 'http://localhost:5000/hub')
   const [connection, setConnection] = useState<HubConnection | null>(null)
   const [isConnected, setIsConnected] = useState(false)
+  const [isConfigReloading, setIsConfigReloading] = useState(false)
+  const [isTesting, setIsTesting] = useState(false)
   const connectionRef = useRef<HubConnection | null>(null)
   const callbacksRef = useRef<Set<(update: IOUpdate) => void>>(new Set())
+  const configCallbacksRef = useRef<Set<(event: ConfigurationEvent) => void>>(new Set())
+  const testingCallbacksRef = useRef<Set<(isTesting: boolean) => void>>(new Set())
+  const commentCallbacksRef = useRef<Set<(update: CommentUpdate) => void>>(new Set())
 
   const connect = async () => {
     if (connectionRef.current?.state === 'Connected') {
@@ -87,13 +109,92 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
         if (process.env.NODE_ENV === 'development') {
           console.log('SignalR UpdateState received:', update)
         }
-        
+
         // Call all registered callbacks
         callbacksRef.current.forEach(callback => {
           try {
             callback(update)
           } catch (error) {
             console.error('Error in SignalR callback:', error)
+          }
+        })
+      })
+
+      // Register the ConfigurationReloading handler (config.json changed externally)
+      newConnection.on('ConfigurationReloading', () => {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('SignalR ConfigurationReloading received')
+        }
+        setIsConfigReloading(true)
+        clearRuntimeConfigCache() // Clear cache so next fetch gets fresh data
+
+        // Notify registered callbacks
+        const event: ConfigurationEvent = { type: 'reloading' }
+        configCallbacksRef.current.forEach(callback => {
+          try {
+            callback(event)
+          } catch (error) {
+            console.error('Error in configuration callback:', error)
+          }
+        })
+      })
+
+      // Register the ConfigurationReloaded handler (config reload complete)
+      newConnection.on('ConfigurationReloaded', async () => {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('SignalR ConfigurationReloaded received')
+        }
+        setIsConfigReloading(false)
+
+        // Refresh the runtime config cache
+        try {
+          await refreshRuntimeConfig()
+        } catch (error) {
+          console.error('Error refreshing runtime config:', error)
+        }
+
+        // Notify registered callbacks
+        const event: ConfigurationEvent = { type: 'reloaded' }
+        configCallbacksRef.current.forEach(callback => {
+          try {
+            callback(event)
+          } catch (error) {
+            console.error('Error in configuration callback:', error)
+          }
+        })
+      })
+
+      // Register the TestingStateChanged handler (testing started/stopped)
+      newConnection.on('TestingStateChanged', (testingState: boolean) => {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('SignalR TestingStateChanged received:', testingState)
+        }
+        setIsTesting(testingState)
+
+        // Notify registered callbacks
+        testingCallbacksRef.current.forEach(callback => {
+          try {
+            callback(testingState)
+          } catch (error) {
+            console.error('Error in testing state callback:', error)
+          }
+        })
+      })
+
+      // Register the CommentUpdate handler (comment edited)
+      newConnection.on('CommentUpdate', (ioId: number, comments: string) => {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('SignalR CommentUpdate received:', ioId, comments)
+        }
+
+        const update: CommentUpdate = { ioId, comments }
+
+        // Notify registered callbacks
+        commentCallbacksRef.current.forEach(callback => {
+          try {
+            callback(update)
+          } catch (error) {
+            console.error('Error in comment update callback:', error)
           }
         })
       })
@@ -159,6 +260,30 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     callbacksRef.current.delete(callback)
   }
 
+  const onConfigurationChange = (callback: (event: ConfigurationEvent) => void) => {
+    configCallbacksRef.current.add(callback)
+  }
+
+  const offConfigurationChange = (callback: (event: ConfigurationEvent) => void) => {
+    configCallbacksRef.current.delete(callback)
+  }
+
+  const onTestingStateChange = (callback: (isTesting: boolean) => void) => {
+    testingCallbacksRef.current.add(callback)
+  }
+
+  const offTestingStateChange = (callback: (isTesting: boolean) => void) => {
+    testingCallbacksRef.current.delete(callback)
+  }
+
+  const onCommentUpdate = (callback: (update: CommentUpdate) => void) => {
+    commentCallbacksRef.current.add(callback)
+  }
+
+  const offCommentUpdate = (callback: (update: CommentUpdate) => void) => {
+    commentCallbacksRef.current.delete(callback)
+  }
+
   // Auto-connect on mount
   useEffect(() => {
     connect()
@@ -172,10 +297,18 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
   return {
     connection,
     isConnected,
+    isConfigReloading,
+    isTesting,
     connect,
     disconnect,
     onIOUpdate,
-    offIOUpdate
+    offIOUpdate,
+    onConfigurationChange,
+    offConfigurationChange,
+    onTestingStateChange,
+    offTestingStateChange,
+    onCommentUpdate,
+    offCommentUpdate
   }
 }
 
