@@ -72,15 +72,7 @@ public class CloudSyncHostedService : IHostedService
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("CloudSyncHostedService starting...");
-
-        // Skip cloud sync on startup - let user configure via UI
-        // This allows the app to start instantly without network dependencies
-        _logger.LogInformation("Skipping automatic cloud sync on startup. Use UI to configure and connect.");
-        _startupCoordination.SignalStartupComplete();
-        return;
-
-        // === LEGACY CODE BELOW - kept for reference but never executed ===
-        #pragma warning disable CS0162 // Unreachable code detected
+        
         try
         {
             // Get fresh configuration values that update when config changes
@@ -91,7 +83,7 @@ public class CloudSyncHostedService : IHostedService
                 return;
             }
 
-            _logger.LogInformation("Starting cloud sync for subsystem {SubsystemId} from {RemoteUrl}",
+            _logger.LogInformation("Starting cloud sync for subsystem {SubsystemId} from {RemoteUrl}", 
                 _configService.SubsystemId, _configService.RemoteUrl);
 
             using var scope = _serviceProvider.CreateScope();
@@ -103,12 +95,12 @@ public class CloudSyncHostedService : IHostedService
             var isAvailable = await cloudSyncService.IsCloudAvailable();
             if (!isAvailable)
             {
-                _logger.LogWarning("Cloud service is not available at {RemoteUrl}. Starting in offline mode - configure via UI.",
+                _logger.LogError("Cloud service is not available at {RemoteUrl}. Cannot sync required subsystem data.", 
                     _configService.RemoteUrl);
-
-                // Don't block startup - allow user to access UI and configure
-                _startupCoordination.SignalStartupComplete();
-                _logger.LogInformation("App started in offline mode. Use UI to configure cloud connection.");
+                
+                // Show error to user - do NOT proceed with PLC initialization
+                await ShowCloudUnavailableError();
+                _startupCoordination.SignalStartupFailed();
                 return;
             }
 
