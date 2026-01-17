@@ -205,7 +205,7 @@ Backend URL hardcoded to `http://localhost:5000`
 
 ## Factory Deployment
 
-The `IO-Checkout-Tool-Portable/` folder contains pre-built distribution:
+The `portable/` folder contains pre-built distribution:
 - Self-contained .NET backend (no .NET install required)
 - Pre-built Next.js frontend with standalone server
 - Portable Node.js runtime included

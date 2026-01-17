@@ -304,6 +304,51 @@ public class ConfigurationController : ControllerBase
         }
     }
 
+    // GET: api/configuration/runtime
+    /// <summary>
+    /// Returns runtime configuration for the frontend.
+    /// This allows the frontend to dynamically discover the backend port for SignalR connections
+    /// without relying on environment variables that are fixed at startup.
+    /// </summary>
+    [HttpGet("runtime")]
+    public async Task<ActionResult<FrontendRuntimeConfig>> GetRuntimeConfiguration()
+    {
+        try
+        {
+            // Get the port from the current request
+            var backendPort = HttpContext.Request.Host.Port ?? 5000;
+
+            // Check cloud connection status
+            var cloudSyncService = HttpContext.RequestServices.GetService<ICloudSyncService>();
+            var cloudConnected = cloudSyncService != null && await cloudSyncService.IsCloudAvailable();
+
+            // Build SignalR hub URL dynamically
+            var signalRHubUrl = $"{HttpContext.Request.Scheme}://{HttpContext.Request.Host}/hub";
+
+            var config = new FrontendRuntimeConfig
+            {
+                BackendPort = backendPort,
+                SubsystemId = _configurationService.SubsystemId,
+                PlcIp = _configurationService.Ip,
+                CloudConnected = cloudConnected,
+                IsReloading = _configurationService.IsReinitializing,
+                ShowStateColumn = _configurationService.ShowStateColumn,
+                ShowResultColumn = _configurationService.ShowResultColumn,
+                ShowTimestampColumn = _configurationService.ShowTimestampColumn,
+                ShowHistoryColumn = _configurationService.ShowHistoryColumn,
+                OrderMode = _configurationService.OrderMode,
+                SignalRHubUrl = signalRHubUrl
+            };
+
+            return Ok(config);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving runtime configuration");
+            return StatusCode(500, "Error retrieving runtime configuration");
+        }
+    }
+
     // POST: api/configuration/import-from-config-json
     [HttpPost("import-from-config-json")]
     public async Task<IActionResult> ImportFromConfigJson()
@@ -432,5 +477,55 @@ public class ConfigJsonUpdateRequest
     public bool? ShowResultColumn { get; set; }
     public bool? ShowTimestampColumn { get; set; }
     public bool? ShowHistoryColumn { get; set; }
+}
+
+/// <summary>
+/// Response model for frontend runtime configuration.
+/// This allows the frontend to dynamically fetch configuration without relying on environment variables.
+/// </summary>
+public class FrontendRuntimeConfig
+{
+    /// <summary>
+    /// The port the backend is running on. Frontend uses this for SignalR connections.
+    /// </summary>
+    public int BackendPort { get; set; }
+
+    /// <summary>
+    /// The current subsystem ID being used.
+    /// </summary>
+    public string SubsystemId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The PLC IP address (for display purposes).
+    /// </summary>
+    public string PlcIp { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Whether the cloud connection is available.
+    /// </summary>
+    public bool CloudConnected { get; set; }
+
+    /// <summary>
+    /// Whether configuration is currently being reloaded.
+    /// </summary>
+    public bool IsReloading { get; set; }
+
+    /// <summary>
+    /// Column visibility settings.
+    /// </summary>
+    public bool ShowStateColumn { get; set; }
+    public bool ShowResultColumn { get; set; }
+    public bool ShowTimestampColumn { get; set; }
+    public bool ShowHistoryColumn { get; set; }
+
+    /// <summary>
+    /// Order mode (sequential testing).
+    /// </summary>
+    public bool OrderMode { get; set; }
+
+    /// <summary>
+    /// SignalR hub URL for WebSocket connections.
+    /// </summary>
+    public string SignalRHubUrl { get; set; } = string.Empty;
 }
 

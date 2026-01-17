@@ -23,4 +23,5 @@ public interface IPlcCommunicationService
     Task ResumeAfterCloudSyncAsync();
     Task RefreshTagListFromDatabaseAsync();
     Task ReconnectAsync(string ip, string path); // Reconnect to PLC with new configuration
+    Task DisconnectPlcAsync(); // Disconnect from PLC and stop all tag reading
 } 
