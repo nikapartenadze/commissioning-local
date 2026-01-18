@@ -22,7 +22,8 @@ namespace IO_Checkout_Tool.Services;
 /// </summary>
 public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
 {
-    private readonly HttpClient _httpClient;
+    private readonly IHttpCloudClient _httpClient;
+    private readonly ISignalRCloudClient _signalRClient;
     private readonly IConfigurationService _configService;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ResilientCloudSyncService> _logger;
@@ -30,8 +31,8 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
 
     // Connection state management
     private string? _cloudUrl;
-    private HubConnection? _hubConnection;
     private bool _isConnected = false;
+    private bool _wasConnected = false; // Track previous state for reconnection detection
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
     
     // Connection retry logic with backoff
@@ -50,17 +51,19 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
     private readonly TimeSpan _offlineProcessingInterval = TimeSpan.FromMinutes(1);
 
     // Connection status tracking
-    public bool IsConnected => _isConnected && _hubConnection?.State == HubConnectionState.Connected;
+    public bool IsConnected => _isConnected && _signalRClient.IsConnected;
     public event Action? ConnectionStateChanged;
 
     public ResilientCloudSyncService(
-        HttpClient httpClient,
+        IHttpCloudClient httpClient,
+        ISignalRCloudClient signalRClient,
         IConfigurationService configService,
         IServiceProvider serviceProvider,
         ILogger<ResilientCloudSyncService> logger,
         IErrorDialogService errorDialogService)
     {
         _httpClient = httpClient;
+        _signalRClient = signalRClient;
         _configService = configService;
         _serviceProvider = serviceProvider;
         _logger = logger;
@@ -71,6 +74,31 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         
         // Configure HttpClient for reasonable timeouts in industrial environments
         _httpClient.Timeout = TimeSpan.FromSeconds(30); // Increased from 5 seconds
+
+        // Subscribe to SignalR connection state changes
+        _signalRClient.ConnectionStateChanged += OnSignalRConnectionStateChanged;
+    }
+
+    private void OnSignalRConnectionStateChanged()
+    {
+        var wasConnected = _wasConnected;
+        _wasConnected = _isConnected = _signalRClient.IsConnected;
+        
+        // If we transitioned from disconnected to connected, trigger pending sync
+        if (!wasConnected && _isConnected)
+        {
+            _logger.LogInformation("SignalR reconnected, scheduling pending syncs...");
+            // Delay sync attempt to ensure stable connection
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(5000); // Wait 5 seconds for connection to stabilize
+                _logger.LogInformation("Starting pending sync after reconnection delay");
+                var syncedCount = await SyncPendingUpdatesAsync();
+                _logger.LogInformation("Completed pending sync after reconnection: {Count} items synced", syncedCount);
+            });
+        }
+        
+        ConnectionStateChanged?.Invoke();
     }
 
     // Existing methods remain the same...
@@ -87,10 +115,14 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         try
         {
             // Add API key header if configured
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{cloudUrl}/api/sync/subsystem/{subsystemId}");
-            AddApiKeyHeader(request);
+            var headers = new Dictionary<string, string>();
+            var apiPassword = _configService.ApiPassword;
+            if (!string.IsNullOrEmpty(apiPassword))
+            {
+                headers["X-API-Key"] = apiPassword;
+            }
             
-            var response = await _httpClient.SendAsync(request);
+            var response = await _httpClient.GetAsync($"{cloudUrl}/api/sync/subsystem/{subsystemId}", headers);
             
             // Check for authentication errors
             if (HandleAuthenticationError(response))
@@ -200,7 +232,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
                 
                 _logger.LogInformation("Invoking UpdateIO on hub with: Id={Id}, Result={Result}, State={State}", 
                     update.Id, update.Result, update.State);
-                await _hubConnection!.InvokeAsync("UpdateIO", update);
+                await _signalRClient.InvokeAsync("UpdateIO", update);
                 _logger.LogInformation("Successfully synced IO {Id} via SignalR", update.Id);
                 return true;
             }
@@ -230,11 +262,16 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
             
             // Use cancellation token for HTTP timeout too
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"{cloudUrl}/api/sync/update");
-            request.Content = JsonContent.Create(batch);
-            AddApiKeyHeader(request);
             
-            var response = await _httpClient.SendAsync(request, cts.Token);
+            // Add API key header if configured
+            var headers = new Dictionary<string, string>();
+            var apiPassword = _configService.ApiPassword;
+            if (!string.IsNullOrEmpty(apiPassword))
+            {
+                headers["X-API-Key"] = apiPassword;
+            }
+            
+            var response = await _httpClient.PostAsync($"{cloudUrl}/api/sync/update", JsonContent.Create(batch), headers, cts.Token);
             
             // Check for authentication errors
             if (HandleAuthenticationError(response))
@@ -521,7 +558,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
             {
                 _logger.LogInformation("SignalR connection available, attempting batch send...");
                 
-                await _hubConnection!.InvokeAsync("SyncMultipleIOs", updates);
+                await _signalRClient.InvokeAsync("SyncMultipleIOs", updates);
                 _logger.LogInformation("Successfully batch synced {Count} IOs via SignalR", updates.Count);
                 return true;
             }
@@ -547,11 +584,16 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
             
             // Use cancellation token for HTTP timeout
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20)); // Longer timeout for batch
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"{cloudUrl}/api/sync/update");
-            request.Content = JsonContent.Create(batch);
-            AddApiKeyHeader(request);
             
-            var response = await _httpClient.SendAsync(request, cts.Token);
+            // Add API key header if configured
+            var headers = new Dictionary<string, string>();
+            var apiPassword = _configService.ApiPassword;
+            if (!string.IsNullOrEmpty(apiPassword))
+            {
+                headers["X-API-Key"] = apiPassword;
+            }
+            
+            var response = await _httpClient.PostAsync($"{cloudUrl}/api/sync/update", JsonContent.Create(batch), headers, cts.Token);
             
             // Check for authentication errors
             if (HandleAuthenticationError(response))
@@ -619,7 +661,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         _cloudUrl = cloudUrl;
 
         // Quick check if already connected
-        if (_hubConnection?.State == HubConnectionState.Connected)
+        if (_signalRClient.IsConnected)
         {
             if (!_isConnected)
             {
@@ -641,7 +683,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
             _lastConnectionAttempt = DateTime.UtcNow;
             
             // Double-check after acquiring lock
-            if (_hubConnection?.State == HubConnectionState.Connected)
+            if (_signalRClient.IsConnected)
             {
                 if (!_isConnected)
                 {
@@ -658,78 +700,19 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
                 ConnectionStateChanged?.Invoke();
             }
 
-            if (_hubConnection == null)
+            // Use cancellation token for quick timeout when offline
+            using var cts = new CancellationTokenSource(_connectionTimeout);
+            var apiPassword = _configService.ApiPassword;
+            var connected = await _signalRClient.ConnectAsync(cloudUrl, apiPassword, cts.Token);
+            
+            if (connected)
             {
-                // Build SignalR URL with API key as query parameter
-                var apiPassword = _configService.ApiPassword;
-                var hubUrl = string.IsNullOrEmpty(apiPassword) 
-                    ? $"{_cloudUrl}/syncHub"
-                    : $"{_cloudUrl}/syncHub?apiKey={Uri.EscapeDataString(apiPassword)}";
-                
-                _logger.LogInformation("Creating SignalR connection to {HubUrl} with API key: {HasApiKey}", 
-                    $"{_cloudUrl}/syncHub", !string.IsNullOrEmpty(apiPassword) ? "PROVIDED" : "MISSING");
-                
-                _hubConnection = new HubConnectionBuilder()
-                    .WithUrl(hubUrl)
-                    .WithAutomaticReconnect(new[] { 
-                        TimeSpan.Zero,              // Immediate retry
-                        TimeSpan.FromSeconds(2),    // Quick retry for brief interruptions
-                        TimeSpan.FromSeconds(5),    // Short delay
-                        TimeSpan.FromSeconds(15),   // Increased for network issues
-                        TimeSpan.FromSeconds(30),   // Longer delay for persistent issues
-                        TimeSpan.FromMinutes(1),    // Even longer for major outages
-                        TimeSpan.FromMinutes(2)     // Max delay before giving up automatic retries
-                    })
-                    .Build();
-
-                _hubConnection.Reconnecting += (error) =>
-                {
-                    _isConnected = false;
-                    ConnectionStateChanged?.Invoke();
-                    _logger.LogWarning(error, "SignalR connection lost, attempting to reconnect...");
-                    return Task.CompletedTask;
-                };
-
-                _hubConnection.Reconnected += (connectionId) =>
-                {
-                    _isConnected = true;
-                    ConnectionStateChanged?.Invoke();
-                    _logger.LogInformation("SignalR reconnected, scheduling pending syncs...");
-                    // Delay sync attempt to ensure stable connection
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(5000); // Wait 5 seconds for connection to stabilize
-                        _logger.LogInformation("Starting pending sync after reconnection delay");
-                        var syncedCount = await SyncPendingUpdatesAsync();
-                        _logger.LogInformation("Completed pending sync after reconnection: {Count} items synced", syncedCount);
-                    });
-                    return Task.CompletedTask;
-                };
-
-                _hubConnection.Closed += (error) =>
-                {
-                    _isConnected = false;
-                    ConnectionStateChanged?.Invoke();
-                    _logger.LogWarning(error, "SignalR connection closed");
-                    return Task.CompletedTask;
-                };
-            }
-
-            if (_hubConnection.State == HubConnectionState.Disconnected)
-            {
-                // Use cancellation token for quick timeout when offline
-                using var cts = new CancellationTokenSource(_connectionTimeout);
-                await _hubConnection.StartAsync(cts.Token);
-                
-                // Only set connected if we actually reach this point without exception
                 _isConnected = true;
                 ConnectionStateChanged?.Invoke();
                 _logger.LogInformation("SignalR connection established to {CloudUrl}", _cloudUrl);
                 return true;
             }
 
-            // Connection exists but not in disconnected state - should not happen
-            _logger.LogWarning("SignalR connection in unexpected state: {State}", _hubConnection.State);
             return false;
         }
         catch (Exception ex)
@@ -752,17 +735,11 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         await _connectionLock.WaitAsync();
         try
         {
-            // Dispose existing connection
-            if (_hubConnection != null)
-            {
-                _logger.LogInformation("Disposing existing SignalR connection...");
-                _isConnected = false;
-                ConnectionStateChanged?.Invoke();
-                
-                await _hubConnection.DisposeAsync();
-                _hubConnection = null;
-                _logger.LogInformation("SignalR connection disposed");
-            }
+            // Disconnect existing connection
+            _logger.LogInformation("Disconnecting existing SignalR connection...");
+            _isConnected = false;
+            ConnectionStateChanged?.Invoke();
+            await _signalRClient.DisconnectAsync();
             
             // Reset connection state
             _lastConnectionAttempt = DateTime.MinValue;
@@ -776,10 +753,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_hubConnection != null)
-        {
-            await _hubConnection.DisposeAsync();
-        }
+        await _signalRClient.DisposeAsync();
         _connectionLock?.Dispose();
     }
 
@@ -1009,15 +983,6 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         
         // Delete the IO itself
         await deleteIoRepo.DeleteAsync(ioId);
-    }
-
-    private void AddApiKeyHeader(HttpRequestMessage request)
-    {
-        var apiPassword = _configService.ApiPassword;
-        if (!string.IsNullOrEmpty(apiPassword))
-        {
-            request.Headers.Add("X-API-Key", apiPassword);
-        }
     }
 
     private bool HandleAuthenticationError(HttpResponseMessage response)

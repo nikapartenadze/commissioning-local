@@ -87,6 +87,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IExportService, ExportService>();
         services.AddSingleton<ISignalRService, SignalRService>();
         services.AddScoped<IFilterService, FilterService>();
+        
+        // Register cloud sync abstractions
+        services.AddSingleton<IHttpCloudClient, HttpCloudClient>();
+        services.AddSingleton<ISignalRCloudClient, SignalRCloudClient>();
+        
         services.AddSingleton<ICloudSyncService, ResilientCloudSyncService>();
         services.AddSingleton<ResilientCloudSyncService>();
         services.AddScoped<IAuthService, AuthService>();
