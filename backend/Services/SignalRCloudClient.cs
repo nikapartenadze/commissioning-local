@@ -112,14 +112,15 @@ public class SignalRCloudClient : ISignalRCloudClient, IAsyncDisposable
         }
     }
 
-    public Task InvokeAsync(string methodName, params object[] args)
+    public Task InvokeAsync(string methodName, object arg)
     {
         if (_hubConnection == null)
         {
             throw new InvalidOperationException("SignalR connection not initialized. Call ConnectAsync first.");
         }
 
-        return _hubConnection.InvokeAsync(methodName, args);
+        // We're only using one arg for the method, so we can pass it without spreading.
+        return _hubConnection.InvokeCoreAsync(methodName, typeof(object), [arg]);
     }
 
     public async Task DisconnectAsync()

@@ -133,14 +133,14 @@ public class TestSignalRCloudClient : ISignalRCloudClient
         return Task.FromResult(true);
     }
 
-    public Task InvokeAsync(string methodName, params object[] args)
+    public Task InvokeAsync(string methodName, object arg)
     {
         lock (_lock)
         {
             _invocations.Add(new SignalRInvocation
             {
                 MethodName = methodName,
-                Arguments = args.ToArray(),
+                Arguments = [arg],
                 Timestamp = DateTime.UtcNow
             });
         }
