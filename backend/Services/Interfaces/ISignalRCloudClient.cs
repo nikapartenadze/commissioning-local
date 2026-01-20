@@ -37,7 +37,7 @@ public interface ISignalRCloudClient
     /// </summary>
     /// <param name="methodName">Name of the hub method to invoke</param>
     /// <param name="args">Arguments to pass to the hub method</param>
-    Task InvokeAsync(string methodName, params object[] args);
+    Task InvokeAsync(string methodName, object arg);
 
     /// <summary>
     /// Disconnects from the SignalR hub
