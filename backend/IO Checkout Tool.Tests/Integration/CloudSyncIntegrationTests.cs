@@ -28,7 +28,6 @@ public class CloudSyncIntegrationTests : IDisposable
     private readonly Mock<IPlcCommunicationService> _plcCommServiceMock;
     private readonly IServiceProvider _serviceProvider;
     private readonly IDbContextFactory<TagsContext> _dbContextFactory;
-    private readonly TagsContext _dbContext;
     private readonly ResilientCloudSyncService _syncService;
     private const string TestCloudUrl = "https://test-cloud.example.com";
     private const string TestApiKey = "test-api-key";
@@ -36,20 +35,11 @@ public class CloudSyncIntegrationTests : IDisposable
 
     public CloudSyncIntegrationTests()
     {
-        // Set up in-memory database
-        var options = new DbContextOptionsBuilder<TagsContext>()
-            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-            .Options;
-        
-        _dbContext = new TagsContext(options);
-        
-        // Create a factory that returns our test context
-        var factoryMock = new Mock<IDbContextFactory<TagsContext>>();
-        factoryMock.Setup(x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(_dbContext);
-        factoryMock.Setup(x => x.CreateDbContext())
-            .Returns(_dbContext);
-        _dbContextFactory = factoryMock.Object;
+        // Create a unique in-memory database for this test instance
+        // xUnit creates a new instance of the test class for each test method,
+        // so each test gets its own isolated database
+        var databaseName = Guid.NewGuid().ToString();
+        _dbContextFactory = new InMemoryDbContextFactory(databaseName);
         
         // Set up test clients
         _httpClient = new TestHttpCloudClient();
@@ -91,7 +81,6 @@ public class CloudSyncIntegrationTests : IDisposable
     public void Dispose()
     {
         _syncService?.DisposeAsync().AsTask().Wait();
-        _dbContext?.Dispose();
         _httpClient?.Clear();
         GC.SuppressFinalize(this);
     }
@@ -996,12 +985,13 @@ public class CloudSyncIntegrationTests : IDisposable
         // But we can test timeout scenarios
         var update = CreateTestIoUpdate(1);
 
-        // Act
-        var result = await _syncService.SyncIoUpdateAsync(update);
-
-        // Assert
+        // Act & Assert
         // Should handle gracefully (either succeed with default response or queue)
-        result.Should().NotBeNull();
+        // The test passes if no exception is thrown
+        var result = await _syncService.SyncIoUpdateAsync(update);
+        
+        // Result is a bool - method completed successfully (no exception thrown)
+        // No additional assertion needed as the test verifies graceful handling
     }
 
     #endregion
