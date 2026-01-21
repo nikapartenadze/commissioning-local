@@ -137,6 +137,12 @@ public class TestSignalRCloudClient : ISignalRCloudClient
     {
         lock (_lock)
         {
+            // Check if we're actually connected before allowing invocation
+            if (!_isConnected || _state != HubConnectionState.Connected)
+            {
+                throw new InvalidOperationException($"Cannot invoke {methodName}: SignalR connection is not connected. State: {_state}");
+            }
+            
             _invocations.Add(new SignalRInvocation
             {
                 MethodName = methodName,

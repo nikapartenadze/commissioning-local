@@ -148,15 +148,34 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
 
     public async Task<bool> SyncIoUpdateAsync(IoUpdateDto update)
     {
-        // If we know we're offline, queue immediately without blocking
-        if (!_isConnected && DateTime.UtcNow - _lastConnectionAttempt < _connectionRetryDelay)
+        // Check actual SignalR connection state, not just cached state
+        var isActuallyConnected = _signalRClient.IsConnected;
+        
+        // If we're disconnected, check if we should queue immediately or try once
+        if (!isActuallyConnected)
         {
-            await AddToOfflineQueue(update);
-            _logger.LogDebug("Queued IO {Id} for offline sync (connection unavailable)", update.Id);
-            return false;
+            // If we've recently tried to connect and failed, queue immediately to avoid repeated attempts
+            if (_lastConnectionAttempt != DateTime.MinValue && 
+                DateTime.UtcNow - _lastConnectionAttempt < _connectionRetryDelay)
+            {
+                await AddToOfflineQueue(update);
+                _logger.LogDebug("Queued IO {Id} for offline sync (connection unavailable, recent attempt failed)", update.Id);
+                return false;
+            }
+            
+            // If we're disconnected but haven't tried recently, try once (this allows quick reconnection after brief disconnects)
+            // But if we just disconnected (state changed), queue immediately to avoid unnecessary connection attempt
+            // We detect "just disconnected" by checking if _isConnected was true but SignalR is now disconnected
+            if (_isConnected && !isActuallyConnected)
+            {
+                // We just detected a disconnect - queue immediately rather than trying to reconnect
+                await AddToOfflineQueue(update);
+                _logger.LogDebug("Queued IO {Id} for offline sync (just detected disconnect)", update.Id);
+                return false;
+            }
         }
         
-        // Try real-time sync first
+        // Try real-time sync first (this will attempt connection if needed)
         var syncedInRealTime = await TryRealtimeSync(update);
         
         if (!syncedInRealTime)
@@ -216,10 +235,21 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
     {
         _logger.LogInformation("=== TryRealtimeSync starting for IO {Id} ===", update.Id);
         
+        // Check actual SignalR connection state first
+        var isActuallyConnected = _signalRClient.IsConnected;
+        
         // Quick check if we're offline - don't attempt connection
-        if (!_isConnected && DateTime.UtcNow - _lastConnectionAttempt < _connectionRetryDelay)
+        if (!isActuallyConnected && !_isConnected && DateTime.UtcNow - _lastConnectionAttempt < _connectionRetryDelay)
         {
             _logger.LogDebug("Skipping SignalR sync for IO {Id} - offline", update.Id);
+            return false;
+        }
+        
+        // If we're disconnected and haven't tried connecting recently, try once
+        // Otherwise, if we just disconnected, don't try again immediately
+        if (!isActuallyConnected && _lastConnectionAttempt != DateTime.MinValue && DateTime.UtcNow - _lastConnectionAttempt < _connectionRetryDelay)
+        {
+            _logger.LogDebug("Skipping SignalR sync for IO {Id} - recently failed connection attempt", update.Id);
             return false;
         }
         
