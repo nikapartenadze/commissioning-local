@@ -61,10 +61,12 @@ public class CloudSyncIntegrationTests : IDisposable
         services.AddSingleton<IDbContextFactory<TagsContext>>(_dbContextFactory);
         services.AddScoped<IIoRepository, IoRepository>();
         services.AddScoped<IPendingSyncRepository, PendingSyncRepository>();
+        services.AddScoped<ITestHistoryRepository, TestHistoryRepository>();
         services.AddSingleton<IPlcCommunicationService>(_plcCommServiceMock.Object);
         
         // Add logger mocks for repositories
         services.AddSingleton<ILogger<PendingSyncRepository>>(new Mock<ILogger<PendingSyncRepository>>().Object);
+        services.AddSingleton<ILogger<TestHistoryRepository>>(new Mock<ILogger<TestHistoryRepository>>().Object);
         
         _serviceProvider = services.BuildServiceProvider();
         
@@ -487,6 +489,7 @@ public class CloudSyncIntegrationTests : IDisposable
         
         // Pre-sync: pending updates succeed
         _signalRClient.SimulateConnect();
+        await Task.Delay(100); // Allow connection state to update
         
         // Health check
         _httpClient.SetJsonResponse($"{TestCloudUrl}/api/sync/health", new { Status = "OK" }, HttpStatusCode.OK);
@@ -504,9 +507,11 @@ public class CloudSyncIntegrationTests : IDisposable
         {
             var ioRepo = scope.ServiceProvider.GetRequiredService<IIoRepository>();
             var localIos = await ioRepo.GetBySubsystemIdAsync(TestSubsystemId);
+            // Nuclear sync should clear all local data and replace with cloud data
             localIos.Should().HaveCount(2);
             localIos.Should().Contain(io => io.Name == "CloudIO1");
             localIos.Should().Contain(io => io.Name == "CloudIO2");
+            localIos.Should().NotContain(io => io.Name == "LocalIO");
         }
         
         _plcCommServiceMock.Verify(x => x.ReloadDataAfterCloudSyncAsync(), Times.Once);
@@ -588,6 +593,7 @@ public class CloudSyncIntegrationTests : IDisposable
         };
         
         _signalRClient.SimulateConnect();
+        await Task.Delay(100); // Allow connection state to update
         _httpClient.SetJsonResponse($"{TestCloudUrl}/api/sync/health", new { Status = "OK" }, HttpStatusCode.OK);
         _httpClient.SetJsonResponse($"{TestCloudUrl}/api/sync/subsystem/{TestSubsystemId}", CreateSyncResponse(cloudIos));
 
@@ -601,7 +607,7 @@ public class CloudSyncIntegrationTests : IDisposable
         {
             var pendingRepo = scope.ServiceProvider.GetRequiredService<IPendingSyncRepository>();
             var pendingSyncs = await pendingRepo.GetAllPendingSyncsAsync();
-            // Version conflict should be rejected
+            // Version conflict should be rejected during pre-nuclear sync
             pendingSyncs.Should().BeEmpty();
         }
     }
@@ -625,6 +631,7 @@ public class CloudSyncIntegrationTests : IDisposable
         };
         
         _signalRClient.SimulateConnect();
+        await Task.Delay(100); // Allow connection state to update
         _httpClient.SetJsonResponse($"{TestCloudUrl}/api/sync/health", new { Status = "OK" }, HttpStatusCode.OK);
         _httpClient.SetJsonResponse($"{TestCloudUrl}/api/sync/subsystem/{TestSubsystemId}", CreateSyncResponse(cloudIos));
 
@@ -638,6 +645,7 @@ public class CloudSyncIntegrationTests : IDisposable
         {
             var ioRepo = scope.ServiceProvider.GetRequiredService<IIoRepository>();
             var localIos = await ioRepo.GetBySubsystemIdAsync(TestSubsystemId);
+            // Nuclear sync should clear all local data and replace with cloud data
             localIos.Should().HaveCount(2);
             localIos.Should().NotContain(io => io.Name == "OldIO1");
             localIos.Should().NotContain(io => io.Name == "OldIO2");
@@ -842,7 +850,14 @@ public class CloudSyncIntegrationTests : IDisposable
     public async Task OfflineQueue_QueueOnDisconnect_StoresInDatabase()
     {
         // Arrange
+        // First connect, then disconnect to ensure service tracks the state
+        _signalRClient.SimulateConnect();
+        await Task.Delay(100); // Allow state to update
         _signalRClient.SimulateDisconnect();
+        // Prevent reconnection attempts after disconnect
+        _signalRClient.SetShouldFailConnect(true);
+        await Task.Delay(100); // Allow state to update
+        
         var update = CreateTestIoUpdate(1);
         _httpClient.SetErrorResponse($"{TestCloudUrl}/api/sync/update", HttpStatusCode.ServiceUnavailable);
 
@@ -915,7 +930,14 @@ public class CloudSyncIntegrationTests : IDisposable
     public async Task OfflineQueue_VersionTracking_PreservesVersion()
     {
         // Arrange
+        // First connect, then disconnect to ensure service tracks the state
+        _signalRClient.SimulateConnect();
+        await Task.Delay(100); // Allow state to update
         _signalRClient.SimulateDisconnect();
+        // Prevent reconnection attempts after disconnect
+        _signalRClient.SetShouldFailConnect(true);
+        await Task.Delay(100); // Allow state to update
+        
         var update = CreateTestIoUpdate(1, version: 42);
         _httpClient.SetErrorResponse($"{TestCloudUrl}/api/sync/update", HttpStatusCode.ServiceUnavailable);
 
