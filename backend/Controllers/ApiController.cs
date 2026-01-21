@@ -17,6 +17,7 @@ public class ApiController : ControllerBase
     private readonly ITestHistoryRepository _testHistoryRepository;
     private readonly ICloudSyncService _cloudSyncService;
     private readonly ISignalRService _signalRService;
+    private readonly ITagReaderService? _tagReaderService;
     private readonly ILogger<ApiController> _logger;
     private static bool _isTesting = false;
 
@@ -27,7 +28,8 @@ public class ApiController : ControllerBase
         ITestHistoryRepository testHistoryRepository,
         ICloudSyncService cloudSyncService,
         ISignalRService signalRService,
-        ILogger<ApiController> logger)
+        ILogger<ApiController> logger,
+        ITagReaderService? tagReaderService = null)
     {
         _plcCommunication = plcCommunication;
         _configuration = configuration;
@@ -35,6 +37,7 @@ public class ApiController : ControllerBase
         _testHistoryRepository = testHistoryRepository;
         _cloudSyncService = cloudSyncService;
         _signalRService = signalRService;
+        _tagReaderService = tagReaderService;
         _logger = logger;
     }
 
@@ -123,6 +126,37 @@ public class ApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting status");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Get TagReaderService performance metrics
+    /// </summary>
+    [HttpGet("performance")]
+    public ActionResult<object> GetPerformanceMetrics()
+    {
+        try
+        {
+            if (_tagReaderService == null)
+            {
+                return NotFound(new { error = "TagReaderService is not available" });
+            }
+
+            var metrics = _tagReaderService.GetPerformanceMetrics();
+            
+            return Ok(new
+            {
+                totalReadCycles = metrics.TotalReadCycles,
+                totalReadTimeMs = metrics.TotalReadTimeMs,
+                averageReadTimeMs = Math.Round(metrics.AverageReadTimeMs, 2),
+                totalTags = metrics.TotalTags,
+                estimatedReadsPerSecond = Math.Round(metrics.EstimatedReadsPerSecond, 2)
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting performance metrics");
             return StatusCode(500, "Internal server error");
         }
     }
