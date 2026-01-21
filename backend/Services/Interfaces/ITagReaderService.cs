@@ -13,4 +13,9 @@ public interface ITagReaderService
     Task StartContinuousReadingAsync(List<NativeTag> tags);
 
     Task ResetForReconnectionAsync(bool isConfigurationChange = true);
+    
+    /// <summary>
+    /// Get current performance metrics for tag reading operations
+    /// </summary>
+    TagReaderPerformanceMetrics GetPerformanceMetrics();
 } 

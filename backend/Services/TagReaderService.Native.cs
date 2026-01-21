@@ -1015,6 +1015,27 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
     }
 
     /// <summary>
+    /// Get current performance metrics for tag reading operations
+    /// </summary>
+    public TagReaderPerformanceMetrics GetPerformanceMetrics()
+    {
+        lock (_perfLock)
+        {
+            var totalTags = _tags.Count;
+            var avgMs = _totalReadCycles > 0 ? (double)_totalReadTimeMs / _totalReadCycles : 0;
+            
+            return new TagReaderPerformanceMetrics
+            {
+                TotalReadCycles = _totalReadCycles,
+                TotalReadTimeMs = _totalReadTimeMs,
+                AverageReadTimeMs = avgMs,
+                TotalTags = totalTags,
+                EstimatedReadsPerSecond = avgMs > 0 ? 1000.0 / avgMs : 0
+            };
+        }
+    }
+
+    /// <summary>
     /// Check for persistent tag errors after new subsystem has had time to settle
     /// </summary>
     private async Task CheckErrorsAfterSettlingAsync()
@@ -1084,4 +1105,16 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
             _logger.LogError(ex, "Error checking for persistent tag errors");
         }
     }
+}
+
+/// <summary>
+/// Performance metrics for tag reading operations
+/// </summary>
+public class TagReaderPerformanceMetrics
+{
+    public int TotalReadCycles { get; set; }
+    public long TotalReadTimeMs { get; set; }
+    public double AverageReadTimeMs { get; set; }
+    public int TotalTags { get; set; }
+    public double EstimatedReadsPerSecond { get; set; }
 } 
