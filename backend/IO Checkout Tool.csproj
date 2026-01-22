@@ -34,6 +34,10 @@
 
   <ItemGroup>
     <Folder Include="Properties\PublishProfiles\" />
+    <Compile Remove="IO Checkout Tool.Tests\**" />
+    <Content Remove="IO Checkout Tool.Tests\**" />
+    <EmbeddedResource Remove="IO Checkout Tool.Tests\**" />
+    <None Remove="IO Checkout Tool.Tests\**" />
   </ItemGroup>
 
   <ItemGroup>

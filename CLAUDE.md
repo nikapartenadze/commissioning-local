@@ -30,8 +30,8 @@ start-dev.bat
 # Backend only (port 5000)
 cd backend && dotnet run
 
-# Frontend only (port 3000)
-cd frontend && npm run dev
+# Frontend only (port 3002)
+cd frontend && set PORT=3002 && npm run dev
 ```
 
 ### Build & Test
@@ -201,11 +201,11 @@ Backend URL hardcoded to `http://localhost:5000`
 ## Ports
 
 - Backend: `5000`
-- Frontend: `3000`
+- Frontend: `3002`
 
 ## Factory Deployment
 
-The `IO-Checkout-Tool-Portable/` folder contains pre-built distribution:
+The `portable/` folder contains pre-built distribution:
 - Self-contained .NET backend (no .NET install required)
 - Pre-built Next.js frontend with standalone server
 - Portable Node.js runtime included

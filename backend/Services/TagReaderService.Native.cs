@@ -71,9 +71,16 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         }
     }
 
-    public async Task<bool> InitializeReadingAsync(List<NativeTag> tags, List<Io> tagList, bool skipErrorDetection = false)
+    public async Task<bool> InitializeReadingAsync(List<NativeTag> tags, List<Io> tagList, bool skipErrorDetection = false, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Initializing native tag reading for {Count} tags with optimized batch initialization", tags.Count);
+
+        // Check for cancellation at the start
+        if (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("Tag initialization cancelled before starting");
+            return false;
+        }
         
         // Clear any existing tags first (important for reconnection scenarios)
         if (_tags.Any())
@@ -145,41 +152,91 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                 {
                     var batchSuccessful = new List<NativeTag>();
                     var batchFailed = new List<string>();
-                    
+
+                    // Check for cancellation/abort before processing batch
+                    if (cancellationToken.IsCancellationRequested || NativeTag.ShouldAbort)
+                    {
+                        // Dispose all tags in this batch without logging errors
+                        foreach (var tag in batch)
+                        {
+                            try { tag.Dispose(); } catch { }
+                        }
+                        return (successful: batchSuccessful, failed: batchFailed);
+                    }
+
                     // Validate all tags in this batch in parallel
                     var tagTasks = batch.Select(async tag =>
                     {
                         try
                         {
+                            // Check for cancellation/abort before each tag - silent exit
+                            if (cancellationToken.IsCancellationRequested || NativeTag.ShouldAbort)
+                            {
+                                try { tag.Dispose(); } catch { }
+                                return (success: false, tag: tag, error: "cancelled");
+                            }
+
                             // Initialize the tag first
                             var initStatus = tag.Initialize();
+
+                            // If aborted during init, don't log error - just clean up
+                            if (NativeTag.ShouldAbort || initStatus == LibPlcTag.PLCTAG_ERR_ABORT)
+                            {
+                                try { tag.Dispose(); } catch { }
+                                return (success: false, tag: tag, error: "cancelled");
+                            }
+
                             if (initStatus != LibPlcTag.PLCTAG_STATUS_OK)
                             {
-                                _logger.LogError("Tag {Name} failed initialization with status: {Status} ({StatusCode})", 
+                                _logger.LogError("Tag {Name} failed initialization with status: {Status} ({StatusCode})",
                                     tag.Name, LibPlcTag.DecodeError(initStatus), initStatus);
                                 HandleTagError(tag.Name, initStatus);
                                 tag.Dispose(); // Clean up failed tag
                                 return (success: false, tag: tag, error: "init");
                             }
-                            
+
+                            // Check for cancellation/abort after init - silent exit
+                            if (cancellationToken.IsCancellationRequested || NativeTag.ShouldAbort)
+                            {
+                                try { tag.Dispose(); } catch { }
+                                return (success: false, tag: tag, error: "cancelled");
+                            }
+
                             // Now READ the tag to verify it actually exists and is accessible
-                            var readStatus = await tag.ReadAsync();
+                            var readStatus = await tag.ReadAsync(cancellationToken);
+
+                            // If aborted during read, don't log error - just clean up
+                            if (NativeTag.ShouldAbort || readStatus == LibPlcTag.PLCTAG_ERR_ABORT)
+                            {
+                                try { tag.Dispose(); } catch { }
+                                return (success: false, tag: tag, error: "cancelled");
+                            }
+
                             if (readStatus != LibPlcTag.PLCTAG_STATUS_OK)
                             {
-                                _logger.LogError("Tag {Name} failed read validation with status: {Status} ({StatusCode})", 
+                                _logger.LogError("Tag {Name} failed read validation with status: {Status} ({StatusCode})",
                                     tag.Name, LibPlcTag.DecodeError(readStatus), readStatus);
                                 HandleTagError(tag.Name, readStatus);
                                 tag.Dispose(); // Clean up failed tag
                                 return (success: false, tag: tag, error: "read");
                             }
-                            
+
                             // Tag fully validated (init + read successful)
                             return (success: true, tag: tag, error: "");
                         }
+                        catch (OperationCanceledException)
+                        {
+                            try { tag.Dispose(); } catch { }
+                            return (success: false, tag: tag, error: "cancelled");
+                        }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Exception during validation of tag {Name}", tag.Name);
-                            HandleTagError(tag.Name, -1);
+                            // Only log if not aborted
+                            if (!NativeTag.ShouldAbort)
+                            {
+                                _logger.LogError(ex, "Exception during validation of tag {Name}", tag.Name);
+                                HandleTagError(tag.Name, -1);
+                            }
                             try { tag.Dispose(); } catch { } // Clean up on exception
                             return (success: false, tag: tag, error: "exception");
                         }
@@ -205,7 +262,22 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                 
                 // Wait for all batches to complete
                 var batchResults = await Task.WhenAll(batchTasks);
-                
+
+                // Check for cancellation after batch processing
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogInformation("Tag initialization cancelled - cleaning up");
+                    // Dispose any successful tags since we're cancelling
+                    foreach (var result in batchResults)
+                    {
+                        foreach (var tag in result.successful)
+                        {
+                            try { tag.Dispose(); } catch { }
+                        }
+                    }
+                    return false;
+                }
+
                 // Combine results from all batches
                 foreach (var batchResult in batchResults)
                 {
@@ -943,6 +1015,27 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
     }
 
     /// <summary>
+    /// Get current performance metrics for tag reading operations
+    /// </summary>
+    public TagReaderPerformanceMetrics GetPerformanceMetrics()
+    {
+        lock (_perfLock)
+        {
+            var totalTags = _tags.Count;
+            var avgMs = _totalReadCycles > 0 ? (double)_totalReadTimeMs / _totalReadCycles : 0;
+            
+            return new TagReaderPerformanceMetrics
+            {
+                TotalReadCycles = _totalReadCycles,
+                TotalReadTimeMs = _totalReadTimeMs,
+                AverageReadTimeMs = avgMs,
+                TotalTags = totalTags,
+                EstimatedReadsPerSecond = avgMs > 0 ? 1000.0 / avgMs : 0
+            };
+        }
+    }
+
+    /// <summary>
     /// Check for persistent tag errors after new subsystem has had time to settle
     /// </summary>
     private async Task CheckErrorsAfterSettlingAsync()
@@ -1012,4 +1105,16 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
             _logger.LogError(ex, "Error checking for persistent tag errors");
         }
     }
+}
+
+/// <summary>
+/// Performance metrics for tag reading operations
+/// </summary>
+public class TagReaderPerformanceMetrics
+{
+    public int TotalReadCycles { get; set; }
+    public long TotalReadTimeMs { get; set; }
+    public double AverageReadTimeMs { get; set; }
+    public int TotalTags { get; set; }
+    public double EstimatedReadsPerSecond { get; set; }
 } 

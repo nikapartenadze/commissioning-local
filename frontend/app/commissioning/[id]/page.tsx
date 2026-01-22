@@ -18,13 +18,14 @@ import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { UserMenu } from "@/components/user-menu"
 import { Download, Settings, BarChart3, History } from "lucide-react"
-import { 
-  PlcCommunicationService, 
-  PlcConfig, 
-  PlcConnectionStatus, 
-  IoState 
+import {
+  PlcCommunicationService,
+  PlcConfig,
+  PlcConnectionStatus,
+  IoState
 } from "@/lib/plc-communication"
-import { useSignalR, IOUpdate } from "@/lib/signalr-client"
+import { useSignalR, IOUpdate, CommentUpdate } from "@/lib/signalr-client"
+import { API_ENDPOINTS, getSignalRHubUrl } from "@/lib/api-config"
 
 interface IoItem {
   id: number
@@ -81,7 +82,7 @@ export default function CommissioningPage() {
   useEffect(() => {
     const checkSimulatorStatus = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/simulator/status')
+        const response = await fetch(API_ENDPOINTS.simulatorStatus)
         if (response.ok) {
           const data = await response.json()
           setIsSimulatorEnabled(data.enabled)
@@ -218,12 +219,12 @@ export default function CommissioningPage() {
   })
 
   // SignalR connection for real-time updates
-  const signalR = useSignalR('http://localhost:5000/hub')
+  const signalR = useSignalR(getSignalRHubUrl())
 
   // Load PLC config function (defined before useEffect that uses it)
   const loadPlcConfig = useCallback(async (updateTestingState: boolean = true) => {
     try {
-      const response = await fetch('http://localhost:5000/api/status')
+      const response = await fetch(API_ENDPOINTS.status)
       if (response.ok) {
         const status = await response.json()
         const newConfig = {
@@ -338,6 +339,45 @@ export default function CommissioningPage() {
     previousStatesRef.current = previousStates
   }, [previousStates])
 
+  // Handle SignalR testing state changes
+  useEffect(() => {
+    const handleTestingStateChange = (newIsTesting: boolean) => {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 SignalR TestingStateChanged:', newIsTesting)
+      }
+      setPlcStatus(prev => ({
+        ...prev,
+        isTesting: newIsTesting
+      }))
+    }
+
+    signalR.onTestingStateChange(handleTestingStateChange)
+
+    return () => {
+      signalR.offTestingStateChange(handleTestingStateChange)
+    }
+  }, [signalR.onTestingStateChange, signalR.offTestingStateChange])
+
+  // Handle SignalR comment updates
+  useEffect(() => {
+    const handleCommentUpdate = (update: CommentUpdate) => {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 SignalR CommentUpdate:', update)
+      }
+      setIos(prevIos =>
+        prevIos.map(io =>
+          io.id === update.ioId ? { ...io, comments: update.comments } : io
+        )
+      )
+    }
+
+    signalR.onCommentUpdate(handleCommentUpdate)
+
+    return () => {
+      signalR.offCommentUpdate(handleCommentUpdate)
+    }
+  }, [signalR.onCommentUpdate, signalR.offCommentUpdate])
+
   // Handle SignalR real-time updates
   useEffect(() => {
     if (process.env.NODE_ENV === 'development') {
@@ -435,7 +475,7 @@ export default function CommissioningPage() {
     try {
       setLoading(true)
       // Load IOs from C# backend (real PLC data)
-      const response = await fetch(`http://localhost:5000/api/ios`)
+      const response = await fetch(API_ENDPOINTS.ios)
       if (response.ok) {
         const data = await response.json()
         setIos(data)
@@ -477,7 +517,7 @@ export default function CommissioningPage() {
       if (process.env.NODE_ENV === 'development') {
         console.log(`🔥 Firing output ${action} for ${io.name}...`)
       }
-      const response = await fetch(`http://localhost:5000/api/ios/${io.id}/fire-output`, {
+      const response = await fetch(API_ENDPOINTS.ioFireOutput(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action })
@@ -508,10 +548,10 @@ export default function CommissioningPage() {
       if (process.env.NODE_ENV === 'development') {
         console.log('🚀 Calling C# backend to mark IO as passed:', io.id, io.name)
       }
-      const response = await fetch(`http://localhost:5000/api/ios/${io.id}/pass`, {
+      const response = await fetch(API_ENDPOINTS.ioPass(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           comments: '',
           currentUser: currentUser?.fullName || 'Unknown'
         })
@@ -547,10 +587,10 @@ export default function CommissioningPage() {
       if (process.env.NODE_ENV === 'development') {
         console.log('🚀 Calling C# backend to mark IO as failed:', io.id, io.name, comments, failureMode)
       }
-      const response = await fetch(`http://localhost:5000/api/ios/${io.id}/fail`, {
+      const response = await fetch(API_ENDPOINTS.ioFail(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           comments,
           currentUser: currentUser?.fullName || 'Unknown',
           failureMode
@@ -579,10 +619,10 @@ export default function CommissioningPage() {
 
   const handleClearResult = async (io: IoItem) => {
     try {
-      const response = await fetch(`http://localhost:5000/api/ios/${io.id}/clear`, {
+      const response = await fetch(API_ENDPOINTS.ioClear(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           currentUser: currentUser?.fullName || 'Unknown'
         })
       })
@@ -661,14 +701,44 @@ export default function CommissioningPage() {
     setCurrentDialogIo(null)
   }
 
+  const handleCommentChange = async (io: IoItem, comment: string) => {
+    try {
+      // Optimistically update UI
+      setIos(prevIos => prevIos.map(i =>
+        i.id === io.id ? { ...i, comments: comment } : i
+      ))
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log('💬 Updating comment for IO:', io.id, io.name, comment)
+      }
+
+      const response = await fetch(API_ENDPOINTS.ioComment(io.id), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comments: comment })
+      })
+
+      if (response.ok) {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('✅ Comment updated via backend')
+        }
+        // SignalR will broadcast the update to other clients
+      } else {
+        console.error('❌ Failed to update comment:', response.status)
+      }
+    } catch (error) {
+      console.error('❌ Error updating comment:', error)
+    }
+  }
+
   const handleClearTesting = async () => {
     try {
       // Clear all test results
-      const clearPromises = ios.map(io => 
-        fetch(`http://localhost:5000/api/ios/${io.id}/clear`, {
+      const clearPromises = ios.map(io =>
+        fetch(API_ENDPOINTS.ioClear(io.id), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
+          body: JSON.stringify({
             currentUser: currentUser?.fullName || 'Unknown'
           })
         })
@@ -693,7 +763,7 @@ export default function CommissioningPage() {
   const handleToggleSimulator = async () => {
     try {
       const endpoint = isSimulatorEnabled ? 'disable' : 'enable'
-      const response = await fetch(`http://localhost:5000/api/simulator/${endpoint}`, {
+      const response = await fetch(endpoint === 'enable' ? API_ENDPOINTS.simulatorEnable : API_ENDPOINTS.simulatorDisable, {
         method: 'POST'
       })
       
@@ -725,7 +795,7 @@ export default function CommissioningPage() {
   const handleTestConnection = async (): Promise<boolean> => {
     // Test connection via C# backend (real PLC communication)
     try {
-      const response = await fetch('http://localhost:5000/api/plc/test-connection', {
+      const response = await fetch(API_ENDPOINTS.plcTestConnection, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -749,7 +819,7 @@ export default function CommissioningPage() {
     
     try {
       console.log('🟡 Making request to C# backend...')
-      const response = await fetch('http://localhost:5000/api/testing/toggle', {
+      const response = await fetch(API_ENDPOINTS.testingToggle, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
@@ -885,6 +955,7 @@ export default function CommissioningPage() {
             onClearResult={handleClearResult}
             onRowClick={handleRowClick}
             onShowFireOutputDialog={handleShowFireOutputDialog}
+            onCommentChange={handleCommentChange}
           />
         </div>
 

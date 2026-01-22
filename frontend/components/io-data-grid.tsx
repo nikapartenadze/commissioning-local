@@ -11,6 +11,7 @@ import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
 import { Search, History, X } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { API_ENDPOINTS } from "@/lib/api-config"
 
 type IoItem = {
   id: number
@@ -51,7 +52,7 @@ export function IoDataGrid({ ios, projectId, onFilteredDataChange }: IoDataGridP
     setShowHistoryDialog(true)
     
     try {
-      const response = await fetch(`http://localhost:5000/api/ios/${io.id}/history`)
+      const response = await fetch(API_ENDPOINTS.ioHistory(io.id))
       if (response.ok) {
         const data = await response.json()
         setHistoryData(data)

@@ -87,6 +87,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IExportService, ExportService>();
         services.AddSingleton<ISignalRService, SignalRService>();
         services.AddScoped<IFilterService, FilterService>();
+        
+        // Register cloud sync abstractions
+        services.AddSingleton<IHttpCloudClient, HttpCloudClient>();
+        services.AddSingleton<ISignalRCloudClient, SignalRCloudClient>();
+        
         services.AddSingleton<ICloudSyncService, ResilientCloudSyncService>();
         services.AddSingleton<ResilientCloudSyncService>();
         services.AddScoped<IAuthService, AuthService>();
@@ -138,11 +143,14 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<PlcInitializationHostedService>();   // Run PLC init AFTER cloud sync
         services.AddHostedService<OfflineSyncHostedService>();
         services.AddHostedService<CloudReconnectionHostedService>();
-        
+
+        // Config file watcher for auto-reinitialization on external config.json changes
+        services.AddHostedService<ConfigFileWatcherService>();
+
         // PLC Simulator (for testing without physical PLC)
         services.AddSingleton<PlcSimulatorService>();
         services.AddHostedService(sp => sp.GetRequiredService<PlcSimulatorService>());
-        
+
         return services;
     }
 

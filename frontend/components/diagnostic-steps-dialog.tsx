@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { HelpCircle } from "lucide-react"
 import { NetworkStatusBreadcrumbs } from "./network-status-breadcrumbs"
+import { API_ENDPOINTS } from "@/lib/api-config"
 
 interface DiagnosticStepsDialogProps {
   open: boolean
@@ -37,7 +38,7 @@ export function DiagnosticStepsDialog({
     setError('')
     try {
       const response = await fetch(
-        `http://localhost:5000/api/diagnostics/steps?tagType=${encodeURIComponent(tagType)}&failureMode=${encodeURIComponent(failureMode)}`
+        `${API_ENDPOINTS.diagnosticSteps}?tagType=${encodeURIComponent(tagType)}&failureMode=${encodeURIComponent(failureMode)}`
       )
 
       if (response.ok) {
