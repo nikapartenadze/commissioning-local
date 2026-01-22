@@ -17,6 +17,7 @@ public class ApiController : ControllerBase
     private readonly ITestHistoryRepository _testHistoryRepository;
     private readonly ICloudSyncService _cloudSyncService;
     private readonly ISignalRService _signalRService;
+    private readonly ITagReaderService? _tagReaderService;
     private readonly ILogger<ApiController> _logger;
     private static bool _isTesting = false;
 
@@ -27,7 +28,8 @@ public class ApiController : ControllerBase
         ITestHistoryRepository testHistoryRepository,
         ICloudSyncService cloudSyncService,
         ISignalRService signalRService,
-        ILogger<ApiController> logger)
+        ILogger<ApiController> logger,
+        ITagReaderService? tagReaderService = null)
     {
         _plcCommunication = plcCommunication;
         _configuration = configuration;
@@ -35,6 +37,7 @@ public class ApiController : ControllerBase
         _testHistoryRepository = testHistoryRepository;
         _cloudSyncService = cloudSyncService;
         _signalRService = signalRService;
+        _tagReaderService = tagReaderService;
         _logger = logger;
     }
 
@@ -128,6 +131,37 @@ public class ApiController : ControllerBase
     }
 
     /// <summary>
+    /// Get TagReaderService performance metrics
+    /// </summary>
+    [HttpGet("performance")]
+    public ActionResult<object> GetPerformanceMetrics()
+    {
+        try
+        {
+            if (_tagReaderService == null)
+            {
+                return NotFound(new { error = "TagReaderService is not available" });
+            }
+
+            var metrics = _tagReaderService.GetPerformanceMetrics();
+            
+            return Ok(new
+            {
+                totalReadCycles = metrics.TotalReadCycles,
+                totalReadTimeMs = metrics.TotalReadTimeMs,
+                averageReadTimeMs = Math.Round(metrics.AverageReadTimeMs, 2),
+                totalTags = metrics.TotalTags,
+                estimatedReadsPerSecond = Math.Round(metrics.EstimatedReadsPerSecond, 2)
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting performance metrics");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
     /// Test PLC connection
     /// </summary>
     [HttpPost("plc/test-connection")]
@@ -159,6 +193,30 @@ public class ApiController : ControllerBase
         {
             _logger.LogError(ex, "Error testing PLC connection");
             return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Disconnect from PLC - stops all tag reading and allows configuration changes
+    /// </summary>
+    [HttpPost("plc/disconnect")]
+    public async Task<ActionResult<object>> DisconnectPlc()
+    {
+        try
+        {
+            _logger.LogInformation("Received PLC disconnect request from UI");
+            await _plcCommunication.DisconnectPlcAsync();
+
+            return Ok(new
+            {
+                success = true,
+                message = "PLC disconnected successfully. You can now change configuration."
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error disconnecting from PLC");
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
@@ -373,20 +431,23 @@ public class ApiController : ControllerBase
     }
 
     /// <summary>
-    /// Toggle testing mode
+    /// Toggle testing mode - broadcasts to all connected clients via SignalR
     /// </summary>
     [HttpPost("testing/toggle")]
-    public ActionResult<object> ToggleTesting()
+    public async Task<ActionResult<object>> ToggleTesting()
     {
         try
         {
             // Toggle the testing state
             _isTesting = !_isTesting;
-            
+
             _logger.LogInformation("Testing mode toggled to: {IsTesting}", _isTesting);
-            
-            return Ok(new { 
-                success = true, 
+
+            // Broadcast to all connected clients so they see the state change immediately
+            await _signalRService.BroadcastTestingStateChanged(_isTesting);
+
+            return Ok(new {
+                success = true,
                 message = "Testing mode toggled",
                 isTesting = _isTesting
             });
@@ -394,6 +455,44 @@ public class ApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error toggling testing mode");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Update comment for an IO (can be used anytime, not just on fail)
+    /// </summary>
+    [HttpPost("ios/{id}/comment")]
+    public async Task<ActionResult<object>> UpdateIoComment(int id, [FromBody] UpdateCommentRequest request)
+    {
+        try
+        {
+            var io = await _ioRepository.GetByIdAsync(id);
+            if (io == null)
+            {
+                return NotFound($"IO with ID {id} not found");
+            }
+
+            // Update the comment
+            io.Comments = request.Comments;
+            await _ioRepository.UpdateAsync(io);
+
+            _logger.LogInformation("Comment updated for IO {Id}: {Comments}", id, request.Comments);
+
+            // Broadcast comment update to all connected clients
+            await _signalRService.BroadcastCommentUpdate(id, request.Comments);
+
+            return Ok(new
+            {
+                success = true,
+                message = "Comment updated",
+                id = io.Id,
+                comments = io.Comments
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating comment for IO {Id}", id);
             return StatusCode(500, "Internal server error");
         }
     }
@@ -495,7 +594,7 @@ public class ApiController : ControllerBase
     }
 
     /// <summary>
-    /// Upload local test data to remote cloud - simple upload only
+    /// Upload local test data to remote cloud - only uploads changed IOs to prevent duplicates
     /// </summary>
     [HttpPost("cloud/sync")]
     public async Task<ActionResult<object>> UploadToCloud()
@@ -513,23 +612,62 @@ public class ApiController : ControllerBase
             // Get all local IOs with test results
             var localIos = await _ioRepository.GetBySubsystemIdAsync(subsystemId);
             var testResults = localIos.Where(io => !string.IsNullOrEmpty(io.Result) || !string.IsNullOrEmpty(io.Comments)).ToList();
-            
+
             if (!testResults.Any())
             {
-                return Ok(new { 
-                    success = true, 
+                return Ok(new {
+                    success = true,
                     message = "No test results to upload",
                     subsystemId = subsystemId,
-                    uploadedCount = 0
+                    uploadedCount = 0,
+                    skippedCount = 0
                 });
             }
 
+            // Filter to only IOs that have changed since last sync
+            // An IO needs syncing if:
+            // 1. It has never been synced (CloudSyncedAt is null), OR
+            // 2. It was modified after the last sync (Timestamp > CloudSyncedAt)
+            var needsSync = testResults.Where(io =>
+            {
+                // Never synced before
+                if (!io.CloudSyncedAt.HasValue)
+                    return true;
+
+                // Check if modified since last sync
+                if (!string.IsNullOrEmpty(io.Timestamp))
+                {
+                    if (DateTime.TryParse(io.Timestamp, out var ioTimestamp))
+                    {
+                        return ioTimestamp > io.CloudSyncedAt.Value;
+                    }
+                }
+
+                return false;
+            }).ToList();
+
+            var skippedCount = testResults.Count - needsSync.Count;
+
+            if (!needsSync.Any())
+            {
+                _logger.LogInformation("All {TotalCount} test results already synced - nothing new to upload", testResults.Count);
+                return Ok(new {
+                    success = true,
+                    message = $"All test results already synced to cloud (checked {testResults.Count} IOs)",
+                    subsystemId = subsystemId,
+                    uploadedCount = 0,
+                    skippedCount = skippedCount
+                });
+            }
+
+            _logger.LogInformation("Found {NeedsSyncCount} IOs to sync, {SkippedCount} already synced", needsSync.Count, skippedCount);
+
             // Upload test results to cloud - get TestedBy from most recent TestHistory
             var updates = new List<IoUpdateDto>();
-            foreach (var io in testResults)
+            foreach (var io in needsSync)
             {
                 if (io.Id <= 0) continue; // Skip if ID is invalid
-                
+
                 // Get the most recent test history for this IO to get the TestedBy field
                 var history = await _testHistoryRepository.GetByIoIdAsync(io.Id, limit: 1);
                 var testedBy = history.FirstOrDefault()?.TestedBy ?? "Unknown";
@@ -547,33 +685,43 @@ public class ApiController : ControllerBase
             }
 
             var uploadSuccess = await _cloudSyncService.SyncIoUpdatesAsync(updates);
-            
+
             if (uploadSuccess)
             {
-                _logger.LogInformation("Successfully uploaded {Count} test results to cloud for subsystem {SubsystemId}", testResults.Count, subsystemId);
-                
-                return Ok(new { 
-                    success = true, 
-                    message = $"Successfully uploaded {testResults.Count} test results to cloud",
+                // Mark these IOs as synced to prevent duplicate uploads
+                var syncTime = DateTime.UtcNow;
+                foreach (var io in needsSync)
+                {
+                    io.CloudSyncedAt = syncTime;
+                    await _ioRepository.UpdateAsync(io);
+                }
+                await _ioRepository.SaveChangesAsync();
+
+                _logger.LogInformation("Successfully uploaded {Count} test results to cloud for subsystem {SubsystemId}", needsSync.Count, subsystemId);
+
+                return Ok(new {
+                    success = true,
+                    message = $"Successfully uploaded {needsSync.Count} test results to cloud",
                     subsystemId = subsystemId,
-                    uploadedCount = testResults.Count
+                    uploadedCount = needsSync.Count,
+                    skippedCount = skippedCount
                 });
             }
             else
             {
                 _logger.LogWarning("Failed to upload test results to cloud for subsystem {SubsystemId}", subsystemId);
-                return StatusCode(500, new { 
-                    success = false, 
-                    message = "Failed to upload test results to cloud" 
+                return StatusCode(500, new {
+                    success = false,
+                    message = "Failed to upload test results to cloud"
                 });
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error uploading to cloud");
-            return StatusCode(500, new { 
-                success = false, 
-                message = "Internal server error during upload" 
+            return StatusCode(500, new {
+                success = false,
+                message = "Internal server error during upload"
             });
         }
     }
@@ -626,4 +774,9 @@ public class TestResultRequest
 public class FireOutputRequest
 {
     public string Action { get; set; } = string.Empty; // "start" or "stop"
+}
+
+public class UpdateCommentRequest
+{
+    public string? Comments { get; set; }
 }

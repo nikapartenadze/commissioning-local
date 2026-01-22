@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Shared.Library.Models.Entities;
 
 namespace IO_Checkout_Tool.Models;
@@ -12,6 +13,20 @@ public class TagsContext : DbContext
     public TagsContext(DbContextOptions<TagsContext> options) : base(options)
     {
         this.Database.EnsureCreated();
+    }
+    
+    /// <summary>
+    /// Initializes the database with SQL-specific configurations and migrations.
+    /// This should be called after the context is created and the database provider is available.
+    /// Only executes for relational database providers (e.g., SQLite).
+    /// </summary>
+    public void InitializeDatabase()
+    {
+        // Only execute SQL for relational database providers
+        if (!Database.IsRelational())
+        {
+            throw new InvalidOperationException("Database provider is not relational. SQL-specific initialization cannot be performed.");
+        }
         
         // Configure SQLite for better concurrency
         try

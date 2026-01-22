@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
+import { getBackendUrl } from '@/lib/api-config'
 
-const C_SHARP_BASE_URL = process.env.NEXT_PUBLIC_CSHARP_API_URL || 'http://localhost:5000'
+const C_SHARP_BASE_URL = getBackendUrl()
 
 // GET /api/configurations - List all configurations
 export async function GET() {

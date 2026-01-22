@@ -25,6 +25,7 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
     private bool _isPlcConnected = false;
     private Timer? _reconnectionTimer;
     private bool _needsReinitialization = false;
+    private CancellationTokenSource? _connectionCts;
     
     // Memory cache for state values - persists during app session only
     private readonly Dictionary<string, string> _stateCache = new();
@@ -345,7 +346,7 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
     public async Task ReconnectAsync(string ip, string path)
     {
         _logger.LogInformation("Reconnecting PLC with new configuration: IP={Ip}, Path={Path}", ip, path);
-        
+
         try
         {
             // Use existing reinitialization logic which already handles:
@@ -355,13 +356,61 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
             // - Testing connectivity
             // - Initializing tag reading
             await ReinitializePlcConnectionAsync();
-            
+
             _logger.LogInformation("Successfully reconnected to PLC with new configuration");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to reconnect to PLC");
             throw;
+        }
+    }
+
+    public async Task DisconnectPlcAsync()
+    {
+        _logger.LogInformation("Disconnecting from PLC - stopping all tag reading...");
+
+        try
+        {
+            // FIRST: Signal all NativeTag wait loops to abort immediately
+            NativeTag.AbortAllOperations();
+            _logger.LogInformation("Signalled all tag operations to abort");
+
+            // Cancel any ongoing connection attempt
+            if (_connectionCts != null)
+            {
+                _logger.LogInformation("Cancelling ongoing PLC connection attempt...");
+                _connectionCts.Cancel();
+                _connectionCts.Dispose();
+                _connectionCts = null;
+            }
+
+            // Stop reconnection timer if running
+            StopReconnectionTimer();
+
+            // Set states to indicate disconnection
+            _loading = false;
+            _disableTesting = true;
+            SetPlcConnectionStatus(false);
+
+            // Reset TagReaderService to stop all PLC communication and dispose connections
+            await _tagReader.ResetForReconnectionAsync(isConfigurationChange: true);
+
+            // Clear the tags list so no reconnection attempts happen
+            _tags.Clear();
+
+            // Notify UI
+            NotifyState?.Invoke();
+
+            _logger.LogInformation("Successfully disconnected from PLC - ready for configuration change");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during PLC disconnect");
+            // Still mark as disconnected even on error
+            _disableTesting = true;
+            SetPlcConnectionStatus(false);
+            NotifyState?.Invoke();
         }
     }
     
@@ -397,9 +446,18 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
     private async Task<bool> InitializeTagReading()
     {
         _logger.LogInformation("InitializeTagReading starting with {TagCount} tags, {IoCount} IOs", _tags.Count, TagList.Count);
-        
+
+        // Reset the global abort flag before starting new operations
+        NativeTag.ResetAbort();
+
+        // Create new cancellation token for this connection attempt
+        _connectionCts?.Cancel();
+        _connectionCts?.Dispose();
+        _connectionCts = new CancellationTokenSource();
+        var cancellationToken = _connectionCts.Token;
+
         // Pass the actual TagList that the UI is bound to
-        var success = await _tagReader.InitializeReadingAsync(_tags, TagList);
+        var success = await _tagReader.InitializeReadingAsync(_tags, TagList, skipErrorDetection: false, cancellationToken: cancellationToken);
         _logger.LogInformation("TagReader initialization result: {Success}", success);
         
         if (success)
@@ -439,9 +497,18 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
     private async Task<bool> InitializeTagReadingDuringSubsystemSwitch()
     {
         _logger.LogInformation("InitializeTagReadingDuringSubsystemSwitch starting with {TagCount} tags, {IoCount} IOs", _tags.Count, TagList.Count);
-        
+
+        // Reset the global abort flag before starting new operations
+        NativeTag.ResetAbort();
+
+        // Create new cancellation token for this connection attempt
+        _connectionCts?.Cancel();
+        _connectionCts?.Dispose();
+        _connectionCts = new CancellationTokenSource();
+        var cancellationToken = _connectionCts.Token;
+
         // Skip error detection during subsystem switch since cloud sync will reload correct tag definitions
-        var success = await _tagReader.InitializeReadingAsync(_tags, TagList, skipErrorDetection: true);
+        var success = await _tagReader.InitializeReadingAsync(_tags, TagList, skipErrorDetection: true, cancellationToken: cancellationToken);
         _logger.LogInformation("TagReader initialization result: {Success}", success);
         
         if (success)

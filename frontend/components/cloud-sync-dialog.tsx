@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, XCircle, Loader2, Cloud, Upload } from "lucide-react"
 import { useState } from "react"
+import { API_ENDPOINTS } from "@/lib/api-config"
 
 interface CloudSyncDialogProps {
   open: boolean
@@ -30,7 +31,7 @@ export function CloudSyncDialog({
       
       console.log('🔄 Uploading local test data to cloud...')
       
-      const response = await fetch('http://localhost:5000/api/cloud/sync', {
+      const response = await fetch(API_ENDPOINTS.cloudSync, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })

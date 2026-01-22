@@ -12,6 +12,7 @@ import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
 import { Search, History, X, Play, Square, AlertTriangle, CheckCircle, HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { API_ENDPOINTS } from "@/lib/api-config"
 
 type IoItem = {
   id: number
@@ -47,6 +48,7 @@ interface EnhancedIoDataGridProps {
   onClearResult?: (io: IoItem) => void
   onRowClick?: (io: IoItem) => void
   onShowFireOutputDialog?: (io: IoItem) => void
+  onCommentChange?: (io: IoItem, comment: string) => void
 }
 
 // Define column widths - these will be applied consistently to both header and body
@@ -64,9 +66,9 @@ const COLUMN_WIDTHS = {
   output: 80
 }
 
-export function EnhancedIoDataGrid({ 
-  ios, 
-  projectId, 
+export function EnhancedIoDataGrid({
+  ios,
+  projectId,
   isTesting,
   currentTestIo,
   onFilteredDataChange,
@@ -75,12 +77,15 @@ export function EnhancedIoDataGrid({
   onMarkFailed,
   onClearResult,
   onRowClick,
-  onShowFireOutputDialog
+  onShowFireOutputDialog,
+  onCommentChange
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
   const [selectedIo, setSelectedIo] = useState<IoItem | null>(null)
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
+  const [editingCommentId, setEditingCommentId] = useState<number | null>(null)
+  const [editingCommentValue, setEditingCommentValue] = useState("")
   const [historyData, setHistoryData] = useState<TestHistory[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [showStateColumn, setShowStateColumn] = useState(true)
@@ -95,7 +100,7 @@ export function EnhancedIoDataGrid({
     setShowHistoryDialog(true)
     
     try {
-      const response = await fetch(`http://localhost:5000/api/ios/${io.id}/history`)
+      const response = await fetch(API_ENDPOINTS.ioHistory(io.id))
       if (response.ok) {
         const data = await response.json()
         setHistoryData(data)
@@ -199,7 +204,7 @@ export function EnhancedIoDataGrid({
     // If IO doesn't have failureMode, fetch it from history
     if (!io.failureMode && io.id) {
       try {
-        const response = await fetch(`http://localhost:5000/api/ios/${io.id}/history`)
+        const response = await fetch(API_ENDPOINTS.ioHistory(io.id))
         if (response.ok) {
           const history = await response.json()
           // Find the most recent failed entry with a failureMode
@@ -434,13 +439,47 @@ export function EnhancedIoDataGrid({
                       <div className="break-words">{formatTimestamp(io.timestamp) || 'N/A'}</div>
                     </div>
                   )}
-                   <div 
+                   <div
                      className="px-3 py-3 text-xs sm:text-sm flex-shrink-0 overflow-hidden flex items-center"
                      style={{ width: `${COLUMN_WIDTHS.comments}px` }}
+                     onClick={(e) => e.stopPropagation()}
                    >
-                     <div className="truncate" title={io.comments || ''}>
-                       {io.comments || '-'}
-                     </div>
+                     {editingCommentId === io.id ? (
+                       <input
+                         type="text"
+                         className="w-full px-2 py-1 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                         value={editingCommentValue}
+                         onChange={(e) => setEditingCommentValue(e.target.value)}
+                         onBlur={() => {
+                           if (editingCommentValue !== (io.comments || '')) {
+                             onCommentChange?.(io, editingCommentValue)
+                           }
+                           setEditingCommentId(null)
+                         }}
+                         onKeyDown={(e) => {
+                           if (e.key === 'Enter') {
+                             if (editingCommentValue !== (io.comments || '')) {
+                               onCommentChange?.(io, editingCommentValue)
+                             }
+                             setEditingCommentId(null)
+                           } else if (e.key === 'Escape') {
+                             setEditingCommentId(null)
+                           }
+                         }}
+                         autoFocus
+                       />
+                     ) : (
+                       <div
+                         className="truncate cursor-text hover:bg-muted/50 px-1 py-0.5 rounded w-full min-h-[24px]"
+                         title={io.comments ? `${io.comments} (click to edit)` : 'Click to add comment'}
+                         onClick={() => {
+                           setEditingCommentId(io.id)
+                           setEditingCommentValue(io.comments || '')
+                         }}
+                       >
+                         {io.comments || <span className="text-muted-foreground italic">Add note...</span>}
+                       </div>
+                     )}
                    </div>
                   {/* History Column */}
                   <div

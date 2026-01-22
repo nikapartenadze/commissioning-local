@@ -28,6 +28,9 @@ public class DatabaseInitializationHostedService : IHostedService
             // This will create the database if it doesn't exist
             await context.Database.EnsureCreatedAsync(cancellationToken);
             
+            // Initialize database with SQL-specific configurations and migrations
+            context.InitializeDatabase();
+            
             _logger.LogInformation("Database initialized successfully");
             
             // Log the database location
