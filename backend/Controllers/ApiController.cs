@@ -17,6 +17,7 @@ public class ApiController : ControllerBase
     private readonly ITestHistoryRepository _testHistoryRepository;
     private readonly ICloudSyncService _cloudSyncService;
     private readonly ISignalRService _signalRService;
+    private readonly IIoTestService _ioTestService;
     private readonly ILogger<ApiController> _logger;
     private static bool _isTesting = false;
 
@@ -27,6 +28,7 @@ public class ApiController : ControllerBase
         ITestHistoryRepository testHistoryRepository,
         ICloudSyncService cloudSyncService,
         ISignalRService signalRService,
+        IIoTestService ioTestService,
         ILogger<ApiController> logger)
     {
         _plcCommunication = plcCommunication;
@@ -35,6 +37,7 @@ public class ApiController : ControllerBase
         _testHistoryRepository = testHistoryRepository;
         _cloudSyncService = cloudSyncService;
         _signalRService = signalRService;
+        _ioTestService = ioTestService;
         _logger = logger;
     }
 
@@ -439,11 +442,27 @@ public class ApiController : ControllerBase
                 return NotFound($"IO with ID {id} not found");
             }
 
-            // Update the comment
-            io.Comments = request.Comments;
-            await _ioRepository.UpdateAsync(io);
+            // Get current state from PLC communication service
+            var plcIo = _plcCommunication.TagList?.FirstOrDefault(t => t.Id == io.Id);
+            if (plcIo != null)
+            {
+                io.State = plcIo.State;
+            }
 
-            _logger.LogInformation("Comment updated for IO {Id}: {Comments}", id, request.Comments);
+            // Use IoTestService to update comment - this handles:
+            // 1. Local database update
+            // 2. Test history recording
+            // 3. Cloud sync to PostgreSQL
+            var result = await _ioTestService.UpdateCommentAsync(io, request.Comments ?? "");
+
+            if (!result.Success)
+            {
+                _logger.LogWarning("Failed to update comment for IO {Id}: {Error}", id, result.ErrorMessage);
+                return BadRequest(new { success = false, error = result.ErrorMessage });
+            }
+
+            _logger.LogInformation("Comment updated for IO {Id}: {Comments} (changes made: {ChangesMade})",
+                id, request.Comments, result.ChangesWereMade);
 
             // Broadcast comment update to all connected clients
             await _signalRService.BroadcastCommentUpdate(id, request.Comments);
@@ -451,9 +470,10 @@ public class ApiController : ControllerBase
             return Ok(new
             {
                 success = true,
-                message = "Comment updated",
+                message = result.ChangesWereMade ? "Comment updated and synced to cloud" : "No changes needed",
                 id = io.Id,
-                comments = io.Comments
+                comments = request.Comments,
+                synced = result.ChangesWereMade
             });
         }
         catch (Exception ex)
