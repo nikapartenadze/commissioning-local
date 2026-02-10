@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using IO_Checkout_Tool.Services.Interfaces;
+using IO_Checkout_Tool.Models;
 
 namespace IO_Checkout_Tool.Controllers;
 
@@ -10,40 +12,48 @@ public class NetworkController : ControllerBase
     private readonly IPlcCommunicationService _plcCommunication;
     private readonly ICloudSyncService _cloudSyncService;
     private readonly IConfigurationService _configuration;
+    private readonly IDbContextFactory<TagsContext> _contextFactory;
     private readonly ILogger<NetworkController> _logger;
 
     public NetworkController(
         IPlcCommunicationService plcCommunication,
         ICloudSyncService cloudSyncService,
         IConfigurationService configuration,
+        IDbContextFactory<TagsContext> contextFactory,
         ILogger<NetworkController> logger)
     {
         _plcCommunication = plcCommunication;
         _cloudSyncService = cloudSyncService;
         _configuration = configuration;
+        _contextFactory = contextFactory;
         _logger = logger;
     }
 
     /// <summary>
-    /// Get the network chain status for diagnostics breadcrumbs
+    /// Get the network chain status for diagnostics breadcrumbs.
     /// Shows status of: Cloud -> Backend -> PLC -> Module -> IO Point
+    /// When tagName is omitted, returns aggregate module health.
     /// </summary>
     [HttpGet("chain-status")]
-    public ActionResult<object> GetChainStatus([FromQuery] string? tagName)
+    public async Task<ActionResult<object>> GetChainStatus([FromQuery] string? tagName)
     {
         try
         {
-            // Parse tag name to extract module/rack info
-            // Tag format example: EPZ_PS2_FIO1:I.Pt00.Data
             var moduleName = "Unknown";
             var ioPointName = "Unknown";
             var tagConnected = false;
             string? tagStatusCode = null;
             string? tagMessage = null;
+            string? deviceType = null;
+            string? ipAddress = null;
+            string? parentDevice = null;
+            int totalTags = 0;
+            int respondingTags = 0;
+            int errorCount = 0;
 
             if (!string.IsNullOrEmpty(tagName))
             {
-                // Extract module name (everything before the colon)
+                // Specific tag mode
                 var colonIndex = tagName.IndexOf(':');
                 if (colonIndex > 0)
                 {
@@ -56,22 +66,42 @@ public class NetworkController : ControllerBase
                     ioPointName = tagName;
                 }
 
-                // Check if this specific tag is working
                 var tagInfo = GetTagStatus(tagName);
                 tagConnected = tagInfo.connected;
                 tagStatusCode = tagInfo.statusCode;
                 tagMessage = tagInfo.message;
+
+                // Enrich with database device info
+                var deviceInfo = await GetDeviceInfoAsync(moduleName);
+                if (deviceInfo != null)
+                {
+                    deviceType = deviceInfo.DeviceType;
+                    ipAddress = deviceInfo.IpAddress;
+                    if (deviceInfo.ParentDeviceId.HasValue)
+                    {
+                        parentDevice = await GetDeviceNameByIdAsync(deviceInfo.ParentDeviceId.Value);
+                    }
+                }
+
+                // Module-level stats
+                var moduleStats = GetModuleStats(moduleName);
+                totalTags = moduleStats.total;
+                respondingTags = moduleStats.responding;
+                errorCount = moduleStats.errors;
             }
             else
             {
-                // No specific tag, show general status
+                // Aggregate mode - show overall module health
                 moduleName = "All Modules";
                 ioPointName = "All Points";
                 tagConnected = _plcCommunication.IsPlcConnected;
+
+                var aggregateStats = GetAggregateModuleStats();
+                totalTags = aggregateStats.totalTags;
+                respondingTags = aggregateStats.respondingTags;
+                errorCount = aggregateStats.errorTags;
             }
 
-            // Get module-level error count
-            var moduleErrorCount = GetModuleErrorCount(moduleName);
             var moduleConnected = _plcCommunication.IsPlcConnected;
 
             return Ok(new
@@ -85,7 +115,7 @@ public class NetworkController : ControllerBase
                 },
                 backend = new
                 {
-                    connected = true, // Always true if we're responding
+                    connected = true,
                     message = "Local server running"
                 },
                 plc = new
@@ -100,9 +130,14 @@ public class NetworkController : ControllerBase
                 module = new
                 {
                     name = moduleName,
+                    deviceType,
+                    ipAddress,
                     connected = moduleConnected,
-                    errorCount = moduleErrorCount,
-                    message = GetModuleStatusMessage(moduleName, moduleConnected, moduleErrorCount)
+                    totalTags,
+                    respondingTags,
+                    errorCount,
+                    parentDevice,
+                    message = GetModuleStatusMessage(moduleName, moduleConnected, errorCount)
                 },
                 ioPoint = new
                 {
@@ -121,123 +156,42 @@ public class NetworkController : ControllerBase
     }
 
     /// <summary>
-    /// Get status for a specific tag
-    /// </summary>
-    private (bool connected, string? statusCode, string? message) GetTagStatus(string tagName)
-    {
-        try
-        {
-            // Check if tag exists in the tag list
-            var tagList = _plcCommunication.TagList;
-            var io = tagList?.FirstOrDefault(t =>
-                t.Name?.Equals(tagName, StringComparison.OrdinalIgnoreCase) == true);
-
-            if (io == null)
-            {
-                return (false, "NOT_FOUND", $"Tag '{tagName}' not found in configuration");
-            }
-
-            // Check if PLC is connected
-            if (!_plcCommunication.IsPlcConnected)
-            {
-                return (false, "PLC_DISCONNECTED", "PLC connection lost");
-            }
-
-            // Tag exists and PLC is connected - check the state
-            var state = io.State;
-            if (state == null)
-            {
-                return (false, "NO_RESPONSE", "No response from tag - may be initializing");
-            }
-
-            // If we have a state value, the tag is working
-            return (true, null, $"Current state: {state}");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error getting tag status for {TagName}", tagName);
-            return (false, "ERROR", ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// Get error count for tags in a specific module
-    /// </summary>
-    private int GetModuleErrorCount(string moduleName)
-    {
-        try
-        {
-            if (moduleName == "All Modules" || moduleName == "Unknown")
-            {
-                return 0;
-            }
-
-            var tagList = _plcCommunication.TagList;
-            if (tagList == null) return 0;
-
-            // Count tags in this module that have no state (errors)
-            var modulePrefix = moduleName + ":";
-            var moduleTags = tagList.Where(t =>
-                t.Name?.StartsWith(modulePrefix, StringComparison.OrdinalIgnoreCase) == true);
-
-            var errorCount = moduleTags.Count(t => t.State == null);
-            return errorCount;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    /// <summary>
-    /// Get status message for a module
-    /// </summary>
-    private string GetModuleStatusMessage(string moduleName, bool connected, int errorCount)
-    {
-        if (!connected)
-        {
-            return $"Module {moduleName} - PLC not connected";
-        }
-
-        if (errorCount == 0)
-        {
-            return $"Module {moduleName} - All tags responding";
-        }
-
-        if (errorCount == 1)
-        {
-            return $"Module {moduleName} - 1 tag not responding";
-        }
-
-        return $"Module {moduleName} - {errorCount} tags not responding";
-    }
-
-    /// <summary>
-    /// Get detailed status for all modules
+    /// Get detailed status for all modules, enriched with database device info
     /// </summary>
     [HttpGet("modules")]
-    public ActionResult<object> GetModulesStatus()
+    public async Task<ActionResult<object>> GetModulesStatus()
     {
         try
         {
             var tagList = _plcCommunication.TagList;
             if (tagList == null || !tagList.Any())
             {
-                return Ok(new { modules = Array.Empty<object>() });
+                return Ok(new { modules = Array.Empty<object>(), plcConnected = false, totalModules = 0 });
             }
 
-            // Group tags by module (prefix before colon)
+            // Load device info from DB
+            using var context = await _contextFactory.CreateDbContextAsync();
+            var devices = await context.NetworkDevices
+                .ToDictionaryAsync(d => d.DeviceName, StringComparer.OrdinalIgnoreCase);
+
             var moduleGroups = tagList
                 .Where(t => !string.IsNullOrEmpty(t.Name) && t.Name.Contains(':'))
                 .GroupBy(t => t.Name!.Split(':')[0])
-                .Select(g => new
+                .Select(g =>
                 {
-                    name = g.Key,
-                    totalTags = g.Count(),
-                    respondingTags = g.Count(t => t.State != null),
-                    errorTags = g.Count(t => t.State == null),
-                    status = g.All(t => t.State != null) ? "ok" :
-                             g.Any(t => t.State != null) ? "warning" : "error"
+                    devices.TryGetValue(g.Key, out var device);
+                    return new
+                    {
+                        name = g.Key,
+                        deviceType = device?.DeviceType,
+                        ipAddress = device?.IpAddress,
+                        parentDeviceId = device?.ParentDeviceId,
+                        totalTags = g.Count(),
+                        respondingTags = g.Count(t => t.State != null),
+                        errorTags = g.Count(t => t.State == null),
+                        status = g.All(t => t.State != null) ? "ok" :
+                                 g.Any(t => t.State != null) ? "warning" : "error"
+                    };
                 })
                 .OrderBy(m => m.name)
                 .ToList();
@@ -254,5 +208,167 @@ public class NetworkController : ControllerBase
             _logger.LogError(ex, "Error getting modules status");
             return StatusCode(500, "Failed to get modules status");
         }
+    }
+
+    /// <summary>
+    /// Get full list of discovered network devices with hierarchy
+    /// </summary>
+    [HttpGet("devices")]
+    public async Task<ActionResult<object>> GetDevices()
+    {
+        try
+        {
+            using var context = await _contextFactory.CreateDbContextAsync();
+            var devices = await context.NetworkDevices
+                .OrderBy(d => d.DeviceName)
+                .Select(d => new
+                {
+                    d.Id,
+                    d.SubsystemId,
+                    d.DeviceName,
+                    d.DeviceType,
+                    d.IpAddress,
+                    d.ParentDeviceId,
+                    d.TagCount,
+                    d.Description,
+                    d.CreatedAt,
+                    d.UpdatedAt
+                })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                totalDevices = devices.Count,
+                devices
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting network devices");
+            return StatusCode(500, "Failed to get network devices");
+        }
+    }
+
+    private (bool connected, string? statusCode, string? message) GetTagStatus(string tagName)
+    {
+        try
+        {
+            var tagList = _plcCommunication.TagList;
+            var io = tagList?.FirstOrDefault(t =>
+                t.Name?.Equals(tagName, StringComparison.OrdinalIgnoreCase) == true);
+
+            if (io == null)
+            {
+                return (false, "NOT_FOUND", $"Tag '{tagName}' not found in configuration");
+            }
+
+            if (!_plcCommunication.IsPlcConnected)
+            {
+                return (false, "PLC_DISCONNECTED", "PLC connection lost");
+            }
+
+            var state = io.State;
+            if (state == null)
+            {
+                return (false, "NO_RESPONSE", "No response from tag - may be initializing");
+            }
+
+            return (true, null, $"Current state: {state}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting tag status for {TagName}", tagName);
+            return (false, "ERROR", ex.Message);
+        }
+    }
+
+    private (int total, int responding, int errors) GetModuleStats(string moduleName)
+    {
+        try
+        {
+            if (moduleName == "All Modules" || moduleName == "Unknown")
+                return (0, 0, 0);
+
+            var tagList = _plcCommunication.TagList;
+            if (tagList == null) return (0, 0, 0);
+
+            var modulePrefix = moduleName + ":";
+            var moduleTags = tagList.Where(t =>
+                t.Name?.StartsWith(modulePrefix, StringComparison.OrdinalIgnoreCase) == true).ToList();
+
+            var total = moduleTags.Count;
+            var responding = moduleTags.Count(t => t.State != null);
+            var errors = total - responding;
+
+            return (total, responding, errors);
+        }
+        catch
+        {
+            return (0, 0, 0);
+        }
+    }
+
+    private (int totalModules, int totalTags, int respondingTags, int errorTags) GetAggregateModuleStats()
+    {
+        try
+        {
+            var tagList = _plcCommunication.TagList;
+            if (tagList == null || !tagList.Any())
+                return (0, 0, 0, 0);
+
+            var modulesWithTags = tagList
+                .Where(t => !string.IsNullOrEmpty(t.Name) && t.Name.Contains(':'))
+                .GroupBy(t => t.Name!.Split(':')[0]);
+
+            var totalModules = modulesWithTags.Count();
+            var totalTags = tagList.Count;
+            var respondingTags = tagList.Count(t => t.State != null);
+            var errorTags = totalTags - respondingTags;
+
+            return (totalModules, totalTags, respondingTags, errorTags);
+        }
+        catch
+        {
+            return (0, 0, 0, 0);
+        }
+    }
+
+    private async Task<Shared.Library.Models.Entities.NetworkDevice?> GetDeviceInfoAsync(string deviceName)
+    {
+        try
+        {
+            using var context = await _contextFactory.CreateDbContextAsync();
+            return await context.NetworkDevices
+                .FirstOrDefaultAsync(d => d.DeviceName == deviceName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<string?> GetDeviceNameByIdAsync(int deviceId)
+    {
+        try
+        {
+            using var context = await _contextFactory.CreateDbContextAsync();
+            var device = await context.NetworkDevices.FindAsync(deviceId);
+            return device?.DeviceName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private string GetModuleStatusMessage(string moduleName, bool connected, int errorCount)
+    {
+        if (!connected)
+            return $"Module {moduleName} - PLC not connected";
+        if (errorCount == 0)
+            return $"Module {moduleName} - All tags responding";
+        if (errorCount == 1)
+            return $"Module {moduleName} - 1 tag not responding";
+        return $"Module {moduleName} - {errorCount} tags not responding";
     }
 }

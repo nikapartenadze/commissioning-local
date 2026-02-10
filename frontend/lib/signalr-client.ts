@@ -21,6 +21,12 @@ export interface CommentUpdate {
   comments: string
 }
 
+export interface NetworkStatusUpdate {
+  moduleName: string
+  status: string
+  errorCount: number
+}
+
 export interface SignalRConnection {
   connection: HubConnection | null
   isConnected: boolean
@@ -36,6 +42,8 @@ export interface SignalRConnection {
   offTestingStateChange: (callback: (isTesting: boolean) => void) => void
   onCommentUpdate: (callback: (update: CommentUpdate) => void) => void
   offCommentUpdate: (callback: (update: CommentUpdate) => void) => void
+  onNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
+  offNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
 }
 
 export function useSignalR(hubUrl?: string): SignalRConnection {
@@ -50,6 +58,7 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
   const configCallbacksRef = useRef<Set<(event: ConfigurationEvent) => void>>(new Set())
   const testingCallbacksRef = useRef<Set<(isTesting: boolean) => void>>(new Set())
   const commentCallbacksRef = useRef<Set<(update: CommentUpdate) => void>>(new Set())
+  const networkStatusCallbacksRef = useRef<Set<(update: NetworkStatusUpdate) => void>>(new Set())
 
   const connect = async () => {
     if (connectionRef.current?.state === 'Connected') {
@@ -199,6 +208,23 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
         })
       })
 
+      // Register the NetworkStatusChanged handler (module status changes)
+      newConnection.on('NetworkStatusChanged', (moduleName: string, status: string, errorCount: number) => {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('SignalR NetworkStatusChanged received:', moduleName, status, errorCount)
+        }
+
+        const update: NetworkStatusUpdate = { moduleName, status, errorCount }
+
+        networkStatusCallbacksRef.current.forEach(callback => {
+          try {
+            callback(update)
+          } catch (error) {
+            console.error('Error in network status callback:', error)
+          }
+        })
+      })
+
       // Connection event handlers
       newConnection.onclose((error) => {
         if (process.env.NODE_ENV === 'development') {
@@ -284,6 +310,14 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     commentCallbacksRef.current.delete(callback)
   }
 
+  const onNetworkStatusChange = (callback: (update: NetworkStatusUpdate) => void) => {
+    networkStatusCallbacksRef.current.add(callback)
+  }
+
+  const offNetworkStatusChange = (callback: (update: NetworkStatusUpdate) => void) => {
+    networkStatusCallbacksRef.current.delete(callback)
+  }
+
   // Auto-connect on mount
   useEffect(() => {
     connect()
@@ -308,7 +342,9 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     onTestingStateChange,
     offTestingStateChange,
     onCommentUpdate,
-    offCommentUpdate
+    offCommentUpdate,
+    onNetworkStatusChange,
+    offNetworkStatusChange
   }
 }
 

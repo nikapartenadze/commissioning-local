@@ -38,8 +38,8 @@ public class ConfigFileWatcherService : BackgroundService
         _serviceProvider = serviceProvider;
         _signalRService = signalRService;
 
-        // Use current directory for config.json (same as ConfigurationService)
-        _configFilePath = Path.Combine(Environment.CurrentDirectory, "config.json");
+        // Use DATA_DIR-aware path for config.json (same as ConfigurationService)
+        _configFilePath = IO_Checkout_Tool.Constants.DatabaseConstants.ConfigFilePath;
     }
 
     /// <summary>

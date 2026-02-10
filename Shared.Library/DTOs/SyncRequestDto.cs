@@ -29,6 +29,24 @@ public class IoUpdateDto
 public class IoSyncBatchDto
 {
     public List<IoUpdateDto> Updates { get; set; } = new();
+    public List<TestHistoryDto>? TestHistories { get; set; }
+}
+
+public class TestHistoryDto
+{
+    public int IoId { get; set; }
+    public string? Result { get; set; }
+    public string? Timestamp { get; set; }
+    public string? Comments { get; set; }
+    public string? TestedBy { get; set; }
+    public string? State { get; set; }
+    public string? FailureMode { get; set; }
+}
+
+public class TestHistorySyncBatchDto
+{
+    public int SubsystemId { get; set; }
+    public List<TestHistoryDto> Histories { get; set; } = new();
 }
 
 #region Admin Management DTOs

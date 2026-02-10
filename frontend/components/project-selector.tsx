@@ -66,7 +66,7 @@ export function ProjectSelector({
   const getSubsystemStatusColor = (status: Subsystem['status']) => {
     switch (status) {
       case 'active': return 'bg-green-500'
-      case 'testing': return 'bg-blue-500'
+      case 'testing': return 'bg-amber-500'
       case 'inactive': return 'bg-gray-400'
       default: return 'bg-gray-400'
     }

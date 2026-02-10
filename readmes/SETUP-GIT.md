@@ -91,7 +91,7 @@ logs/
 .env.production
 
 # Portable Distribution (optional - uncomment if you don't want to track it)
-# IO-Checkout-Tool-Portable/
+# portable/
 "@ | Out-File -FilePath .gitignore -Encoding utf8
 ```
 

@@ -28,8 +28,8 @@ public static class ServiceCollectionExtensions
 
     public static IServiceCollection AddDatabaseContext(this IServiceCollection services, IConfiguration configuration)
     {
-        var connectionString = configuration.GetConnectionString("SQLite") 
-            ?? DatabaseConstants.SQLITE_CONNECTION_STRING;
+        var connectionString = configuration.GetConnectionString("SQLite")
+            ?? DatabaseConstants.SqliteConnectionString;
         
         services.AddDbContextFactory<TagsContext>(opt => 
             opt.UseSqlite(connectionString, options =>
@@ -90,6 +90,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICloudSyncService, ResilientCloudSyncService>();
         services.AddSingleton<ResilientCloudSyncService>();
         services.AddScoped<IAuthService, AuthService>();
+        services.AddScoped<INetworkDiscoveryService, NetworkDiscoveryService>();
         return services;
     }
 

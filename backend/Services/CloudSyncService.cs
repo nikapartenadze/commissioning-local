@@ -70,6 +70,12 @@ public class CloudSyncService : ICloudSyncService
         }
     }
 
+    public Task<bool> SyncTestHistoriesAsync(int subsystemId, List<TestHistoryDto> histories)
+    {
+        _logger.LogDebug("SyncTestHistoriesAsync not implemented in CloudSyncService - use ResilientCloudSyncService");
+        return Task.FromResult(false);
+    }
+
     public async Task<bool> TriggerFreshSyncAsync()
     {
         _logger.LogInformation("TriggerFreshSyncAsync not fully implemented in CloudSyncService - use ResilientCloudSyncService for full functionality");

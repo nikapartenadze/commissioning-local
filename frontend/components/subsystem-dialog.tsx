@@ -34,14 +34,14 @@ export function SubsystemDialog({ open, onOpenChange, projectName, subsystems }:
           <DialogTitle>Subsystems for {projectName}</DialogTitle>
         </DialogHeader>
 
-        <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900 rounded-lg p-4 mb-4">
+        <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-lg p-4 mb-4">
           <div className="flex gap-2">
-            <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+            <Info className="h-5 w-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
             <div>
-              <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-1">
+              <h4 className="font-semibold text-amber-900 dark:text-amber-100 mb-1">
                 Configuration Information
               </h4>
-              <p className="text-sm text-blue-800 dark:text-blue-200">
+              <p className="text-sm text-amber-800 dark:text-amber-200">
                 Use these subsystem IDs when configuring local IO Checkout Tool applications.
               </p>
             </div>

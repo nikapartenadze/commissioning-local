@@ -18,7 +18,7 @@ echo ========================================
 echo   Build Complete!
 echo ========================================
 echo.
-echo Your portable distribution is in: IO-Checkout-Tool-Portable
+echo Your portable distribution is in: portable
 echo.
 pause
 

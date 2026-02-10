@@ -120,8 +120,8 @@ export function PassFailDialog({
 
           {/* Fire Output Button for Outputs */}
           {io.name?.includes(':O.') && (
-            <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg">
-              <div className="text-sm text-blue-600 dark:text-blue-400 mb-2">
+            <div className="p-3 bg-amber-50 dark:bg-amber-950/20 rounded-lg">
+              <div className="text-sm text-amber-600 dark:text-amber-400 mb-2">
                 <AlertTriangle className="w-4 h-4 inline mr-1" />
                 This is an output. Make sure to fire the output before testing.
               </div>

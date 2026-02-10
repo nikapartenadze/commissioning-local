@@ -22,6 +22,8 @@
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="9.0.5" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.5" />
     <PackageReference Include="MudBlazor" Version="8.7.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
 
     <PackageReference Include="System.Linq.Async" Version="6.0.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="8.1.2" />

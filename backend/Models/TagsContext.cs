@@ -7,6 +7,8 @@ public class TagsContext : DbContext
 {
     private static bool _versionMigrationCompleted = false;
     private static bool _diagnosticMigrationCompleted = false;
+    private static bool _networkMigrationCompleted = false;
+    private static bool _cloudSyncMigrationCompleted = false;
     private static readonly object _migrationLock = new object();
     
     public TagsContext(DbContextOptions<TagsContext> options) : base(options)
@@ -214,6 +216,60 @@ public class TagsContext : DbContext
             );
         ");
         
+        // Create NetworkDevices table
+        this.Database.ExecuteSqlRaw(@"
+            CREATE TABLE IF NOT EXISTS NetworkDevices (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                SubsystemId INTEGER NOT NULL,
+                DeviceName TEXT NOT NULL,
+                DeviceType TEXT,
+                IpAddress TEXT,
+                ParentDeviceId INTEGER,
+                TagCount INTEGER NOT NULL DEFAULT 0,
+                Description TEXT,
+                CreatedAt TEXT NOT NULL,
+                UpdatedAt TEXT,
+                FOREIGN KEY (ParentDeviceId) REFERENCES NetworkDevices(Id)
+            );
+        ");
+        this.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS idx_networkdevices_subsystem_name ON NetworkDevices(SubsystemId, DeviceName);");
+
+        // Add NetworkDeviceName column to Ios (only run once per app lifetime)
+        if (!_networkMigrationCompleted)
+        {
+            lock (_migrationLock)
+            {
+                if (!_networkMigrationCompleted)
+                {
+                    try
+                    {
+                        this.Database.ExecuteSqlRaw("ALTER TABLE Ios ADD COLUMN NetworkDeviceName TEXT;");
+                    }
+                    catch { /* Column already exists */ }
+
+                    _networkMigrationCompleted = true;
+                }
+            }
+        }
+
+        // Add CloudSyncedAt column to Ios (only run once per app lifetime)
+        if (!_cloudSyncMigrationCompleted)
+        {
+            lock (_migrationLock)
+            {
+                if (!_cloudSyncMigrationCompleted)
+                {
+                    try
+                    {
+                        this.Database.ExecuteSqlRaw("ALTER TABLE Ios ADD COLUMN CloudSyncedAt TEXT;");
+                    }
+                    catch { /* Column already exists */ }
+
+                    _cloudSyncMigrationCompleted = true;
+                }
+            }
+        }
+
         // Ensure Users table exists
         try
         {
@@ -265,6 +321,7 @@ public class TagsContext : DbContext
     public DbSet<SubsystemConfiguration> SubsystemConfigurations { get; set; }
     public DbSet<User> Users { get; set; }
     public DbSet<TagTypeDiagnostic> TagTypeDiagnostics { get; set; }
+    public DbSet<NetworkDevice> NetworkDevices { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -280,6 +337,24 @@ public class TagsContext : DbContext
             entity.Property(e => e.Comments).HasMaxLength(1000);
             entity.Property(e => e.Version).IsRequired().HasDefaultValue(0L);
             entity.Property(e => e.TagType).HasMaxLength(100);
+            entity.Property(e => e.NetworkDeviceName).HasMaxLength(100);
+        });
+
+        modelBuilder.Entity<NetworkDevice>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.DeviceName).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.DeviceType).HasMaxLength(50);
+            entity.Property(e => e.IpAddress).HasMaxLength(50);
+            entity.Property(e => e.Description).HasMaxLength(500);
+            entity.Property(e => e.TagCount).HasDefaultValue(0);
+            entity.Property(e => e.CreatedAt).IsRequired();
+            entity.HasIndex(e => new { e.SubsystemId, e.DeviceName }).IsUnique();
+            entity.HasOne(e => e.ParentDevice)
+                  .WithMany()
+                  .HasForeignKey(e => e.ParentDeviceId)
+                  .IsRequired(false);
+            entity.Ignore(e => e.ParentDevice);
         });
 
         modelBuilder.Entity<TestHistory>(entity =>

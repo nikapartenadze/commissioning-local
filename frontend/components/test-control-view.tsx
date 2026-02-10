@@ -117,7 +117,7 @@ export function TestControlView({
                     "w-full h-12 text-lg font-bold",
                     isFiring 
                       ? "bg-green-600 hover:bg-green-700" 
-                      : "bg-blue-600 hover:bg-blue-700",
+                      : "bg-amber-600 hover:bg-amber-700",
                     !isTesting && "opacity-50 cursor-not-allowed"
                   )}
                   disabled={!isTesting}
