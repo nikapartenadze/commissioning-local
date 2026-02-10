@@ -147,4 +147,17 @@ public class SignalRService : ISignalRService
             _logger.LogError(ex, "SignalR: Error broadcasting CommentUpdate for IO {IoId}", ioId);
         }
     }
+
+    public async Task BroadcastNetworkStatusChanged(string moduleName, string status, int errorCount)
+    {
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("NetworkStatusChanged", moduleName, status, errorCount);
+            _logger.LogDebug("SignalR: Broadcasted NetworkStatusChanged for module {ModuleName} - Status: {Status}, Errors: {ErrorCount}", moduleName, status, errorCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR: Error broadcasting NetworkStatusChanged for module {ModuleName}", moduleName);
+        }
+    }
 } 

@@ -156,9 +156,11 @@ public class WatchdogService : IWatchdogService
     {
         _logger.LogInformation("WatchdogService starting - DisableWatchdog config: {DisableWatchdog}", _configService.DisableWatchdog);
         
-        if (_configService.DisableWatchdog)
+        if (_configService.DisableWatchdog || string.IsNullOrEmpty(_configService.Ip))
         {
-            _logger.LogInformation("Watchdog PLC communication disabled by configuration");
+            _logger.LogInformation(string.IsNullOrEmpty(_configService.Ip)
+                ? "Watchdog skipped — no PLC IP configured yet. Configure via UI."
+                : "Watchdog PLC communication disabled by configuration");
             _watchdogTag = null; // Ensure tag is null when disabled
         }
         else

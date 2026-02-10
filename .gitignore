@@ -2,7 +2,7 @@
 **/[Bb]in/
 **/[Oo]bj/
 **/.vs/
-tmpclaude-*
+**/tmpclaude-*
 
 # User-specific files
 *.rsuser
@@ -76,13 +76,12 @@ artifacts/
 # User-specific configuration files
 config.json
 
-# Next.js (for commissioning-tool-frontend)
-commissioning-tool-frontend/.next/
-commissioning-tool-frontend/out/
-commissioning-tool-frontend/build/
-commissioning-tool-frontend/dist/
-commissioning-tool-frontend/node_modules/
-commissioning-tool-frontend/.env*.local
+# Next.js frontend
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/.env*.local
 
 # Node
 node_modules/
@@ -115,9 +114,12 @@ Desktop.ini
 Shared.Library/bin/
 Shared.Library/obj/
 
-# IO-Checkout-Tool build output (keep source, ignore compiled)
-IO-Checkout-Tool copy/bin/
-IO-Checkout-Tool copy/obj/
+# Portable distribution (binary output, not source)
+portable/
+IO-Checkout-Tool-Portable/
+
+# Windows artifacts
+nul
 
 # Test results
 TestResults/

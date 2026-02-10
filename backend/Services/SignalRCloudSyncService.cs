@@ -190,6 +190,12 @@ public class SignalRCloudSyncService : ICloudSyncService, IAsyncDisposable
         }
     }
 
+    public Task<bool> SyncTestHistoriesAsync(int subsystemId, List<TestHistoryDto> histories)
+    {
+        _logger.LogDebug("SyncTestHistoriesAsync not implemented in SignalRCloudSyncService - use ResilientCloudSyncService");
+        return Task.FromResult(false);
+    }
+
     public async Task<bool> TriggerFreshSyncAsync()
     {
         _logger.LogInformation("TriggerFreshSyncAsync not fully implemented in SignalRCloudSyncService - use ResilientCloudSyncService for full functionality");

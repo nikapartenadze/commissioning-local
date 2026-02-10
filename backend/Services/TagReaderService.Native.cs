@@ -23,7 +23,8 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
     private readonly ILogger<NativeTagReaderService> _logger;
     private readonly IPlcTagFactoryService? _tagFactory;
     private readonly IPlcConnectionService? _connectionService;
-    private readonly List<NativeTag> _tags = new();
+    private readonly List<NativeTag> _tags = new(); // Individual (ungrouped) tags
+    private readonly List<DintGroupTag> _dintGroups = new(); // DINT group tags (optimization)
     private readonly List<string> _notFoundTags = [];
     private readonly List<string> _illegalTags = [];
     private readonly List<string> _unknownTags = [];
@@ -369,9 +370,6 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                     stopwatch.ElapsedMilliseconds, successfulTags.Count, tags.Count);
             }
             
-            // Add successful tags to our internal list
-            _tags.AddRange(successfulTags);
-            
             // Set initial State based on actual tag values after validation
             foreach (var tag in successfulTags)
             {
@@ -385,12 +383,132 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                     _logger.LogWarning("Could not find IO for tag {Name} when setting initial state", tag.Name);
                 }
             }
-            
+
             // Notify general state change
             StateChanged?.Invoke();
-            
-            // Setup event handlers for successfully initialized tags
-            foreach (var tag in successfulTags)
+
+            // ===== DINT GROUP OPTIMIZATION =====
+            // Group validated tags by parent DINT to reduce CIP requests from ~2000 to ~80
+            var allTagNames = successfulTags.Select(t => t.Name).ToList();
+            var groupingAnalysis = TagGroupingService.Analyze(allTagNames, _logger);
+
+            List<NativeTag> ungroupedTags;
+
+            if (groupingAnalysis.Groups.Count > 0 && _tagFactory != null)
+            {
+                _logger.LogInformation(
+                    "DINT optimization: {Original} individual reads → {Optimized} total reads ({DintGroups} DINT groups + {Individual} individual) = {Ratio:F1}x reduction",
+                    groupingAnalysis.TotalOriginalTags,
+                    groupingAnalysis.TotalOptimizedReads,
+                    groupingAnalysis.TotalDintReads,
+                    groupingAnalysis.TotalIndividualReads,
+                    groupingAnalysis.ReductionRatio);
+
+                // Identify which tags are grouped vs ungrouped
+                var groupedTagNames = new HashSet<string>(
+                    groupingAnalysis.Groups.SelectMany(g => g.BitToIoName.Values));
+                var ungroupedTagNames = new HashSet<string>(groupingAnalysis.UngroupedTagNames);
+
+                // Create DintGroupTags for each group
+                var dintGroupInitFailures = 0;
+                foreach (var group in groupingAnalysis.Groups)
+                {
+                    try
+                    {
+                        var dintNativeTag = _tagFactory.CreateDintTag(group.ParentTagPath);
+                        var initStatus = dintNativeTag.Initialize();
+
+                        if (initStatus == LibPlcTag.PLCTAG_STATUS_OK)
+                        {
+                            var dintGroup = new DintGroupTag(group.ParentTagPath, dintNativeTag, group.BitToIoName, _logger);
+                            _dintGroups.Add(dintGroup);
+
+                            // Read initial values from the DINT
+                            var (readStatus, initialValues) = await dintGroup.ReadAllValuesAsync(cancellationToken);
+                            if (readStatus == LibPlcTag.PLCTAG_STATUS_OK)
+                            {
+                                foreach (var (ioName, value) in initialValues)
+                                {
+                                    var io = tagList.FirstOrDefault(t => t.Name == ioName);
+                                    if (io != null)
+                                    {
+                                        io.State = value.ToString().ToUpper();
+                                    }
+                                }
+                            }
+
+                            _logger.LogInformation("DINT group {ParentTag} initialized: {Members} IO points in 1 read",
+                                group.ParentTagPath, group.BitToIoName.Count);
+                        }
+                        else
+                        {
+                            // DINT init failed - fall back to individual reads for this group
+                            _logger.LogWarning("DINT group {ParentTag} failed to initialize ({Status}), falling back to individual reads",
+                                group.ParentTagPath, LibPlcTag.DecodeError(initStatus));
+                            dintNativeTag.Dispose();
+                            dintGroupInitFailures++;
+
+                            // Move these tags back to ungrouped
+                            foreach (var ioName in group.BitToIoName.Values)
+                            {
+                                ungroupedTagNames.Add(ioName);
+                                groupedTagNames.Remove(ioName);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Exception creating DINT group for {ParentTag}", group.ParentTagPath);
+                        dintGroupInitFailures++;
+                        foreach (var ioName in group.BitToIoName.Values)
+                        {
+                            ungroupedTagNames.Add(ioName);
+                            groupedTagNames.Remove(ioName);
+                        }
+                    }
+                }
+
+                if (dintGroupInitFailures > 0)
+                {
+                    _logger.LogWarning("{FailCount} DINT groups failed to initialize, those tags will be read individually", dintGroupInitFailures);
+                }
+
+                // Separate individual tags: keep ungrouped, dispose grouped
+                ungroupedTags = new List<NativeTag>();
+                foreach (var tag in successfulTags)
+                {
+                    if (groupedTagNames.Contains(tag.Name))
+                    {
+                        // This tag is covered by a DINT group - dispose the individual tag
+                        tag.Dispose();
+                    }
+                    else
+                    {
+                        // This tag is ungrouped - keep for individual reading
+                        ungroupedTags.Add(tag);
+                    }
+                }
+
+                _logger.LogInformation("DINT optimization active: {DintGroups} groups ({GroupedCount} tags) + {IndividualCount} individual tags",
+                    _dintGroups.Count,
+                    groupedTagNames.Count,
+                    ungroupedTags.Count);
+            }
+            else
+            {
+                // No grouping possible or no tag factory - use all tags individually
+                ungroupedTags = successfulTags;
+                if (groupingAnalysis.Groups.Count == 0)
+                {
+                    _logger.LogInformation("No tags matched DINT grouping pattern - all {Count} tags will be read individually", successfulTags.Count);
+                }
+            }
+
+            // Add ungrouped tags to internal list
+            _tags.AddRange(ungroupedTags);
+
+            // Setup event handlers for UNGROUPED tags only (DINT groups handle state changes differently)
+            foreach (var tag in ungroupedTags)
             {
                 tag.ValueChanged += (sender, e) =>
                 {
@@ -401,7 +519,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                         {
                             var oldState = io.State;
                             var newState = Convert.ToBoolean(nativeTag.Value).ToString().ToUpper();
-                            
+
                             if (oldState != newState)
                             {
                                 io.State = newState;
@@ -411,24 +529,26 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                     }
                 };
             }
-            
-            _logger.LogInformation("Tag initialization complete with {SuccessCount}/{TotalCount} tags ready", 
-                successCount, tags.Count);
-            
+
+            var totalReadTargets = _dintGroups.Count + ungroupedTags.Count;
+            _logger.LogInformation("Tag initialization complete with {SuccessCount}/{TotalCount} tags ready ({DintGroups} DINT groups + {Individual} individual = {TotalReads} reads per cycle)",
+                successCount, tags.Count, _dintGroups.Count, ungroupedTags.Count, totalReadTargets);
+
             // Start continuous reading if we have any successful tags
-            if (successCount > 0)
+            if (totalReadTargets > 0)
             {
-                _logger.LogInformation("Starting continuous reading for {Count} successful tags", successfulTags.Count);
-                _ = Task.Run(async () => await StartContinuousReadingAsync(successfulTags));
+                _logger.LogInformation("Starting optimized continuous reading: {DintGroups} DINT groups + {Individual} individual tags",
+                    _dintGroups.Count, ungroupedTags.Count);
+                _ = Task.Run(async () => await StartOptimizedContinuousReadingAsync(ungroupedTags, tagList));
             }
             else
             {
                 _logger.LogWarning("No successful tags available for continuous reading");
             }
-            
+
             // Report connection status based on initialization success
             ReportConnectionStatus(successCount > 0);
-            
+
             return successCount > 0;
         }
         catch (Exception ex)
@@ -500,6 +620,230 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         });
         
         _logger.LogInformation("All {BatchCount} continuous reading tasks have been started", batches.Count);
+    }
+
+    /// <summary>
+    /// Optimized continuous reading that uses DINT groups where possible.
+    /// DINT groups: 1 CIP request reads up to 32 boolean points.
+    /// Individual tags: standard per-tag reading (fallback for ungroupable tags).
+    /// </summary>
+    private async Task StartOptimizedContinuousReadingAsync(List<NativeTag> ungroupedTags, List<Io> tagList)
+    {
+        _readingCancellationToken?.Cancel();
+        _readingCancellationToken = new CancellationTokenSource();
+        var token = _readingCancellationToken.Token;
+
+        var tasks = new List<Task>();
+
+        // Task 1: DINT group continuous reading (all groups in one loop for efficiency)
+        if (_dintGroups.Any())
+        {
+            tasks.Add(Task.Run(async () =>
+                await ContinuouslyReadDintGroupsAsync(_dintGroups, tagList, token), token));
+        }
+
+        // Task 2: Individual tag continuous reading (batched, same as before)
+        if (ungroupedTags.Any())
+        {
+            var batchSize = PlcConstants.OptimizedBatchSize;
+            var batches = new List<List<NativeTag>>();
+            for (int i = 0; i < ungroupedTags.Count; i += batchSize)
+            {
+                batches.Add(ungroupedTags.Skip(i).Take(batchSize).ToList());
+            }
+
+            _logger.LogInformation("Individual tags: {BatchCount} batches of ~{BatchSize} tags each", batches.Count, batchSize);
+
+            tasks.AddRange(batches.Select((batch, index) =>
+                ContinuouslyReadBatchOptimized(batch, index, token)));
+        }
+
+        // Start performance monitoring
+        _ = Task.Run(async () => await MonitorPerformanceAsync(token));
+
+        // Run all tasks
+        _ = Task.WhenAll(tasks).ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                _logger.LogError(t.Exception, "Optimized continuous reading tasks failed");
+            else
+                _logger.LogInformation("Optimized continuous reading tasks completed");
+        });
+
+        _logger.LogInformation("Optimized continuous reading started: {DintGroups} DINT groups + {IndividualBatches} individual batches",
+            _dintGroups.Count, ungroupedTags.Any() ? (ungroupedTags.Count + PlcConstants.OptimizedBatchSize - 1) / PlcConstants.OptimizedBatchSize : 0);
+    }
+
+    /// <summary>
+    /// Continuously reads all DINT group tags and dispatches individual bit state changes.
+    /// Each DINT read replaces up to 32 individual boolean reads.
+    /// </summary>
+    private async Task ContinuouslyReadDintGroupsAsync(List<DintGroupTag> groups, List<Io> tagList, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("DINT group reader started: {GroupCount} groups covering {TotalTags} IO points",
+            groups.Count, groups.Sum(g => g.MemberCount));
+
+        var cycleCount = 0;
+        var totalCycleTime = 0L;
+        var stopwatch = new Stopwatch();
+
+        // Build IO lookup for fast access
+        var ioLookup = tagList.ToDictionary(io => io.Name ?? string.Empty, io => io);
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                stopwatch.Restart();
+
+                // Read all DINT groups concurrently
+                var readTasks = groups.Select(async group =>
+                {
+                    try
+                    {
+                        var (status, changes) = await group.ReadAndExtractAsync(cancellationToken);
+                        return (group, status, changes);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        return (group, status: -1, changes: new List<(string ioName, bool value)>());
+                    }
+                });
+
+                var results = await Task.WhenAll(readTasks);
+
+                stopwatch.Stop();
+                var cycleTimeMs = stopwatch.ElapsedMilliseconds;
+                cycleCount++;
+                totalCycleTime += cycleTimeMs;
+
+                // Update global performance metrics
+                lock (_perfLock)
+                {
+                    _totalReadCycles++;
+                    _totalReadTimeMs += cycleTimeMs;
+                }
+
+                // Process results and dispatch state changes
+                var failedCount = 0;
+                var timeoutCount = 0;
+                var totalChanges = 0;
+
+                foreach (var (group, status, changes) in results)
+                {
+                    if (status != LibPlcTag.PLCTAG_STATUS_OK)
+                    {
+                        failedCount++;
+                        if (status == LibPlcTag.PLCTAG_ERR_TIMEOUT)
+                            timeoutCount++;
+                        continue;
+                    }
+
+                    // Dispatch individual bit changes to IO state + SignalR
+                    foreach (var (ioName, value) in changes)
+                    {
+                        if (ioLookup.TryGetValue(ioName, out var io))
+                        {
+                            var newState = value.ToString().ToUpper();
+                            if (io.State != newState)
+                            {
+                                io.State = newState;
+                                TagValueChanged?.Invoke(io);
+                                totalChanges++;
+                            }
+                        }
+                    }
+                }
+
+                // Connection error handling (same logic as individual batch reading)
+                var hasConnectionIssue = timeoutCount > 0 || failedCount > 0;
+
+                lock (_errorStateLock)
+                {
+                    if (hasConnectionIssue)
+                    {
+                        _logger.LogWarning("DINT group reader: {Failed}/{Total} groups failed ({Timeouts} timeouts) in cycle {Cycle}",
+                            failedCount, groups.Count, timeoutCount, cycleCount);
+
+                        _consecutiveErrorCycles++;
+
+                        if (timeoutCount > 0 || _consecutiveErrorCycles >= 2)
+                        {
+                            if (!_tagReadError && !_reconnectionInProgress && !_isResetting)
+                            {
+                                _tagReadError = true;
+                                _logger.LogError("PLC communication lost (DINT groups): {Failed} failures, {Timeouts} timeouts",
+                                    failedCount, timeoutCount);
+                                ReportConnectionStatus(false);
+                                ShowRuntimeCommunicationError();
+
+                                if (!_hasConfigurationErrors)
+                                {
+                                    _ = Task.Run(async () => await CleanDisconnectionAsync());
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (_tagReadError && _consecutiveErrorCycles == 0)
+                        {
+                            _tagReadError = false;
+                            ReportConnectionStatus(true);
+                        }
+                        if (_consecutiveErrorCycles > 0)
+                        {
+                            _consecutiveErrorCycles = Math.Max(0, _consecutiveErrorCycles - 1);
+                        }
+                    }
+                }
+
+                // Adaptive delay
+                var targetInterval = PlcConstants.OptimizedReadInterval;
+                var delay = Math.Max(0, targetInterval - (int)cycleTimeMs);
+                if (delay > 0)
+                {
+                    await Task.Delay(delay, cancellationToken);
+                }
+
+                // Notify state changed
+                StateChanged?.Invoke();
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("DINT group reader cancelled");
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "DINT group reader error");
+
+                if (!_isResetting)
+                {
+                    _tagReadError = true;
+                    ReportConnectionStatus(false);
+                    ShowRuntimeCommunicationError();
+
+                    if (!_hasConfigurationErrors)
+                    {
+                        _ = Task.Run(async () => await CleanDisconnectionAsync());
+                    }
+                }
+
+                try
+                {
+                    await Task.Delay(2000, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
     }
 
     private async Task ContinuouslyReadBatchOptimized(List<NativeTag> batch, int batchIndex, CancellationToken cancellationToken)
@@ -713,11 +1057,15 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
             // Log basic performance stats occasionally
             lock (_perfLock)
             {
-                var totalTags = _tags.Count;
+                var individualTags = _tags.Count;
+                var dintGroups = _dintGroups.Count;
+                var dintCoveredTags = _dintGroups.Sum(g => g.MemberCount);
+                var totalReadsPerCycle = individualTags + dintGroups;
                 var avgMs = _totalReadCycles > 0 ? (double)_totalReadTimeMs / _totalReadCycles : 0;
-                
-                _logger.LogInformation("Performance: {TotalTags} tags, Avg: {AvgMs:F1}ms per batch", 
-                    totalTags, avgMs);
+
+                _logger.LogInformation(
+                    "Performance: {DintGroups} DINT groups ({DintCovered} tags) + {Individual} individual = {TotalReads} reads/cycle, Avg: {AvgMs:F1}ms",
+                    dintGroups, dintCoveredTags, individualTags, totalReadsPerCycle, avgMs);
             }
         }
     }
@@ -825,7 +1173,21 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         // Cancel reading
         _readingCancellationToken?.Cancel();
         
-        // Dispose all tags
+        // Dispose all DINT groups
+        foreach (var group in _dintGroups)
+        {
+            try
+            {
+                group.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error disposing DINT group {Name}", group.ParentTagPath);
+            }
+        }
+        _dintGroups.Clear();
+
+        // Dispose all individual tags
         foreach (var tag in _tags)
         {
             try
@@ -837,9 +1199,8 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                 _logger.LogError(ex, "Error disposing tag {Name}", tag.Name);
             }
         }
-        
         _tags.Clear();
-        
+
         // Shutdown the library
         LibPlcTag.plc_tag_shutdown();
         
@@ -882,7 +1243,21 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         // Wait longer for cancellation to propagate and tasks to complete
         await Task.Delay(500);
         
-        // Dispose all tags
+        // Dispose all DINT groups
+        foreach (var group in _dintGroups)
+        {
+            try
+            {
+                group.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error disposing DINT group {Name} during reset", group.ParentTagPath);
+            }
+        }
+        _dintGroups.Clear();
+
+        // Dispose all individual tags
         foreach (var tag in _tags)
         {
             try
@@ -894,9 +1269,8 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                 _logger.LogError(ex, "Error disposing tag {Name} during reset", tag.Name);
             }
         }
-        
         _tags.Clear();
-        
+
         // Clear tag error lists from previous subsystem
         _notFoundTags.Clear();
         _illegalTags.Clear();
@@ -942,7 +1316,14 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         // Cancel all reading operations
         _readingCancellationToken?.Cancel();
         
-        // Dispose all tags
+        // Dispose all DINT groups
+        foreach (var group in _dintGroups)
+        {
+            try { group.Dispose(); } catch { }
+        }
+        _dintGroups.Clear();
+
+        // Dispose all individual tags
         foreach (var tag in _tags)
         {
             try
@@ -954,9 +1335,9 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                 _logger.LogError(ex, "Error disposing tag {Name} during disconnection", tag.Name);
             }
         }
-        
         _tags.Clear();
-        _logger.LogInformation("All tags disposed after PLC disconnection");
+
+        _logger.LogInformation("All tags and DINT groups disposed after PLC disconnection");
         
         // Start reconnection attempts
         _ = Task.Run(async () => await AttemptReconnectionAsync());

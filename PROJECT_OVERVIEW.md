@@ -359,7 +359,7 @@ Technician can test all 5 lines in sequence without restarting the app or editin
 **Typical Setup:**
 1. Copy folder to technician's tablet
 2. Double-click `START.bat`
-3. Open browser to `http://localhost:3000`
+3. Open browser to `http://localhost:3002`
 4. Start testing
 
 ### Option 2: Development Setup
@@ -473,7 +473,7 @@ Whether commissioning a new factory, maintaining existing equipment, or troubles
 
 **Default Ports**:
 - Backend: `http://localhost:5000`
-- Frontend: `http://localhost:3000`
+- Frontend: `http://localhost:3002`
 
 **Key Files**:
 - Configuration: `backend/config.json`
@@ -489,7 +489,7 @@ start-dev.bat
 REBUILD-DISTRIBUTION.bat
 
 # Access application
-http://localhost:3000
+http://localhost:3002
 ```
 
 **Support Contact**: [Your support contact information here]

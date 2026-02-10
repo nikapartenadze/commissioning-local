@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Shared.Library.Repositories.Interfaces;
+using Shared.Library.DTOs;
 
 namespace IO_Checkout_Tool.Services;
 
@@ -54,11 +55,11 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
     public bool LoadConfiguration()
     {
         // Read directly from root level since config.json has values at root
-        if (string.IsNullOrEmpty(_configuration[DatabaseConstants.ConfigKeys.IP]) || 
-            string.IsNullOrEmpty(_configuration[DatabaseConstants.ConfigKeys.PATH]) || 
+        if (string.IsNullOrEmpty(_configuration[DatabaseConstants.ConfigKeys.IP]) ||
+            string.IsNullOrEmpty(_configuration[DatabaseConstants.ConfigKeys.PATH]) ||
             string.IsNullOrEmpty(_configuration[DatabaseConstants.ConfigKeys.SUBSYSTEM_ID]))
         {
-            _errorDialogService.ShowConfigurationError();
+            _logger.LogInformation("PLC not configured yet (IP/Path/SubsystemId empty). Configure via the UI.");
             return false;
         }
 
@@ -118,7 +119,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
 
             // Notify file watcher that this is an internal write (prevent triggering reinitialization)
             ConfigFileWatcherService.NotifyInternalWrite();
-            await File.WriteAllTextAsync("config.json", jsonString);
+            await File.WriteAllTextAsync(DatabaseConstants.ConfigFilePath, jsonString);
 
             // Update local properties
             Ip = ip;
@@ -160,9 +161,9 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             // Read the current config file to preserve all existing settings
             var currentConfig = new Dictionary<string, object>();
             
-            if (File.Exists("config.json"))
+            if (File.Exists(DatabaseConstants.ConfigFilePath))
             {
-                var existingJson = await File.ReadAllTextAsync("config.json");
+                var existingJson = await File.ReadAllTextAsync(DatabaseConstants.ConfigFilePath);
                 if (!string.IsNullOrEmpty(existingJson))
                 {
                     var existingConfig = JsonSerializer.Deserialize<Dictionary<string, object>>(existingJson);
@@ -188,7 +189,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
 
             // Notify file watcher that this is an internal write (prevent triggering reinitialization)
             ConfigFileWatcherService.NotifyInternalWrite();
-            await File.WriteAllTextAsync("config.json", jsonString);
+            await File.WriteAllTextAsync(DatabaseConstants.ConfigFilePath, jsonString);
         }
         catch (Exception ex)
         {
@@ -481,7 +482,11 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         {
             var subsystemId = int.Parse(SubsystemId);
 
-            // 1. Fetch IOs from cloud
+            // 1. Sync any unsaved test results to cloud BEFORE switching
+            _logger.LogInformation("Syncing pending changes before subsystem switch...");
+            await SyncPendingChangesBeforeSwitch(cloudSyncService);
+
+            // 2. Fetch IOs from cloud for the NEW subsystem
             _logger.LogInformation("Fetching IOs from cloud for subsystem {SubsystemId}...", subsystemId);
             var cloudIos = await cloudSyncService.GetSubsystemIosAsync(subsystemId);
 
@@ -493,30 +498,37 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
 
             _logger.LogInformation("Retrieved {Count} IOs from cloud", cloudIos.Count);
 
-            // 2. Get repository and clear old data
+            // 3. Clear old IOs (preserve TestHistories — audit trail must survive)
             using var scope = _serviceProvider.CreateScope();
             var ioRepository = scope.ServiceProvider.GetRequiredService<IIoRepository>();
+            var pendingSyncRepo = scope.ServiceProvider.GetRequiredService<IPendingSyncRepository>();
 
-            // Clear ALL local IOs (we're switching subsystems, so old data is irrelevant)
-            _logger.LogInformation("Clearing local database for subsystem switch...");
-            var existingIos = await ioRepository.GetAllAsync();
-            foreach (var io in existingIos)
+            // Clear all remaining pending syncs (already attempted cloud push above)
+            var remainingPendingSyncs = await pendingSyncRepo.GetAllPendingSyncsAsync();
+            if (remainingPendingSyncs.Any())
             {
-                await ioRepository.DeleteAsync(io.Id);
+                _logger.LogInformation("Clearing {Count} remaining pending syncs", remainingPendingSyncs.Count);
+                await pendingSyncRepo.ClearAllAsync();
             }
 
-            // 3. Save new IOs to local database
+            _logger.LogInformation("Clearing local IOs for subsystem switch (TestHistories preserved)...");
+            var existingIos = await ioRepository.GetAllAsync();
+            if (existingIos.Any())
+            {
+                await ioRepository.DeleteRangeAsync(existingIos);
+            }
+
+            // 4. Save new IOs to local database
             _logger.LogInformation("Saving {Count} IOs to local database...", cloudIos.Count);
             foreach (var io in cloudIos)
             {
-                // Clear any state/result since this is fresh data
                 io.State = null;
                 await ioRepository.AddAsync(io);
             }
 
             _logger.LogInformation("Successfully synced {Count} IOs from cloud to local database", cloudIos.Count);
 
-            // 4. Reload PLC with new data
+            // 5. Reload PLC with new data
             if (plcCommunicationService != null)
             {
                 _logger.LogInformation("Reinitializing PLC with new IO data...");
@@ -531,4 +543,105 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             return false;
         }
     }
-} 
+
+    /// <summary>
+    /// Syncs any pending changes (test results) to cloud before switching subsystems.
+    /// Best-effort: logs warnings but doesn't block the switch if sync fails.
+    /// </summary>
+    private async Task SyncPendingChangesBeforeSwitch(ICloudSyncService cloudSyncService)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var pendingSyncRepo = scope.ServiceProvider.GetRequiredService<IPendingSyncRepository>();
+            var ioRepository = scope.ServiceProvider.GetRequiredService<IIoRepository>();
+
+            // 1. Push any queued PendingSyncs to cloud
+            var pendingSyncs = await pendingSyncRepo.GetAllPendingSyncsAsync();
+            if (pendingSyncs.Any())
+            {
+                _logger.LogInformation("Found {Count} pending syncs to push before subsystem switch", pendingSyncs.Count);
+
+                var updates = pendingSyncs.Select(ps => new IoUpdateDto
+                {
+                    Id = ps.IoId,
+                    Result = ps.TestResult,
+                    Timestamp = ps.Timestamp?.ToString("o"),
+                    Comments = ps.Comments,
+                    TestedBy = ps.InspectorName,
+                    State = ps.State
+                }).ToList();
+
+                var syncResult = await cloudSyncService.SyncIoUpdatesAsync(updates);
+                if (syncResult)
+                {
+                    _logger.LogInformation("Successfully synced {Count} pending changes to cloud", updates.Count);
+                    await pendingSyncRepo.ClearAllAsync();
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to sync pending changes to cloud — changes may be lost. Database backup exists as safety net.");
+                }
+            }
+
+            // 2. Push any local IO test results that haven't been synced
+            var allIos = await ioRepository.GetAllAsync();
+            var iosWithResults = allIos.Where(io => !string.IsNullOrEmpty(io.Result)).ToList();
+            if (iosWithResults.Any())
+            {
+                _logger.LogInformation("Pushing {Count} IO test results to cloud before switch", iosWithResults.Count);
+
+                var resultUpdates = iosWithResults.Select(io => new IoUpdateDto
+                {
+                    Id = io.Id,
+                    Result = io.Result,
+                    Timestamp = io.Timestamp,
+                    Comments = io.Comments
+                }).ToList();
+
+                var resultSync = await cloudSyncService.SyncIoUpdatesAsync(resultUpdates);
+                if (resultSync)
+                {
+                    _logger.LogInformation("Successfully pushed {Count} IO results to cloud", resultUpdates.Count);
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to push IO results to cloud — local backup preserved");
+                }
+            }
+
+            // 3. Also sync TestHistories to cloud
+            var testHistoryRepo = scope.ServiceProvider.GetRequiredService<ITestHistoryRepository>();
+            var allHistories = await testHistoryRepo.GetAllAsync();
+            if (allHistories.Any())
+            {
+                _logger.LogInformation("Syncing {Count} test histories to cloud before switch", allHistories.Count);
+
+                var historyDtos = allHistories.Select(h => new TestHistoryDto
+                {
+                    IoId = h.IoId,
+                    Result = h.Result,
+                    Timestamp = h.Timestamp,
+                    Comments = h.Comments,
+                    TestedBy = h.TestedBy,
+                    State = h.State
+                }).ToList();
+
+                var subsystemId = int.TryParse(SubsystemId, out var sid) ? sid : 0;
+                var historySync = await cloudSyncService.SyncTestHistoriesAsync(subsystemId, historyDtos);
+                if (historySync)
+                {
+                    _logger.LogInformation("Successfully synced {Count} test histories to cloud", historyDtos.Count);
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to sync test histories to cloud — local records preserved");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error syncing pending changes before subsystem switch — proceeding with switch anyway");
+        }
+    }
+}

@@ -15,6 +15,7 @@ using IO_Checkout_Tool.Models;
 using System.Diagnostics;
 using IO_Checkout_Tool.Extensions;
 using System.IO.Compression;
+using Serilog;
 
 if (!args.Contains("--allow-multiple-instances") && IO_Checkout_Tool.Extensions.ServiceCollectionExtensions.IsApplicationAlreadyRunning())
 {
@@ -25,8 +26,76 @@ if (!args.Contains("--allow-multiple-instances") && IO_Checkout_Tool.Extensions.
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure application
-builder.Configuration.AddJsonFile("config.json", optional: false, reloadOnChange: true);
+// Windows Service support (only activates when running as a service, no-op otherwise)
+if (OperatingSystem.IsWindows())
+{
+    builder.Host.UseWindowsService();
+}
+
+// Ensure data directory exists (for Docker DATA_DIR support)
+var dataDir = DatabaseConstants.DataDir;
+if (dataDir != "." && !Directory.Exists(dataDir))
+{
+    Directory.CreateDirectory(dataDir);
+}
+
+// Configure Serilog
+var logsDir = DatabaseConstants.LogsDir;
+if (!Directory.Exists(logsDir))
+{
+    Directory.CreateDirectory(logsDir);
+}
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.AspNetCore", Serilog.Events.LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.EntityFrameworkCore", Serilog.Events.LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File(
+        Path.Combine(logsDir, "backend-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
+
+builder.Host.UseSerilog();
+
+// Resolve config.json path (supports DATA_DIR for Docker)
+var configPath = dataDir == "." ? "config.json" : Path.Combine(dataDir, "config.json");
+var templatePath = "config.json.template";
+
+// Ensure config.json exists (create from template or empty defaults if missing)
+if (!File.Exists(configPath))
+{
+    if (File.Exists(templatePath))
+    {
+        File.Copy(templatePath, configPath);
+        Log.Information("Created config.json from template at {Path}", configPath);
+    }
+    else
+    {
+        var defaultConfig = new Dictionary<string, object>
+        {
+            { "ip", "" },
+            { "path", "" },
+            { "subsystemId", "" },
+            { "remoteUrl", "" },
+            { "ApiPassword", "" },
+            { "orderMode", "0" },
+            { "disableWatchdog", false },
+            { "syncBatchSize", 50 },
+            { "syncBatchDelayMs", 500 }
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(defaultConfig, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(configPath, json);
+        Log.Information("Created empty config.json at {Path}. Configure via the UI.", configPath);
+    }
+}
+
+// Configure application — optional: true so the app starts even if config.json is malformed
+builder.Configuration.AddJsonFile(configPath, optional: true, reloadOnChange: true);
 
 // Add application configuration
 builder.Services.AddApplicationConfiguration(builder.Configuration);
@@ -71,12 +140,12 @@ builder.Services.Configure<GzipCompressionProviderOptions>(options =>
 
 builder.Services.AddHttpClient();
 
-// Add CORS for Next.js frontend
+// Add CORS for Next.js frontend (supports Docker and any host)
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("NextJsFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "https://localhost:3000", "http://localhost:3001", "https://localhost:3001")
+        policy.SetIsOriginAllowed(_ => true)
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();

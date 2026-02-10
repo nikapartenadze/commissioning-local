@@ -10,7 +10,7 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, Square, AlertTriangle, CheckCircle, HelpCircle } from "lucide-react"
+import { Search, History, X, Play, Square, AlertTriangle, CheckCircle, HelpCircle, ArrowUpDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS } from "@/lib/api-config"
 
@@ -49,6 +49,7 @@ interface EnhancedIoDataGridProps {
   onRowClick?: (io: IoItem) => void
   onShowFireOutputDialog?: (io: IoItem) => void
   onCommentChange?: (io: IoItem, comment: string) => void
+  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | null
 }
 
 // Define column widths - these will be applied consistently to both header and body
@@ -78,7 +79,8 @@ export function EnhancedIoDataGrid({
   onClearResult,
   onRowClick,
   onShowFireOutputDialog,
-  onCommentChange
+  onCommentChange,
+  activeQuickFilter = null
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -91,8 +93,41 @@ export function EnhancedIoDataGrid({
   const [showStateColumn, setShowStateColumn] = useState(true)
   const [showResultColumn, setShowResultColumn] = useState(true)
   const [showTimestampColumn, setShowTimestampColumn] = useState(true)
+  const [sortMode, setSortMode] = useState<'default' | 'failed-first' | 'not-tested-first'>('default')
   const [showDiagnosticDialog, setShowDiagnosticDialog] = useState(false)
   const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
+  const [moduleHealth, setModuleHealth] = useState<Record<string, 'ok' | 'warning' | 'error'>>({})
+
+  // Fetch module health status periodically
+  useEffect(() => {
+    const fetchModuleHealth = async () => {
+      try {
+        const response = await fetch(API_ENDPOINTS.networkModules)
+        if (response.ok) {
+          const data = await response.json()
+          const healthMap: Record<string, 'ok' | 'warning' | 'error'> = {}
+          if (data.modules) {
+            for (const mod of data.modules) {
+              healthMap[mod.name] = mod.status as 'ok' | 'warning' | 'error'
+            }
+          }
+          setModuleHealth(healthMap)
+        }
+      } catch {
+        // Silently fail - module health is non-critical
+      }
+    }
+
+    fetchModuleHealth()
+    const interval = setInterval(fetchModuleHealth, 5000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Extract module name from IO name (prefix before ':')
+  const getModuleName = (ioName: string): string | null => {
+    const colonIndex = ioName.indexOf(':')
+    return colonIndex > 0 ? ioName.substring(0, colonIndex) : null
+  }
 
   const handleShowHistory = async (io: IoItem) => {
     setSelectedIo(io)
@@ -139,13 +174,18 @@ export function EnhancedIoDataGrid({
 
   const filteredIos = useMemo(() => {
     const filtered = ios.filter(io => {
+      // Apply quick filter first
+      if (activeQuickFilter === 'failed' && io.result !== 'Failed') return false
+      if (activeQuickFilter === 'not-tested' && io.result) return false
+      if (activeQuickFilter === 'passed' && io.result !== 'Passed') return false
+
       if (filterTags.length === 0 && !searchTerm.trim()) return true
-      
+
       const allTerms = [...filterTags]
       if (searchTerm.trim()) {
         allTerms.push(searchTerm.trim())
       }
-      
+
       return allTerms.some(term => {
         const lowerTerm = term.toLowerCase()
         return (
@@ -157,8 +197,23 @@ export function EnhancedIoDataGrid({
         )
       })
     })
-    return filtered
-  }, [ios, filterTags, searchTerm])
+
+    if (sortMode === 'default') return filtered
+
+    const sortOrder = (result: string | null): number => {
+      if (sortMode === 'failed-first') {
+        if (result === 'Failed') return 0
+        if (!result) return 1
+        return 2
+      }
+      // not-tested-first
+      if (!result) return 0
+      if (result === 'Failed') return 1
+      return 2
+    }
+
+    return [...filtered].sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
+  }, [ios, filterTags, searchTerm, activeQuickFilter, sortMode])
 
   useEffect(() => {
     if (onFilteredDataChange) {
@@ -279,13 +334,27 @@ export function EnhancedIoDataGrid({
             </button>
           )}
         </div>
-        <p className="text-xs sm:text-sm text-muted-foreground mt-2">
-          {filterTags.length > 0 || searchTerm ? (
-            <>Found {filteredIos.length} IO{filteredIos.length !== 1 ? 's' : ''} • {filterTags.length} filter{filterTags.length !== 1 ? 's' : ''} active</>
-          ) : (
-            <>Showing {filteredIos.length} of {ios.length} IO{ios.length !== 1 ? 's' : ''}</>
-          )}
-        </p>
+        <div className="flex items-center justify-between mt-2">
+          <p className="text-xs sm:text-sm text-muted-foreground">
+            {filterTags.length > 0 || searchTerm ? (
+              <>Found {filteredIos.length} IO{filteredIos.length !== 1 ? 's' : ''} • {filterTags.length} filter{filterTags.length !== 1 ? 's' : ''} active</>
+            ) : (
+              <>Showing {filteredIos.length} of {ios.length} IO{ios.length !== 1 ? 's' : ''}</>
+            )}
+          </p>
+          <div className="flex items-center gap-1">
+            <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
+            <select
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
+              className="text-xs bg-background border rounded px-2 py-1 text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="default">Default Order</option>
+              <option value="failed-first">Failed First</option>
+              <option value="not-tested-first">Not Tested First</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Data Grid with Virtual Scrolling */}
@@ -403,10 +472,27 @@ export function EnhancedIoDataGrid({
                        {io.description || 'N/A'}
                      </div>
                    </div>
-                   <div 
-                     className="px-3 py-3 text-xs sm:text-sm font-mono flex-shrink-0 overflow-hidden flex items-center"
+                   <div
+                     className="px-3 py-3 text-xs sm:text-sm font-mono flex-shrink-0 overflow-hidden flex items-center gap-1.5"
                      style={{ width: `${COLUMN_WIDTHS.ioPoint}px` }}
                    >
+                     {/* Module health indicator dot */}
+                     {(() => {
+                       const modName = getModuleName(io.name)
+                       const health = modName ? moduleHealth[modName] : undefined
+                       if (!health) return null
+                       return (
+                         <div
+                           className={cn(
+                             "w-2 h-2 rounded-full shrink-0",
+                             health === 'ok' && "bg-green-500",
+                             health === 'warning' && "bg-yellow-500",
+                             health === 'error' && "bg-red-500"
+                           )}
+                           title={`Module ${modName}: ${health === 'ok' ? 'All tags OK' : health === 'warning' ? 'Some tags not responding' : 'Module not responding'}`}
+                         />
+                       )
+                     })()}
                      <div className="truncate">{io.name}</div>
                    </div>
                   {showStateColumn && (
@@ -489,31 +575,36 @@ export function EnhancedIoDataGrid({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-9 w-9"
                       onClick={(e) => {
                         e.stopPropagation()
                         handleShowHistory(io)
                       }}
                       title="Show History"
                     >
-                      <History className="h-3 w-3" />
+                      <History className="h-4 w-4" />
                     </Button>
                   </div>
-                  {/* Help Column - shown for failed IOs with tagType */}
+                  {/* Help Column - shown for all IOs with tagType */}
                   <div
                     className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
                     style={{ width: `${COLUMN_WIDTHS.help}px` }}
                   >
-                    {io.result === TEST_CONSTANTS.RESULT_FAILED && io.tagType ? (
+                    {io.tagType ? (
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                        className={cn(
+                          "h-9 w-9",
+                          io.result === TEST_CONSTANTS.RESULT_FAILED
+                            ? "text-red-600 hover:text-red-700 hover:bg-red-50"
+                            : "text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                        )}
                         onClick={(e) => {
                           e.stopPropagation()
                           handleShowDiagnostic(io)
                         }}
-                        title="Show Troubleshooting Guide"
+                        title={io.result === TEST_CONSTANTS.RESULT_FAILED ? "Show Troubleshooting Guide" : "Browse Troubleshooting Guide"}
                       >
                         <HelpCircle className="h-4 w-4" />
                       </Button>
@@ -529,7 +620,7 @@ export function EnhancedIoDataGrid({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-9 w-9"
                       onClick={(e) => {
                         e.stopPropagation()
                         onMarkFailed?.(io)
@@ -537,7 +628,7 @@ export function EnhancedIoDataGrid({
                       disabled={!isTesting}
                       title="Mark as Failed"
                     >
-                      <AlertTriangle className="h-3 w-3" />
+                      <AlertTriangle className="h-4 w-4" />
                     </Button>
                   </div>
                   {/* Clear Column */}
@@ -548,7 +639,7 @@ export function EnhancedIoDataGrid({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-9 w-9"
                       onClick={(e) => {
                         e.stopPropagation()
                         onClearResult?.(io)
@@ -556,7 +647,7 @@ export function EnhancedIoDataGrid({
                       disabled={!isTesting || !io.result}
                       title="Clear Result"
                     >
-                      <X className="h-3 w-3" />
+                      <X className="h-4 w-4" />
                     </Button>
                   </div>
                   {/* Output Column */}
@@ -568,7 +659,7 @@ export function EnhancedIoDataGrid({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
+                        className="h-9 w-9"
                         onClick={(e) => {
                           e.stopPropagation()
                           onShowFireOutputDialog?.(io)
@@ -576,10 +667,10 @@ export function EnhancedIoDataGrid({
                         disabled={!isTesting}
                         title="Fire Output"
                       >
-                        <Play className="h-3 w-3" />
+                        <Play className="h-4 w-4" />
                       </Button>
                     ) : (
-                      <X className="h-3 w-3 text-muted-foreground" />
+                      <X className="h-4 w-4 text-muted-foreground" />
                     )}
                   </div>
                 </div>
@@ -620,7 +711,7 @@ export function EnhancedIoDataGrid({
         open={showDiagnosticDialog}
         onOpenChange={setShowDiagnosticDialog}
         tagType={diagnosticIo.tagType}
-        failureMode={diagnosticIo.failureMode || 'No response'}
+        failureMode={diagnosticIo.failureMode || undefined}
         tagName={diagnosticIo.name}
       />
     )}

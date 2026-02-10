@@ -126,11 +126,33 @@ public static class LibPlcTag
     [SuppressGCTransition] // Optimization for high-frequency calls
     public static extern int plc_tag_set_int8(int tag, int offset, sbyte val);
     
+    // 16-bit accessors (for INT)
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    [SuppressGCTransition]
+    public static extern short plc_tag_get_int16(int tag, int offset);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    [SuppressGCTransition]
+    public static extern int plc_tag_set_int16(int tag, int offset, short val);
+
+    // 32-bit accessors (for DINT) - used for DINT group reading optimization
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    [SuppressGCTransition]
+    public static extern int plc_tag_get_int32(int tag, int offset);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    [SuppressGCTransition]
+    public static extern int plc_tag_set_int32(int tag, int offset, int val);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    [SuppressGCTransition]
+    public static extern uint plc_tag_get_uint32(int tag, int offset);
+
     // Bit accessors
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     [SuppressGCTransition] // Optimization for high-frequency calls
     public static extern int plc_tag_get_bit(int tag, int offset_bit);
-    
+
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     [SuppressGCTransition] // Optimization for high-frequency calls
     public static extern int plc_tag_set_bit(int tag, int offset_bit, int val);

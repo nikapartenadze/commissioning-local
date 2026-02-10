@@ -15,8 +15,8 @@ import { NextRequest, NextResponse } from 'next/server'
  * etc.
  */
 
-// Hardcoded backend URL - no .env needed
-const BACKEND_URL = 'http://localhost:5000'
+// Backend URL: configurable via BACKEND_URL env var (for Docker), defaults to localhost:5000
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000'
 
 async function proxyRequest(
   request: NextRequest,

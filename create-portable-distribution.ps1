@@ -6,7 +6,7 @@ Write-Host "  IO Checkout Tool - Distribution Builder" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-$distributionFolder = "IO-Checkout-Tool-Portable"
+$distributionFolder = "portable"
 $backendSource = "backend"
 $frontendSource = "frontend"
 
@@ -360,7 +360,7 @@ server or computer. Follow these steps in order.
 
 STEP 1: COPY FILES TO SERVER
 -----------------------------
-Copy the entire IO-Checkout-Tool-Portable folder to the server.
+Copy the entire portable folder to the server.
 Recommended location: C:\IOCheckout
 
 Do not rename the internal folders (backend, frontend, nodejs).
@@ -498,6 +498,13 @@ Solution: Check that database.db file is not read-only.
 "@
 
 $factorySetup | Out-File -FilePath "$distributionFolder\FACTORY-SETUP.txt" -Encoding ASCII
+
+# Copy service management script
+$serviceScript = Join-Path $PSScriptRoot "portable\service.ps1"
+if (Test-Path $serviceScript) {
+    Copy-Item $serviceScript "$distributionFolder\service.ps1"
+    Write-Host "Copied service.ps1 for Windows Service management" -ForegroundColor Green
+}
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green

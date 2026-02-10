@@ -8,6 +8,7 @@ public interface ICloudSyncService
     Task<List<Io>> GetSubsystemIosAsync(int subsystemId);
     Task<bool> SyncIoUpdateAsync(IoUpdateDto update);
     Task<bool> SyncIoUpdatesAsync(List<IoUpdateDto> updates);
+    Task<bool> SyncTestHistoriesAsync(int subsystemId, List<TestHistoryDto> histories);
     Task<bool> IsCloudAvailable();
     Task<bool> TriggerFreshSyncAsync();
     bool IsConnected { get; }

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AlertCircle } from "lucide-react"
 import { API_ENDPOINTS } from "@/lib/api-config"
+import { toast } from "@/hooks/use-toast"
 
 interface IoItem {
   id: number
@@ -84,12 +85,12 @@ export function FailCommentDialog({
   const handleSubmit = () => {
     // Validation
     if (!failureMode) {
-      alert('Please select a failure reason')
+      toast({ title: "Please select a failure reason", variant: "destructive" })
       return
     }
-    
+
     if (failureMode === 'Other' && !comment.trim()) {
-      alert('Please provide comments when selecting "Other" as the failure reason')
+      toast({ title: "Please provide comments when selecting \"Other\"", variant: "destructive" })
       return
     }
     
