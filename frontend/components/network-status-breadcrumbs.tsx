@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { CheckCircle, XCircle, AlertCircle, Circle, Loader2, Cloud, Server, Cpu, Box, Radio } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS } from "@/lib/api-config"
@@ -14,13 +14,24 @@ interface NetworkNode {
   statusCode?: string
   message?: string
   icon: React.ReactNode
+  badge?: string
 }
 
 interface NetworkChainStatus {
   cloud: { connected: boolean; message?: string }
   backend: { connected: boolean; message?: string }
   plc: { connected: boolean; ip?: string; path?: string; message?: string }
-  module: { name: string; connected: boolean; errorCount?: number; message?: string }
+  module: {
+    name: string
+    connected: boolean
+    deviceType?: string
+    ipAddress?: string
+    totalTags?: number
+    respondingTags?: number
+    errorCount?: number
+    parentDevice?: string
+    message?: string
+  }
   ioPoint: { name: string; connected: boolean; statusCode?: string; message?: string }
 }
 
@@ -34,14 +45,7 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
   const [loading, setLoading] = useState(true)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
 
-  useEffect(() => {
-    fetchNetworkStatus()
-    // Refresh every 5 seconds for live updates
-    const interval = setInterval(fetchNetworkStatus, 5000)
-    return () => clearInterval(interval)
-  }, [tagName])
-
-  const fetchNetworkStatus = async () => {
+  const fetchNetworkStatus = useCallback(async () => {
     try {
       const url = tagName
         ? `${API_ENDPOINTS.networkChainStatus}?tagName=${encodeURIComponent(tagName)}`
@@ -56,6 +60,26 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
       console.error('Error fetching network status:', err)
     } finally {
       setLoading(false)
+    }
+  }, [tagName])
+
+  useEffect(() => {
+    fetchNetworkStatus()
+    // Poll every 5s as fallback (SignalR will provide faster updates when available)
+    const interval = setInterval(fetchNetworkStatus, 5000)
+    return () => clearInterval(interval)
+  }, [fetchNetworkStatus])
+
+  const getStatusColor = (status: NetworkNodeStatus) => {
+    switch (status) {
+      case "connected":
+        return "bg-green-500"
+      case "disconnected":
+        return "bg-red-500"
+      case "warning":
+        return "bg-yellow-500"
+      default:
+        return "bg-gray-400"
     }
   }
 
@@ -74,28 +98,25 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
     }
   }
 
-  const getStatusColor = (status: NetworkNodeStatus) => {
-    switch (status) {
-      case "connected":
-        return "bg-green-500"
-      case "disconnected":
-        return "bg-red-500"
-      case "warning":
-        return "bg-yellow-500"
-      default:
-        return "bg-gray-400"
-    }
-  }
-
   const buildNodes = (): NetworkNode[] => {
     if (!chainStatus) {
-      return [
+      // Show only Cloud/Backend/PLC when loading (without tag-specific nodes)
+      const baseNodes: NetworkNode[] = [
         { name: "cloud", label: "Cloud", status: "loading", icon: <Cloud className="w-4 h-4" /> },
         { name: "backend", label: "Backend", status: "loading", icon: <Server className="w-4 h-4" /> },
         { name: "plc", label: "PLC", status: "loading", icon: <Cpu className="w-4 h-4" /> },
-        { name: "module", label: "Module", status: "loading", icon: <Box className="w-4 h-4" /> },
-        { name: "io", label: "I/O", status: "loading", icon: <Radio className="w-4 h-4" /> },
       ]
+      if (tagName) {
+        baseNodes.push(
+          { name: "module", label: "Module", status: "loading", icon: <Box className="w-4 h-4" /> },
+          { name: "io", label: "I/O", status: "loading", icon: <Radio className="w-4 h-4" /> }
+        )
+      } else {
+        baseNodes.push(
+          { name: "modules", label: "Modules", status: "loading", icon: <Box className="w-4 h-4" /> }
+        )
+      }
+      return baseNodes
     }
 
     const nodes: NetworkNode[] = [
@@ -123,21 +144,41 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
           : `Cannot reach PLC at ${chainStatus.plc.ip}`),
         icon: <Cpu className="w-4 h-4" />
       },
-      {
+    ]
+
+    if (tagName) {
+      // Tag-specific: show individual module and IO point
+      const moduleStatus: NetworkNodeStatus = chainStatus.module.connected
+        ? (chainStatus.module.errorCount && chainStatus.module.errorCount > 0 ? "warning" : "connected")
+        : "disconnected"
+
+      const moduleLabel = chainStatus.module.name || "Module"
+      const moduleBadge = chainStatus.module.deviceType || undefined
+
+      let moduleMessage = chainStatus.module.message || ""
+      if (chainStatus.module.ipAddress) {
+        moduleMessage += ` (IP: ${chainStatus.module.ipAddress})`
+      }
+      if (chainStatus.module.totalTags) {
+        moduleMessage += ` | ${chainStatus.module.respondingTags ?? 0}/${chainStatus.module.totalTags} tags OK`
+      }
+      if (chainStatus.module.parentDevice) {
+        moduleMessage += ` | Parent: ${chainStatus.module.parentDevice}`
+      }
+
+      nodes.push({
         name: "module",
-        label: chainStatus.module.name || "Module",
-        status: chainStatus.module.connected
-          ? (chainStatus.module.errorCount && chainStatus.module.errorCount > 0 ? "warning" : "connected")
-          : "disconnected",
+        label: moduleLabel,
+        status: moduleStatus,
+        badge: moduleBadge,
         statusCode: chainStatus.module.errorCount && chainStatus.module.errorCount > 0
           ? `${chainStatus.module.errorCount} errors`
           : undefined,
-        message: chainStatus.module.message || (chainStatus.module.connected
-          ? (chainStatus.module.errorCount ? `${chainStatus.module.errorCount} tag errors in module` : "Module responding")
-          : "Module not responding"),
+        message: moduleMessage,
         icon: <Box className="w-4 h-4" />
-      },
-      {
+      })
+
+      nodes.push({
         name: "io",
         label: chainStatus.ioPoint.name || "I/O Point",
         status: chainStatus.ioPoint.connected ? "connected" : "disconnected",
@@ -146,8 +187,33 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
           ? "Tag reading OK"
           : "Tag read failed"),
         icon: <Radio className="w-4 h-4" />
-      }
-    ]
+      })
+    } else {
+      // Aggregate mode: show module summary
+      const totalTags = chainStatus.module.totalTags ?? 0
+      const respondingTags = chainStatus.module.respondingTags ?? 0
+      const errorCount = chainStatus.module.errorCount ?? 0
+
+      const aggregateStatus: NetworkNodeStatus = !chainStatus.plc.connected
+        ? "disconnected"
+        : errorCount > 0
+          ? "warning"
+          : "connected"
+
+      const aggregateLabel = errorCount > 0
+        ? `${errorCount} errors`
+        : totalTags > 0
+          ? `${respondingTags}/${totalTags} OK`
+          : "Modules"
+
+      nodes.push({
+        name: "modules",
+        label: aggregateLabel,
+        status: aggregateStatus,
+        message: chainStatus.module.message || `${totalTags} total tags across all modules`,
+        icon: <Box className="w-4 h-4" />
+      })
+    }
 
     return nodes
   }
@@ -170,7 +236,13 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
               {/* Icon */}
               <span className="text-muted-foreground shrink-0">{node.icon}</span>
               {/* Label */}
-              <span className="text-xs font-medium truncate max-w-[80px]">{node.label}</span>
+              <span className="text-xs font-medium truncate max-w-[100px]">{node.label}</span>
+              {/* Device type badge */}
+              {node.badge && (
+                <span className="text-[10px] px-1 py-0.5 rounded bg-muted-foreground/10 text-muted-foreground font-mono">
+                  {node.badge}
+                </span>
+              )}
 
               {/* Tooltip */}
               {hoveredNode === node.name && (

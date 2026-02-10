@@ -80,6 +80,14 @@ public class Io
     [MessagePack.Key(11)]
     public DateTime? CloudSyncedAt { get; set; }
 
+    /// <summary>
+    /// Network device name extracted from tag name prefix (before ':').
+    /// Links this IO to its parent network device for topology visualization.
+    /// </summary>
+    [MessagePack.Key(12)]
+    [StringLength(100)]
+    public string? NetworkDeviceName { get; set; }
+
     // Navigation properties
     [IgnoreMember]
     public Subsystem? Subsystem { get; set; }

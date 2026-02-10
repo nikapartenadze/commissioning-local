@@ -97,10 +97,10 @@ export function FireOutputDialog({
           </div>
 
           {/* Warning for outputs */}
-          <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+          <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-              <span className="text-sm text-blue-700 dark:text-blue-300">
+              <div className="w-2 h-2 bg-amber-500 rounded-full"></div>
+              <span className="text-sm text-amber-700 dark:text-amber-300">
                 This is an output. Hold the button below to fire the output signal.
               </span>
             </div>

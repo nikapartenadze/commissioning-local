@@ -9,15 +9,18 @@ import { PlcConfigDialog } from "@/components/plc-config-dialog"
 import { TestResultsChart } from "@/components/test-results-chart"
 import { AllTestHistoryDialog } from "@/components/all-test-history-dialog"
 import { FireOutputDialog } from "@/components/fire-output-dialog"
+import { NetworkStatusBreadcrumbs } from "@/components/network-status-breadcrumbs"
 import { ValueChangeDialog } from "@/components/value-change-dialog"
 import { FailCommentDialog } from "@/components/fail-comment-dialog"
 import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { UserMenu } from "@/components/user-menu"
 import { Download, Settings, BarChart3, History } from "lucide-react"
+import { toast } from "@/hooks/use-toast"
 import {
   PlcCommunicationService,
   PlcConfig,
@@ -123,6 +126,8 @@ export default function CommissioningPage() {
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
   const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false)
+  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | null>(null)
+  const [confirmClearIo, setConfirmClearIo] = useState<IoItem | null>(null)
   
 
   // Helper function to check if an IO is an output
@@ -205,7 +210,7 @@ export default function CommissioningPage() {
 
   const handleConfigureProject = (projectName: string) => {
     // In a real implementation, this would open a configuration dialog
-    alert(`Configure project ${projectName} - This would open a configuration dialog`)
+    toast({ title: `Configure project ${projectName}`, description: "Configuration dialog not yet implemented" })
   }
 
   // PLC Configuration
@@ -562,18 +567,15 @@ export default function CommissioningPage() {
         if (process.env.NODE_ENV === 'development') {
           console.log('✅ IO marked as passed via C# backend:', result)
         }
-        // SignalR will handle the real-time update - no need for alert, UI updates automatically
+        toast({ title: `${io.name} marked as Passed` })
       } else {
         const errorText = await response.text()
         console.error('❌ Failed to mark IO as passed:', response.status, errorText)
-        // Only show error in development, or use a non-blocking toast notification
-        if (process.env.NODE_ENV === 'development') {
-          alert(`❌ Failed to mark test as passed:\n\nStatus: ${response.status}\nError: ${errorText}`)
-        }
+        toast({ title: "Failed to mark as passed", description: errorText, variant: "destructive" })
       }
     } catch (error) {
       console.error('❌ Error marking IO as passed:', error)
-      // Error is logged, SignalR will update UI when backend confirms
+      toast({ title: "Failed to mark as passed", description: "Network error", variant: "destructive" })
     }
   }
 
@@ -602,18 +604,15 @@ export default function CommissioningPage() {
         if (process.env.NODE_ENV === 'development') {
           console.log('✅ IO marked as failed via C# backend:', result)
         }
-        // SignalR will handle the real-time update - no need for alert, UI updates automatically
+        toast({ title: `${io.name} marked as Failed`, variant: "destructive" })
       } else {
         const errorText = await response.text()
         console.error('❌ Failed to mark IO as failed:', response.status, errorText)
-        // Only show error in development, or use a non-blocking toast notification
-        if (process.env.NODE_ENV === 'development') {
-          alert(`❌ Failed to mark test as failed:\n\nStatus: ${response.status}\nError: ${errorText}`)
-        }
+        toast({ title: "Failed to mark as failed", description: errorText, variant: "destructive" })
       }
     } catch (error) {
       console.error('❌ Error marking IO as failed:', error)
-      // Error is logged, SignalR will update UI when backend confirms
+      toast({ title: "Failed to mark as failed", description: "Network error", variant: "destructive" })
     }
   }
 
@@ -641,7 +640,9 @@ export default function CommissioningPage() {
   }
 
   const handleRowClick = (io: IoItem) => {
-    // Row clicking is disabled - no action
+    if (plcStatus.isTesting) {
+      addToDialogQueue(io)
+    }
   }
 
   const handleShowFireOutputDialog = (io: IoItem) => {
@@ -916,6 +917,8 @@ export default function CommissioningPage() {
       </header>
 
       <div className="container mx-auto px-4 py-4">
+             {/* Network Status Bar - persistent overview of system health */}
+             <NetworkStatusBreadcrumbs className="mb-4" />
 
              {/* PLC Toolbar */}
              <PlcToolbar
@@ -935,6 +938,8 @@ export default function CommissioningPage() {
                currentUser={currentUser}
                onToggleSimulator={handleToggleSimulator}
                isSimulatorEnabled={isSimulatorEnabled}
+               activeFilter={quickFilter}
+               onFilterChange={setQuickFilter}
              />
 
         {/* Main Content */}
@@ -952,10 +957,11 @@ export default function CommissioningPage() {
               setPendingFailIo(io)
               setShowFailCommentDialog(true)
             }}
-            onClearResult={handleClearResult}
+            onClearResult={(io) => setConfirmClearIo(io)}
             onRowClick={handleRowClick}
             onShowFireOutputDialog={handleShowFireOutputDialog}
             onCommentChange={handleCommentChange}
+            activeQuickFilter={quickFilter}
           />
         </div>
 
@@ -1029,6 +1035,35 @@ export default function CommissioningPage() {
           onOpenChange={setShowCloudSyncDialog}
           subsystemId={plcConfig.subsystemId}
         />
+
+        {/* Clear Result Confirmation Dialog */}
+        <Dialog open={!!confirmClearIo} onOpenChange={(open) => { if (!open) setConfirmClearIo(null) }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Clear Test Result</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Clear test result for <span className="font-mono font-semibold text-foreground">{confirmClearIo?.name}</span>? This cannot be undone.
+            </p>
+            <DialogFooter className="flex gap-2">
+              <Button variant="outline" onClick={() => setConfirmClearIo(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  if (confirmClearIo) {
+                    handleClearResult(confirmClearIo)
+                    toast({ title: `${confirmClearIo.name} result cleared` })
+                    setConfirmClearIo(null)
+                  }
+                }}
+              >
+                Clear
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   )

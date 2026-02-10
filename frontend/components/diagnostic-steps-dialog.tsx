@@ -1,10 +1,11 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import ReactMarkdown from "react-markdown"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { HelpCircle } from "lucide-react"
+import { HelpCircle, ChevronDown } from "lucide-react"
 import { NetworkStatusBreadcrumbs } from "./network-status-breadcrumbs"
 import { API_ENDPOINTS } from "@/lib/api-config"
 
@@ -12,7 +13,7 @@ interface DiagnosticStepsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   tagType: string
-  failureMode: string
+  failureMode?: string
   tagName?: string
 }
 
@@ -26,37 +27,98 @@ export function DiagnosticStepsDialog({
   const [steps, setSteps] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [availableFailureModes, setAvailableFailureModes] = useState<string[]>([])
+  const [selectedFailureMode, setSelectedFailureMode] = useState<string | undefined>(failureMode)
+  const [showModeSelector, setShowModeSelector] = useState(false)
 
+  // Reset selected mode when dialog opens with new props
   useEffect(() => {
-    if (open && tagType && failureMode) {
-      loadDiagnosticSteps()
+    if (open) {
+      setSelectedFailureMode(failureMode)
+      setShowModeSelector(false)
     }
-  }, [open, tagType, failureMode])
+  }, [open, failureMode])
 
-  const loadDiagnosticSteps = async () => {
+  // Load available failure modes for this tag type
+  useEffect(() => {
+    if (open && tagType) {
+      loadFailureModes()
+    }
+  }, [open, tagType])
+
+  // Load diagnostic steps when a failure mode is selected
+  useEffect(() => {
+    if (open && tagType && selectedFailureMode) {
+      loadDiagnosticSteps(selectedFailureMode)
+    } else if (open && tagType && !selectedFailureMode) {
+      // No failure mode - show general overview
+      setSteps(getGeneralOverview(tagType))
+      setLoading(false)
+    }
+  }, [open, tagType, selectedFailureMode])
+
+  const loadFailureModes = async () => {
+    try {
+      const response = await fetch(
+        `${API_ENDPOINTS.diagnosticFailureModes}?tagType=${encodeURIComponent(tagType)}`
+      )
+      if (response.ok) {
+        const data = await response.json()
+        setAvailableFailureModes(data)
+      }
+    } catch (err) {
+      console.error('Error loading failure modes:', err)
+    }
+  }
+
+  const loadDiagnosticSteps = async (mode: string) => {
     setLoading(true)
     setError('')
     try {
       const response = await fetch(
-        `${API_ENDPOINTS.diagnosticSteps}?tagType=${encodeURIComponent(tagType)}&failureMode=${encodeURIComponent(failureMode)}`
+        `${API_ENDPOINTS.diagnosticSteps}?tagType=${encodeURIComponent(tagType)}&failureMode=${encodeURIComponent(mode)}`
       )
 
       if (response.ok) {
         const data = await response.json()
         setSteps(data.steps)
       } else if (response.status === 404) {
-        // Show placeholder/default troubleshooting steps
-        setSteps(getDefaultTroubleshootingSteps(tagType, failureMode))
+        setSteps(getDefaultTroubleshootingSteps(tagType, mode))
       } else {
         setError('Failed to load diagnostic steps.')
       }
     } catch (err) {
       console.error('Error loading diagnostic steps:', err)
-      // Show placeholder on error too
-      setSteps(getDefaultTroubleshootingSteps(tagType, failureMode))
+      setSteps(getDefaultTroubleshootingSteps(tagType, mode))
     } finally {
       setLoading(false)
     }
+  }
+
+  const getGeneralOverview = (tagType: string) => {
+    return `# Device Overview: ${tagType}
+
+## About This Device Type
+
+This is a **${tagType}** device. Select a failure mode below to see specific troubleshooting steps.
+
+### General Inspection Checklist
+
+- Check for visible damage or loose connections
+- Verify 24V DC power at device terminals (21.6V - 26.4V)
+- Ensure proper wiring per electrical drawings
+- Check PLC input/output card LED indicators
+- Verify tag name mapping is correct
+
+### Available Failure Modes
+
+${availableFailureModes.length > 0
+  ? availableFailureModes.map(mode => `- **${mode}** - Click to view troubleshooting steps`).join('\n')
+  : '- No specific failure modes documented yet\n- Use the general steps above for troubleshooting'
+}
+
+---
+**Tip:** Select a specific failure mode from the dropdown above to see detailed step-by-step troubleshooting instructions.`
   }
 
   const getDefaultTroubleshootingSteps = (tagType: string, failureMode: string) => {
@@ -109,15 +171,62 @@ export function DiagnosticStepsDialog({
       <DialogContent className="sm:max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <HelpCircle className="w-5 h-5 text-blue-600" />
+            <HelpCircle className="w-5 h-5 text-primary" />
             Troubleshooting Guide
           </DialogTitle>
-          <div className="flex flex-col gap-1 text-sm text-muted-foreground">
+          <div className="flex flex-col gap-1.5 text-sm text-muted-foreground">
             {tagName && (
               <div>Tag: <Badge variant="outline" className="font-mono">{tagName}</Badge></div>
             )}
             <div>Device Type: <Badge variant="secondary">{tagType}</Badge></div>
-            <div>Failure Mode: <Badge variant="destructive">{failureMode}</Badge></div>
+            <div className="flex items-center gap-2">
+              <span>Failure Mode:</span>
+              {/* Failure mode selector dropdown */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowModeSelector(!showModeSelector)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-medium hover:bg-muted transition-colors"
+                >
+                  {selectedFailureMode ? (
+                    <Badge variant="destructive" className="text-xs">{selectedFailureMode}</Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-xs">General Overview</Badge>
+                  )}
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+                {showModeSelector && (
+                  <div className="absolute top-full left-0 mt-1 z-50 min-w-[200px] max-w-[300px] bg-popover border rounded-md shadow-md py-1">
+                    <button
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+                      onClick={() => {
+                        setSelectedFailureMode(undefined)
+                        setShowModeSelector(false)
+                      }}
+                    >
+                      General Overview
+                    </button>
+                    {availableFailureModes.map((mode) => (
+                      <button
+                        key={mode}
+                        className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+                        onClick={() => {
+                          setSelectedFailureMode(mode)
+                          setShowModeSelector(false)
+                        }}
+                      >
+                        {mode}
+                        {mode === failureMode && " (current)"}
+                      </button>
+                    ))}
+                    {availableFailureModes.length === 0 && (
+                      <div className="px-3 py-1.5 text-xs text-muted-foreground italic">
+                        No failure modes documented
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </DialogHeader>
 
@@ -134,11 +243,8 @@ export function DiagnosticStepsDialog({
               <p className="text-sm text-yellow-800 dark:text-yellow-200">{error}</p>
             </div>
           ) : (
-            <div className="prose prose-sm max-w-none dark:prose-invert">
-              <div
-                className="whitespace-pre-wrap"
-                dangerouslySetInnerHTML={{ __html: formatMarkdown(steps) }}
-              />
+            <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:mt-4 prose-headings:mb-2 prose-li:my-0.5 prose-p:my-2 prose-hr:my-4">
+              <ReactMarkdown>{steps}</ReactMarkdown>
             </div>
           )}
         </div>
@@ -149,20 +255,4 @@ export function DiagnosticStepsDialog({
       </DialogContent>
     </Dialog>
   )
-}
-
-// Simple markdown formatter (basic support)
-function formatMarkdown(text: string): string {
-  return text
-    // Headers
-    .replace(/^### (.+)$/gm, '<h3 class="text-lg font-semibold mt-4 mb-2">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="text-xl font-bold mt-6 mb-3">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 class="text-2xl font-bold mt-8 mb-4">$1</h1>')
-    // Bold
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // Lists
-    .replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>')
-    // Line breaks
-    .replace(/\n\n/g, '<br/><br/>')
-    .replace(/\n/g, '<br/>')
 }

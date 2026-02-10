@@ -8,4 +8,5 @@ public interface IPlcTagFactoryService
     List<NativeTag> CreateReadTags(List<Io> tags);
     NativeTag CreateReadTag(string tagName);
     NativeTag CreateWriteTag(string tagName);
+    NativeTag CreateDintTag(string tagName);
 } 

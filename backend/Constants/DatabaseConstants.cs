@@ -2,9 +2,22 @@ namespace IO_Checkout_Tool.Constants;
 
 public static class DatabaseConstants
 {
-    // Connection Strings
-    public const string SQLITE_CONNECTION_STRING = "Data Source=database.db";
+    // Data directory (configurable via DATA_DIR env var for Docker)
+    public static string DataDir => Environment.GetEnvironmentVariable("DATA_DIR") ?? ".";
+
+    // Connection Strings (resolved at runtime for Docker support)
+    public static string SqliteConnectionString => $"Data Source={Path.Combine(DataDir, "database.db")}";
     public const string DATABASE_FILENAME = "database.db";
+    public static string DatabasePath => Path.Combine(DataDir, DATABASE_FILENAME);
+
+    // Logs directory
+    public static string LogsDir => Path.Combine(DataDir, "logs");
+
+    // Config file path
+    public static string ConfigFilePath => Path.Combine(DataDir, "config.json");
+
+    // Legacy constant for backward compatibility
+    public const string SQLITE_CONNECTION_STRING = "Data Source=database.db";
     
     // Configuration Keys
     public static class ConfigKeys

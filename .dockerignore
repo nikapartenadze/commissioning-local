@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# Build artifacts
+**/bin
+**/obj
+**/node_modules
+**/.next
+**/out
+
+# Portable distribution
+portable/
+IO-Checkout-Tool-Portable/
+
+# Temp files
+nul
+tmpclaude-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs
+*.md
+!backend/config-help.txt
+
+# Claude
+.claude/
+
+# Scripts (not needed in Docker)
+*.bat
+*.ps1

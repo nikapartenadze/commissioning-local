@@ -4,12 +4,12 @@ import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { 
-  Play, 
-  Square, 
-  BarChart3, 
-  Download, 
-  History, 
+import {
+  Play,
+  Square,
+  BarChart3,
+  Download,
+  History,
   Wifi,
   WifiOff,
   Cloud,
@@ -17,7 +17,8 @@ import {
   Cpu,
   Monitor,
   Zap,
-  ZapOff
+  ZapOff,
+  Filter
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -38,6 +39,8 @@ interface PlcToolbarProps {
   currentUser?: { isAdmin: boolean; fullName: string } | null
   onToggleSimulator?: () => void
   isSimulatorEnabled?: boolean
+  activeFilter?: 'failed' | 'not-tested' | 'passed' | null
+  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | null) => void
 }
 
 export function PlcToolbar({
@@ -56,7 +59,9 @@ export function PlcToolbar({
   onCloudSync,
   currentUser,
   onToggleSimulator,
-  isSimulatorEnabled = false
+  isSimulatorEnabled = false,
+  activeFilter = null,
+  onFilterChange
 }: PlcToolbarProps) {
   const [watchdogColor, setWatchdogColor] = useState("")
 
@@ -81,7 +86,7 @@ export function PlcToolbar({
               "transition-all duration-300 font-bold text-lg px-6 py-3",
               isTesting 
                 ? "bg-green-600 hover:bg-green-700 text-white shadow-lg" 
-                : "bg-blue-600 hover:bg-blue-700 text-white"
+                : "bg-amber-600 hover:bg-amber-700 text-white"
             )}
             onClick={() => {
               console.log('🔴 Start Testing button clicked!')
@@ -134,12 +139,48 @@ export function PlcToolbar({
 
         </div>
 
-        {/* Center - Status Indicators */}
-        <div className="flex items-center space-x-4">
-          {/* Pass Animation Placeholder */}
-          <div className="w-8 h-8 flex items-center justify-center">
-            {/* This would show pass animation when test passes */}
-          </div>
+        {/* Center - Quick Filters */}
+        <div className="flex items-center gap-1">
+          <Filter className="w-4 h-4 text-muted-foreground mr-1" />
+          <Button
+            variant={activeFilter === 'failed' ? 'default' : 'outline'}
+            size="sm"
+            className={cn(
+              "text-xs",
+              activeFilter === 'failed'
+                ? "bg-red-600 hover:bg-red-700 text-white"
+                : "text-red-600 border-red-200 hover:bg-red-50"
+            )}
+            onClick={() => onFilterChange?.(activeFilter === 'failed' ? null : 'failed')}
+          >
+            Failed ({failedIos})
+          </Button>
+          <Button
+            variant={activeFilter === 'not-tested' ? 'default' : 'outline'}
+            size="sm"
+            className={cn(
+              "text-xs",
+              activeFilter === 'not-tested'
+                ? "bg-gray-600 hover:bg-gray-700 text-white"
+                : "text-muted-foreground border-muted hover:bg-muted/50"
+            )}
+            onClick={() => onFilterChange?.(activeFilter === 'not-tested' ? null : 'not-tested')}
+          >
+            Not Tested ({notTestedIos})
+          </Button>
+          <Button
+            variant={activeFilter === 'passed' ? 'default' : 'outline'}
+            size="sm"
+            className={cn(
+              "text-xs",
+              activeFilter === 'passed'
+                ? "bg-green-600 hover:bg-green-700 text-white"
+                : "text-green-600 border-green-200 hover:bg-green-50"
+            )}
+            onClick={() => onFilterChange?.(activeFilter === 'passed' ? null : 'passed')}
+          >
+            Passed ({passedIos})
+          </Button>
         </div>
 
         {/* Right Side - Connection Status */}

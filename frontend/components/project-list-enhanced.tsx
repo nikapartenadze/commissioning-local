@@ -120,7 +120,7 @@ export function ProjectListEnhanced({
               <Badge variant="secondary" className="text-xs">
                 {project.subsystemCount} {project.subsystemCount === 1 ? 'Subsystem' : 'Subsystems'}
               </Badge>
-              <Badge variant="default" className="text-xs bg-blue-600">
+              <Badge variant="default" className="text-xs bg-amber-600">
                 {project.ioCount} IOs
               </Badge>
             </div>
@@ -134,7 +134,7 @@ export function ProjectListEnhanced({
             <div className="flex gap-2">
               <Button 
                 onClick={() => handleViewDashboard(project.id)}
-                className="flex-1 bg-blue-600 hover:bg-blue-700"
+                className="flex-1 bg-amber-600 hover:bg-amber-700"
               >
                 <Eye className="h-4 w-4 mr-2" />
                 View Dashboard
@@ -163,7 +163,7 @@ export function ProjectListEnhanced({
                   <div className="space-y-4">
                     {/* Configuration Information */}
                     <div className="flex items-start gap-3 p-3 bg-muted rounded-lg">
-                      <Info className="h-5 w-5 text-blue-500 mt-0.5" />
+                      <Info className="h-5 w-5 text-amber-500 mt-0.5" />
                       <div>
                         <h4 className="font-semibold text-sm">Configuration Information</h4>
                         <p className="text-xs text-muted-foreground mt-1">
@@ -178,7 +178,7 @@ export function ProjectListEnhanced({
                         project.subsystems.map((subsystem) => (
                           <div key={subsystem.id} className="flex items-center justify-between p-3 border rounded-lg">
                             <div className="flex-1">
-                              <div className="font-bold text-blue-600 text-lg">
+                              <div className="font-bold text-primary text-lg">
                                 {subsystem.name}
                               </div>
                               <div className="text-sm text-muted-foreground">
@@ -201,7 +201,7 @@ export function ProjectListEnhanced({
                               <Button
                                 size="sm"
                                 onClick={() => handleConnectToSubsystem(project, subsystem)}
-                                className="bg-blue-600 hover:bg-blue-700"
+                                className="bg-amber-600 hover:bg-amber-700"
                                 disabled={connecting === subsystem.id}
                               >
                                 {connecting === subsystem.id ? (

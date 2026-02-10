@@ -63,7 +63,7 @@ Write-Host "  Next Steps" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "1. Start the application (backend + frontend)" -ForegroundColor White
-Write-Host "2. Open: http://localhost:3000" -ForegroundColor White
+Write-Host "2. Open: http://localhost:3002" -ForegroundColor White
 Write-Host "3. Test the fail workflow with diagnostic steps!" -ForegroundColor White
 Write-Host ""
 Write-Host "See DIAGNOSTIC-SYSTEM-GUIDE.md for full documentation." -ForegroundColor Cyan
