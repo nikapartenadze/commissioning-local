@@ -157,8 +157,12 @@ export function getApiBaseUrl(): string {
 /**
  * Get the backend URL for server-side API routes.
  * This is the actual C# backend URL, only used in Next.js API routes.
+ * Configurable via BACKEND_URL env var for Docker deployment.
  */
 export function getBackendUrl(): string {
+  if (typeof process !== 'undefined' && process.env?.BACKEND_URL) {
+    return process.env.BACKEND_URL
+  }
   return `http://localhost:${BACKEND_PORT}`
 }
 
@@ -239,9 +243,13 @@ export const API_ENDPOINTS = {
 
   // Network Status
   networkChainStatus: '/api/backend/network/chain-status',
+  networkModules: '/api/backend/network/modules',
+  networkDevices: '/api/backend/network/devices',
 
   // History
   history: '/api/backend/history',
+  historyExport: '/api/backend/history/export',
+  historySyncToCloud: '/api/backend/history/sync-to-cloud',
 } as const
 
 /**

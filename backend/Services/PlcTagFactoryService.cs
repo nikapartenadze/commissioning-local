@@ -50,4 +50,21 @@ public class PlcTagFactoryService : IPlcTagFactoryService
         // For native implementation, read and write tags are the same
         return CreateReadTag(tagName);
     }
+
+    /// <summary>
+    /// Creates a DINT-sized tag for reading parent data structures.
+    /// Used by the DINT group optimization to read 32 boolean points in a single CIP request.
+    /// </summary>
+    public NativeTag CreateDintTag(string tagName)
+    {
+        var logger = _loggerFactory.CreateLogger<NativeTag>();
+        return new NativeTag(
+            tagName,
+            _configService.Ip,
+            _configService.Path,
+            timeout: PlcConstants.OptimizedTagTimeout,
+            logger: logger,
+            elemSize: 4,
+            elemCount: 1);
+    }
 } 

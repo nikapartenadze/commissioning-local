@@ -47,7 +47,7 @@ Open: `http://localhost:5000/api/simulator/enable` (POST request)
 
 ### **Step 3: Watch the Magic!**
 
-Open the frontend (`http://localhost:3000`) and watch I/O states change automatically! 🎉
+Open the frontend (`http://localhost:3002`) and watch I/O states change automatically! 🎉
 
 ---
 

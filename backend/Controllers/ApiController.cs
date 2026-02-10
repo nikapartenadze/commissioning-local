@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using IO_Checkout_Tool.Services.Interfaces;
+using IO_Checkout_Tool.Models;
 using Shared.Library.Models.Entities;
 using Shared.Library.DTOs;
 using Shared.Library.Repositories.Interfaces;
@@ -18,6 +20,7 @@ public class ApiController : ControllerBase
     private readonly ICloudSyncService _cloudSyncService;
     private readonly ISignalRService _signalRService;
     private readonly IIoTestService _ioTestService;
+    private readonly IDbContextFactory<TagsContext> _dbFactory;
     private readonly ILogger<ApiController> _logger;
     private static bool _isTesting = false;
 
@@ -29,6 +32,7 @@ public class ApiController : ControllerBase
         ICloudSyncService cloudSyncService,
         ISignalRService signalRService,
         IIoTestService ioTestService,
+        IDbContextFactory<TagsContext> dbFactory,
         ILogger<ApiController> logger)
     {
         _plcCommunication = plcCommunication;
@@ -38,6 +42,7 @@ public class ApiController : ControllerBase
         _cloudSyncService = cloudSyncService;
         _signalRService = signalRService;
         _ioTestService = ioTestService;
+        _dbFactory = dbFactory;
         _logger = logger;
     }
 
@@ -197,40 +202,45 @@ public class ApiController : ControllerBase
     {
         try
         {
-            var io = await _ioRepository.GetByIdAsync(id);
+            // Use a single DbContext + transaction so IO update and TestHistory are atomic
+            using var db = _dbFactory.CreateDbContext();
+            using var transaction = await db.Database.BeginTransactionAsync();
+
+            var io = await db.Ios.FirstOrDefaultAsync(x => x.Id == id);
             if (io == null)
             {
                 return NotFound($"IO with ID {id} not found");
             }
 
+            // Get live PLC state
+            var plcIo = _plcCommunication.TagList?.FirstOrDefault(t => t.Id == io.Id);
+
             // Preserve old comment for history before clearing
             var oldComment = io.Comments;
-            
+
             io.Result = "Passed";
             io.Timestamp = DateTime.UtcNow.ToString("MM/dd/yy h:mm:ss.fff tt");
-            // Clear comments when passing (unless explicitly provided)
             io.Comments = request?.Comments ?? null;
 
-            await _ioRepository.UpdateAsync(io);
-            await _ioRepository.SaveChangesAsync();
-
-            // Add test history - preserve old comment in history even though we cleared it on IO
+            // Add test history in the same transaction
             var testHistory = new TestHistory
             {
                 IoId = id,
                 Result = "Passed",
                 Timestamp = io.Timestamp,
-                Comments = oldComment, // Preserve the old comment in history, even if cleared on IO
-                State = io.State,
+                Comments = oldComment,
+                State = plcIo?.State ?? io.State,
                 TestedBy = request?.CurrentUser ?? "Unknown"
             };
-            await _testHistoryRepository.AddAsync(testHistory);
-            await _testHistoryRepository.SaveChangesAsync();
+            db.TestHistories.Add(testHistory);
 
-            // Refresh the TagList in PlcCommunicationService to reflect database changes
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            // Post-transaction: refresh, broadcast, sync (non-critical)
+            io.State = plcIo?.State;
             await _plcCommunication.RefreshTagListFromDatabaseAsync();
 
-            // Send SignalR update to frontend
             _logger.LogInformation("API: About to send IO update - ID: {Id}, Result: {Result}, State: {State}", io.Id, io.Result, io.State);
             await _signalRService.SendIOUpdateAsync(io);
 
@@ -251,37 +261,43 @@ public class ApiController : ControllerBase
     {
         try
         {
-            var io = await _ioRepository.GetByIdAsync(id);
+            // Use a single DbContext + transaction so IO update and TestHistory are atomic
+            using var db = _dbFactory.CreateDbContext();
+            using var transaction = await db.Database.BeginTransactionAsync();
+
+            var io = await db.Ios.FirstOrDefaultAsync(x => x.Id == id);
             if (io == null)
             {
                 return NotFound($"IO with ID {id} not found");
             }
 
+            // Get live PLC state
+            var plcIo = _plcCommunication.TagList?.FirstOrDefault(t => t.Id == io.Id);
+
             io.Result = "Failed";
             io.Timestamp = DateTime.UtcNow.ToString("MM/dd/yy h:mm:ss.fff tt");
             io.Comments = request?.Comments ?? io.Comments;
 
-            await _ioRepository.UpdateAsync(io);
-            await _ioRepository.SaveChangesAsync();
-
-            // Add test history
+            // Add test history in the same transaction
             var testHistory = new TestHistory
             {
                 IoId = id,
                 Result = "Failed",
                 Timestamp = io.Timestamp,
                 Comments = io.Comments,
-                State = io.State,
+                State = plcIo?.State ?? io.State,
                 TestedBy = request?.CurrentUser ?? "Unknown",
                 FailureMode = request?.FailureMode
             };
-            await _testHistoryRepository.AddAsync(testHistory);
-            await _testHistoryRepository.SaveChangesAsync();
+            db.TestHistories.Add(testHistory);
 
-            // Refresh the TagList in PlcCommunicationService to reflect database changes
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            // Post-transaction: refresh, broadcast, sync (non-critical)
+            io.State = plcIo?.State;
             await _plcCommunication.RefreshTagListFromDatabaseAsync();
 
-            // Send SignalR update to frontend
             _logger.LogInformation("API: About to send IO update - ID: {Id}, Result: {Result}, State: {State}", io.Id, io.Result, io.State);
             await _signalRService.SendIOUpdateAsync(io);
 
@@ -302,50 +318,46 @@ public class ApiController : ControllerBase
     {
         try
         {
-            var io = await _ioRepository.GetByIdAsync(id);
+            // Use a single DbContext + transaction so IO clear and TestHistory are atomic
+            using var db = _dbFactory.CreateDbContext();
+            using var transaction = await db.Database.BeginTransactionAsync();
+
+            var io = await db.Ios.FirstOrDefaultAsync(x => x.Id == id);
             if (io == null)
             {
                 return NotFound($"IO with ID {id} not found");
             }
 
-            // Store the old values BEFORE clearing - preserve actual comment for history
+            // Get live PLC state
+            var plcIo = _plcCommunication.TagList?.FirstOrDefault(t => t.Id == io.Id);
+
+            // Store old values BEFORE clearing
             var hadComments = !string.IsNullOrEmpty(io.Comments);
             var hadResult = !string.IsNullOrEmpty(io.Result);
-            var originalComment = io.Comments; // Preserve the actual comment
-            var originalResult = io.Result; // Preserve the actual result
-            
-            // Add history if there were comments or a previous result - preserve actual comment
+            var originalComment = io.Comments;
+            var originalResult = io.Result;
+
+            // Add history if there were comments or a previous result
+            string? historyComment = null;
             if (hadComments || hadResult)
             {
-                // Use the actual comment if it exists, otherwise create a descriptive message
-                string? historyComment;
                 if (hadComments)
-                {
-                    // Preserve the actual comment that was there
                     historyComment = originalComment;
-                }
                 else if (hadResult)
-                {
-                    // No comment but had result - describe what was cleared
                     historyComment = $"Cleared {originalResult} result";
-                }
                 else
-                {
                     historyComment = "Cleared comments";
-                }
-                
-                // Add test history with "Cleared" result, preserving actual comment
+
                 var testHistory = new TestHistory
                 {
                     IoId = id,
                     Result = "Cleared",
                     Timestamp = DateTime.UtcNow.ToString("MM/dd/yy h:mm:ss.fff tt"),
-                    Comments = historyComment, // Preserve actual comment instead of generic message
-                    State = io.State,
+                    Comments = historyComment,
+                    State = plcIo?.State ?? io.State,
                     TestedBy = request?.CurrentUser ?? "Unknown"
                 };
-                await _testHistoryRepository.AddAsync(testHistory);
-                await _testHistoryRepository.SaveChangesAsync();
+                db.TestHistories.Add(testHistory);
             }
 
             // Clear the IO result
@@ -353,27 +365,23 @@ public class ApiController : ControllerBase
             io.Timestamp = null;
             io.Comments = null;
 
-            await _ioRepository.UpdateAsync(io);
-            await _ioRepository.SaveChangesAsync();
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
 
-            // Sync cleared result to cloud - send null Result/Comments to actually clear on cloud
+            // Post-transaction: sync to cloud (non-critical, fire-and-forget)
             if (hadComments || hadResult)
             {
-                var history = await _testHistoryRepository.GetByIoIdAsync(id);
-                var testedBy = history.OrderByDescending(h => h.Timestamp).FirstOrDefault()?.TestedBy ?? request?.CurrentUser ?? "Unknown";
-                
                 var cloudUpdate = new IoUpdateDto
                 {
                     Id = io.Id,
-                    Result = null, // Send null to clear on cloud
-                    Timestamp = null, // Send null to clear on cloud
-                    Comments = null, // Send null to clear on cloud
-                    TestedBy = testedBy,
-                    State = io.State,
+                    Result = null,
+                    Timestamp = null,
+                    Comments = null,
+                    TestedBy = request?.CurrentUser ?? "Unknown",
+                    State = plcIo?.State,
                     Version = io.Version
                 };
-                
-                // Don't await - let it run in background
+
                 _ = _cloudSyncService.SyncIoUpdateAsync(cloudUpdate).ContinueWith(task =>
                 {
                     if (!task.Result)
@@ -383,10 +391,9 @@ public class ApiController : ControllerBase
                 }, TaskContinuationOptions.OnlyOnRanToCompletion);
             }
 
-            // Refresh the TagList in PlcCommunicationService to reflect database changes
+            io.State = plcIo?.State;
             await _plcCommunication.RefreshTagListFromDatabaseAsync();
 
-            // Send SignalR update to frontend
             _logger.LogInformation("API: About to send IO update - ID: {Id}, Result: {Result}, State: {State}", io.Id, io.Result, io.State);
             await _signalRService.SendIOUpdateAsync(io);
 
@@ -515,6 +522,91 @@ public class ApiController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting all history");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Export all test history as JSON (for backup/audit purposes)
+    /// </summary>
+    [HttpGet("history/export")]
+    public async Task<ActionResult> ExportHistory()
+    {
+        try
+        {
+            var history = await _testHistoryRepository.GetAllAsync();
+            var export = new
+            {
+                exportedAt = DateTime.UtcNow.ToString("o"),
+                subsystemId = _configuration.SubsystemId,
+                totalRecords = history.Count,
+                records = history.Select(h => new
+                {
+                    h.Id,
+                    h.IoId,
+                    ioName = h.Io?.Name,
+                    h.Result,
+                    h.Timestamp,
+                    h.Comments,
+                    h.TestedBy,
+                    h.State,
+                    h.FailureMode
+                })
+            };
+
+            var json = System.Text.Json.JsonSerializer.Serialize(export, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var fileName = $"test-history-export-{DateTime.UtcNow:yyyy-MM-dd-HHmmss}.json";
+
+            return File(bytes, "application/json", fileName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error exporting history");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Sync all test histories to cloud (best-effort, requires cloud endpoint support)
+    /// </summary>
+    [HttpPost("history/sync-to-cloud")]
+    public async Task<ActionResult<object>> SyncHistoryToCloud()
+    {
+        try
+        {
+            var history = await _testHistoryRepository.GetAllAsync();
+            if (!history.Any())
+            {
+                return Ok(new { success = true, message = "No test history to sync", count = 0 });
+            }
+
+            var subsystemId = int.Parse(_configuration.SubsystemId);
+            var historyDtos = history.Select(h => new TestHistoryDto
+            {
+                IoId = h.IoId,
+                Result = h.Result,
+                Timestamp = h.Timestamp,
+                Comments = h.Comments,
+                TestedBy = h.TestedBy,
+                State = h.State,
+                FailureMode = h.FailureMode
+            }).ToList();
+
+            var success = await _cloudSyncService.SyncTestHistoriesAsync(subsystemId, historyDtos);
+
+            return Ok(new
+            {
+                success,
+                message = success
+                    ? $"Successfully synced {historyDtos.Count} test history records to cloud"
+                    : "Cloud server does not support TestHistory sync yet. Use Export to download a backup.",
+                count = historyDtos.Count
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error syncing history to cloud");
             return StatusCode(500, "Internal server error");
         }
     }

@@ -19,6 +19,7 @@ public class NativeTag : IDisposable
     private int _tagHandle = -1;
     private readonly string _tagPath;
     private readonly ILogger<NativeTag> _logger;
+    private readonly int _elemSize;
     private volatile sbyte _currentValue;
     private volatile bool _hasValue;
     private bool _disposed;
@@ -74,13 +75,39 @@ public class NativeTag : IDisposable
         }
     }
     
-    public NativeTag(string name, string gateway, string path, int timeout = 5000, ILogger<NativeTag>? logger = null)
+    public NativeTag(string name, string gateway, string path, int timeout = 5000, ILogger<NativeTag>? logger = null, int elemSize = 1, int elemCount = 1)
     {
         Name = name;
         _logger = logger ?? new LoggerFactory().CreateLogger<NativeTag>();
-        
+        _elemSize = elemSize;
+
         // Build tag path similar to libplctag.NET
-        _tagPath = $"protocol=ab_eip&gateway={gateway}&path={path}&cpu=logix&elem_size=1&elem_count=1&name={name}";
+        _tagPath = $"protocol=ab_eip&gateway={gateway}&path={path}&cpu=logix&elem_size={elemSize}&elem_count={elemCount}&name={name}";
+    }
+
+    /// <summary>
+    /// Element size this tag was created with (1=SINT/BOOL, 4=DINT)
+    /// </summary>
+    public int ElemSize => _elemSize;
+
+    /// <summary>
+    /// Read a 32-bit integer from the tag's data buffer at the given byte offset.
+    /// Only valid for tags created with elemSize=4.
+    /// </summary>
+    public int GetInt32(int offset = 0)
+    {
+        if (_tagHandle < 0) return 0;
+        return LibPlcTag.plc_tag_get_int32(_tagHandle, offset);
+    }
+
+    /// <summary>
+    /// Read a single bit from the tag's data buffer.
+    /// Works for any tag size - reads the bit at the given bit offset.
+    /// </summary>
+    public int GetBit(int bitOffset)
+    {
+        if (_tagHandle < 0) return 0;
+        return LibPlcTag.plc_tag_get_bit(_tagHandle, bitOffset);
     }
     
     /// <summary>
@@ -172,21 +199,30 @@ public class NativeTag : IDisposable
             return tagStatus;
         }
         
-        // Read the initial value to complete validation
-        var initialValue = LibPlcTag.plc_tag_get_int8(_tagHandle, 0);
-        
-        // CRITICAL: For digital I/O tags, check if value indicates a fault condition
-        // Valid boolean values should only be 0 or 1. Anything else (like -21) indicates module fault/offline
-        if (initialValue != 0 && initialValue != 1)
+        if (_elemSize == 1)
         {
-            _logger.LogError("Tag {Name} has fault/offline value: {Value} (expected 0 or 1) - likely module offline or fault condition", Name, initialValue);
-            Dispose();
-            return LibPlcTag.PLCTAG_ERR_BAD_STATUS; // Use appropriate error code for fault condition
+            // Read the initial value to complete validation
+            var initialValue = LibPlcTag.plc_tag_get_int8(_tagHandle, 0);
+
+            // CRITICAL: For digital I/O tags, check if value indicates a fault condition
+            // Valid boolean values should only be 0 or 1. Anything else (like -21) indicates module fault/offline
+            if (initialValue != 0 && initialValue != 1)
+            {
+                _logger.LogError("Tag {Name} has fault/offline value: {Value} (expected 0 or 1) - likely module offline or fault condition", Name, initialValue);
+                Dispose();
+                return LibPlcTag.PLCTAG_ERR_BAD_STATUS; // Use appropriate error code for fault condition
+            }
+
+            _currentValue = initialValue;
         }
-        
-        _currentValue = initialValue;
+        else
+        {
+            // DINT tag - skip individual boolean validation, just verify we can read data
+            _logger.LogDebug("DINT tag {Name} initialized successfully (elem_size={ElemSize})", Name, _elemSize);
+        }
+
         _hasValue = true;
-        
+
         return LibPlcTag.PLCTAG_STATUS_OK;
     }
     
@@ -269,20 +305,27 @@ public class NativeTag : IDisposable
         
         if (status == LibPlcTag.PLCTAG_STATUS_OK)
         {
-            var newValue = LibPlcTag.plc_tag_get_int8(_tagHandle, 0);
-            var oldValue = _currentValue;
-            _currentValue = newValue;
-            _hasValue = true;
-            
-            if (oldValue != newValue)
+            if (_elemSize == 1)
             {
-                ValueChanged?.Invoke(this, EventArgs.Empty);
+                var newValue = LibPlcTag.plc_tag_get_int8(_tagHandle, 0);
+                var oldValue = _currentValue;
+                _currentValue = newValue;
+                _hasValue = true;
+
+                if (oldValue != newValue)
+                {
+                    ValueChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+            else
+            {
+                _hasValue = true;
             }
         }
-        
+
         return status;
     }
-    
+
     public async Task<int> ReadAsync(CancellationToken cancellationToken = default)
     {
         if (_tagHandle < 0)
@@ -307,14 +350,23 @@ public class NativeTag : IDisposable
             {
                 if (status == LibPlcTag.PLCTAG_STATUS_OK)
                 {
-                    var newValue = LibPlcTag.plc_tag_get_int8(_tagHandle, 0);
-                    var oldValue = _currentValue;
-                    _currentValue = newValue;
-                    _hasValue = true;
-                    
-                    if (oldValue != newValue)
+                    if (_elemSize == 1)
                     {
-                        ValueChanged?.Invoke(this, EventArgs.Empty);
+                        // Boolean/SINT tag - extract int8 value and fire change event
+                        var newValue = LibPlcTag.plc_tag_get_int8(_tagHandle, 0);
+                        var oldValue = _currentValue;
+                        _currentValue = newValue;
+                        _hasValue = true;
+
+                        if (oldValue != newValue)
+                        {
+                            ValueChanged?.Invoke(this, EventArgs.Empty);
+                        }
+                    }
+                    else
+                    {
+                        // DINT tag - data is in the buffer, caller uses GetInt32()/GetBit() to extract
+                        _hasValue = true;
                     }
                 }
                 return status;

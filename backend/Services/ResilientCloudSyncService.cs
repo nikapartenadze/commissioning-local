@@ -180,6 +180,61 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         return successCount == updates.Count;
     }
 
+    public async Task<bool> SyncTestHistoriesAsync(int subsystemId, List<TestHistoryDto> histories)
+    {
+        if (!histories.Any())
+            return true;
+
+        var cloudUrl = _configService.RemoteUrl;
+        if (string.IsNullOrEmpty(cloudUrl))
+        {
+            _logger.LogWarning("Cloud URL not configured — cannot sync TestHistories");
+            return false;
+        }
+
+        try
+        {
+            var batch = new TestHistorySyncBatchDto
+            {
+                SubsystemId = subsystemId,
+                Histories = histories
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{cloudUrl}/api/sync/test-histories");
+            request.Content = JsonContent.Create(batch);
+            AddApiKeyHeader(request);
+
+            var response = await _httpClient.SendAsync(request, cts.Token);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation("Successfully synced {Count} TestHistory records to cloud", histories.Count);
+                return true;
+            }
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogDebug("Cloud server does not support TestHistory sync endpoint yet (404). " +
+                    "TestHistories are preserved locally and in database backups.");
+                return false;
+            }
+
+            _logger.LogWarning("Failed to sync TestHistories to cloud: {StatusCode}", response.StatusCode);
+            return false;
+        }
+        catch (TaskCanceledException)
+        {
+            _logger.LogDebug("TestHistory sync timed out — cloud endpoint may not be available yet");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "TestHistory sync failed — cloud endpoint may not be available yet");
+            return false;
+        }
+    }
+
     private async Task<bool> TryRealtimeSync(IoUpdateDto update)
     {
         _logger.LogInformation("=== TryRealtimeSync starting for IO {Id} ===", update.Id);
@@ -951,25 +1006,25 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
     {
         try
         {
-            _logger.LogInformation("Clearing all existing local data...");
-            
+            _logger.LogInformation("Clearing local IO data (preserving TestHistories audit trail)...");
+
             var allLocalIos = await ioRepository.GetAllAsync();
-            
+
             if (!allLocalIos.Any())
             {
                 _logger.LogInformation("No existing local data to clear");
                 return;
             }
-            
-            _logger.LogInformation("Found {Count} existing IOs to clear", allLocalIos.Count);
-            
+
+            _logger.LogInformation("Found {Count} existing IOs to clear (TestHistories will be preserved)", allLocalIos.Count);
+
             foreach (var ioToDelete in allLocalIos)
             {
                 if (ioToDelete.Id <= 0) continue;
-                
+
                 try
                 {
-                    await DeleteIoWithRelatedData(ioToDelete.Id);
+                    await DeleteIoPreservingHistory(ioToDelete.Id);
                     _logger.LogDebug("Cleared IO: {Name} (ID: {Id})", ioToDelete.Name, ioToDelete.Id);
                 }
                 catch (Exception ex)
@@ -977,8 +1032,8 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
                     _logger.LogError(ex, "Failed to clear IO {Id} ({Name})", ioToDelete.Id, ioToDelete.Name);
                 }
             }
-            
-            _logger.LogInformation("Completed clearing all existing local data");
+
+            _logger.LogInformation("Completed clearing local IO data (TestHistories preserved)");
         }
         catch (Exception ex)
         {
@@ -986,28 +1041,28 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         }
     }
 
-    private async Task DeleteIoWithRelatedData(int ioId)
+    private async Task DeleteIoPreservingHistory(int ioId)
     {
         // Use a new scope for each deletion to avoid transaction conflicts
         using var deleteScope = _serviceProvider.CreateScope();
         var deleteIoRepo = deleteScope.ServiceProvider.GetRequiredService<IIoRepository>();
-        var deleteHistoryRepo = deleteScope.ServiceProvider.GetRequiredService<ITestHistoryRepository>();
         var deletePendingRepo = deleteScope.ServiceProvider.GetRequiredService<IPendingSyncRepository>();
-        
-        // Delete related test history first
-        await deleteHistoryRepo.DeleteByIoIdAsync(ioId);
-        
-        // Remove any pending syncs for this IO
+
+        // NOTE: TestHistories are intentionally NOT deleted here.
+        // The audit trail (who tested what, when, with what comments) must survive nuclear syncs.
+        // TestHistories reference IoId which will be re-created with the same ID from cloud.
+
+        // Remove any pending syncs for this IO (already attempted pre-sync above)
         var pendingSyncs = await deletePendingRepo.GetAllPendingSyncsAsync();
         var syncsToRemove = pendingSyncs.Where(ps => ps.IoId == ioId)
             .Select(ps => ps.Id).ToList();
-        
+
         if (syncsToRemove.Any())
         {
             await deletePendingRepo.RemovePendingSyncsAsync(syncsToRemove);
         }
-        
-        // Delete the IO itself
+
+        // Delete the IO itself (will be re-created from cloud data)
         await deleteIoRepo.DeleteAsync(ioId);
     }
 

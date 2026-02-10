@@ -94,10 +94,10 @@ export function ConnectionStatusIndicator({
       {currentStatus.testing.active && (
         <div className="flex items-center space-x-2">
           <div className="flex items-center space-x-1">
-            <Clock className="h-4 w-4 text-blue-500" />
+            <Clock className="h-4 w-4 text-amber-500" />
             <span className="text-sm font-medium">Testing</span>
           </div>
-          <Badge variant="default" className="text-xs bg-blue-500">
+          <Badge variant="default" className="text-xs bg-amber-500">
             Active
           </Badge>
         </div>
@@ -188,7 +188,7 @@ export function CompactConnectionStatus({
       {/* Testing Status */}
       {currentStatus.testing.active && (
         <div className="flex items-center space-x-1">
-          <Clock className="h-4 w-4 text-blue-500" />
+          <Clock className="h-4 w-4 text-amber-500" />
           <span className="text-xs">Testing</span>
         </div>
       )}

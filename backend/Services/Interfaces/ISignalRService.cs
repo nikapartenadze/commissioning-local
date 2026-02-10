@@ -37,4 +37,10 @@ public interface ISignalRService
     /// Broadcasts comment update to all connected clients.
     /// </summary>
     Task BroadcastCommentUpdate(int ioId, string? comments);
+
+    /// <summary>
+    /// Broadcasts network module status change to all connected clients.
+    /// Used to push real-time module health updates to the UI.
+    /// </summary>
+    Task BroadcastNetworkStatusChanged(string moduleName, string status, int errorCount);
 } 
