@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -14,6 +14,7 @@ export function PinLogin() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const { setCurrentUser } = useUser()
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const handleNumberClick = (num: string) => {
     if (pin.length < 6) {
@@ -59,6 +60,9 @@ export function PinLogin() {
 
         if (response.ok) {
           const userData = await response.json()
+          if (userData.token) {
+            localStorage.setItem('authToken', userData.token)
+          }
           setCurrentUser({
             fullName: userData.fullName,
             isAdmin: userData.isAdmin,
@@ -81,34 +85,10 @@ export function PinLogin() {
     }
   }
 
-  const handlePaste = (e: ClipboardEvent) => {
-    e.preventDefault()
-    const pastedText = e.clipboardData?.getData('text') || ''
-    const digits = pastedText.replace(/\D/g, '').slice(0, 6)
-    if (digits.length > 0) {
-      setPin(digits)
-      setError('')
-    }
-  }
-
-  const handleKeyPress = (e: KeyboardEvent) => {
-    if (e.key >= '0' && e.key <= '9') {
-      handleNumberClick(e.key)
-    } else if (e.key === 'Backspace') {
-      handleBackspace()
-    } else if (e.key === 'Enter' && pin.length === 6) {
-      handleLogin()
-    }
-  }
-
+  // Auto-focus input on mount
   useEffect(() => {
-    window.addEventListener('keydown', handleKeyPress)
-    window.addEventListener('paste', handlePaste as any)
-    return () => {
-      window.removeEventListener('keydown', handleKeyPress)
-      window.removeEventListener('paste', handlePaste as any)
-    }
-  }, [pin])
+    inputRef.current?.focus()
+  }, [])
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
@@ -142,8 +122,33 @@ export function PinLogin() {
                 )}
               </Button>
             </div>
-            <div className="flex justify-center items-center h-20 bg-muted/50 border-2 border-primary/30 rounded-lg">
-              <div className="flex gap-3 font-mono text-4xl font-bold">
+            <div
+              className="relative flex justify-center items-center h-20 bg-muted/50 border-2 border-primary/30 rounded-lg cursor-text"
+              onClick={() => inputRef.current?.focus()}
+            >
+              {/* Hidden input for keyboard/paste support */}
+              <input
+                ref={inputRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                autoFocus
+                className="absolute opacity-0 w-full h-full cursor-text"
+                value={pin}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/\D/g, '').slice(0, 6)
+                  setPin(digits)
+                  setError('')
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && pin.length === 6) {
+                    handleLogin()
+                  }
+                }}
+                disabled={loading}
+              />
+              <div className="flex gap-3 font-mono text-4xl font-bold pointer-events-none">
                 {Array.from({ length: 6 }).map((_, i) => (
                   <span key={i} className="w-10 text-center">
                     {showPin ? (pin[i] || '·') : (pin[i] ? '●' : '·')}

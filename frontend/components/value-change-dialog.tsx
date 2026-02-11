@@ -38,7 +38,7 @@ export function ValueChangeDialog({
 
   const isOutput = (ioName: string | null): boolean => {
     if (!ioName) return false
-    return ioName.includes(':O.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.toLowerCase().includes('output')
+    return ioName.includes(':O.') || ioName.includes(':SO.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO')
   }
 
   const isOutputTag = isOutput(io.name)
@@ -58,8 +58,18 @@ export function ValueChangeDialog({
     onOpenChange(false)
   }
 
+  // Handle dialog close attempt (clicking outside, pressing Escape)
+  // Treat as Cancel to prevent queue from freezing
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen && io) {
+      // User is closing dialog without clicking Pass/Fail - treat as Cancel
+      onCancel(io)
+    }
+    onOpenChange(newOpen)
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{isOutputTag ? 'Output fired' : 'Input value changed'}</DialogTitle>

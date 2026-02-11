@@ -10,9 +10,11 @@ import { TestResultsChart } from "@/components/test-results-chart"
 import { AllTestHistoryDialog } from "@/components/all-test-history-dialog"
 import { FireOutputDialog } from "@/components/fire-output-dialog"
 import { NetworkStatusBreadcrumbs } from "@/components/network-status-breadcrumbs"
+import { TagStatusPanel } from "@/components/tag-status-panel"
 import { ValueChangeDialog } from "@/components/value-change-dialog"
 import { FailCommentDialog } from "@/components/fail-comment-dialog"
 import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
+import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -27,8 +29,9 @@ import {
   PlcConnectionStatus,
   IoState
 } from "@/lib/plc-communication"
-import { useSignalR, IOUpdate, CommentUpdate } from "@/lib/signalr-client"
-import { API_ENDPOINTS, getSignalRHubUrl } from "@/lib/api-config"
+import { useSignalR, IOUpdate, CommentUpdate, ErrorEvent } from "@/lib/signalr-client"
+import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/lib/api-config"
+import { logger } from "@/lib/logger"
 
 interface IoItem {
   id: number
@@ -85,13 +88,13 @@ export default function CommissioningPage() {
   useEffect(() => {
     const checkSimulatorStatus = async () => {
       try {
-        const response = await fetch(API_ENDPOINTS.simulatorStatus)
+        const response = await authFetch(API_ENDPOINTS.simulatorStatus)
         if (response.ok) {
           const data = await response.json()
           setIsSimulatorEnabled(data.enabled)
         }
       } catch (error) {
-        console.error('Error checking simulator status:', error)
+        logger.error('Error checking simulator status:', error)
       }
     }
     
@@ -106,7 +109,6 @@ export default function CommissioningPage() {
   const [plcStatus, setPlcStatus] = useState<PlcConnectionStatus>({
     isConnected: false,
     isTesting: false,
-    watchdogActive: false,
     lastUpdate: new Date()
   })
   const [showConfigDialog, setShowConfigDialog] = useState(false)
@@ -128,12 +130,13 @@ export default function CommissioningPage() {
   const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false)
   const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | null>(null)
   const [confirmClearIo, setConfirmClearIo] = useState<IoItem | null>(null)
-  
+  const [errorLog, setErrorLog] = useState<ErrorEvent[]>([])
+
 
   // Helper function to check if an IO is an output
   const isOutput = (ioName: string | null): boolean => {
     if (!ioName) return false
-    return ioName.includes(':O.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.toLowerCase().includes('output')
+    return ioName.includes(':O.') || ioName.includes(':SO.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO')
   }
 
   // Auto-show next dialog from queue
@@ -204,7 +207,7 @@ export default function CommissioningPage() {
       
       router.push(`/commissioning/${subsystemId}`)
     } catch (error) {
-      console.error('Failed to switch subsystem:', error)
+      logger.error('Failed to switch subsystem:', error)
     }
   }
 
@@ -218,7 +221,6 @@ export default function CommissioningPage() {
     ip: "192.168.1.100",
     path: "1,0",
     subsystemId: projectId.toString(), // Use the URL parameter as initial subsystem ID
-    disableWatchdog: false,
     apiPassword: "",
     remoteUrl: ""
   })
@@ -229,14 +231,13 @@ export default function CommissioningPage() {
   // Load PLC config function (defined before useEffect that uses it)
   const loadPlcConfig = useCallback(async (updateTestingState: boolean = true) => {
     try {
-      const response = await fetch(API_ENDPOINTS.status)
+      const response = await fetchWithRetry(API_ENDPOINTS.status)
       if (response.ok) {
         const status = await response.json()
         const newConfig = {
           ip: status.plcIp || "192.168.20.14",
-          path: status.plcPath || "1,1", 
+          path: status.plcPath || "1,1",
           subsystemId: status.subsystemId || "16",
-          disableWatchdog: status.disableTesting || false,
           apiPassword: status.apiPassword || "",
           remoteUrl: status.remoteUrl || ""
         }
@@ -246,7 +247,6 @@ export default function CommissioningPage() {
           if (prev.ip === newConfig.ip && 
               prev.path === newConfig.path && 
               prev.subsystemId === newConfig.subsystemId &&
-              prev.disableWatchdog === newConfig.disableWatchdog &&
               prev.apiPassword === newConfig.apiPassword &&
               prev.remoteUrl === newConfig.remoteUrl) {
             return prev // Return same reference if nothing changed
@@ -383,6 +383,29 @@ export default function CommissioningPage() {
     }
   }, [signalR.onCommentUpdate, signalR.offCommentUpdate])
 
+  // Handle SignalR error events (backend-pushed errors + connection state changes)
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      // Add to error log (newest first, max 50)
+      setErrorLog(prev => [event, ...prev].slice(0, 50))
+
+      // Show toast for errors and warnings
+      if (event.severity === 'error') {
+        toast({ title: event.message, variant: "destructive" })
+      } else if (event.severity === 'warning') {
+        toast({ title: event.message })
+      } else if (event.severity === 'info') {
+        toast({ title: event.message })
+      }
+    }
+
+    signalR.onError(handleError)
+
+    return () => {
+      signalR.offError(handleError)
+    }
+  }, [signalR.onError, signalR.offError])
+
   // Handle SignalR real-time updates
   useEffect(() => {
     if (process.env.NODE_ENV === 'development') {
@@ -479,8 +502,8 @@ export default function CommissioningPage() {
   const loadIos = async () => {
     try {
       setLoading(true)
-      // Load IOs from C# backend (real PLC data)
-      const response = await fetch(API_ENDPOINTS.ios)
+      // Load IOs from C# backend (real PLC data) - retry on failure
+      const response = await fetchWithRetry(API_ENDPOINTS.ios)
       if (response.ok) {
         const data = await response.json()
         setIos(data)
@@ -489,16 +512,14 @@ export default function CommissioningPage() {
         // First untested IO found (for future use)
         // const firstUntested = data.find((io: IoItem) => !io.result)
       } else {
-        console.error('Failed to load IOs from C# backend:', response.status)
-        // No fallback - C# backend is required
-        console.error('❌ C# backend is required for IO data')
+        logger.error('Failed to load IOs from C# backend:', response.status)
+        toast({ title: "Failed to load IO data", description: `Backend returned ${response.status}`, variant: "destructive" })
         setIos([])
         setFilteredIos([])
       }
     } catch (error) {
-      console.error('Error loading IOs:', error)
-      // No fallback - C# backend is required
-      console.error('❌ C# backend is required for IO data')
+      logger.error('Error loading IOs:', error)
+      toast({ title: "Failed to load IO data", description: "Cannot connect to backend server", variant: "destructive" })
       setIos([])
       setFilteredIos([])
     } finally {
@@ -522,7 +543,7 @@ export default function CommissioningPage() {
       if (process.env.NODE_ENV === 'development') {
         console.log(`🔥 Firing output ${action} for ${io.name}...`)
       }
-      const response = await fetch(API_ENDPOINTS.ioFireOutput(io.id), {
+      const response = await authFetch(API_ENDPOINTS.ioFireOutput(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action })
@@ -536,24 +557,28 @@ export default function CommissioningPage() {
         // SignalR will handle the real-time update
       } else {
         const errorText = await response.text()
-        console.error(`❌ Failed to ${action} output:`, response.status, errorText)
+        logger.error(`Failed to ${action} output:`, response.status, errorText)
       }
     } catch (error) {
-      console.error(`❌ Error ${action}ing output:`, error)
+      logger.error(`Error ${action}ing output:`, error)
     }
   }
 
   const handleMarkPassed = async (io: IoItem) => {
+    // Save previous state for rollback
+    const previousResult = io.result
+    const previousTimestamp = io.timestamp
+
     try {
       // Optimistically update UI immediately for better UX
-      setIos(prevIos => prevIos.map(i => 
+      setIos(prevIos => prevIos.map(i =>
         i.id === io.id ? { ...i, result: 'Passed', timestamp: new Date().toISOString() } : i
       ))
-      
+
       if (process.env.NODE_ENV === 'development') {
-        console.log('🚀 Calling C# backend to mark IO as passed:', io.id, io.name)
+        console.log('Calling C# backend to mark IO as passed:', io.id, io.name)
       }
-      const response = await fetch(API_ENDPOINTS.ioPass(io.id), {
+      const response = await authFetch(API_ENDPOINTS.ioPass(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -561,35 +586,44 @@ export default function CommissioningPage() {
           currentUser: currentUser?.fullName || 'Unknown'
         })
       })
-      
+
       if (response.ok) {
-        const result = await response.json()
-        if (process.env.NODE_ENV === 'development') {
-          console.log('✅ IO marked as passed via C# backend:', result)
-        }
         toast({ title: `${io.name} marked as Passed` })
       } else {
         const errorText = await response.text()
-        console.error('❌ Failed to mark IO as passed:', response.status, errorText)
+        logger.error('Failed to mark IO as passed:', response.status, errorText)
+        // Rollback optimistic update
+        setIos(prevIos => prevIos.map(i =>
+          i.id === io.id ? { ...i, result: previousResult, timestamp: previousTimestamp } : i
+        ))
         toast({ title: "Failed to mark as passed", description: errorText, variant: "destructive" })
       }
     } catch (error) {
-      console.error('❌ Error marking IO as passed:', error)
+      logger.error('Error marking IO as passed:', error)
+      // Rollback optimistic update
+      setIos(prevIos => prevIos.map(i =>
+        i.id === io.id ? { ...i, result: previousResult, timestamp: previousTimestamp } : i
+      ))
       toast({ title: "Failed to mark as passed", description: "Network error", variant: "destructive" })
     }
   }
 
   const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
+    // Save previous state for rollback
+    const previousResult = io.result
+    const previousComments = io.comments
+    const previousTimestamp = io.timestamp
+
     try {
       // Optimistically update UI immediately for better UX
-      setIos(prevIos => prevIos.map(i => 
+      setIos(prevIos => prevIos.map(i =>
         i.id === io.id ? { ...i, result: 'Failed', comments, timestamp: new Date().toISOString() } : i
       ))
-      
+
       if (process.env.NODE_ENV === 'development') {
-        console.log('🚀 Calling C# backend to mark IO as failed:', io.id, io.name, comments, failureMode)
+        console.log('Calling C# backend to mark IO as failed:', io.id, io.name, comments, failureMode)
       }
-      const response = await fetch(API_ENDPOINTS.ioFail(io.id), {
+      const response = await authFetch(API_ENDPOINTS.ioFail(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -598,27 +632,31 @@ export default function CommissioningPage() {
           failureMode
         })
       })
-      
+
       if (response.ok) {
-        const result = await response.json()
-        if (process.env.NODE_ENV === 'development') {
-          console.log('✅ IO marked as failed via C# backend:', result)
-        }
         toast({ title: `${io.name} marked as Failed`, variant: "destructive" })
       } else {
         const errorText = await response.text()
-        console.error('❌ Failed to mark IO as failed:', response.status, errorText)
+        logger.error('Failed to mark IO as failed:', response.status, errorText)
+        // Rollback optimistic update
+        setIos(prevIos => prevIos.map(i =>
+          i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+        ))
         toast({ title: "Failed to mark as failed", description: errorText, variant: "destructive" })
       }
     } catch (error) {
-      console.error('❌ Error marking IO as failed:', error)
+      logger.error('Error marking IO as failed:', error)
+      // Rollback optimistic update
+      setIos(prevIos => prevIos.map(i =>
+        i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+      ))
       toast({ title: "Failed to mark as failed", description: "Network error", variant: "destructive" })
     }
   }
 
   const handleClearResult = async (io: IoItem) => {
     try {
-      const response = await fetch(API_ENDPOINTS.ioClear(io.id), {
+      const response = await authFetch(API_ENDPOINTS.ioClear(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -632,10 +670,10 @@ export default function CommissioningPage() {
         }
         // SignalR will handle the real-time update
       } else {
-        console.error('❌ Failed to clear IO:', response.status)
+        logger.error('Failed to clear IO:', response.status)
       }
     } catch (error) {
-      console.error('❌ Error clearing IO:', error)
+      logger.error('Error clearing IO:', error)
     }
   }
 
@@ -713,7 +751,7 @@ export default function CommissioningPage() {
         console.log('💬 Updating comment for IO:', io.id, io.name, comment)
       }
 
-      const response = await fetch(API_ENDPOINTS.ioComment(io.id), {
+      const response = await authFetch(API_ENDPOINTS.ioComment(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ comments: comment })
@@ -725,10 +763,10 @@ export default function CommissioningPage() {
         }
         // SignalR will broadcast the update to other clients
       } else {
-        console.error('❌ Failed to update comment:', response.status)
+        logger.error('Failed to update comment:', response.status)
       }
     } catch (error) {
-      console.error('❌ Error updating comment:', error)
+      logger.error('Error updating comment:', error)
     }
   }
 
@@ -736,7 +774,7 @@ export default function CommissioningPage() {
     try {
       // Clear all test results
       const clearPromises = ios.map(io =>
-        fetch(API_ENDPOINTS.ioClear(io.id), {
+        authFetch(API_ENDPOINTS.ioClear(io.id), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -750,9 +788,9 @@ export default function CommissioningPage() {
       // Reload IOs to get updated data
       await loadIos()
       
-      console.log('✅ All test results cleared')
+      logger.log('All test results cleared')
     } catch (error) {
-      console.error('❌ Error clearing test results:', error instanceof Error ? error.message : error)
+      logger.error('Error clearing test results:', error instanceof Error ? error.message : error)
     }
   }
 
@@ -770,33 +808,31 @@ export default function CommissioningPage() {
       
       if (response.ok) {
         setIsSimulatorEnabled(!isSimulatorEnabled)
-        console.log(`🎮 Simulator ${!isSimulatorEnabled ? 'enabled' : 'disabled'}`)
+        logger.log(`Simulator ${!isSimulatorEnabled ? 'enabled' : 'disabled'}`)
       } else {
-        console.error('Failed to toggle simulator')
+        logger.error('Failed to toggle simulator')
       }
     } catch (error) {
-      console.error('Error toggling simulator:', error)
+      logger.error('Error toggling simulator:', error)
     }
   }
 
   const handleConfigChange = async (newConfig: PlcConfig) => {
-    console.log('🔄 Config change triggered with:', newConfig)
+    logger.log('Config change triggered with:', newConfig)
     setPlcConfig(newConfig)
     setShowConfigDialog(false)
-    
+
     // Wait a bit for C# backend to process the config change
-    console.log('⏳ Waiting for C# backend to process config change...')
     await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    // Reload the page to ensure fresh data (this is what actually works)
-    console.log('🔄 Reloading page to show new subsystem data...')
+
+    // Reload the page to ensure fresh data
     window.location.reload()
   }
 
   const handleTestConnection = async (): Promise<boolean> => {
     // Test connection via C# backend (real PLC communication)
     try {
-      const response = await fetch(API_ENDPOINTS.plcTestConnection, {
+      const response = await authFetch(API_ENDPOINTS.plcTestConnection, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -807,48 +843,32 @@ export default function CommissioningPage() {
       const result = await response.json()
       return result.success
     } catch (error) {
-      console.error('C# backend connection test failed:', error)
-      // No fallback - C# backend is required for PLC communication
-      console.error('❌ C# backend is required for PLC communication')
+      logger.error('C# backend connection test failed:', error)
       return false
     }
   }
 
   const handleToggleTesting = async () => {
-    console.log('🟡 handleToggleTesting called!')
-    console.log('🟡 Current testing state:', plcStatus.isTesting)
-    
     try {
-      console.log('🟡 Making request to C# backend...')
-      const response = await fetch(API_ENDPOINTS.testingToggle, {
+      const response = await authFetch(API_ENDPOINTS.testingToggle, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
-      
-      console.log('🟡 Response status:', response.status)
-      console.log('🟡 Response ok:', response.ok)
-      
+
       if (response.ok) {
         const result = await response.json()
-        console.log('✅ Testing toggled via C# backend:', result)
-        console.log('✅ New testing state from backend:', result.isTesting)
-        
-        // Update local state
-        setPlcStatus(prev => {
-          const newState = {
-            ...prev,
-            isTesting: result.isTesting
-          }
-          console.log('✅ Updated local state:', newState)
-          return newState
-        })
+        logger.log('Testing toggled:', result.isTesting)
+
+        setPlcStatus(prev => ({
+          ...prev,
+          isTesting: result.isTesting
+        }))
       } else {
         const errorText = await response.text()
-        console.error('❌ Failed to toggle testing:', response.status, errorText)
+        logger.error('Failed to toggle testing:', response.status, errorText)
       }
     } catch (error) {
-      console.error('❌ Error toggling testing:', error)
-      console.error('❌ Error details:', error instanceof Error ? error.message : error)
+      logger.error('Error toggling testing:', error)
     }
   }
 
@@ -882,69 +902,86 @@ export default function CommissioningPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
-        <div className="container mx-auto px-4 py-8">
-          <div className="flex items-center justify-center h-64">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-              <p className="text-muted-foreground">Loading IO data...</p>
-            </div>
-          </div>
+      <div className="h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-4 border-primary border-t-transparent mx-auto mb-4"></div>
+          <p className="text-lg font-medium text-muted-foreground">Loading IO data...</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
-      {/* Navbar */}
-      <header className="border-b bg-card/50 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-3 sm:py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold">IO Checkout Tool</h1>
-                <span className="text-muted-foreground">•</span>
-                <span className="text-sm text-muted-foreground">Subsystem {plcConfig.subsystemId}</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <UserMenu />
-              <ThemeToggle />
-            </div>
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
+      {/* Compact Header Bar */}
+      <header className="bg-card border-b flex-shrink-0 z-50">
+        <div className="flex items-center justify-between px-4 h-12">
+          <div className="flex items-center gap-4">
+            <h1 className="text-lg font-bold tracking-tight">IO CHECKOUT</h1>
+            <div className="h-6 w-px bg-border" />
+            <span className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
+              SUB {plcConfig.subsystemId}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <UserMenu />
+            <ThemeToggle />
           </div>
         </div>
       </header>
 
-      <div className="container mx-auto px-4 py-4">
-             {/* Network Status Bar - persistent overview of system health */}
-             <NetworkStatusBreadcrumbs className="mb-4" />
+      {/* SignalR Connection Warning - Shows when real-time updates are disconnected */}
+      {!signalR.isConnected && (
+        <div className="bg-red-500/10 border-b border-red-500/30 px-4 py-2 flex items-center gap-2 flex-shrink-0">
+          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          <span className="text-sm text-red-600 dark:text-red-400 font-medium">
+            Real-time connection lost — Reconnecting...
+          </span>
+        </div>
+      )}
 
-             {/* PLC Toolbar */}
-             <PlcToolbar
-               isTesting={plcStatus.isTesting}
-               isPlcConnected={plcStatus.isConnected}
-               isCloudConnected={true} // Assume cloud is connected for now
-               totalIos={ios.length}
-               passedIos={ios.filter(io => io.result === 'Passed').length}
-               failedIos={ios.filter(io => io.result === 'Failed').length}
-               notTestedIos={ios.filter(io => !io.result).length}
-               onToggleTesting={handleToggleTesting}
-               onShowGraph={() => setShowGraph(true)}
-               onDownloadCsv={handleDownloadCsv}
-               onShowHistory={() => setShowHistoryDialog(true)}
-               onShowConfig={() => setShowConfigDialog(true)}
-               onCloudSync={handleCloudSync}
-               currentUser={currentUser}
-               onToggleSimulator={handleToggleSimulator}
-               isSimulatorEnabled={isSimulatorEnabled}
-               activeFilter={quickFilter}
-               onFilterChange={setQuickFilter}
-             />
+      {/* Network Status - Shows PLC path, cloud connection, etc */}
+      <NetworkStatusBreadcrumbs className="flex-shrink-0 border-b" />
 
-        {/* Main Content */}
-        <div className="mt-6">
-          <EnhancedIoDataGrid
+      {/* Tag Status Panel - Shows PLC tag connection errors */}
+      <TagStatusPanel className="flex-shrink-0" />
+
+      {/* Error Log - Collapsible, only shows when errors exist */}
+      {errorLog.length > 0 && (
+        <ErrorLogPanel
+          errors={errorLog}
+          onClear={() => setErrorLog([])}
+          className="flex-shrink-0"
+        />
+      )}
+
+      {/* Main Toolbar - Full width */}
+      <div className="flex-shrink-0">
+        <PlcToolbar
+          isTesting={plcStatus.isTesting}
+          isPlcConnected={plcStatus.isConnected}
+          isCloudConnected={true}
+          totalIos={ios.length}
+          passedIos={ios.filter(io => io.result === 'Passed').length}
+          failedIos={ios.filter(io => io.result === 'Failed').length}
+          notTestedIos={ios.filter(io => !io.result).length}
+          onToggleTesting={handleToggleTesting}
+          onShowGraph={() => setShowGraph(true)}
+          onDownloadCsv={handleDownloadCsv}
+          onShowHistory={() => setShowHistoryDialog(true)}
+          onShowConfig={() => setShowConfigDialog(true)}
+          onCloudSync={handleCloudSync}
+          currentUser={currentUser}
+          onToggleSimulator={handleToggleSimulator}
+          isSimulatorEnabled={isSimulatorEnabled}
+          activeFilter={quickFilter}
+          onFilterChange={setQuickFilter}
+        />
+      </div>
+
+      {/* Data Grid - Takes all remaining space */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <EnhancedIoDataGrid
             ios={ios}
             projectId={projectId}
             isTesting={plcStatus.isTesting}
@@ -963,19 +1000,19 @@ export default function CommissioningPage() {
             onCommentChange={handleCommentChange}
             activeQuickFilter={quickFilter}
           />
+      </div>
+
+      {/* Test Results Chart - Overlay */}
+      {showGraph && (
+        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <TestResultsChart
+            data={calculateTestResults(filteredIos)}
+            onClose={() => setShowGraph(false)}
+          />
         </div>
+      )}
 
-        {/* Test Results Chart */}
-        {showGraph && (
-          <div className="mt-6">
-            <TestResultsChart 
-              data={calculateTestResults(filteredIos)}
-              onClose={() => setShowGraph(false)}
-            />
-          </div>
-        )}
-
-        {/* Configuration Dialog */}
+      {/* Configuration Dialog */}
         <PlcConfigDialog
           open={showConfigDialog}
           onOpenChange={setShowConfigDialog}
@@ -1064,7 +1101,6 @@ export default function CommissioningPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
     </div>
   )
 }
