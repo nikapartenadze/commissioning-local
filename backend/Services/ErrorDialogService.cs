@@ -8,7 +8,8 @@ public class ErrorDialogService : IErrorDialogService
     public string DialogTitle { get; private set; } = string.Empty;
     public string DialogMessage { get; private set; } = string.Empty;
     public bool Alert { get; private set; } = false;
-    
+    public TagConnectionStatus TagStatus { get; private set; } = new();
+
     public event Action? NotifyAlert;
 
     public void ShowError(string title, string message)
@@ -37,9 +38,25 @@ public class ErrorDialogService : IErrorDialogService
             $"PLC IP: {plcIp}{Environment.NewLine}PLC Path: {plcPath}{Environment.NewLine}Please check your connection/configuration and try again.");
     }
 
+    public void ClearTagStatus()
+    {
+        TagStatus = new TagConnectionStatus();
+    }
+
     public void ShowTagErrors(List<string> notFoundTags, List<string> illegalTags, List<string> unknownTags)
     {
         var totalErrors = notFoundTags.Count + illegalTags.Count + unknownTags.Count;
+
+        // Store the tag status for API access
+        TagStatus = new TagConnectionStatus
+        {
+            FailedTags = totalErrors,
+            NotFoundTags = notFoundTags,
+            IllegalTags = illegalTags,
+            UnknownErrorTags = unknownTags,
+            LastUpdated = DateTime.UtcNow
+        };
+
         List<string> sections = [];
 
         // Header with summary
@@ -98,11 +115,6 @@ public class ErrorDialogService : IErrorDialogService
                   "Data from the remote server will not sync, and may not be up to date.");
     }
 
-    public void ShowWatchdogError()
-    {
-        ShowError("Watchdog Failed", "Make sure the Watchdog AOI is enabled in the PLC");
-    }
-
     public void ShowTagReadError(List<string> errorMessages)
     {
         ShowError("Failed to read tags", string.Join(Environment.NewLine, errorMessages));
@@ -130,11 +142,6 @@ public class ErrorDialogService : IErrorDialogService
     {
         ShowError(PlcConstants.ErrorMessages.ConnectionFailed,
             "Internet connection not detected when the application was started. Data will not be uploaded to remote server.");
-    }
-
-    public void ShowWatchdogFailed()
-    {
-        ShowError(PlcConstants.ErrorMessages.WatchdogFailed, PlcConstants.ErrorMessages.WatchdogAoiMessage);
     }
 
     public void ShowFailedToReadTags(List<string> errorMessages)

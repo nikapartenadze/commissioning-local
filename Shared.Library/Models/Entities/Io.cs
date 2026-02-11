@@ -94,7 +94,7 @@ public class Io
 
     // Computed properties - don't serialize for SignalR efficiency
     [IgnoreMember]
-    public bool IsOutput => Name?.Contains(":O.") == true || Name?.Contains(".O.") == true || Name?.Contains(":O:") == true || Name?.Contains(".Outputs.") == true || Name?.EndsWith(".DO") == true;
+    public bool IsOutput => Name?.Contains(":O.") == true || Name?.Contains(":SO.") == true || Name?.Contains(".O.") == true || Name?.Contains(":O:") == true || Name?.Contains(".Outputs.") == true || Name?.EndsWith(".DO") == true;
     
     [IgnoreMember]
     public bool HasResult => !string.IsNullOrEmpty(Result);

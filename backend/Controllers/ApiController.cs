@@ -1,4 +1,6 @@
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using IO_Checkout_Tool.Services.Interfaces;
 using IO_Checkout_Tool.Models;
@@ -9,6 +11,7 @@ using IO_Checkout_Tool.Models.Configuration;
 
 namespace IO_Checkout_Tool.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api")]
 public class ApiController : ControllerBase
@@ -20,9 +23,10 @@ public class ApiController : ControllerBase
     private readonly ICloudSyncService _cloudSyncService;
     private readonly ISignalRService _signalRService;
     private readonly IIoTestService _ioTestService;
+    private readonly IErrorDialogService _errorDialogService;
+    private readonly IAppStateService _appState;
     private readonly IDbContextFactory<TagsContext> _dbFactory;
     private readonly ILogger<ApiController> _logger;
-    private static bool _isTesting = false;
 
     public ApiController(
         IPlcCommunicationService plcCommunication,
@@ -32,6 +36,8 @@ public class ApiController : ControllerBase
         ICloudSyncService cloudSyncService,
         ISignalRService signalRService,
         IIoTestService ioTestService,
+        IErrorDialogService errorDialogService,
+        IAppStateService appState,
         IDbContextFactory<TagsContext> dbFactory,
         ILogger<ApiController> logger)
     {
@@ -42,8 +48,16 @@ public class ApiController : ControllerBase
         _cloudSyncService = cloudSyncService;
         _signalRService = signalRService;
         _ioTestService = ioTestService;
+        _errorDialogService = errorDialogService;
+        _appState = appState;
         _dbFactory = dbFactory;
         _logger = logger;
+    }
+
+    private static string? SanitizeComment(string? input)
+    {
+        if (string.IsNullOrEmpty(input)) return input;
+        return Regex.Replace(input, "<[^>]*>", "");
     }
 
     /// <summary>
@@ -121,16 +135,47 @@ public class ApiController : ControllerBase
                 subsystemId = _configuration.SubsystemId,
                 remoteUrl = _configuration.RemoteUrl,
                 apiPassword = _configuration.ApiPassword,
-                disableTesting = _configuration.DisableWatchdog,
                 cloudConnected = _cloudSyncService.IsConnected,
                 totalIos = _plcCommunication.TagList?.Count ?? 0,
-                testingEnabled = !_configuration.DisableWatchdog,
-                isTesting = _isTesting
+                testingEnabled = true,
+                isTesting = _appState.TestState.IsTesting
             });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting status");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Get detailed tag connection status including any errors
+    /// </summary>
+    [HttpGet("tag-status")]
+    public ActionResult<object> GetTagStatus()
+    {
+        try
+        {
+            var tagStatus = _errorDialogService.TagStatus;
+            return Ok(new
+            {
+                plcConnected = _plcCommunication.IsPlcConnected,
+                totalTags = tagStatus.TotalTags > 0 ? tagStatus.TotalTags : (_plcCommunication.TagList?.Count ?? 0),
+                successfulTags = tagStatus.SuccessfulTags,
+                failedTags = tagStatus.FailedTags,
+                successRate = tagStatus.SuccessRate,
+                hasErrors = tagStatus.HasErrors,
+                notFoundTags = tagStatus.NotFoundTags,
+                illegalTags = tagStatus.IllegalTags,
+                unknownErrorTags = tagStatus.UnknownErrorTags,
+                lastUpdated = tagStatus.LastUpdated,
+                plcIp = _configuration.Ip,
+                plcPath = _configuration.Path
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting tag status");
             return StatusCode(500, "Internal server error");
         }
     }
@@ -202,6 +247,10 @@ public class ApiController : ControllerBase
     {
         try
         {
+            if (request?.Comments != null && request.Comments.Length > 500)
+                return BadRequest("Comment must be 500 characters or fewer");
+            if (request != null) request.Comments = SanitizeComment(request.Comments);
+
             // Use a single DbContext + transaction so IO update and TestHistory are atomic
             using var db = _dbFactory.CreateDbContext();
             using var transaction = await db.Database.BeginTransactionAsync();
@@ -261,6 +310,10 @@ public class ApiController : ControllerBase
     {
         try
         {
+            if (request?.Comments != null && request.Comments.Length > 500)
+                return BadRequest("Comment must be 500 characters or fewer");
+            if (request != null) request.Comments = SanitizeComment(request.Comments);
+
             // Use a single DbContext + transaction so IO update and TestHistory are atomic
             using var db = _dbFactory.CreateDbContext();
             using var transaction = await db.Database.BeginTransactionAsync();
@@ -415,17 +468,17 @@ public class ApiController : ControllerBase
         try
         {
             // Toggle the testing state
-            _isTesting = !_isTesting;
+            _appState.TestState.IsTesting = !_appState.TestState.IsTesting;
 
-            _logger.LogInformation("Testing mode toggled to: {IsTesting}", _isTesting);
+            _logger.LogInformation("Testing mode toggled to: {IsTesting}", _appState.TestState.IsTesting);
 
             // Broadcast to all connected clients so they see the state change immediately
-            await _signalRService.BroadcastTestingStateChanged(_isTesting);
+            await _signalRService.BroadcastTestingStateChanged(_appState.TestState.IsTesting);
 
             return Ok(new {
                 success = true,
                 message = "Testing mode toggled",
-                isTesting = _isTesting
+                isTesting = _appState.TestState.IsTesting
             });
         }
         catch (Exception ex)
@@ -443,6 +496,10 @@ public class ApiController : ControllerBase
     {
         try
         {
+            if (request?.Comments != null && request.Comments.Length > 500)
+                return BadRequest("Comment must be 500 characters or fewer");
+            if (request != null) request.Comments = SanitizeComment(request.Comments);
+
             var io = await _ioRepository.GetByIdAsync(id);
             if (io == null)
             {
@@ -625,8 +682,9 @@ public class ApiController : ControllerBase
                 return NotFound($"IO with ID {id} not found");
             }
 
-            // Check if this is an output IO
-            if (!io.Name?.Contains(":O.") == true)
+            // Check if this is an output IO (supports :O. and :SO. patterns)
+            var isOutput = io.Name?.Contains(":O.") == true || io.Name?.Contains(":SO.") == true;
+            if (!isOutput)
             {
                 return BadRequest("This IO is not an output");
             }
