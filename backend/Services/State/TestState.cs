@@ -7,6 +7,20 @@ public class TestState
 {
     private Io _testTag = new();
     private Io _outputToTestInputTag = new();
+    private bool _isTesting = false;
+
+    public bool IsTesting
+    {
+        get => _isTesting;
+        set
+        {
+            if (_isTesting != value)
+            {
+                _isTesting = value;
+                StateChanged?.Invoke();
+            }
+        }
+    }
 
     public Io TestTag
     {
@@ -38,6 +52,7 @@ public class TestState
 
     public void Reset()
     {
+        IsTesting = false;
         TestTag = new Io();
         OutputToTestInputTag = new Io();
     }
