@@ -47,7 +47,6 @@ public static class TestConstants
     public static class PlcValues
     {
         public const int OUTPUT_ENABLED = 1;
-        public const int WATCHDOG_ACTIVE = 1;
     }
     
     // UI Text

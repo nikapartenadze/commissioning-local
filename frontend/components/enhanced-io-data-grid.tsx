@@ -2,17 +2,15 @@
 
 import { useState, useMemo, useEffect, useRef } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { Card } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, Square, AlertTriangle, CheckCircle, HelpCircle, ArrowUpDown } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { API_ENDPOINTS } from "@/lib/api-config"
+import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 type IoItem = {
   id: number
@@ -52,20 +50,23 @@ interface EnhancedIoDataGridProps {
   activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | null
 }
 
-// Define column widths - these will be applied consistently to both header and body
+// Define column widths - LARGER for factory floor visibility
 const COLUMN_WIDTHS = {
-  description: 280,
-  ioPoint: 200,
-  state: 90,
-  result: 110,
-  timestamp: 170,
-  comments: 180,
-  history: 80,
-  help: 80,
-  failed: 80,
-  clear: 80,
-  output: 80
+  description: 320,
+  ioPoint: 260,
+  state: 100,
+  result: 120,
+  timestamp: 180,
+  comments: 220,
+  history: 70,
+  help: 70,
+  failed: 70,
+  clear: 70,
+  output: 100
 }
+
+// Row height for better touch targets
+const ROW_HEIGHT = 56
 
 export function EnhancedIoDataGrid({
   ios,
@@ -102,7 +103,7 @@ export function EnhancedIoDataGrid({
   useEffect(() => {
     const fetchModuleHealth = async () => {
       try {
-        const response = await fetch(API_ENDPOINTS.networkModules)
+        const response = await authFetch(API_ENDPOINTS.networkModules)
         if (response.ok) {
           const data = await response.json()
           const healthMap: Record<string, 'ok' | 'warning' | 'error'> = {}
@@ -135,7 +136,7 @@ export function EnhancedIoDataGrid({
     setShowHistoryDialog(true)
     
     try {
-      const response = await fetch(API_ENDPOINTS.ioHistory(io.id))
+      const response = await authFetch(API_ENDPOINTS.ioHistory(io.id))
       if (response.ok) {
         const data = await response.json()
         setHistoryData(data)
@@ -223,12 +224,46 @@ export function EnhancedIoDataGrid({
 
   // Virtual scrolling setup
   const parentRef = useRef<HTMLDivElement>(null)
-  
+
+  // Drag-to-scroll state
+  const [isDragging, setIsDragging] = useState(false)
+  const [startX, setStartX] = useState(0)
+  const [scrollLeft, setScrollLeft] = useState(0)
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!parentRef.current) return
+    // Don't start drag if clicking on interactive elements or text content
+    const target = e.target as HTMLElement
+    if (target.closest('button')) return
+    if (target.closest('input')) return
+    // Allow text selection in data cells
+    if (target.closest('[data-selectable]')) return
+    setIsDragging(true)
+    setStartX(e.pageX - parentRef.current.offsetLeft)
+    setScrollLeft(parentRef.current.scrollLeft)
+  }
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging || !parentRef.current) return
+    e.preventDefault()
+    const x = e.pageX - parentRef.current.offsetLeft
+    const walk = (x - startX) * 1.5 // Scroll speed multiplier
+    parentRef.current.scrollLeft = scrollLeft - walk
+  }
+
+  const handleMouseUp = () => {
+    setIsDragging(false)
+  }
+
+  const handleMouseLeave = () => {
+    setIsDragging(false)
+  }
+
   const virtualizer = useVirtualizer({
     count: filteredIos.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 60,
-    overscan: 10,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 8,
   })
 
   const getRowClassName = (io: IoItem) => {
@@ -240,26 +275,33 @@ export function EnhancedIoDataGrid({
 
   const getStateDisplay = (state: string | null) => {
     if (!state || state === 'UNKNOWN') {
-      return <X className="h-4 w-4 text-gray-500" />
+      return <div className="w-6 h-6 rounded-full bg-gray-300 dark:bg-gray-600" />
     }
-    
+
     if (state === 'TRUE' || state === 'ON' || state === 'HIGH' || state === 'ACTIVE' || state === '1') {
-      return <CheckCircle className="h-4 w-4 text-green-500" />
+      return <div className="w-6 h-6 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" />
     }
     if (state === 'FALSE' || state === 'OFF' || state === 'LOW' || state === 'INACTIVE' || state === '0') {
-      return <X className="h-4 w-4 text-red-500" />
+      return <div className="w-6 h-6 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
     }
-    
-    return <X className="h-4 w-4 text-gray-500" />
+
+    return <div className="w-6 h-6 rounded-full bg-gray-300 dark:bg-gray-600" />
   }
 
-  const isOutput = (ioName: string) => ioName.includes(':O.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.toLowerCase().includes('output')
+  // Match backend Io.IsOutput property - check for O after colon before dot
+  const isOutput = (ioName: string) =>
+    ioName.includes(':O.') ||
+    ioName.includes(':SO.') ||   // Serial Output: SIO:SO.Data
+    ioName.includes('.O.') ||
+    ioName.includes(':O:') ||
+    ioName.includes('.Outputs.') ||
+    ioName.endsWith('.DO')
 
   const handleShowDiagnostic = async (io: IoItem) => {
     // If IO doesn't have failureMode, fetch it from history
     if (!io.failureMode && io.id) {
       try {
-        const response = await fetch(API_ENDPOINTS.ioHistory(io.id))
+        const response = await authFetch(API_ENDPOINTS.ioHistory(io.id))
         if (response.ok) {
           const history = await response.json()
           // Find the most recent failed entry with a failureMode
@@ -294,17 +336,17 @@ export function EnhancedIoDataGrid({
 
   return (
     <>
-    <Card className="overflow-hidden">
-      {/* Search Header */}
-      <div className="p-3 sm:p-4 border-b bg-muted/50">
-        <div className="relative">
-          <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-          <div className="flex flex-wrap gap-2 pl-10 pr-10 py-2 border rounded-md bg-background min-h-[42px] items-center">
+    <div className="h-full flex flex-col border-t border-border bg-card">
+      {/* Compact Search Bar */}
+      <div className="flex items-center gap-2 p-2 border-b bg-muted/30 flex-shrink-0">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+          <div className="flex flex-wrap gap-1 pl-10 pr-10 py-2 border rounded bg-background min-h-[44px] items-center">
             {filterTags.map((tag, index) => (
-              <Badge 
-                key={index} 
-                variant="secondary" 
-                className="gap-1 pr-1 text-xs font-normal"
+              <Badge
+                key={index}
+                variant="secondary"
+                className="gap-1 pr-1 text-sm font-medium"
               >
                 {tag}
                 <button
@@ -317,125 +359,128 @@ export function EnhancedIoDataGrid({
             ))}
             <input
               type="text"
-              placeholder={filterTags.length === 0 ? "Type and press Space/Enter to add filters..." : "Add filter..."}
+              placeholder={filterTags.length === 0 ? "Search IO points..." : ""}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               onKeyDown={handleKeyDown}
-              className="flex-1 outline-none bg-transparent min-w-[120px] sm:min-w-[200px] text-sm"
+              className="flex-1 outline-none bg-transparent min-w-[150px] text-base"
             />
           </div>
           {(filterTags.length > 0 || searchTerm) && (
             <button
               onClick={clearAllFilters}
-              className="absolute right-3 top-1/2 transform -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              title="Clear all filters"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
+              title="Clear"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </button>
           )}
         </div>
-        <div className="flex items-center justify-between mt-2">
-          <p className="text-xs sm:text-sm text-muted-foreground">
-            {filterTags.length > 0 || searchTerm ? (
-              <>Found {filteredIos.length} IO{filteredIos.length !== 1 ? 's' : ''} • {filterTags.length} filter{filterTags.length !== 1 ? 's' : ''} active</>
-            ) : (
-              <>Showing {filteredIos.length} of {ios.length} IO{ios.length !== 1 ? 's' : ''}</>
-            )}
-          </p>
-          <div className="flex items-center gap-1">
-            <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
-            <select
-              value={sortMode}
-              onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
-              className="text-xs bg-background border rounded px-2 py-1 text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="default">Default Order</option>
-              <option value="failed-first">Failed First</option>
-              <option value="not-tested-first">Not Tested First</option>
-            </select>
-          </div>
+
+        {/* Sort Dropdown */}
+        <select
+          value={sortMode}
+          onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
+          className="h-[44px] px-3 text-sm bg-background border rounded font-medium focus:outline-none focus:ring-2 focus:ring-primary"
+        >
+          <option value="default">Default</option>
+          <option value="failed-first">Failed First</option>
+          <option value="not-tested-first">Untested First</option>
+        </select>
+
+        {/* Count Badge */}
+        <div className="h-[44px] px-4 flex items-center bg-muted rounded font-mono text-sm">
+          <span className="font-bold">{filteredIos.length}</span>
+          <span className="text-muted-foreground ml-1">/ {ios.length}</span>
         </div>
       </div>
 
       {/* Data Grid with Virtual Scrolling */}
-      <div 
+      <div
         ref={parentRef}
-        className="max-h-[calc(100vh-16rem)] overflow-auto"
+        className={cn(
+          "flex-1 overflow-auto grab-scroll min-h-0",
+          isDragging && "dragging"
+        )}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
       >
         <div style={{ minWidth: `${totalWidth}px` }}>
-          {/* Header */}
-          <div className="bg-muted sticky top-0 z-10 flex border-b">
-            <div 
-              className="px-3 py-3 text-left text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+          {/* Header - Sticky, bold, industrial */}
+          <div className="bg-muted sticky top-0 z-10 flex border-b-2 border-border">
+            <div
+              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.description}px` }}
             >
               Description
             </div>
-            <div 
-              className="px-3 py-3 text-left text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+            <div
+              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.ioPoint}px` }}
             >
               I/O Point
             </div>
             {showStateColumn && (
-              <div 
-                className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+              <div
+                className="px-4 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
                 style={{ width: `${COLUMN_WIDTHS.state}px` }}
               >
                 State
               </div>
             )}
             {showResultColumn && (
-              <div 
-                className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+              <div
+                className="px-4 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
                 style={{ width: `${COLUMN_WIDTHS.result}px` }}
               >
                 Result
               </div>
             )}
             {showTimestampColumn && (
-              <div 
-                className="px-3 py-3 text-left text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+              <div
+                className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
                 style={{ width: `${COLUMN_WIDTHS.timestamp}px` }}
               >
-                Timestamp
+                Tested
               </div>
             )}
-            <div 
-              className="px-3 py-3 text-left text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+            <div
+              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.comments}px` }}
             >
-              Comments
+              Notes
             </div>
             <div
-              className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+              className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.history}px` }}
             >
-              History
+              Hist
             </div>
             <div
-              className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+              className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.help}px` }}
             >
               Help
             </div>
             <div
-              className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+              className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.failed}px` }}
             >
-              Failed
+              Fail
             </div>
-            <div 
-              className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+            <div
+              className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.clear}px` }}
             >
               Clear
             </div>
-            <div 
-              className="px-3 py-3 text-center text-xs font-medium text-muted-foreground uppercase flex-shrink-0"
+            <div
+              className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.output}px` }}
             >
-              Output
+              Fire
             </div>
           </div>
 
@@ -454,7 +499,7 @@ export function EnhancedIoDataGrid({
                   data-index={virtualRow.index}
                   ref={virtualizer.measureElement}
                   className={cn(
-                    "hover:bg-muted/50 transition-colors border-b border-border absolute left-0 w-full flex",
+                    "transition-colors border-b border-border absolute left-0 w-full flex",
                     isTesting ? "cursor-pointer" : "cursor-default",
                     getRowClassName(io),
                     currentTestIo?.id === io.id && "border-l-4 border-l-primary"
@@ -464,19 +509,21 @@ export function EnhancedIoDataGrid({
                   }}
                   onClick={() => isTesting && onRowClick?.(io)}
                 >
-                   <div 
-                     className="px-3 py-3 text-xs sm:text-sm flex-shrink-0 flex items-center"
+                   <div
+                     className="px-4 py-2 text-sm font-medium flex-shrink-0 flex items-center select-text"
                      style={{ width: `${COLUMN_WIDTHS.description}px` }}
+                     data-selectable
                    >
-                     <div className="break-words">
-                       {io.description || 'N/A'}
+                     <div className="line-clamp-2 leading-tight">
+                       {io.description || <span className="text-muted-foreground">—</span>}
                      </div>
                    </div>
                    <div
-                     className="px-3 py-3 text-xs sm:text-sm font-mono flex-shrink-0 overflow-hidden flex items-center gap-1.5"
+                     className="px-4 py-2 text-sm font-mono font-medium flex-shrink-0 overflow-hidden flex items-center gap-2 select-text"
                      style={{ width: `${COLUMN_WIDTHS.ioPoint}px` }}
+                     data-selectable
                    >
-                     {/* Module health indicator dot */}
+                     {/* Module health indicator */}
                      {(() => {
                        const modName = getModuleName(io.name)
                        const health = modName ? moduleHealth[modName] : undefined
@@ -484,56 +531,56 @@ export function EnhancedIoDataGrid({
                        return (
                          <div
                            className={cn(
-                             "w-2 h-2 rounded-full shrink-0",
+                             "w-3 h-3 rounded-full shrink-0",
                              health === 'ok' && "bg-green-500",
-                             health === 'warning' && "bg-yellow-500",
-                             health === 'error' && "bg-red-500"
+                             health === 'warning' && "bg-yellow-500 status-pulse",
+                             health === 'error' && "bg-red-500 status-pulse"
                            )}
-                           title={`Module ${modName}: ${health === 'ok' ? 'All tags OK' : health === 'warning' ? 'Some tags not responding' : 'Module not responding'}`}
+                           title={`Module ${modName}: ${health}`}
                          />
                        )
                      })()}
                      <div className="truncate">{io.name}</div>
                    </div>
                   {showStateColumn && (
-                    <div 
-                      className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                    <div
+                      className="px-4 py-2 flex items-center justify-center flex-shrink-0"
                       style={{ width: `${COLUMN_WIDTHS.state}px` }}
                     >
                       {getStateDisplay(io.state)}
                     </div>
                   )}
                    {showResultColumn && (
-                     <div 
-                       className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                     <div
+                       className="px-4 py-2 flex items-center justify-center flex-shrink-0"
                        style={{ width: `${COLUMN_WIDTHS.result}px` }}
                      >
                        {io.result ? (
-                         <Badge variant={getResultBadgeVariant(io.result)} className="text-xs">
+                         <Badge variant={getResultBadgeVariant(io.result)} className="text-sm font-bold px-3 py-1">
                            {io.result}
                          </Badge>
                        ) : (
-                         <Badge variant="secondary" className="text-xs">N/A</Badge>
+                         <span className="text-muted-foreground text-sm">—</span>
                        )}
                      </div>
                    )}
                   {showTimestampColumn && (
-                    <div 
-                      className="px-3 py-3 text-xs sm:text-sm text-muted-foreground flex-shrink-0 flex items-center"
+                    <div
+                      className="px-4 py-2 text-sm text-muted-foreground flex-shrink-0 flex items-center font-mono"
                       style={{ width: `${COLUMN_WIDTHS.timestamp}px` }}
                     >
-                      <div className="break-words">{formatTimestamp(io.timestamp) || 'N/A'}</div>
+                      {formatTimestamp(io.timestamp) || <span className="opacity-50">—</span>}
                     </div>
                   )}
                    <div
-                     className="px-3 py-3 text-xs sm:text-sm flex-shrink-0 overflow-hidden flex items-center"
+                     className="px-4 py-2 text-sm flex-shrink-0 overflow-hidden flex items-center"
                      style={{ width: `${COLUMN_WIDTHS.comments}px` }}
                      onClick={(e) => e.stopPropagation()}
                    >
                      {editingCommentId === io.id ? (
                        <input
                          type="text"
-                         className="w-full px-2 py-1 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                         className="w-full px-3 py-2 text-sm border-2 rounded bg-background focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
                          value={editingCommentValue}
                          onChange={(e) => setEditingCommentValue(e.target.value)}
                          onBlur={() => {
@@ -556,38 +603,38 @@ export function EnhancedIoDataGrid({
                        />
                      ) : (
                        <div
-                         className="truncate cursor-text hover:bg-muted/50 px-1 py-0.5 rounded w-full min-h-[24px]"
-                         title={io.comments ? `${io.comments} (click to edit)` : 'Click to add comment'}
+                         className="truncate cursor-text hover:bg-muted px-2 py-1 rounded w-full min-h-[32px] flex items-center"
+                         title={io.comments ? `${io.comments} (click to edit)` : 'Click to add note'}
                          onClick={() => {
                            setEditingCommentId(io.id)
                            setEditingCommentValue(io.comments || '')
                          }}
                        >
-                         {io.comments || <span className="text-muted-foreground italic">Add note...</span>}
+                         {io.comments || <span className="text-muted-foreground">+ Add note</span>}
                        </div>
                      )}
                    </div>
                   {/* History Column */}
                   <div
-                    className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                    className="px-1 py-2 flex items-center justify-center flex-shrink-0"
                     style={{ width: `${COLUMN_WIDTHS.history}px` }}
                   >
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9"
+                      className="h-10 w-10"
                       onClick={(e) => {
                         e.stopPropagation()
                         handleShowHistory(io)
                       }}
-                      title="Show History"
+                      title="History"
                     >
-                      <History className="h-4 w-4" />
+                      <History className="h-5 w-5" />
                     </Button>
                   </div>
-                  {/* Help Column - shown for all IOs with tagType */}
+                  {/* Help Column */}
                   <div
-                    className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                    className="px-1 py-2 flex items-center justify-center flex-shrink-0"
                     style={{ width: `${COLUMN_WIDTHS.help}px` }}
                   >
                     {io.tagType ? (
@@ -595,71 +642,72 @@ export function EnhancedIoDataGrid({
                         variant="ghost"
                         size="icon"
                         className={cn(
-                          "h-9 w-9",
+                          "h-10 w-10",
                           io.result === TEST_CONSTANTS.RESULT_FAILED
-                            ? "text-red-600 hover:text-red-700 hover:bg-red-50"
-                            : "text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                            ? "text-red-600 hover:text-red-700 hover:bg-red-100 dark:hover:bg-red-900/30"
+                            : "text-amber-600 hover:text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30"
                         )}
                         onClick={(e) => {
                           e.stopPropagation()
                           handleShowDiagnostic(io)
                         }}
-                        title={io.result === TEST_CONSTANTS.RESULT_FAILED ? "Show Troubleshooting Guide" : "Browse Troubleshooting Guide"}
+                        title="Help"
                       >
-                        <HelpCircle className="h-4 w-4" />
+                        <HelpCircle className="h-5 w-5" />
                       </Button>
                     ) : (
-                      <span className="text-muted-foreground">-</span>
+                      <span className="text-muted-foreground/30">—</span>
                     )}
                   </div>
                   {/* Failed Column */}
-                  <div 
-                    className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                  <div
+                    className="px-1 py-2 flex items-center justify-center flex-shrink-0"
                     style={{ width: `${COLUMN_WIDTHS.failed}px` }}
                   >
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9"
+                      className="h-10 w-10 text-red-600 hover:text-red-700 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-30"
                       onClick={(e) => {
                         e.stopPropagation()
                         onMarkFailed?.(io)
                       }}
                       disabled={!isTesting}
-                      title="Mark as Failed"
+                      title="Mark Failed"
                     >
-                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTriangle className="h-5 w-5" />
                     </Button>
                   </div>
                   {/* Clear Column */}
-                  <div 
-                    className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                  <div
+                    className="px-1 py-2 flex items-center justify-center flex-shrink-0"
                     style={{ width: `${COLUMN_WIDTHS.clear}px` }}
                   >
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-9 w-9"
+                      className="h-10 w-10 disabled:opacity-30"
                       onClick={(e) => {
                         e.stopPropagation()
                         onClearResult?.(io)
                       }}
                       disabled={!isTesting || !io.result}
-                      title="Clear Result"
+                      title="Clear"
                     >
-                      <X className="h-4 w-4" />
+                      <X className="h-5 w-5" />
                     </Button>
                   </div>
-                  {/* Output Column */}
-                  <div 
-                    className="px-3 py-3 text-xs sm:text-sm flex items-center justify-center flex-shrink-0"
+                  {/* Fire Output Column */}
+                  <div
+                    className="px-2 py-2 flex items-center justify-center flex-shrink-0"
                     style={{ width: `${COLUMN_WIDTHS.output}px` }}
+                    onClick={(e) => e.stopPropagation()}
                   >
                     {isOutput(io.name) ? (
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-9 w-9"
+                        variant="default"
+                        size="sm"
+                        className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold shadow-md disabled:opacity-30 disabled:bg-amber-500/50"
                         onClick={(e) => {
                           e.stopPropagation()
                           onShowFireOutputDialog?.(io)
@@ -667,10 +715,11 @@ export function EnhancedIoDataGrid({
                         disabled={!isTesting}
                         title="Fire Output"
                       >
-                        <Play className="h-4 w-4" />
+                        <Play className="h-4 w-4 mr-1" />
+                        FIRE
                       </Button>
                     ) : (
-                      <X className="h-4 w-4 text-muted-foreground" />
+                      <span className="text-muted-foreground/30">—</span>
                     )}
                   </div>
                 </div>
@@ -681,20 +730,22 @@ export function EnhancedIoDataGrid({
       </div>
 
       {filteredIos.length === 0 && (
-        <div className="p-8 text-left text-muted-foreground">
-          <p>No IOs found matching your filters.</p>
-          {(filterTags.length > 0 || searchTerm) && (
-            <Button 
-              variant="link" 
-              onClick={clearAllFilters}
-              className="mt-2"
-            >
-              Clear all filters
-            </Button>
-          )}
+        <div className="flex-1 flex items-center justify-center text-muted-foreground p-8">
+          <div className="text-center">
+            <p className="text-lg">No IOs found matching your filters.</p>
+            {(filterTags.length > 0 || searchTerm) && (
+              <Button
+                variant="outline"
+                onClick={clearAllFilters}
+                className="mt-4"
+              >
+                Clear all filters
+              </Button>
+            )}
+          </div>
         </div>
       )}
-    </Card>
+    </div>
 
     {selectedIo && (
       <TestHistoryDialog

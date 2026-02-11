@@ -200,6 +200,7 @@ export function getPorts() {
 export const API_ENDPOINTS = {
   // Status & Connection
   status: '/api/backend/status',
+  tagStatus: '/api/backend/tag-status',
   plcTestConnection: '/api/backend/plc/test-connection',
   plcDisconnect: '/api/backend/plc/disconnect',
 
@@ -253,6 +254,46 @@ export const API_ENDPOINTS = {
 } as const
 
 /**
+ * Authenticated fetch wrapper.
+ * Reads JWT from localStorage and adds Authorization header.
+ * On 401 response, clears token and redirects to login page.
+ */
+export async function authFetch(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const baseUrl = getApiBaseUrl()
+  const url = `${baseUrl}${endpoint}`
+  const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string> || {}),
+  }
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
+  const response = await fetch(url, {
+    ...options,
+    headers,
+  })
+
+  if (response.status === 401) {
+    // Token expired or invalid — clear and redirect to login
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('authToken')
+      localStorage.removeItem('currentUser')
+      localStorage.removeItem('loginTime')
+      window.location.href = '/'
+    }
+  }
+
+  return response
+}
+
+/**
  * Helper function to make API calls through the proxy.
  * Automatically handles the base URL and error handling.
  */
@@ -260,16 +301,7 @@ export async function apiCall<T = unknown>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const baseUrl = getApiBaseUrl()
-  const url = `${baseUrl}${endpoint}`
-
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
+  const response = await authFetch(endpoint, options)
 
   if (!response.ok) {
     const error = await response.text()
@@ -283,4 +315,37 @@ export async function apiCall<T = unknown>(
   }
 
   return JSON.parse(text) as T
+}
+
+/**
+ * Fetch with retry for read-only GET calls.
+ * 3 retries with exponential backoff (1s, 2s, 4s).
+ * Only use for idempotent read operations, NOT mutations.
+ */
+export async function fetchWithRetry(
+  endpoint: string,
+  options: RequestInit = {},
+  maxRetries = 3
+): Promise<Response> {
+  let lastError: Error | null = null
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await authFetch(endpoint, options)
+      if (response.ok || response.status === 401 || response.status === 403) {
+        return response
+      }
+      // Server error — retry
+      lastError = new Error(`HTTP ${response.status}`)
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+    }
+
+    if (attempt < maxRetries) {
+      const delay = 1000 * Math.pow(2, attempt)
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
+
+  throw lastError || new Error('fetchWithRetry exhausted all retries')
 }

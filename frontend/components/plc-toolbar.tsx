@@ -1,24 +1,18 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import {
   Play,
   Square,
   BarChart3,
   Download,
   History,
-  Wifi,
-  WifiOff,
   Cloud,
   CloudOff,
   Cpu,
-  Monitor,
+  Settings,
   Zap,
   ZapOff,
-  Filter
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -63,215 +57,238 @@ export function PlcToolbar({
   activeFilter = null,
   onFilterChange
 }: PlcToolbarProps) {
-  const [watchdogColor, setWatchdogColor] = useState("")
-
-  useEffect(() => {
-    if (isTesting) {
-      setWatchdogColor("text-green-600")
-    } else {
-      setWatchdogColor("text-gray-500")
-    }
-  }, [isTesting])
+  const progressPercent = totalIos > 0 ? ((passedIos + failedIos) / totalIos) * 100 : 0
+  const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
 
   return (
-    <Card className="overflow-hidden">
-      <div className="flex items-center justify-between p-4 bg-muted/50">
-        {/* Left Side - Main Controls */}
-        <div className="flex items-center space-x-2">
-          {/* Start/Stop Testing */}
-          <Button
-            variant="default"
-            size="lg"
-            className={cn(
-              "transition-all duration-300 font-bold text-lg px-6 py-3",
-              isTesting 
-                ? "bg-green-600 hover:bg-green-700 text-white shadow-lg" 
-                : "bg-amber-600 hover:bg-amber-700 text-white"
-            )}
-            onClick={() => {
-              console.log('🔴 Start Testing button clicked!')
-              onToggleTesting()
-            }}
-            title={isTesting ? "Stop Testing" : "Start Testing"}
-          >
-            {isTesting ? (
-              <>
-                <Square className="w-5 h-5 mr-2" />
-                STOP TESTING
-              </>
-            ) : (
-              <>
-                <Play className="w-5 h-5 mr-2" />
-                START TESTING
-              </>
-            )}
-          </Button>
+    <div className="bg-card border-y border-border">
+      {/* Main Toolbar Row */}
+      <div className="flex items-center gap-2 p-2">
+        {/* START/STOP Button - Large and prominent */}
+        <Button
+          size="lg"
+          className={cn(
+            "h-14 px-6 text-lg font-bold uppercase tracking-wider transition-all min-w-[160px]",
+            isTesting
+              ? "bg-red-600 hover:bg-red-700 text-white animate-pulse"
+              : !isPlcConnected
+                ? "bg-gray-400 text-gray-200 cursor-not-allowed"
+                : "bg-green-600 hover:bg-green-700 text-white"
+          )}
+          onClick={onToggleTesting}
+          disabled={!isTesting && !isPlcConnected}
+          title={!isPlcConnected && !isTesting
+            ? "Click PLC button on right to configure connection"
+            : (isTesting ? "Click to stop testing mode" : "Click to start testing mode")}
+        >
+          {isTesting ? (
+            <>
+              <Square className="w-6 h-6 mr-2" />
+              TESTING
+            </>
+          ) : isPlcConnected ? (
+            <>
+              <Play className="w-6 h-6 mr-2" />
+              START
+            </>
+          ) : (
+            <>
+              <Play className="w-6 h-6 mr-2 opacity-50" />
+              <span className="flex flex-col items-start leading-tight">
+                <span className="text-sm">NO PLC</span>
+              </span>
+            </>
+          )}
+        </Button>
 
-          {/* Show Graph */}
+        {/* Divider */}
+        <div className="w-px h-10 bg-border" />
+
+        {/* Quick Filter Buttons */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onFilterChange?.(activeFilter === 'passed' ? null : 'passed')}
+            className={cn(
+              "h-14 px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+              activeFilter === 'passed'
+                ? "bg-green-600 text-white"
+                : "bg-green-500/10 hover:bg-green-500/20 text-green-600 dark:text-green-400"
+            )}
+          >
+            <span className="text-2xl font-bold leading-none">{passedIos}</span>
+            <span className="text-[10px] uppercase tracking-wider font-sans opacity-80">Passed</span>
+          </button>
+
+          <button
+            onClick={() => onFilterChange?.(activeFilter === 'failed' ? null : 'failed')}
+            className={cn(
+              "h-14 px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+              activeFilter === 'failed'
+                ? "bg-red-600 text-white"
+                : "bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400"
+            )}
+          >
+            <span className="text-2xl font-bold leading-none">{failedIos}</span>
+            <span className="text-[10px] uppercase tracking-wider font-sans opacity-80">Failed</span>
+          </button>
+
+          <button
+            onClick={() => onFilterChange?.(activeFilter === 'not-tested' ? null : 'not-tested')}
+            className={cn(
+              "h-14 px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+              activeFilter === 'not-tested'
+                ? "bg-slate-600 text-white"
+                : "bg-slate-500/10 hover:bg-slate-500/20 text-slate-600 dark:text-slate-400"
+            )}
+          >
+            <span className="text-2xl font-bold leading-none">{notTestedIos}</span>
+            <span className="text-[10px] uppercase tracking-wider font-sans opacity-80">Remaining</span>
+          </button>
+        </div>
+
+        {/* Progress Bar - Flex grow to fill space */}
+        <div className="flex-1 mx-4">
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-8 bg-muted rounded-full overflow-hidden relative">
+              {/* Passed portion (green) */}
+              <div
+                className="absolute inset-y-0 left-0 bg-green-500 transition-all duration-500"
+                style={{ width: `${passedPercent}%` }}
+              />
+              {/* Failed portion (red) - starts after passed */}
+              <div
+                className="absolute inset-y-0 bg-red-500 transition-all duration-500"
+                style={{
+                  left: `${passedPercent}%`,
+                  width: `${totalIos > 0 ? (failedIos / totalIos) * 100 : 0}%`
+                }}
+              />
+              {/* Progress text overlay */}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-sm font-bold text-foreground drop-shadow-sm">
+                  {Math.round(progressPercent)}% Complete ({passedIos + failedIos} / {totalIos})
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="w-px h-10 bg-border" />
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-1">
           <Button
             variant="ghost"
             size="lg"
+            className="h-12 w-12 p-0"
             onClick={onShowGraph}
             title="Show Graph"
           >
             <BarChart3 className="w-6 h-6" />
           </Button>
 
-          {/* Export CSV */}
           <Button
             variant="ghost"
             size="lg"
+            className="h-12 w-12 p-0"
             onClick={onDownloadCsv}
-            title="Export Table as CSV"
+            title="Export CSV"
           >
             <Download className="w-6 h-6" />
           </Button>
 
-          {/* Show History */}
           <Button
             variant="ghost"
             size="lg"
+            className="h-12 w-12 p-0"
             onClick={onShowHistory}
-            title="Show Test History"
+            title="Test History"
           >
             <History className="w-6 h-6" />
           </Button>
-
         </div>
 
-        {/* Center - Quick Filters */}
+        {/* Divider */}
+        <div className="w-px h-10 bg-border" />
+
+        {/* Status & Config */}
         <div className="flex items-center gap-1">
-          <Filter className="w-4 h-4 text-muted-foreground mr-1" />
-          <Button
-            variant={activeFilter === 'failed' ? 'default' : 'outline'}
-            size="sm"
-            className={cn(
-              "text-xs",
-              activeFilter === 'failed'
-                ? "bg-red-600 hover:bg-red-700 text-white"
-                : "text-red-600 border-red-200 hover:bg-red-50"
-            )}
-            onClick={() => onFilterChange?.(activeFilter === 'failed' ? null : 'failed')}
-          >
-            Failed ({failedIos})
-          </Button>
-          <Button
-            variant={activeFilter === 'not-tested' ? 'default' : 'outline'}
-            size="sm"
-            className={cn(
-              "text-xs",
-              activeFilter === 'not-tested'
-                ? "bg-gray-600 hover:bg-gray-700 text-white"
-                : "text-muted-foreground border-muted hover:bg-muted/50"
-            )}
-            onClick={() => onFilterChange?.(activeFilter === 'not-tested' ? null : 'not-tested')}
-          >
-            Not Tested ({notTestedIos})
-          </Button>
-          <Button
-            variant={activeFilter === 'passed' ? 'default' : 'outline'}
-            size="sm"
-            className={cn(
-              "text-xs",
-              activeFilter === 'passed'
-                ? "bg-green-600 hover:bg-green-700 text-white"
-                : "text-green-600 border-green-200 hover:bg-green-50"
-            )}
-            onClick={() => onFilterChange?.(activeFilter === 'passed' ? null : 'passed')}
-          >
-            Passed ({passedIos})
-          </Button>
-        </div>
-
-        {/* Right Side - Connection Status */}
-        <div className="flex items-center space-x-2">
-          {/* Simulator Control - ADMIN ONLY */}
+          {/* Simulator Toggle - Admin only */}
           {currentUser?.isAdmin && onToggleSimulator && (
             <Button
-              variant={isSimulatorEnabled ? "default" : "outline"}
-              size="sm"
-              onClick={onToggleSimulator}
+              variant={isSimulatorEnabled ? "default" : "ghost"}
+              size="lg"
               className={cn(
-                "transition-all",
+                "h-12 px-3",
                 isSimulatorEnabled && "bg-purple-600 hover:bg-purple-700 text-white"
               )}
-              title={isSimulatorEnabled ? "Disable PLC Simulator" : "Enable PLC Simulator (Testing Mode)"}
+              onClick={onToggleSimulator}
+              title={isSimulatorEnabled ? "Disable Simulator" : "Enable Simulator"}
             >
               {isSimulatorEnabled ? (
-                <>
-                  <ZapOff className="w-4 h-4 mr-1" />
-                  <span className="hidden sm:inline">Simulator ON</span>
-                </>
+                <ZapOff className="w-5 h-5" />
               ) : (
-                <>
-                  <Zap className="w-4 h-4 mr-1" />
-                  <span className="hidden sm:inline">Simulator</span>
-                </>
+                <Zap className="w-5 h-5" />
               )}
+              <span className="ml-2 text-xs uppercase hidden lg:inline">
+                {isSimulatorEnabled ? "SIM ON" : "SIM"}
+              </span>
             </Button>
           )}
 
-          {/* PLC Connection Status */}
+          {/* PLC Status - Click to configure */}
           <Button
-            variant="ghost"
-            size="sm"
+            variant={isPlcConnected ? "ghost" : "outline"}
+            size="lg"
             className={cn(
-              "min-w-[40px] transition-colors",
-              isPlcConnected ? "text-green-600" : "text-red-600"
+              "h-12 px-3 gap-2",
+              isPlcConnected
+                ? "text-green-600"
+                : "text-red-600 border-red-500/50 bg-red-500/10 hover:bg-red-500/20 animate-pulse"
             )}
             onClick={onShowConfig}
-            title={isPlcConnected ? "PLC Connected - Click to edit config" : "PLC Disconnected - Click to edit config"}
+            title={isPlcConnected ? "PLC Connected - Click to configure" : "PLC Disconnected - Click to configure"}
           >
-            {isPlcConnected ? (
-              <Cpu className="w-5 h-5" />
-            ) : (
-              <Monitor className="w-5 h-5" />
-            )}
+            <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse")} />
+            <span className="text-xs uppercase">
+              {isPlcConnected ? "PLC OK" : "SETUP PLC"}
+            </span>
           </Button>
 
-          {/* Cloud Connection Status */}
+          {/* Cloud Status */}
           <Button
             variant="ghost"
-            size="sm"
+            size="lg"
             className={cn(
-              "min-w-[40px] transition-colors",
-              isCloudConnected ? "text-green-600" : "text-red-600"
+              "h-12 px-3 gap-2",
+              isCloudConnected ? "text-green-600" : "text-amber-600"
             )}
             onClick={onCloudSync}
-            disabled={!isCloudConnected}
-            title={isCloudConnected ? "Connected to cloud - Click to sync" : "Offline - syncing locally"}
+            title={isCloudConnected ? "Cloud Connected" : "Offline Mode"}
           >
             {isCloudConnected ? (
               <Cloud className="w-5 h-5" />
             ) : (
               <CloudOff className="w-5 h-5" />
             )}
+            <span className="text-xs uppercase hidden lg:inline">
+              {isCloudConnected ? "CLOUD" : "OFFLINE"}
+            </span>
           </Button>
 
+          {/* Config Button */}
+          <Button
+            variant="ghost"
+            size="lg"
+            className="h-12 w-12 p-0"
+            onClick={onShowConfig}
+            title="Settings"
+          >
+            <Settings className="w-6 h-6" />
+          </Button>
         </div>
       </div>
-
-      {/* Status Bar with IO Statistics */}
-      <div className="px-4 py-2 bg-muted/30 border-t">
-        <div className="flex items-center justify-center gap-2">
-          <div className="flex items-center gap-1 px-2 py-1 bg-background/50 rounded-md text-xs">
-            <span className="font-semibold text-foreground">{totalIos}</span>
-            <span className="text-muted-foreground">Total</span>
-          </div>
-          <div className="flex items-center gap-1 px-2 py-1 bg-green-500/10 rounded-md text-xs">
-            <span className="font-semibold text-green-600">{passedIos}</span>
-            <span className="text-green-600/70">Passed</span>
-          </div>
-          <div className="flex items-center gap-1 px-2 py-1 bg-red-500/10 rounded-md text-xs">
-            <span className="font-semibold text-red-600">{failedIos}</span>
-            <span className="text-red-600/70">Failed</span>
-          </div>
-          <div className="flex items-center gap-1 px-2 py-1 bg-background/50 rounded-md text-xs">
-            <span className="font-semibold text-foreground">{notTestedIos}</span>
-            <span className="text-muted-foreground">Not Tested</span>
-          </div>
-        </div>
-      </div>
-    </Card>
+    </div>
   )
 }
