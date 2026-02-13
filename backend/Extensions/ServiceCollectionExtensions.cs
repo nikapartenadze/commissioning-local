@@ -73,6 +73,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IPlcConnectionService, PlcConnectionService>();
         services.AddSingleton<IPlcCommunicationService, PlcCommunicationService>();
         services.AddSingleton<IPlcInitializationService, PlcInitializationService>();
+        services.AddSingleton<ITagChangeFrequencyService, TagChangeFrequencyService>();
         return services;
     }
 

@@ -92,6 +92,15 @@
                 </FilterTemplate>
             </PropertyColumn>
             
+            @if (HzDisplayFunc != null)
+            {
+                <TemplateColumn Title="Hz" CellStyle="width: 8%;">
+                    <CellTemplate>
+                        @(HzDisplayFunc?.Invoke(context.Item) ?? "-")
+                    </CellTemplate>
+                </TemplateColumn>
+            }
+            
             <PropertyColumn @ref="_resultColumn" Property="x => x.Result" Title="Result" CellStyle="width: 15%;">
                 <CellTemplate>
                     @if (context.Item.Result == Shared.Library.Constants.TestConstants.RESULT_PASSED)
@@ -215,6 +224,9 @@
     // Action events
     [Parameter] public EventCallback<CellContext<Io>> OnCommentChanged { get; set; }
     [Parameter] public EventCallback<Io> OnShowHistory { get; set; }
+
+    // Hz column: optional func to display change frequency (e.g. from ITagChangeFrequencyService)
+    [Parameter] public Func<Io, string>? HzDisplayFunc { get; set; }
 
     // Custom actions template for app-specific buttons
     [Parameter] public RenderFragment? CustomActionsTemplate { get; set; }

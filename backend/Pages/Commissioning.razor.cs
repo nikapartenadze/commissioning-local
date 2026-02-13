@@ -26,7 +26,8 @@ public partial class Commissioning : ComponentBase, IDisposable
     [Inject] private ICloudSyncService CloudSyncService { get; set; } = null!;
     [Inject] private IErrorDialogService ErrorDialogService { get; set; } = null!;
     [Inject] private IDialogService DialogService { get; set; } = null!;
-    
+    [Inject] private ITagChangeFrequencyService TagChangeFrequency { get; set; } = null!;
+
     IDialogReference? valueDialog = null;
     private bool _isCloudConnected = false;
     private bool _isPlcConnected = false;
@@ -42,6 +43,7 @@ public partial class Commissioning : ComponentBase, IDisposable
         PlcCommunication.PlcConnectionChanged += OnPlcConnectionChanged;
         ErrorDialogService.NotifyAlert += OnErrorAlert;
         Configuration.ColumnVisibilityChanged += OnColumnVisibilityChanged;
+        TagChangeFrequency.HzUpdated += OnHzUpdated;
         _isCloudConnected = CloudSyncService.IsConnected;
         _isPlcConnected = PlcCommunication.IsPlcConnected;
         await base.OnInitializedAsync();
@@ -70,6 +72,11 @@ public partial class Commissioning : ComponentBase, IDisposable
     }
 
     private void OnColumnVisibilityChanged()
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void OnHzUpdated(int ioId)
     {
         InvokeAsync(StateHasChanged);
     }
@@ -417,5 +424,6 @@ public partial class Commissioning : ComponentBase, IDisposable
         PlcCommunication.PlcConnectionChanged -= OnPlcConnectionChanged;
         ErrorDialogService.NotifyAlert -= OnErrorAlert;
         Configuration.ColumnVisibilityChanged -= OnColumnVisibilityChanged;
+        TagChangeFrequency.HzUpdated -= OnHzUpdated;
     }
 } 

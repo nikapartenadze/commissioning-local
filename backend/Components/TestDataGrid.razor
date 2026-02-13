@@ -28,7 +28,8 @@
     OnResetResultFilter="@OnResetResultFilter"
     OnResultFilterChanged="@OnResultFilterChanged"
     OnCommentChanged="@OnCommentChanged"
-    OnShowHistory="@OnShowHistory">
+    OnShowHistory="@OnShowHistory"
+    HzDisplayFunc="@HzDisplayFunc">
     
     <CustomActionsTemplate>
         <TemplateColumn T="Io" Sortable="false" Filterable="false" Title="Failed" CellStyle="width: 0%;">
@@ -92,6 +93,7 @@
     [Parameter] public Func<Io, bool>? QuickFilter { get; set; }
     [Parameter] public Func<Io, int, string>? RowStyleFunc { get; set; }
     [Parameter] public Func<Io, object>? TimestampSortBy { get; set; }
+    [Parameter] public Func<Io, string>? HzDisplayFunc { get; set; }
 
     // Filter state
     [Parameter] public bool ShowStateFilter { get; set; }
