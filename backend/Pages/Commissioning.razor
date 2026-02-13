@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 @using System.Net;
 @using CsvHelper;
 @using System.Globalization;
@@ -78,4 +78,5 @@
     OnManualFail="@ManualFail"
     OnClearRow="@ClearRow"
     OnShowHistory="@ShowTestHistory"
-    OnEnableOutput="@EnableOutput" />
+    OnEnableOutput="@EnableOutput"
+    HzDisplayFunc="@(io => TagChangeFrequency.GetHz(io.Id).ToString("F2"))" />
