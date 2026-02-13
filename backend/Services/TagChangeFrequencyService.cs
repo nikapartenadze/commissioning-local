@@ -22,6 +22,7 @@ public class TagChangeFrequencyService : ITagChangeFrequencyService, IDisposable
     private bool _disposed;
 
     public event Action<int>? HzUpdated;
+    public event Action? AnyHzUpdated;
 
     public TagChangeFrequencyService(ITagReaderService tagReader)
     {
@@ -78,6 +79,8 @@ public class TagChangeFrequencyService : ITagChangeFrequencyService, IDisposable
 
         foreach (var ioId in toNotify)
             HzUpdated?.Invoke(ioId);
+        if (toNotify.Count > 0)
+            AnyHzUpdated?.Invoke();
     }
 
     private static void PruneToLastFiveSeconds(List<DateTime> list)

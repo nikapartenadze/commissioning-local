@@ -16,4 +16,10 @@ public interface ITagChangeFrequencyService
     /// Fired only for I/Os in the active set (have had at least one change in the past 5 seconds).
     /// </summary>
     event Action<int>? HzUpdated;
+
+    /// <summary>
+    /// Raised once per prune cycle when any I/O's Hz was updated (at least one active I/O).
+    /// Use this to refresh the grid once per cycle instead of per-IO.
+    /// </summary>
+    event Action? AnyHzUpdated;
 }
