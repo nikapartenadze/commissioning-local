@@ -29,7 +29,15 @@
     OnResultFilterChanged="@OnResultFilterChanged"
     OnCommentChanged="@OnCommentChanged"
     OnShowHistory="@OnShowHistory"
-    HzDisplayFunc="@HzDisplayFunc">
+    HzDisplayFunc="@HzDisplayFunc"
+    HzSortBy="@HzSortBy"
+    ShowHzFilter="@ShowHzFilter"
+    HzFilterIcon="@HzFilterIcon"
+    HzFilterItems="@HzFilterItems"
+    OnOpenHzFilter="@OnOpenHzFilter"
+    OnCloseHzFilter="@OnCloseHzFilter"
+    OnResetHzFilter="@OnResetHzFilter"
+    OnHzFilterChanged="@OnHzFilterChanged">
     
     <CustomActionsTemplate>
         <TemplateColumn T="Io" Sortable="false" Filterable="false" Title="Failed" CellStyle="width: 0%;">
@@ -94,6 +102,16 @@
     [Parameter] public Func<Io, int, string>? RowStyleFunc { get; set; }
     [Parameter] public Func<Io, object>? TimestampSortBy { get; set; }
     [Parameter] public Func<Io, string>? HzDisplayFunc { get; set; }
+    [Parameter] public Func<Io, object>? HzSortBy { get; set; }
+
+    // Hz filter state
+    [Parameter] public bool ShowHzFilter { get; set; }
+    [Parameter] public string HzFilterIcon { get; set; } = Icons.Material.Filled.FilterAlt;
+    [Parameter] public Dictionary<string, bool> HzFilterItems { get; set; } = new();
+    [Parameter] public EventCallback OnOpenHzFilter { get; set; }
+    [Parameter] public EventCallback OnCloseHzFilter { get; set; }
+    [Parameter] public EventCallback OnResetHzFilter { get; set; }
+    [Parameter] public EventCallback<(bool value, string item)> OnHzFilterChanged { get; set; }
 
     // Filter state
     [Parameter] public bool ShowStateFilter { get; set; }

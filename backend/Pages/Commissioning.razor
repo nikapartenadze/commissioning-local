@@ -79,4 +79,12 @@
     OnClearRow="@ClearRow"
     OnShowHistory="@ShowTestHistory"
     OnEnableOutput="@EnableOutput"
-    HzDisplayFunc="@(io => TagChangeFrequency.GetHz(io.Id).ToString("F2"))" />
+    HzDisplayFunc="@(io => TagChangeFrequency.GetHz(io.Id).ToString("F2"))"
+    HzSortBy="@_hzSortBy"
+    ShowHzFilter="@AppState.FilterState.OpenHzFilter"
+    HzFilterIcon="@AppState.FilterState.HzFilterIcon"
+    HzFilterItems="@AppState.FilterState.HzItems"
+    OnOpenHzFilter="@(() => AppState.FilterState.OpenHzFilter = true)"
+    OnCloseHzFilter="@(() => AppState.FilterState.OpenHzFilter = false)"
+    OnResetHzFilter="@ResetHzFilter"
+    OnHzFilterChanged="@((valueItem) => HzValuesChanged(valueItem.value, valueItem.item))" />

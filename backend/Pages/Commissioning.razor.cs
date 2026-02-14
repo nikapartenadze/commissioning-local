@@ -33,8 +33,9 @@ public partial class Commissioning : ComponentBase, IDisposable
     private bool _isPlcConnected = false;
 
     private Func<Io, object> _sortBy => FilterService.CreateTimestampSortFunction();
-    private Func<Io, bool> _quickFilter => FilterService.CreateQuickFilter(AppState);
+    private Func<Io, bool> _quickFilter => FilterService.CreateQuickFilter(AppState, TagChangeFrequency.GetHz, AppState.FilterState.HzItems);
     private Func<Io, int, string> _rowStyleFunc => FilterService.CreateRowStyleFunction();
+    private Func<Io, object> _hzSortBy => io => (object)TagChangeFrequency.GetHz(io.Id);
 
     protected override async Task OnInitializedAsync()
     {
@@ -122,6 +123,16 @@ public partial class Commissioning : ComponentBase, IDisposable
     void ResetResultFilter()
     {
         AppState.FilterState.ResetResultFilter();
+    }
+
+    void HzValuesChanged(bool value, string item)
+    {
+        AppState.FilterState.SetHzFilter(item, value);
+    }
+
+    void ResetHzFilter()
+    {
+        AppState.FilterState.ResetHzFilter();
     }
 
     async Task ShowGraph()

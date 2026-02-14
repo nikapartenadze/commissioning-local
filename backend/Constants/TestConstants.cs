@@ -89,6 +89,18 @@ public static class TestConstants
         public const string STATE_TRUE = "TRUE";
         public const string STATE_FALSE = "FALSE";
     }
+
+    // Hz filter intervals (column filter options)
+    public static class HzFilterIntervals
+    {
+        public const string Over5 = ">5 Hz";
+        public const string From2To5 = "2-5 Hz";
+        public const string From1To2 = "1-2 Hz";
+        public const string From05To1 = "0.5-1 Hz";
+        public const string From02To05 = "0.2-0.5 Hz";
+        public const string From0To02 = "0-0.2 Hz";
+        public const string Zero = "0 Hz";
+    }
     
     // Dialog Titles
     public static class DialogTitles
