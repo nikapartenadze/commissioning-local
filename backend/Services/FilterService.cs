@@ -12,6 +12,27 @@ public class FilterService : IFilterService
         return x => PassesFilters(x, appState);
     }
 
+    public Func<Io, bool> CreateQuickFilter(IAppStateService appState, Func<int, double>? getHz, IReadOnlyDictionary<string, bool>? hzFilterItems)
+    {
+        if (getHz == null || hzFilterItems == null)
+            return CreateQuickFilter(appState);
+        return x => PassesFilters(x, appState) && PassesHzFilter(x, getHz, hzFilterItems);
+    }
+
+    /// <summary>
+    /// Returns the Hz filter interval key for a given frequency (e.g. "2-5 Hz", "0 Hz", ">5 Hz").
+    /// </summary>
+    public static string GetHzIntervalKey(double hz)
+    {
+        if (hz <= 0) return TestConstants.HzFilterIntervals.Zero;
+        if (hz <= 0.2) return TestConstants.HzFilterIntervals.From0To02;
+        if (hz <= 0.5) return TestConstants.HzFilterIntervals.From02To05;
+        if (hz <= 1) return TestConstants.HzFilterIntervals.From05To1;
+        if (hz <= 2) return TestConstants.HzFilterIntervals.From1To2;
+        if (hz <= 5) return TestConstants.HzFilterIntervals.From2To5;
+        return TestConstants.HzFilterIntervals.Over5;
+    }
+
     public Func<Io, int, string> CreateRowStyleFunction()
     {
         return (x, i) => GetRowStyle(x);
@@ -59,6 +80,13 @@ public class FilterService : IFilterService
             return false;
 
         return true;
+    }
+
+    public bool PassesHzFilter(Io item, Func<int, double> getHz, IReadOnlyDictionary<string, bool> hzFilterItems)
+    {
+        var hz = getHz(item.Id);
+        var key = GetHzIntervalKey(hz);
+        return hzFilterItems.TryGetValue(key, out var checked_) && checked_;
     }
 
     private bool PassesStateFilters(Io item, IAppStateService appState)

@@ -1,3 +1,4 @@
+using System.Linq;
 using MudBlazor;
 using IO_Checkout_Tool.Constants;
 
@@ -20,6 +21,19 @@ public class FilterState
     {
         {TestConstants.FilterStates.STATE_TRUE, true},
         {TestConstants.FilterStates.STATE_FALSE, true}
+    };
+
+    private bool _openHzFilter = false;
+    private string _hzFilterIcon = Icons.Material.Filled.FilterAlt;
+    private Dictionary<string, bool> _hzItems = new()
+    {
+        {TestConstants.HzFilterIntervals.Over5, true},
+        {TestConstants.HzFilterIntervals.From2To5, true},
+        {TestConstants.HzFilterIntervals.From1To2, true},
+        {TestConstants.HzFilterIntervals.From05To1, true},
+        {TestConstants.HzFilterIntervals.From02To05, true},
+        {TestConstants.HzFilterIntervals.From0To02, true},
+        {TestConstants.HzFilterIntervals.Zero, true}
     };
 
     public bool OpenResultFilter
@@ -78,6 +92,34 @@ public class FilterState
 
     public Dictionary<string, bool> StateItems => _stateItems;
 
+    public bool OpenHzFilter
+    {
+        get => _openHzFilter;
+        set
+        {
+            if (_openHzFilter != value)
+            {
+                _openHzFilter = value;
+                StateChanged?.Invoke();
+            }
+        }
+    }
+
+    public string HzFilterIcon
+    {
+        get => _hzFilterIcon;
+        private set
+        {
+            if (_hzFilterIcon != value)
+            {
+                _hzFilterIcon = value;
+                StateChanged?.Invoke();
+            }
+        }
+    }
+
+    public Dictionary<string, bool> HzItems => _hzItems;
+
     public event Action? StateChanged;
 
     public void SetResultFilter(string item, bool value)
@@ -123,12 +165,40 @@ public class FilterState
         StateChanged?.Invoke();
     }
 
+    public void SetHzFilter(string item, bool value)
+    {
+        if (_hzItems.ContainsKey(item) && _hzItems[item] != value)
+        {
+            _hzItems[item] = value;
+            UpdateHzFilterIcon();
+            StateChanged?.Invoke();
+        }
+    }
+
+    public void ResetHzFilter()
+    {
+        _hzItems = new Dictionary<string, bool>
+        {
+            {TestConstants.HzFilterIntervals.Over5, true},
+            {TestConstants.HzFilterIntervals.From2To5, true},
+            {TestConstants.HzFilterIntervals.From1To2, true},
+            {TestConstants.HzFilterIntervals.From05To1, true},
+            {TestConstants.HzFilterIntervals.From02To05, true},
+            {TestConstants.HzFilterIntervals.From0To02, true},
+            {TestConstants.HzFilterIntervals.Zero, true}
+        };
+        UpdateHzFilterIcon();
+        StateChanged?.Invoke();
+    }
+
     public void Reset()
     {
         ResetResultFilter();
         ResetStateFilter();
+        ResetHzFilter();
         OpenResultFilter = false;
         OpenStateFilter = false;
+        OpenHzFilter = false;
     }
 
     private void UpdateResultFilterIcon()
@@ -146,5 +216,11 @@ public class FilterState
                           _stateItems[TestConstants.FilterStates.STATE_FALSE])
                           ? Icons.Material.Filled.FilterAlt
                           : Icons.Material.Outlined.FilterAlt;
+    }
+
+    private void UpdateHzFilterIcon()
+    {
+        var allChecked = _hzItems.Values.All(v => v);
+        HzFilterIcon = allChecked ? Icons.Material.Filled.FilterAlt : Icons.Material.Outlined.FilterAlt;
     }
 } 

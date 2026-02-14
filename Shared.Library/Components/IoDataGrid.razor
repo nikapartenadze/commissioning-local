@@ -94,10 +94,32 @@
             
             @if (HzDisplayFunc != null)
             {
-                <TemplateColumn Title="Hz" CellStyle="width: 8%;">
+                <TemplateColumn Title="Hz" CellStyle="width: 8%;" SortBy="@HzSortBy" Filterable="true">
                     <CellTemplate>
                         @(HzDisplayFunc?.Invoke(context.Item) ?? "-")
                     </CellTemplate>
+                    <FilterTemplate>
+                        <MudIconButton OnClick="() => OnOpenHzFilter.InvokeAsync()" Icon="@HzFilterIcon" Size="@Size.Small" title="Filter by Hz" />
+                        <MudIconButton OnClick="@(() => OnResetHzFilter.InvokeAsync())" Icon="@Icons.Material.Filled.FilterAltOff" Size="@Size.Small" Style="margin-left:10px" title="Reset Hz Filter" />
+                        <MudOverlay AutoClose Visible="@ShowHzFilter" OnClosed="@(() => OnCloseHzFilter.InvokeAsync())" />
+                        <MudPopover Open="@ShowHzFilter" AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft" Style="width:160px">
+                            <MudStack Spacing="0">
+                                <MudStack Spacing="0" Style="overflow-y:auto;max-height:280px">
+                                    @foreach (var item in _hzFilterOrder)
+                                    {
+                                        @if (HzFilterItems.ContainsKey(item))
+                                        {
+                                            <MudCheckBox T="bool"
+                                                        Label="@item"
+                                                        Size="@Size.Small"
+                                                        Value="@HzFilterItems[item]"
+                                                        ValueChanged="@((value) => OnHzFilterChanged.InvokeAsync((value, item)))" />
+                                        }
+                                    }
+                                </MudStack>
+                            </MudStack>
+                        </MudPopover>
+                    </FilterTemplate>
                 </TemplateColumn>
             }
             
@@ -227,6 +249,18 @@
 
     // Hz column: optional func to display change frequency (e.g. from ITagChangeFrequencyService)
     [Parameter] public Func<Io, string>? HzDisplayFunc { get; set; }
+    [Parameter] public Func<Io, object>? HzSortBy { get; set; }
+
+    // Filter state for Hz column
+    [Parameter] public bool ShowHzFilter { get; set; }
+    [Parameter] public string HzFilterIcon { get; set; } = Icons.Material.Filled.FilterAlt;
+    [Parameter] public Dictionary<string, bool> HzFilterItems { get; set; } = new();
+    [Parameter] public EventCallback OnOpenHzFilter { get; set; }
+    [Parameter] public EventCallback OnCloseHzFilter { get; set; }
+    [Parameter] public EventCallback OnResetHzFilter { get; set; }
+    [Parameter] public EventCallback<(bool value, string item)> OnHzFilterChanged { get; set; }
+
+    private static readonly string[] _hzFilterOrder = new[] { ">5 Hz", "2-5 Hz", "1-2 Hz", "0.5-1 Hz", "0.2-0.5 Hz", "0-0.2 Hz", "0 Hz" };
 
     // Custom actions template for app-specific buttons
     [Parameter] public RenderFragment? CustomActionsTemplate { get; set; }
