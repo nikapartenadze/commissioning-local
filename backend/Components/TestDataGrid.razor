@@ -8,6 +8,7 @@
     TimestampSortBy="@TimestampSortBy"
     ShowOrderColumn="@ShowOrderColumn"
     ShowStateColumn="@ShowStateColumn"
+    ShowHzColumn="@ShowHzColumn"
     ShowResultColumn="@ShowResultColumn"
     ShowTimestampColumn="@ShowTimestampColumn"
     ShowHistoryColumn="@ShowHistoryColumn"
@@ -93,6 +94,7 @@
     [Parameter] public bool ShowOrderColumn { get; set; }
     [Parameter] public bool ShowOutputColumn { get; set; }
     [Parameter] public bool ShowStateColumn { get; set; } = true;
+    [Parameter] public bool ShowHzColumn { get; set; } = true;
     [Parameter] public bool ShowResultColumn { get; set; } = true;
     [Parameter] public bool ShowTimestampColumn { get; set; } = true;
     [Parameter] public bool ShowHistoryColumn { get; set; } = true;

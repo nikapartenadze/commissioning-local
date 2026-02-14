@@ -8,6 +8,7 @@ public class TagsContext : DbContext
 {
     private static bool _versionMigrationCompleted = false;
     private static bool _diagnosticMigrationCompleted = false;
+    private static bool _subsystemConfigShowHzMigrationCompleted = false;
     private static readonly object _migrationLock = new object();
     
     public TagsContext(DbContextOptions<TagsContext> options) : base(options)
@@ -213,6 +214,23 @@ public class TagsContext : DbContext
                     catch { /* Column already exists */ }
 
                     _diagnosticMigrationCompleted = true;
+                }
+            }
+        }
+        
+        // Add ShowHzColumn to SubsystemConfigurations (only run once per app lifetime)
+        if (!_subsystemConfigShowHzMigrationCompleted)
+        {
+            lock (_migrationLock)
+            {
+                if (!_subsystemConfigShowHzMigrationCompleted)
+                {
+                    try
+                    {
+                        this.Database.ExecuteSqlRaw("ALTER TABLE SubsystemConfigurations ADD COLUMN ShowHzColumn INTEGER NOT NULL DEFAULT 1;");
+                    }
+                    catch { /* Column already exists */ }
+                    _subsystemConfigShowHzMigrationCompleted = true;
                 }
             }
         }

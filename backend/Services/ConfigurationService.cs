@@ -32,6 +32,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
     
     // Column visibility settings
     public bool ShowStateColumn { get; private set; } = true;
+    public bool ShowHzColumn { get; private set; } = true;
     public bool ShowResultColumn { get; private set; } = true;
     public bool ShowTimestampColumn { get; private set; } = true;
     public bool ShowHistoryColumn { get; private set; } = true;
@@ -74,6 +75,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             
             // Load column visibility settings (default to true if not specified)
             ShowStateColumn = bool.Parse(_configuration[DatabaseConstants.ConfigKeys.SHOW_STATE_COLUMN] ?? "true");
+            ShowHzColumn = bool.Parse(_configuration[DatabaseConstants.ConfigKeys.SHOW_HZ_COLUMN] ?? "true");
             ShowResultColumn = bool.Parse(_configuration[DatabaseConstants.ConfigKeys.SHOW_RESULT_COLUMN] ?? "true");
             ShowTimestampColumn = bool.Parse(_configuration[DatabaseConstants.ConfigKeys.SHOW_TIMESTAMP_COLUMN] ?? "true");
             ShowHistoryColumn = bool.Parse(_configuration[DatabaseConstants.ConfigKeys.SHOW_HISTORY_COLUMN] ?? "true");
@@ -87,7 +89,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         }
     }
 
-    public async Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
+    public async Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showHzColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
     {
         try
         {
@@ -101,6 +103,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
                 { DatabaseConstants.ConfigKeys.ORDER_MODE, orderMode ? "1" : "0" },
                 { DatabaseConstants.ConfigKeys.DISABLE_WATCHDOG, disableWatchdog.ToString().ToLower() },
                 { DatabaseConstants.ConfigKeys.SHOW_STATE_COLUMN, showStateColumn.ToString().ToLower() },
+                { DatabaseConstants.ConfigKeys.SHOW_HZ_COLUMN, showHzColumn.ToString().ToLower() },
                 { DatabaseConstants.ConfigKeys.SHOW_RESULT_COLUMN, showResultColumn.ToString().ToLower() },
                 { DatabaseConstants.ConfigKeys.SHOW_TIMESTAMP_COLUMN, showTimestampColumn.ToString().ToLower() },
                 { DatabaseConstants.ConfigKeys.SHOW_HISTORY_COLUMN, showHistoryColumn.ToString().ToLower() },
@@ -129,6 +132,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             OrderMode = orderMode;
             DisableWatchdog = disableWatchdog;
             ShowStateColumn = showStateColumn;
+            ShowHzColumn = showHzColumn;
             ShowResultColumn = showResultColumn;
             ShowTimestampColumn = showTimestampColumn;
             ShowHistoryColumn = showHistoryColumn;
@@ -142,9 +146,10 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         }
     }
 
-    public void UpdateColumnVisibility(bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
+    public void UpdateColumnVisibility(bool showStateColumn, bool showHzColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
     {
         ShowStateColumn = showStateColumn;
+        ShowHzColumn = showHzColumn;
         ShowResultColumn = showResultColumn;
         ShowTimestampColumn = showTimestampColumn;
         ShowHistoryColumn = showHistoryColumn;
@@ -175,6 +180,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             
             // Update only the column visibility settings
             currentConfig[DatabaseConstants.ConfigKeys.SHOW_STATE_COLUMN] = ShowStateColumn.ToString().ToLower();
+            currentConfig[DatabaseConstants.ConfigKeys.SHOW_HZ_COLUMN] = ShowHzColumn.ToString().ToLower();
             currentConfig[DatabaseConstants.ConfigKeys.SHOW_RESULT_COLUMN] = ShowResultColumn.ToString().ToLower();
             currentConfig[DatabaseConstants.ConfigKeys.SHOW_TIMESTAMP_COLUMN] = ShowTimestampColumn.ToString().ToLower();
             currentConfig[DatabaseConstants.ConfigKeys.SHOW_HISTORY_COLUMN] = ShowHistoryColumn.ToString().ToLower();
@@ -436,7 +442,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         }
     }
     
-    public async Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
+    public async Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showHzColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
     {
         try
         {
@@ -451,12 +457,13 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             OrderMode = orderMode;
             DisableWatchdog = disableWatchdog;
             ShowStateColumn = showStateColumn;
+            ShowHzColumn = showHzColumn;
             ShowResultColumn = showResultColumn;
             ShowTimestampColumn = showTimestampColumn;
             ShowHistoryColumn = showHistoryColumn;
             
             // Optionally save to config.json for persistence across app restarts
-            await UpdateConfigurationAsync(ip, path, subsystemId, remoteUrl, apiPassword, orderMode, disableWatchdog, showStateColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
+            await UpdateConfigurationAsync(ip, path, subsystemId, remoteUrl, apiPassword, orderMode, disableWatchdog, showStateColumn, showHzColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
             
             // Notify components of column visibility changes
             ColumnVisibilityChanged?.Invoke();

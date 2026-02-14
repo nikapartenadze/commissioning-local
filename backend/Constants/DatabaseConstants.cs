@@ -18,6 +18,7 @@ public static class DatabaseConstants
         
         // Column visibility settings
         public const string SHOW_STATE_COLUMN = "showStateColumn";
+        public const string SHOW_HZ_COLUMN = "showHzColumn";
         public const string SHOW_RESULT_COLUMN = "showResultColumn";
         public const string SHOW_TIMESTAMP_COLUMN = "showTimestampColumn";
         public const string SHOW_HISTORY_COLUMN = "showHistoryColumn";
