@@ -13,6 +13,7 @@ public interface IConfigurationService
     
     // Column visibility settings
     bool ShowStateColumn { get; }
+    bool ShowHzColumn { get; }
     bool ShowResultColumn { get; }
     bool ShowTimestampColumn { get; }
     bool ShowHistoryColumn { get; }
@@ -23,13 +24,13 @@ public interface IConfigurationService
     bool LoadConfiguration();
     
     // Methods for immediate UI updates (no reload required)
-    void UpdateColumnVisibility(bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
+    void UpdateColumnVisibility(bool showStateColumn, bool showHzColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
     Task SaveUISettingsAsync();
     
     // New methods for config editing (requires reload)
-    Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
+    Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showHzColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
     Task ReinitializeApplicationAsync();
     
     // Runtime configuration switching (no reload required)
-    Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
+    Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showHzColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
 } 

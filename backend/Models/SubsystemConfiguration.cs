@@ -35,6 +35,8 @@ public class SubsystemConfiguration
     
     public bool ShowStateColumn { get; set; } = true;
     
+    public bool ShowHzColumn { get; set; } = true;
+    
     public bool ShowResultColumn { get; set; } = true;
     
     public bool ShowTimestampColumn { get; set; } = true;

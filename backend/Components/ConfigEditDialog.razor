@@ -61,6 +61,13 @@
                         Class="my-2" />
             
             <MudCheckBox T="bool" 
+                        Value="@showHzColumn" 
+                        ValueChanged="@((bool value) => OnColumnVisibilityChanged(nameof(showHzColumn), value))"
+                        Label="Show Hz Column" 
+                        Color="Color.Primary"
+                        Class="my-2" />
+            
+            <MudCheckBox T="bool" 
                         Value="@showResultColumn" 
                         ValueChanged="@((bool value) => OnColumnVisibilityChanged(nameof(showResultColumn), value))"
                         Label="Show Result Column" 
@@ -116,6 +123,7 @@
     
     // Column visibility settings
     private bool showStateColumn = true;
+    private bool showHzColumn = true;
     private bool showResultColumn = true;
     private bool showTimestampColumn = true;
     private bool showHistoryColumn = true;
@@ -146,6 +154,7 @@
         orderMode = ConfigurationService.OrderMode;
         disableWatchdog = ConfigurationService.DisableWatchdog;
         showStateColumn = ConfigurationService.ShowStateColumn;
+        showHzColumn = ConfigurationService.ShowHzColumn;
         showResultColumn = ConfigurationService.ShowResultColumn;
         showTimestampColumn = ConfigurationService.ShowTimestampColumn;
         showHistoryColumn = ConfigurationService.ShowHistoryColumn;
@@ -177,7 +186,7 @@
             // First save the configuration
             var success = await ConfigurationService.UpdateConfigurationAsync(
                 ip, path, subsystemId, remoteUrl, apiPassword, orderMode, disableWatchdog, 
-                showStateColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
+                showStateColumn, showHzColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
             
             if (!success)
             {
@@ -237,6 +246,9 @@
             case nameof(showStateColumn):
                 showStateColumn = value;
                 break;
+            case nameof(showHzColumn):
+                showHzColumn = value;
+                break;
             case nameof(showResultColumn):
                 showResultColumn = value;
                 break;
@@ -249,7 +261,7 @@
         }
         
         // Apply changes immediately to the configuration service
-        ConfigurationService.UpdateColumnVisibility(showStateColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
+        ConfigurationService.UpdateColumnVisibility(showStateColumn, showHzColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
         
         // Save the UI settings to the config file (without requiring reload)
         await ConfigurationService.SaveUISettingsAsync();

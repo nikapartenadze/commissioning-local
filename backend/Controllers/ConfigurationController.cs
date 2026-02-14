@@ -188,6 +188,7 @@ public class ConfigurationController : ControllerBase
             existing.OrderMode = configuration.OrderMode;
             existing.DisableWatchdog = configuration.DisableWatchdog;
             existing.ShowStateColumn = configuration.ShowStateColumn;
+            existing.ShowHzColumn = configuration.ShowHzColumn;
             existing.ShowResultColumn = configuration.ShowResultColumn;
             existing.ShowTimestampColumn = configuration.ShowTimestampColumn;
             existing.ShowHistoryColumn = configuration.ShowHistoryColumn;
@@ -275,6 +276,7 @@ public class ConfigurationController : ControllerBase
                 config.OrderMode,
                 config.DisableWatchdog,
                 config.ShowStateColumn,
+                config.ShowHzColumn,
                 config.ShowResultColumn,
                 config.ShowTimestampColumn,
                 config.ShowHistoryColumn
@@ -333,6 +335,7 @@ public class ConfigurationController : ControllerBase
                 CloudConnected = cloudConnected,
                 IsReloading = _configurationService.IsReinitializing,
                 ShowStateColumn = _configurationService.ShowStateColumn,
+                ShowHzColumn = _configurationService.ShowHzColumn,
                 ShowResultColumn = _configurationService.ShowResultColumn,
                 ShowTimestampColumn = _configurationService.ShowTimestampColumn,
                 ShowHistoryColumn = _configurationService.ShowHistoryColumn,
@@ -377,6 +380,7 @@ public class ConfigurationController : ControllerBase
                 OrderMode = _configurationService.OrderMode,
                 DisableWatchdog = _configurationService.DisableWatchdog,
                 ShowStateColumn = _configurationService.ShowStateColumn,
+                ShowHzColumn = _configurationService.ShowHzColumn,
                 ShowResultColumn = _configurationService.ShowResultColumn,
                 ShowTimestampColumn = _configurationService.ShowTimestampColumn,
                 ShowHistoryColumn = _configurationService.ShowHistoryColumn,
@@ -422,6 +426,7 @@ public class ConfigurationController : ControllerBase
                 request.OrderMode ?? false,
                 request.DisableWatchdog ?? false,
                 request.ShowStateColumn ?? true,
+                request.ShowHzColumn ?? true,
                 request.ShowResultColumn ?? true,
                 request.ShowTimestampColumn ?? true,
                 request.ShowHistoryColumn ?? true
@@ -474,6 +479,7 @@ public class ConfigJsonUpdateRequest
     public bool? OrderMode { get; set; }
     public bool? DisableWatchdog { get; set; }
     public bool? ShowStateColumn { get; set; }
+    public bool? ShowHzColumn { get; set; }
     public bool? ShowResultColumn { get; set; }
     public bool? ShowTimestampColumn { get; set; }
     public bool? ShowHistoryColumn { get; set; }
@@ -514,6 +520,7 @@ public class FrontendRuntimeConfig
     /// Column visibility settings.
     /// </summary>
     public bool ShowStateColumn { get; set; }
+    public bool ShowHzColumn { get; set; }
     public bool ShowResultColumn { get; set; }
     public bool ShowTimestampColumn { get; set; }
     public bool ShowHistoryColumn { get; set; }

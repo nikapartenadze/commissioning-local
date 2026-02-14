@@ -92,7 +92,7 @@
                 </FilterTemplate>
             </PropertyColumn>
             
-            @if (HzDisplayFunc != null)
+            @if (HzDisplayFunc != null && ShowHzColumn)
             {
                 <TemplateColumn Title="Hz" CellStyle="width: 8%;" SortBy="@HzSortBy" Filterable="true">
                     <CellTemplate>
@@ -206,6 +206,7 @@
     [Parameter] public bool ShowSubsystemColumn { get; set; } = false;
     [Parameter] public bool ShowOrderColumn { get; set; } = false;
     [Parameter] public bool ShowStateColumn { get; set; } = true;
+    [Parameter] public bool ShowHzColumn { get; set; } = true;
     [Parameter] public bool ShowResultColumn { get; set; } = true;
     [Parameter] public bool ShowTimestampColumn { get; set; } = true;
     [Parameter] public bool ShowHistoryColumn { get; set; } = true;
