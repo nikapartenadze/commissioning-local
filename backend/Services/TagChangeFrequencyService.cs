@@ -39,7 +39,8 @@ public class TagChangeFrequencyService : ITagChangeFrequencyService, IDisposable
                 return 0;
 
             PruneToLastFiveSeconds(list);
-            return list.Count / WindowSeconds;
+            // Divide by 2 because a complete cycle is two state changes (off to on and on to off).
+            return list.Count / WindowSeconds / 2.0;
         }
     }
 

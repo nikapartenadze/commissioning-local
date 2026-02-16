@@ -47,12 +47,22 @@ public class TagChangeFrequencyServiceTests : IDisposable
     }
 
     [Fact]
-    public void GetHz_AfterOneTagValueChanged_ReturnsOneFifthHz()
+    public void GetHz_AfterOneTagValueChanged_ReturnsOneTenthHz()
     {
         var io = CreateIo(1);
         RaiseTagValueChanged(io);
 
-        _sut.GetHz(1).Should().BeApproximately(0.2, 0.001); // 1 change in 5s window = 0.2 Hz
+        _sut.GetHz(1).Should().BeApproximately(0.1, 0.001); // 1 change (half cycle) in 5s window = 0.1 Hz
+    }
+
+    [Fact]
+    public void GetHz_AfterTwoTagValueChanged_ReturnsOneFifthHz()
+    {
+        var io = CreateIo(1);
+        RaiseTagValueChanged(io);
+        RaiseTagValueChanged(io);
+
+        _sut.GetHz(1).Should().BeApproximately(0.2, 0.001); // 2 changes (full cycle) in 5s window = 0.2 Hz
     }
 
     [Fact]
@@ -62,7 +72,7 @@ public class TagChangeFrequencyServiceTests : IDisposable
         for (int i = 0; i < 10; i++)
             RaiseTagValueChanged(io);
 
-        _sut.GetHz(1).Should().BeApproximately(2.0, 0.001); // 10 changes in 5s = 2.0 Hz
+        _sut.GetHz(1).Should().BeApproximately(1.0, 0.001); // 10 changes (5 cycles) in 5s = 1.0 Hz
     }
 
     [Fact]
@@ -72,8 +82,8 @@ public class TagChangeFrequencyServiceTests : IDisposable
         RaiseTagValueChanged(CreateIo(1));
         RaiseTagValueChanged(CreateIo(2));
 
-        _sut.GetHz(1).Should().BeApproximately(0.4, 0.001);  // 2/5
-        _sut.GetHz(2).Should().BeApproximately(0.2, 0.001);  // 1/5
+        _sut.GetHz(1).Should().BeApproximately(0.2, 0.001);  // 1 cycle / 5 seconds = 0.2 Hz
+        _sut.GetHz(2).Should().BeApproximately(0.1, 0.001);  // 1/2 cycle / 5 seconds = 0.1 Hz
         _sut.GetHz(3).Should().Be(0);
     }
 
@@ -123,11 +133,11 @@ public class TagChangeFrequencyServiceTests : IDisposable
     public void AfterDispose_GetHz_StillReturnsValueForPreviouslyRecordedIo()
     {
         RaiseTagValueChanged(CreateIo(1));
-        _sut.GetHz(1).Should().BeApproximately(0.2, 0.001);
+        _sut.GetHz(1).Should().BeApproximately(0.1, 0.001);
 
         _sut.Dispose();
 
         // Data recorded before dispose is still there (timer is stopped so no prune)
-        _sut.GetHz(1).Should().BeApproximately(0.2, 0.001);
+        _sut.GetHz(1).Should().BeApproximately(0.1, 0.001);
     }
 }
