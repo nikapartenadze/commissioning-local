@@ -10,7 +10,6 @@ export interface PlcConfig {
   ip: string
   path: string
   subsystemId: string
-  disableWatchdog: boolean
   apiPassword?: string
   remoteUrl?: string
 }
@@ -27,7 +26,6 @@ export interface IoState {
 export interface PlcConnectionStatus {
   isConnected: boolean
   isTesting: boolean
-  watchdogActive: boolean
   lastUpdate: Date
 }
 
@@ -38,7 +36,6 @@ export class PlcCommunicationService {
   private status: PlcConnectionStatus = {
     isConnected: false,
     isTesting: false,
-    watchdogActive: false,
     lastUpdate: new Date()
   }
   private listeners: Set<(status: PlcConnectionStatus) => void> = new Set()
@@ -66,11 +63,6 @@ export class PlcCommunicationService {
       // Connect to WebSocket for real-time updates
       await this.connectWebSocket()
       
-      // Start watchdog if enabled
-      if (!this.config.disableWatchdog) {
-        this.startWatchdog()
-      }
-
       console.log('✅ PLC communication initialized')
       return true
     } catch (error) {
@@ -164,23 +156,7 @@ export class PlcCommunicationService {
       case 'status-update':
         this.updateStatus(message.data)
         break
-      case 'watchdog-status':
-        this.updateStatus({ watchdogActive: message.data.active })
-        break
     }
-  }
-
-  // Start watchdog service
-  private startWatchdog(): void {
-    if (this.config.disableWatchdog) return
-
-    setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({
-          type: 'watchdog-ping'
-        }))
-      }
-    }, 5000) // Ping every 5 seconds
   }
 
   // Schedule reconnection
@@ -325,7 +301,7 @@ export class PlcCommunicationService {
       this.reconnectInterval = null
     }
     
-    this.updateStatus({ isConnected: false, isTesting: false, watchdogActive: false })
+    this.updateStatus({ isConnected: false, isTesting: false })
   }
 }
 

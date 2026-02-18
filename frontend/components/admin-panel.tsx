@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Loader2, UserPlus, Key, UserX, Trash2, User, Shield } from "lucide-react"
 import { useUser } from "@/lib/user-context"
 import { useToast } from "@/hooks/use-toast"
-import { API_ENDPOINTS } from "@/lib/api-config"
+import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 interface UserData {
   id: number
@@ -46,7 +46,7 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
   const loadUsers = async () => {
     try {
       setLoading(true)
-      const response = await fetch(API_ENDPOINTS.users)
+      const response = await authFetch(API_ENDPOINTS.users)
       if (response.ok) {
         const data = await response.json()
         setUsers(data)
@@ -70,7 +70,7 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
 
     try {
       setCreating(true)
-      const response = await fetch(API_ENDPOINTS.users, {
+      const response = await authFetch(API_ENDPOINTS.users, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -118,7 +118,7 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
     }
 
     try {
-      const response = await fetch(API_ENDPOINTS.userResetPin(userId), {
+      const response = await authFetch(API_ENDPOINTS.userResetPin(userId), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -153,7 +153,7 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
 
   const handleToggleActive = async (userId: number) => {
     try {
-      const response = await fetch(API_ENDPOINTS.userToggleActive(userId), {
+      const response = await authFetch(API_ENDPOINTS.userToggleActive(userId), {
         method: 'PUT'
       })
 
@@ -186,7 +186,7 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
     }
 
     try {
-      const response = await fetch(API_ENDPOINTS.userById(userId), {
+      const response = await authFetch(API_ENDPOINTS.userById(userId), {
         method: 'DELETE'
       })
 

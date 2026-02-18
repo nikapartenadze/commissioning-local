@@ -1,10 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using IO_Checkout_Tool.Models;
 using Shared.Library.Models.Entities;
 
 namespace IO_Checkout_Tool.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/diagnostics")]
 public class DiagnosticController : ControllerBase

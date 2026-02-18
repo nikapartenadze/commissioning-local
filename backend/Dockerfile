@@ -18,13 +18,13 @@ WORKDIR /app
 
 # Install libplctag for Linux (PLC communication)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget ca-certificates \
+    curl ca-certificates unzip \
     && LIBPLCTAG_VERSION="2.6.3" \
-    && wget -q "https://github.com/libplctag/libplctag/releases/download/v${LIBPLCTAG_VERSION}/libplctag_${LIBPLCTAG_VERSION}_ubuntu_x64.tar.gz" -O /tmp/libplctag.tar.gz \
-    && tar -xzf /tmp/libplctag.tar.gz -C /tmp \
-    && find /tmp -name "libplctag.so" -exec cp {} /app/ \; \
+    && curl -sL "https://github.com/libplctag/libplctag/releases/download/v${LIBPLCTAG_VERSION}/libplctag_${LIBPLCTAG_VERSION}_ubuntu_x64.zip" -o /tmp/libplctag.zip \
+    && unzip -q /tmp/libplctag.zip -d /tmp/libplctag \
+    && find /tmp/libplctag -name "libplctag.so" -exec cp {} /app/ \; \
     && rm -rf /tmp/libplctag* \
-    && apt-get remove -y wget \
+    && apt-get remove -y unzip \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 

@@ -44,13 +44,6 @@
                         Color="Color.Primary"
                         Class="my-3" /> *@
             
-            <MudCheckBox T="bool" 
-                        Value="@disableWatchdog" 
-                        ValueChanged="@((bool value) => { disableWatchdog = value; StateHasChanged(); })"
-                        Label="Disable Watchdog" 
-                        Color="Color.Primary"
-                        Class="my-3" />
-            
             <MudText Typo="Typo.h6" Class="mt-4 mb-2">Column Visibility</MudText>
             
             <MudCheckBox T="bool" 
@@ -112,7 +105,6 @@
     private string remoteUrl = string.Empty;
     private string apiPassword = string.Empty;
     private bool orderMode = false;
-    private bool disableWatchdog = false;
     
     // Column visibility settings
     private bool showStateColumn = true;
@@ -127,7 +119,6 @@
     private string originalRemoteUrl = string.Empty;
     private string originalApiPassword = string.Empty;
     private bool originalOrderMode = false;
-    private bool originalDisableWatchdog = false;
     
     protected override async Task OnInitializedAsync()
     {
@@ -144,7 +135,6 @@
         remoteUrl = ConfigurationService.RemoteUrl;
         apiPassword = ConfigurationService.ApiPassword;
         orderMode = ConfigurationService.OrderMode;
-        disableWatchdog = ConfigurationService.DisableWatchdog;
         showStateColumn = ConfigurationService.ShowStateColumn;
         showResultColumn = ConfigurationService.ShowResultColumn;
         showTimestampColumn = ConfigurationService.ShowTimestampColumn;
@@ -157,7 +147,6 @@
         originalRemoteUrl = remoteUrl;
         originalApiPassword = apiPassword;
         originalOrderMode = orderMode;
-        originalDisableWatchdog = disableWatchdog;
         
         // Force UI update to ensure binding
         StateHasChanged();
@@ -176,7 +165,7 @@
 
             // First save the configuration
             var success = await ConfigurationService.UpdateConfigurationAsync(
-                ip, path, subsystemId, remoteUrl, apiPassword, orderMode, disableWatchdog, 
+                ip, path, subsystemId, remoteUrl, apiPassword, orderMode,
                 showStateColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
             
             if (!success)
@@ -265,7 +254,6 @@
                subsystemId != originalSubsystemId ||
                remoteUrl != originalRemoteUrl ||
                apiPassword != originalApiPassword ||
-               orderMode != originalOrderMode ||
-               disableWatchdog != originalDisableWatchdog;
+               orderMode != originalOrderMode;
     }
 } 

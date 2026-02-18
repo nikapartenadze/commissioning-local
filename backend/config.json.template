@@ -6,6 +6,5 @@
   "subsystemId": "1",
   "orderMode": "0",
   "syncBatchSize": 50,
-  "syncBatchDelayMs": 500,
-  "disableWatchdog": false
+  "syncBatchDelayMs": 500
 } 

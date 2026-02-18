@@ -27,7 +27,6 @@ public static class DatabaseConstants
         public const string SUBSYSTEM_ID = "subsystemId";
         public const string REMOTE_URL = "remoteUrl";
         public const string ORDER_MODE = "orderMode";
-        public const string DISABLE_WATCHDOG = "disableWatchdog";
         
         // Column visibility settings
         public const string SHOW_STATE_COLUMN = "showStateColumn";

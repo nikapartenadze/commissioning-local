@@ -5,6 +5,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 // import { AuthProvider } from "@/components/auth-provider"
 import { UserProvider } from "@/lib/user-context"
 import { Toaster } from "@/components/ui/toaster"
+import { ErrorBoundary } from "@/components/error-boundary"
 
 // const inter = Inter({ subsets: ["latin"] })
 
@@ -21,18 +22,20 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans">
-        <UserProvider>
-          <ThemeProvider
-            attribute="class"
-            defaultTheme="system"
-            enableSystem
-            disableTransitionOnChange
-            storageKey="io-checkout-theme"
-          >
-            {children}
-            <Toaster />
-          </ThemeProvider>
-        </UserProvider>
+        <ErrorBoundary>
+          <UserProvider>
+            <ThemeProvider
+              attribute="class"
+              defaultTheme="system"
+              enableSystem
+              disableTransitionOnChange
+              storageKey="io-checkout-theme"
+            >
+              {children}
+              <Toaster />
+            </ThemeProvider>
+          </UserProvider>
+        </ErrorBoundary>
       </body>
     </html>
   )

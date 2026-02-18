@@ -11,6 +11,7 @@ import { AllTestHistoryDialog } from "@/components/all-test-history-dialog"
 import { FireOutputDialog } from "@/components/fire-output-dialog"
 import { NetworkStatusBreadcrumbs } from "@/components/network-status-breadcrumbs"
 import { TagStatusPanel } from "@/components/tag-status-panel"
+import { TagStatusDialog, TagStatus } from "@/components/tag-status-dialog"
 import { ValueChangeDialog } from "@/components/value-change-dialog"
 import { FailCommentDialog } from "@/components/fail-comment-dialog"
 import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
@@ -131,7 +132,27 @@ export default function CommissioningPage() {
   const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | null>(null)
   const [confirmClearIo, setConfirmClearIo] = useState<IoItem | null>(null)
   const [errorLog, setErrorLog] = useState<ErrorEvent[]>([])
+  const [tagStatus, setTagStatus] = useState<TagStatus | null>(null)
+  const [showTagStatusDialog, setShowTagStatusDialog] = useState(false)
 
+  // Fetch tag status periodically
+  useEffect(() => {
+    const fetchTagStatus = async () => {
+      try {
+        const response = await authFetch(API_ENDPOINTS.tagStatus)
+        if (response.ok) {
+          const data = await response.json()
+          setTagStatus(data)
+        }
+      } catch (error) {
+        logger.error('Error fetching tag status:', error)
+      }
+    }
+
+    fetchTagStatus()
+    const interval = setInterval(fetchTagStatus, 10000)
+    return () => clearInterval(interval)
+  }, [])
 
   // Helper function to check if an IO is an output
   const isOutput = (ioName: string | null): boolean => {
@@ -677,11 +698,6 @@ export default function CommissioningPage() {
     }
   }
 
-  const handleRowClick = (io: IoItem) => {
-    if (plcStatus.isTesting) {
-      addToDialogQueue(io)
-    }
-  }
 
   const handleShowFireOutputDialog = (io: IoItem) => {
     setSelectedIo(io)
@@ -976,6 +992,13 @@ export default function CommissioningPage() {
           isSimulatorEnabled={isSimulatorEnabled}
           activeFilter={quickFilter}
           onFilterChange={setQuickFilter}
+          tagStatus={tagStatus ? {
+            totalTags: tagStatus.totalTags,
+            successfulTags: tagStatus.successfulTags,
+            failedTags: tagStatus.failedTags,
+            hasErrors: tagStatus.hasErrors
+          } : null}
+          onShowTagStatus={() => setShowTagStatusDialog(true)}
         />
       </div>
 
@@ -995,7 +1018,6 @@ export default function CommissioningPage() {
               setShowFailCommentDialog(true)
             }}
             onClearResult={(io) => setConfirmClearIo(io)}
-            onRowClick={handleRowClick}
             onShowFireOutputDialog={handleShowFireOutputDialog}
             onCommentChange={handleCommentChange}
             activeQuickFilter={quickFilter}
@@ -1030,16 +1052,16 @@ export default function CommissioningPage() {
         />
 
 
-        {/* Fire Output Dialog */}
+        {/* Fire Output Dialog - use current IO from array to get live state updates */}
         <FireOutputDialog
           open={showFireOutputDialog}
           onOpenChange={setShowFireOutputDialog}
-          io={selectedIo}
+          io={selectedIo ? ios.find(i => i.id === selectedIo.id) || selectedIo : null}
           onFireOutput={handleFireOutput}
           isTesting={plcStatus.isTesting}
         />
 
-        {/* Value Change Dialog */}
+        {/* Value Change Dialog - use current IO from array to get live state updates */}
         <ValueChangeDialog
           open={showValueChangeDialog}
           onOpenChange={(open) => {
@@ -1050,18 +1072,18 @@ export default function CommissioningPage() {
               }
             }
           }}
-          io={currentDialogIo}
+          io={currentDialogIo ? ios.find(i => i.id === currentDialogIo.id) || currentDialogIo : null}
           remainingCount={dialogQueue.length}
           onYes={handleValueChangeYes}
           onNo={handleValueChangeNo}
           onCancel={handleValueChangeCancel}
         />
 
-        {/* Fail Comment Dialog */}
+        {/* Fail Comment Dialog - use current IO from array to get live state updates */}
         <FailCommentDialog
           open={showFailCommentDialog}
           onOpenChange={setShowFailCommentDialog}
-          io={pendingFailIo}
+          io={pendingFailIo ? ios.find(i => i.id === pendingFailIo.id) || pendingFailIo : null}
           onSubmit={handleFailCommentSubmit}
           onCancel={handleFailCommentCancel}
         />
@@ -1071,6 +1093,13 @@ export default function CommissioningPage() {
           open={showCloudSyncDialog}
           onOpenChange={setShowCloudSyncDialog}
           subsystemId={plcConfig.subsystemId}
+        />
+
+        {/* Tag Status Dialog */}
+        <TagStatusDialog
+          open={showTagStatusDialog}
+          onOpenChange={setShowTagStatusDialog}
+          tagStatus={tagStatus}
         />
 
         {/* Clear Result Confirmation Dialog */}

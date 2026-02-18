@@ -1,6 +1,7 @@
 "use client"
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { logger } from '@/lib/logger'
 
 interface User {
   fullName: string
@@ -54,14 +55,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
           })
         } else {
           // Auto-logout after 8 hours
-          console.log('⏰ Auto-logout: 8 hours have passed')
           localStorage.removeItem('currentUser')
           localStorage.removeItem('loginTime')
+          localStorage.removeItem('authToken')
         }
       } catch (error) {
         console.error('Error loading user from localStorage:', error)
         localStorage.removeItem('currentUser')
         localStorage.removeItem('loginTime')
+        localStorage.removeItem('authToken')
       }
     }
 
@@ -76,7 +78,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         isAdmin: user.isAdmin
       }))
       localStorage.setItem('loginTime', new Date().toISOString())
-      console.log('✅ User logged in:', user.fullName)
+      logger.log('User logged in:', user.fullName)
     } else {
       localStorage.removeItem('currentUser')
       localStorage.removeItem('loginTime')
@@ -84,10 +86,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
-    console.log('👋 User logged out:', currentUser?.fullName)
     setCurrentUserState(null)
     localStorage.removeItem('currentUser')
     localStorage.removeItem('loginTime')
+    localStorage.removeItem('authToken')
   }
 
   return (
