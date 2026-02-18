@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using IO_Checkout_Tool.Services;
 using Microsoft.Extensions.Logging;
 
@@ -9,14 +10,17 @@ namespace IO_Checkout_Tool.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
+    private readonly IJwtTokenService _jwtTokenService;
     private readonly ILogger<AuthController> _logger;
 
-    public AuthController(IAuthService authService, ILogger<AuthController> logger)
+    public AuthController(IAuthService authService, IJwtTokenService jwtTokenService, ILogger<AuthController> logger)
     {
         _authService = authService;
+        _jwtTokenService = jwtTokenService;
         _logger = logger;
     }
 
+    [EnableRateLimiting("AuthRateLimit")]
     [HttpPost("login")]
     public async Task<ActionResult<object>> Login([FromBody] LoginRequest request)
     {
@@ -32,11 +36,14 @@ public class AuthController : ControllerBase
             return Unauthorized(new { message });
         }
 
+        var token = _jwtTokenService.GenerateToken(user);
+
         return Ok(new
         {
             fullName = user.FullName,
             isAdmin = user.IsAdmin,
-            loginTime = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")
+            loginTime = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
+            token
         });
     }
 }

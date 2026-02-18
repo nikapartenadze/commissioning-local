@@ -43,4 +43,13 @@ public interface ISignalRService
     /// Used to push real-time module health updates to the UI.
     /// </summary>
     Task BroadcastNetworkStatusChanged(string moduleName, string status, int errorCount);
+
+    /// <summary>
+    /// Broadcasts an error event to all connected frontend clients.
+    /// Used to show toast notifications for PLC, cloud sync, and tag errors.
+    /// </summary>
+    /// <param name="source">Error source: "plc", "cloud", "tags", "system"</param>
+    /// <param name="message">Human-readable error message</param>
+    /// <param name="severity">Error severity: "error", "warning", "info"</param>
+    Task BroadcastError(string source, string message, string severity = "error");
 } 

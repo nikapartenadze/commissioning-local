@@ -24,7 +24,13 @@
       "Bash(cmd.exe /c \"timeout /t 8 /nobreak >nul && netstat -an | findstr /R \"\"5000 3002\"\"\")",
       "Bash(cmd.exe /c \"netstat -an | findstr LISTENING\")",
       "Bash(PORT=3002 npm run dev:*)",
-      "Bash(ipconfig:*)"
+      "Bash(ipconfig:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(npm run lint)",
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: add real-time SignalR updates and config hot-reload\n\n- Add ConfigFileWatcherService for automatic config.json hot-reload\n- Add runtime configuration API endpoint for frontend\n- Add SignalR broadcasts for testing state and comment updates\n- Make comment column editable inline \\(click to edit, Enter to save\\)\n- Hardcode ports \\(backend: 5000, frontend: 3002\\) - no .env needed\n- Add config reload banner UI component\n- Add STARTUP-AND-CONFIGURATION-GUIDE.md documentation\n\nReal-time updates now sync across all connected clients:\n- Testing state \\(Start/Stop Testing button\\)\n- Comment changes\n- IO state and result changes\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

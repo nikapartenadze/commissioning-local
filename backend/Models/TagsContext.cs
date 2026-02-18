@@ -9,6 +9,7 @@ public class TagsContext : DbContext
     private static bool _diagnosticMigrationCompleted = false;
     private static bool _networkMigrationCompleted = false;
     private static bool _cloudSyncMigrationCompleted = false;
+    private static bool _performanceIndexesCreated = false;
     private static readonly object _migrationLock = new object();
     
     public TagsContext(DbContextOptions<TagsContext> options) : base(options)
@@ -266,6 +267,29 @@ public class TagsContext : DbContext
                     catch { /* Column already exists */ }
 
                     _cloudSyncMigrationCompleted = true;
+                }
+            }
+        }
+
+        // Create performance indexes (only run once per app lifetime)
+        if (!_performanceIndexesCreated)
+        {
+            lock (_migrationLock)
+            {
+                if (!_performanceIndexesCreated)
+                {
+                    try
+                    {
+                        this.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS idx_ios_subsystemid ON Ios(SubsystemId);");
+                        this.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS idx_ios_result ON Ios(Result);");
+                        this.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS idx_testhistories_timestamp ON TestHistories(Timestamp);");
+                    }
+                    catch
+                    {
+                        // Indexes may already exist or table schema differs
+                    }
+
+                    _performanceIndexesCreated = true;
                 }
             }
         }

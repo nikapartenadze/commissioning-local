@@ -58,7 +58,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISimpleDialogService, SimpleDialogService>();
         services.AddSingleton<IStartupCoordinationService, StartupCoordinationService>();
 
-        services.AddSingleton<IWatchdogService, WatchdogService>();
         services.AddScoped<IErrorHandlingService, ErrorHandlingService>();
         services.AddSingleton<IDialogCoordinatorService, DialogCoordinatorService>();
         services.AddScoped<IDatabaseSeedingService, DatabaseSeedingService>();
@@ -91,12 +90,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ResilientCloudSyncService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<INetworkDiscoveryService, NetworkDiscoveryService>();
+        services.AddSingleton<IJwtTokenService, JwtTokenService>();
         return services;
     }
 
     public static IServiceCollection AddStateManagement(this IServiceCollection services)
     {
-        services.AddScoped<IAppStateService, AppStateService>();
+        // Must be Singleton so state persists across HTTP requests
+        services.AddSingleton<IAppStateService, AppStateService>();
         return services;
     }
 

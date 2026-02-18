@@ -29,7 +29,6 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
     public string RemoteUrl { get; private set; } = string.Empty;
     public string ApiPassword { get; private set; } = string.Empty;
     public bool OrderMode { get; private set; }
-    public bool DisableWatchdog { get; private set; }
     
     // Column visibility settings
     public bool ShowStateColumn { get; private set; } = true;
@@ -71,7 +70,6 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             RemoteUrl = (_configuration[DatabaseConstants.ConfigKeys.REMOTE_URL] ?? string.Empty).TrimEnd('/');
             ApiPassword = _configuration["ApiPassword"] ?? string.Empty;
             OrderMode = int.Parse(_configuration[DatabaseConstants.ConfigKeys.ORDER_MODE] ?? "0") == DatabaseConstants.Defaults.ORDER_MODE_ENABLED;
-            DisableWatchdog = bool.Parse(_configuration[DatabaseConstants.ConfigKeys.DISABLE_WATCHDOG] ?? "false");
             
             // Load column visibility settings (default to true if not specified)
             ShowStateColumn = bool.Parse(_configuration[DatabaseConstants.ConfigKeys.SHOW_STATE_COLUMN] ?? "true");
@@ -88,7 +86,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         }
     }
 
-    public async Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
+    public async Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
     {
         try
         {
@@ -100,7 +98,6 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
                 { DatabaseConstants.ConfigKeys.REMOTE_URL, remoteUrl },
                 { "ApiPassword", apiPassword },
                 { DatabaseConstants.ConfigKeys.ORDER_MODE, orderMode ? "1" : "0" },
-                { DatabaseConstants.ConfigKeys.DISABLE_WATCHDOG, disableWatchdog.ToString().ToLower() },
                 { DatabaseConstants.ConfigKeys.SHOW_STATE_COLUMN, showStateColumn.ToString().ToLower() },
                 { DatabaseConstants.ConfigKeys.SHOW_RESULT_COLUMN, showResultColumn.ToString().ToLower() },
                 { DatabaseConstants.ConfigKeys.SHOW_TIMESTAMP_COLUMN, showTimestampColumn.ToString().ToLower() },
@@ -128,7 +125,6 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             RemoteUrl = remoteUrl.TrimEnd('/');
             ApiPassword = apiPassword;
             OrderMode = orderMode;
-            DisableWatchdog = disableWatchdog;
             ShowStateColumn = showStateColumn;
             ShowResultColumn = showResultColumn;
             ShowTimestampColumn = showTimestampColumn;
@@ -243,36 +239,21 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
                     previousSubsystem, SubsystemId);
             }
 
-            _logger.LogInformation("Configuration reloaded successfully. IP={Ip}, Path={Path}, DisableWatchdog={DisableWatchdog}, OrderMode={OrderMode}",
-                Ip, Path, DisableWatchdog, OrderMode);
+            _logger.LogInformation("Configuration reloaded successfully. IP={Ip}, Path={Path}, OrderMode={OrderMode}",
+                Ip, Path, OrderMode);
 
             // 3. Get services needed for reinitialization
             var cloudSyncService = _serviceProvider.GetService<ICloudSyncService>();
             var plcCommunicationService = _serviceProvider.GetService<IPlcCommunicationService>();
-            var watchdogService = _serviceProvider.GetService<IWatchdogService>();
-            
+
             // 4. Reinitialize PLC connections with new IP/Path settings
             _logger.LogInformation("Reinitializing PLC connections with new configuration...");
-            
-            // First reinitialize the watchdog service with new IP/Path
-            if (watchdogService != null)
-            {
-                try
-                {
-                    await watchdogService.ReinitializeWatchdogAsync();
-                    _logger.LogInformation("Watchdog service reinitialized successfully");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to reinitialize watchdog service");
-                }
-            }
-            
-            // Wait extra time to ensure all background tasks from old subsystem are fully stopped
+
+            // Wait to ensure all background tasks from old subsystem are fully stopped
             _logger.LogInformation("Ensuring clean state before PLC reinitialization...");
             await Task.Delay(800);
-            
-            // Then reinitialize the PLC communication service
+
+            // Reinitialize the PLC communication service
             if (plcCommunicationService != null)
             {
                 try
@@ -437,7 +418,7 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         }
     }
     
-    public async Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
+    public async Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn)
     {
         try
         {
@@ -450,14 +431,13 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
             RemoteUrl = remoteUrl?.TrimEnd('/') ?? string.Empty;
             ApiPassword = apiPassword ?? string.Empty;
             OrderMode = orderMode;
-            DisableWatchdog = disableWatchdog;
             ShowStateColumn = showStateColumn;
             ShowResultColumn = showResultColumn;
             ShowTimestampColumn = showTimestampColumn;
             ShowHistoryColumn = showHistoryColumn;
             
             // Optionally save to config.json for persistence across app restarts
-            await UpdateConfigurationAsync(ip, path, subsystemId, remoteUrl, apiPassword, orderMode, disableWatchdog, showStateColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
+            await UpdateConfigurationAsync(ip, path, subsystemId, remoteUrl, apiPassword, orderMode, showStateColumn, showResultColumn, showTimestampColumn, showHistoryColumn);
             
             // Notify components of column visibility changes
             ColumnVisibilityChanged?.Invoke();

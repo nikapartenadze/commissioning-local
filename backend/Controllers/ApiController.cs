@@ -122,6 +122,7 @@ public class ApiController : ControllerBase
     /// <summary>
     /// Get PLC connection status and configuration
     /// </summary>
+    [AllowAnonymous]
     [HttpGet("status")]
     public ActionResult<object> GetStatus()
     {

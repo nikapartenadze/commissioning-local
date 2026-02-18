@@ -10,7 +10,6 @@ export interface PlcConfig {
   ip: string
   path: string
   subsystemId: string
-  disableWatchdog: boolean
 }
 
 export interface IoState {
@@ -67,18 +66,7 @@ export class PlcWebSocketServer {
         console.log('📋 PLC configuration received:', message.data)
         this.startRealTimeUpdates()
         break
-      case 'watchdog-ping':
-        this.handleWatchdogPing(ws)
-        break
     }
-  }
-
-  private handleWatchdogPing(ws: WebSocket): void {
-    // Send watchdog response
-    ws.send(JSON.stringify({
-      type: 'watchdog-status',
-      data: { active: true, timestamp: new Date().toISOString() }
-    }))
   }
 
   private startRealTimeUpdates(): void {

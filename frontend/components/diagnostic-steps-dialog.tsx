@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { HelpCircle, ChevronDown } from "lucide-react"
 import { NetworkStatusBreadcrumbs } from "./network-status-breadcrumbs"
-import { API_ENDPOINTS } from "@/lib/api-config"
+import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 interface DiagnosticStepsDialogProps {
   open: boolean
@@ -59,7 +59,7 @@ export function DiagnosticStepsDialog({
 
   const loadFailureModes = async () => {
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_ENDPOINTS.diagnosticFailureModes}?tagType=${encodeURIComponent(tagType)}`
       )
       if (response.ok) {
@@ -75,7 +75,7 @@ export function DiagnosticStepsDialog({
     setLoading(true)
     setError('')
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_ENDPOINTS.diagnosticSteps}?tagType=${encodeURIComponent(tagType)}&failureMode=${encodeURIComponent(mode)}`
       )
 

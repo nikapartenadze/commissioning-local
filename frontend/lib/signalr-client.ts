@@ -3,6 +3,7 @@
 import { HubConnection, HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
 import { useEffect, useRef, useState } from 'react'
 import { getSignalRHubUrl, refreshRuntimeConfig, clearRuntimeConfigCache } from './api-config'
+import { logger } from './logger'
 
 export interface IOUpdate {
   Id: number
@@ -27,6 +28,13 @@ export interface NetworkStatusUpdate {
   errorCount: number
 }
 
+export interface ErrorEvent {
+  source: 'plc' | 'cloud' | 'tags' | 'system' | 'signalr'
+  message: string
+  severity: 'error' | 'warning' | 'info'
+  timestamp: Date
+}
+
 export interface SignalRConnection {
   connection: HubConnection | null
   isConnected: boolean
@@ -44,6 +52,8 @@ export interface SignalRConnection {
   offCommentUpdate: (callback: (update: CommentUpdate) => void) => void
   onNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
   offNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
+  onError: (callback: (event: ErrorEvent) => void) => void
+  offError: (callback: (event: ErrorEvent) => void) => void
 }
 
 export function useSignalR(hubUrl?: string): SignalRConnection {
@@ -59,6 +69,7 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
   const testingCallbacksRef = useRef<Set<(isTesting: boolean) => void>>(new Set())
   const commentCallbacksRef = useRef<Set<(update: CommentUpdate) => void>>(new Set())
   const networkStatusCallbacksRef = useRef<Set<(update: NetworkStatusUpdate) => void>>(new Set())
+  const errorCallbacksRef = useRef<Set<(event: ErrorEvent) => void>>(new Set())
 
   const connect = async () => {
     if (connectionRef.current?.state === 'Connected') {
@@ -69,6 +80,7 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
       const newConnection = new HubConnectionBuilder()
         .withUrl(effectiveHubUrl, {
           withCredentials: false,
+          accessTokenFactory: () => localStorage.getItem('authToken') || '',
         })
         .configureLogging(process.env.NODE_ENV === 'production' ? LogLevel.Warning : LogLevel.Information)
         .withAutomaticReconnect({
@@ -225,26 +237,59 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
         })
       })
 
+      // Register the ErrorEvent handler (backend-pushed errors)
+      newConnection.on('ErrorEvent', (source: string, message: string, severity: string) => {
+        const event: ErrorEvent = {
+          source: source as ErrorEvent['source'],
+          message,
+          severity: severity as ErrorEvent['severity'],
+          timestamp: new Date()
+        }
+
+        errorCallbacksRef.current.forEach(callback => {
+          try {
+            callback(event)
+          } catch (error) {
+            console.error('Error in error event callback:', error)
+          }
+        })
+      })
+
       // Connection event handlers
       newConnection.onclose((error) => {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('SignalR connection closed:', error)
-        }
+        logger.log('SignalR connection closed:', error)
         setIsConnected(false)
+        const event: ErrorEvent = {
+          source: 'signalr',
+          message: 'Lost connection to backend server',
+          severity: 'error',
+          timestamp: new Date()
+        }
+        errorCallbacksRef.current.forEach(cb => { try { cb(event) } catch {} })
       })
 
       newConnection.onreconnecting((error) => {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('SignalR reconnecting:', error)
-        }
+        logger.log('SignalR reconnecting:', error)
         setIsConnected(false)
+        const event: ErrorEvent = {
+          source: 'signalr',
+          message: 'Reconnecting to backend server...',
+          severity: 'warning',
+          timestamp: new Date()
+        }
+        errorCallbacksRef.current.forEach(cb => { try { cb(event) } catch {} })
       })
 
       newConnection.onreconnected((connectionId) => {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('SignalR reconnected:', connectionId)
-        }
+        logger.log('SignalR reconnected:', connectionId)
         setIsConnected(true)
+        const event: ErrorEvent = {
+          source: 'signalr',
+          message: 'Reconnected to backend server',
+          severity: 'info',
+          timestamp: new Date()
+        }
+        errorCallbacksRef.current.forEach(cb => { try { cb(event) } catch {} })
       })
 
       // Start the connection
@@ -258,8 +303,15 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
       setIsConnected(true)
 
     } catch (error) {
-      console.error('SignalR connection failed:', error)
+      logger.error('SignalR connection failed:', error)
       setIsConnected(false)
+      const event: ErrorEvent = {
+        source: 'signalr',
+        message: 'Failed to connect to backend server',
+        severity: 'error',
+        timestamp: new Date()
+      }
+      errorCallbacksRef.current.forEach(cb => { try { cb(event) } catch {} })
     }
   }
 
@@ -267,9 +319,9 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     if (connectionRef.current) {
       try {
         await connectionRef.current.stop()
-        console.log('SignalR disconnected')
+        logger.log('SignalR disconnected')
       } catch (error) {
-        console.error('Error disconnecting SignalR:', error)
+        logger.error('Error disconnecting SignalR:', error)
       } finally {
         setConnection(null)
         connectionRef.current = null
@@ -318,6 +370,14 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     networkStatusCallbacksRef.current.delete(callback)
   }
 
+  const onError = (callback: (event: ErrorEvent) => void) => {
+    errorCallbacksRef.current.add(callback)
+  }
+
+  const offError = (callback: (event: ErrorEvent) => void) => {
+    errorCallbacksRef.current.delete(callback)
+  }
+
   // Auto-connect on mount
   useEffect(() => {
     connect()
@@ -344,7 +404,9 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     onCommentUpdate,
     offCommentUpdate,
     onNetworkStatusChange,
-    offNetworkStatusChange
+    offNetworkStatusChange,
+    onError,
+    offError
   }
 }
 
@@ -365,6 +427,7 @@ export class SignalRService {
       this.connection = new HubConnectionBuilder()
         .withUrl(this.hubUrl, {
           withCredentials: false,
+          accessTokenFactory: () => (typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : '') || '',
         })
         .configureLogging(process.env.NODE_ENV === 'production' ? LogLevel.Warning : LogLevel.Information)
         .withAutomaticReconnect()
@@ -395,11 +458,11 @@ export class SignalRService {
       })
 
       await this.connection.start()
-      console.log('SignalR connected successfully')
+      logger.log('SignalR connected successfully')
       this.isConnected = true
 
     } catch (error) {
-      console.error('SignalR connection failed:', error)
+      logger.error('SignalR connection failed:', error)
       this.isConnected = false
       throw error
     }
@@ -409,9 +472,9 @@ export class SignalRService {
     if (this.connection) {
       try {
         await this.connection.stop()
-        console.log('SignalR disconnected')
+        logger.log('SignalR disconnected')
       } catch (error) {
-        console.error('Error disconnecting SignalR:', error)
+        logger.error('Error disconnecting SignalR:', error)
       } finally {
         this.connection = null
         this.isConnected = false

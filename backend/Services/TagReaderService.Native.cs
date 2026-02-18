@@ -108,7 +108,8 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         _notFoundTags.Clear();
         _illegalTags.Clear();
         _unknownTags.Clear();
-        
+        _errorDialogService.ClearTagStatus(); // Clear cached tag status in ErrorDialogService
+
         // Reset all error states for clean reconnection
         lock (_errorStateLock)
         {
@@ -160,7 +161,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                         // Dispose all tags in this batch without logging errors
                         foreach (var tag in batch)
                         {
-                            try { tag.Dispose(); } catch { }
+                            try { tag.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag during cleanup"); }
                         }
                         return (successful: batchSuccessful, failed: batchFailed);
                     }
@@ -173,7 +174,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                             // Check for cancellation/abort before each tag - silent exit
                             if (cancellationToken.IsCancellationRequested || NativeTag.ShouldAbort)
                             {
-                                try { tag.Dispose(); } catch { }
+                                try { tag.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag during cleanup"); }
                                 return (success: false, tag: tag, error: "cancelled");
                             }
 
@@ -183,7 +184,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                             // If aborted during init, don't log error - just clean up
                             if (NativeTag.ShouldAbort || initStatus == LibPlcTag.PLCTAG_ERR_ABORT)
                             {
-                                try { tag.Dispose(); } catch { }
+                                try { tag.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag during cleanup"); }
                                 return (success: false, tag: tag, error: "cancelled");
                             }
 
@@ -199,7 +200,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                             // Check for cancellation/abort after init - silent exit
                             if (cancellationToken.IsCancellationRequested || NativeTag.ShouldAbort)
                             {
-                                try { tag.Dispose(); } catch { }
+                                try { tag.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag during cleanup"); }
                                 return (success: false, tag: tag, error: "cancelled");
                             }
 
@@ -209,7 +210,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                             // If aborted during read, don't log error - just clean up
                             if (NativeTag.ShouldAbort || readStatus == LibPlcTag.PLCTAG_ERR_ABORT)
                             {
-                                try { tag.Dispose(); } catch { }
+                                try { tag.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag during cleanup"); }
                                 return (success: false, tag: tag, error: "cancelled");
                             }
 
@@ -227,7 +228,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                         }
                         catch (OperationCanceledException)
                         {
-                            try { tag.Dispose(); } catch { }
+                            try { tag.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag during cleanup"); }
                             return (success: false, tag: tag, error: "cancelled");
                         }
                         catch (Exception ex)
@@ -238,7 +239,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                                 _logger.LogError(ex, "Exception during validation of tag {Name}", tag.Name);
                                 HandleTagError(tag.Name, -1);
                             }
-                            try { tag.Dispose(); } catch { } // Clean up on exception
+                            try { tag.Dispose(); } catch (Exception disposeEx) { _logger.LogDebug(disposeEx, "Error disposing tag during cleanup"); } // Clean up on exception
                             return (success: false, tag: tag, error: "exception");
                         }
                     });
@@ -273,7 +274,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                     {
                         foreach (var tag in result.successful)
                         {
-                            try { tag.Dispose(); } catch { }
+                            try { tag.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag during cleanup"); }
                         }
                     }
                     return false;
@@ -293,44 +294,62 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                 _logger.LogInformation("Parallel batch validation completed in {ElapsedMs}ms: {SuccessCount}/{TotalCount} tags successful ({SuccessPercentage:F1}%)", 
                     stopwatch.ElapsedMilliseconds, successCount, tags.Count, successPercentage);
                 
-                // Handle tag errors FIRST - these are configuration issues
+                // Handle tag errors - log them and update status, but DON'T stop
                 if (!skipErrorDetection && HasTagErrors())
                 {
-                    _logger.LogError("CONFIGURATION ERROR: Found {ErrorCount} tag definition errors - showing error dialog", 
-                        _notFoundTags.Count + _illegalTags.Count + _unknownTags.Count);
+                    var errorCount = _notFoundTags.Count + _illegalTags.Count + _unknownTags.Count;
+                    _logger.LogWarning("TAG VALIDATION: {ErrorCount} tags have errors (will continue with {SuccessCount} working tags)",
+                        errorCount, successCount);
+
+                    // Update TagStatus with ALL info including totals
+                    _errorDialogService.TagStatus.TotalTags = tags.Count;
+                    _errorDialogService.TagStatus.SuccessfulTags = successCount;
+                    _errorDialogService.TagStatus.FailedTags = errorCount;
+                    _errorDialogService.TagStatus.NotFoundTags = new List<string>(_notFoundTags);
+                    _errorDialogService.TagStatus.IllegalTags = new List<string>(_illegalTags);
+                    _errorDialogService.TagStatus.UnknownErrorTags = new List<string>(_unknownTags);
+                    _errorDialogService.TagStatus.LastUpdated = DateTime.UtcNow;
+
+                    // Show error notification (non-blocking - just updates UI indicator)
                     ShowTagErrors();
-                    await Task.Delay(500); // Give time for dialog to appear
                 }
-                
-                // Require 100% success before allowing batch reads
+
+                // PARTIAL SUCCESS: Continue with working tags even if some failed
                 if (failedTags.Any())
                 {
-                    _logger.LogError("Parallel batch validation failed - {FailedCount} of {TotalCount} tags failed. Failed tags: {FailedTags}", 
-                        failedTags.Count, tags.Count, string.Join(", ", failedTags));
-                    
-                    // Set flags to prevent reconnection attempts for configuration errors
+                    _logger.LogWarning("Partial validation: {FailedCount} of {TotalCount} tags failed, continuing with {SuccessCount} working tags. Failed: {FailedTags}",
+                        failedTags.Count, tags.Count, successCount, string.Join(", ", failedTags.Take(10)) + (failedTags.Count > 10 ? "..." : ""));
+                }
+
+                // Only fail completely if NO tags work
+                if (successCount == 0)
+                {
+                    _logger.LogError("STOPPING: All {TotalCount} tags failed validation - no working tags to read", tags.Count);
+
                     lock (_errorStateLock)
                     {
-                        _tagReadError = true; // Mark as error but don't trigger reconnection
-                        _reconnectionInProgress = false; // Ensure no reconnection happens
-                        _hasConfigurationErrors = true; // Prevent all reconnection attempts
+                        _tagReadError = true;
+                        _reconnectionInProgress = false;
+                        _hasConfigurationErrors = true;
                     }
-                    
-                    // Report disconnected status but don't trigger reconnection attempts
+
                     ReportConnectionStatus(false);
-                    
-                    _logger.LogError("STOPPING: Parallel batch validation failed due to configuration errors - no batch reads will start");
                     return false;
                 }
-                
-                // Clear configuration error flag on success and mark initial validation as completed
+
+                // Mark initial validation as completed (partial or full success)
                 lock (_errorStateLock)
                 {
                     _hasConfigurationErrors = false; // Allow reconnection attempts for runtime issues
-                    _initialValidationCompleted = true; // Mark that we've done initial validation successfully
+                    _initialValidationCompleted = true;
                 }
-                
-                _logger.LogInformation("All {Count} tags validated in parallel batches with 100% success - proceeding to batch reads", successCount);
+
+                // Always update TagStatus with current totals (even if no errors)
+                _errorDialogService.TagStatus.TotalTags = tags.Count;
+                _errorDialogService.TagStatus.SuccessfulTags = successCount;
+                _errorDialogService.TagStatus.LastUpdated = DateTime.UtcNow;
+
+                _logger.LogInformation("{SuccessCount}/{TotalCount} tags validated successfully - proceeding to batch reads", successCount, tags.Count);
             }
             else
             {
@@ -361,7 +380,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                      catch (Exception ex)
                      {
                          _logger.LogError(ex, "Exception initializing tag {Name} during reconnection", tag.Name);
-                         try { tag.Dispose(); } catch { }
+                         try { tag.Dispose(); } catch (Exception disposeEx) { _logger.LogDebug(disposeEx, "Error disposing tag during cleanup"); }
                      }
                  }
                 
@@ -522,6 +541,8 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
 
                             if (oldState != newState)
                             {
+                                _logger.LogInformation("🔄 Tag value changed: {TagName} {OldState} → {NewState}",
+                                    nativeTag.Name, oldState ?? "NULL", newState);
                                 io.State = newState;
                                 TagValueChanged?.Invoke(io);
                             }
@@ -890,11 +911,20 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                 });
                 
                 var results = await Task.WhenAll(readTasks);
-                
+
                 stopwatch.Stop();
                 var cycleTimeMs = stopwatch.ElapsedMilliseconds;
                 cycleCount++;
                 totalCycleTime += cycleTimeMs;
+
+                // Log every 50 cycles (~5 seconds) to show continuous reading is active
+                if (cycleCount % 50 == 0)
+                {
+                    var successCount = results.Count(r => r.success);
+                    var avgMs = totalCycleTime / cycleCount;
+                    _logger.LogInformation("📡 {BatchName} reading: cycle {Cycle}, {Success}/{Total} tags OK, avg {AvgMs}ms/cycle",
+                        batchName, cycleCount, successCount, batch.Count, avgMs);
+                }
                 
                 // Update global performance metrics
                 lock (_perfLock)
@@ -1095,12 +1125,20 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
 
     private void ShowTagErrors()
     {
-        _logger.LogError("ShowTagErrors called with: NotFound={NotFoundCount}, Illegal={IllegalCount}, Unknown={UnknownCount}", 
+        var totalTags = _originalTagList?.Count ?? _tags.Count;
+        var failedCount = _notFoundTags.Count + _illegalTags.Count + _unknownTags.Count;
+        var successfulCount = totalTags - failedCount;
+
+        _logger.LogError("ShowTagErrors called with: NotFound={NotFoundCount}, Illegal={IllegalCount}, Unknown={UnknownCount}",
             _notFoundTags.Count, _illegalTags.Count, _unknownTags.Count);
         _logger.LogError("NotFound tags: {NotFoundTags}", string.Join(", ", _notFoundTags));
         _logger.LogError("Illegal tags: {IllegalTags}", string.Join(", ", _illegalTags));
         _logger.LogError("Unknown tags: {UnknownTags}", string.Join(", ", _unknownTags));
-        
+
+        // Update TagStatus with totals before calling ShowTagErrors
+        _errorDialogService.TagStatus.TotalTags = totalTags;
+        _errorDialogService.TagStatus.SuccessfulTags = successfulCount;
+
         _errorDialogService.ShowTagErrors(_notFoundTags, _illegalTags, _unknownTags);
     }
 
@@ -1275,7 +1313,8 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         _notFoundTags.Clear();
         _illegalTags.Clear();
         _unknownTags.Clear();
-        
+        _errorDialogService.ClearTagStatus(); // Clear cached tag status
+
         // Wait another moment to ensure cleanup is complete
         await Task.Delay(300);
         
@@ -1319,7 +1358,7 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         // Dispose all DINT groups
         foreach (var group in _dintGroups)
         {
-            try { group.Dispose(); } catch { }
+            try { group.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing tag group during cleanup"); }
         }
         _dintGroups.Clear();
 

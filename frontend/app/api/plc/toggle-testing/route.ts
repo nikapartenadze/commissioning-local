@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
     console.log(`🔄 Toggling testing mode: ${enabled ? 'ON' : 'OFF'}`)
     
     // In a real implementation, this would communicate with the PLC
-    // to start/stop the testing watchdog
+    // to start/stop the testing mode
     
     return NextResponse.json({ 
       success: true, 

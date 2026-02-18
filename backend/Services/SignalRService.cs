@@ -160,4 +160,17 @@ public class SignalRService : ISignalRService
             _logger.LogError(ex, "SignalR: Error broadcasting NetworkStatusChanged for module {ModuleName}", moduleName);
         }
     }
+
+    public async Task BroadcastError(string source, string message, string severity = "error")
+    {
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("ErrorEvent", source, message, severity);
+            _logger.LogDebug("SignalR: Broadcasted ErrorEvent - Source: {Source}, Severity: {Severity}, Message: {Message}", source, severity, message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SignalR: Error broadcasting ErrorEvent from {Source}", source);
+        }
+    }
 } 

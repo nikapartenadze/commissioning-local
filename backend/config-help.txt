@@ -28,11 +28,6 @@ orderMode:
   - "0" = Tests can be done in any order
   - "1" = Tests must be done in the specified order
 
-disableWatchdog:
-  - Controls whether the watchdog PLC tag communication is enabled
-  - false = Watchdog button controls both UI state AND PLC watchdog tag communication (default)
-  - true = Watchdog button only controls UI state, no PLC watchdog tag is read/written
-
 How to modify settings:
 1. Close the IO Checkout Tool application
 2. Open config.json in any text editor (like Notepad)

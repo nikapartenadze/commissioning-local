@@ -16,7 +16,6 @@ public partial class Commissioning : ComponentBase, IDisposable
     [Inject] private DialogController DialogController { get; set; } = null!;
     [Inject] private EventHandlingController EventHandling { get; set; } = null!;
     [Inject] private IPlcCommunicationService PlcCommunication { get; set; } = null!;
-    [Inject] private IWatchdogService Watchdog { get; set; } = null!;
     [Inject] private IConfigurationService Configuration { get; set; } = null!;
     [Inject] private IAppStateService AppState { get; set; } = null!;
     [Inject] private IExportService ExportService { get; set; } = null!;

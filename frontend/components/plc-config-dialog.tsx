@@ -12,16 +12,14 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { TestTube, Unplug } from "lucide-react"
-import { API_ENDPOINTS } from "@/lib/api-config"
+import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 interface PlcConfig {
   ip: string
   path: string
   subsystemId: string
-  disableWatchdog: boolean
   apiPassword?: string
   remoteUrl?: string
 }
@@ -45,7 +43,6 @@ export function PlcConfigDialog({
     ip: "",
     path: "",
     subsystemId: "",
-    disableWatchdog: false,
     apiPassword: "",
     remoteUrl: ""
   })
@@ -75,16 +72,15 @@ export function PlcConfigDialog({
     try {
       setIsLoadingConfig(true)
       console.log('🔄 Loading actual config from C# backend...')
-      const response = await fetch(API_ENDPOINTS.status)
+      const response = await authFetch(API_ENDPOINTS.status)
       if (response.ok) {
         const status = await response.json()
         console.log('📡 Raw status response from C# backend:', status)
         
         const actualConfig: PlcConfig = {
           ip: status.plcIp || "192.168.20.14",
-          path: status.plcPath || "1,1", 
+          path: status.plcPath || "1,1",
           subsystemId: status.subsystemId || "16",
-          disableWatchdog: status.disableTesting || false,
           apiPassword: status.apiPassword || "",
           remoteUrl: status.remoteUrl || ""
         }
@@ -107,14 +103,13 @@ export function PlcConfigDialog({
       setSaveStatus({ type: 'loading', message: 'Saving configuration and connecting...' })
       console.log('💾 Saving configuration with values:', localConfig)
 
-      const response = await fetch(API_ENDPOINTS.configurationUpdate, {
+      const response = await authFetch(API_ENDPOINTS.configurationUpdate, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ip: localConfig.ip,
           path: localConfig.path,
           subsystemId: localConfig.subsystemId,
-          disableWatchdog: localConfig.disableWatchdog,
           apiPassword: localConfig.apiPassword || "",
           remoteUrl: localConfig.remoteUrl || ""
         })
@@ -160,7 +155,7 @@ export function PlcConfigDialog({
       setSaveStatus({ type: 'loading', message: wasSaving ? 'Cancelling connection attempt...' : 'Disconnecting from PLC...' })
       console.log('🔌 Disconnecting from PLC...')
 
-      const response = await fetch(API_ENDPOINTS.plcDisconnect, {
+      const response = await authFetch(API_ENDPOINTS.plcDisconnect, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
@@ -198,7 +193,6 @@ export function PlcConfigDialog({
       ip: "",
       path: "",
       subsystemId: "",
-      disableWatchdog: false,
       apiPassword: "",
       remoteUrl: ""
     })
@@ -283,22 +277,6 @@ export function PlcConfigDialog({
                 />
               </div>
 
-              {/* Watchdog Setting */}
-              <div className="flex items-center justify-between p-4 border-2 border-primary/20 rounded-lg bg-muted/30">
-                <div className="space-y-0.5">
-                  <Label htmlFor="disableWatchdog" className="text-base font-medium">Disable Watchdog</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {localConfig.disableWatchdog ? "Watchdog is DISABLED - Testing without PLC connection" : "Watchdog is ENABLED - Safety monitoring active"}
-                  </p>
-                </div>
-                <Switch
-                  id="disableWatchdog"
-                  checked={localConfig.disableWatchdog}
-                  onCheckedChange={(checked) => 
-                    setLocalConfig({ ...localConfig, disableWatchdog: checked })
-                  }
-                />
-              </div>
             </CardContent>
           </Card>
 

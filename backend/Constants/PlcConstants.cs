@@ -2,29 +2,19 @@ namespace IO_Checkout_Tool.Constants;
 
 public static class PlcConstants
 {
-    public const string WatchdogTagName = "Global.CTRL.CMD.Watchdog";
     public const int DefaultTagTimeout = 1000;
-    public const int WatchdogTimeout = 1000;
     public const int TagReadInterval = 75;
-    public const int WatchdogInterval = 2000;
-    public const int WatchdogToggleDelay = 3000;
-    
+
     // Performance optimization constants - balanced for 1000 tags and PLC limits
     public const int MaxTagsPerBatch = 25;
     public const int OptimizedTagTimeout = 800;
     public const int MaxConcurrentBatches = 6;
     public const int ConnectionRetryDelay = 50;
-    
+
     // Optimized batch reading constants
     public const int OptimizedBatchSize = 50; // Larger batches for parallel initialization
     public const int OptimizedReadInterval = 100; // Slightly longer interval for better throughput
-    
-    public static class Colors
-    {
-        public const string WatchdogInactive = "background-color:white";
-        public const string WatchdogActive = "background-color:forestgreen";
-    }
-    
+
     public static class ErrorMessages
     {
         public const string ErrorTimeout = "ErrorTimeout";
@@ -34,15 +24,13 @@ public static class PlcConstants
         public const string PlcCommFailure = "Failed to communicate with PLC";
         public const string FailedTags = "Failed tags";
         public const string ConnectionFailed = "Connection to internet not detected on startup";
-        public const string WatchdogFailed = "Watchdog Failed";
-        public const string WatchdogAoiMessage = "Make sure the Watchdog AOI is enabled in the PLC";
         public const string FailedToReadTags = "Failed to read tags";
     }
-    
+
     public static class LogMessages
     {
         public const string PlcInitSuccess = "PLC initialization completed successfully";
         public const string PlcInitFailed = "PLC initialization failed";
         public const string PlcInitError = "Error during PLC initialization";
     }
-} 
+}

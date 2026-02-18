@@ -31,7 +31,9 @@ async function proxyRequest(
   const queryString = searchParams.toString()
   const fullUrl = queryString ? `${backendUrl}?${queryString}` : backendUrl
 
-  console.log(`[Proxy] ${request.method} ${fullUrl}`)
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`[Proxy] ${request.method} ${fullUrl}`)
+  }
 
   try {
     // Prepare headers - forward relevant headers

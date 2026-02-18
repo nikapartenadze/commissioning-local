@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { CheckCircle, XCircle, AlertCircle, Circle, Loader2, Cloud, Server, Cpu, Box, Radio } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { API_ENDPOINTS } from "@/lib/api-config"
+import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 type NetworkNodeStatus = "connected" | "disconnected" | "warning" | "unknown" | "loading"
 
@@ -51,7 +51,7 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
         ? `${API_ENDPOINTS.networkChainStatus}?tagName=${encodeURIComponent(tagName)}`
         : API_ENDPOINTS.networkChainStatus
 
-      const response = await fetch(url)
+      const response = await authFetch(url)
       if (response.ok) {
         const data = await response.json()
         setChainStatus(data)
