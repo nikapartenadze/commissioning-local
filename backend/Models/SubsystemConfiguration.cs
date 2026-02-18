@@ -30,9 +30,7 @@ public class SubsystemConfiguration
     public string? ApiPassword { get; set; }
     
     public bool OrderMode { get; set; } = false;
-    
-    public bool DisableWatchdog { get; set; } = true;
-    
+
     public bool ShowStateColumn { get; set; } = true;
     
     public bool ShowResultColumn { get; set; } = true;

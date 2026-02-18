@@ -1,10 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using IO_Checkout_Tool.Models;
 using IO_Checkout_Tool.Services.Interfaces;
 
 namespace IO_Checkout_Tool.Controllers;
 
+[Authorize]
 [Route("api/[controller]")]
 [ApiController]
 public class ConfigurationController : ControllerBase
@@ -186,7 +188,6 @@ public class ConfigurationController : ControllerBase
             existing.RemoteUrl = configuration.RemoteUrl;
             existing.ApiPassword = configuration.ApiPassword;
             existing.OrderMode = configuration.OrderMode;
-            existing.DisableWatchdog = configuration.DisableWatchdog;
             existing.ShowStateColumn = configuration.ShowStateColumn;
             existing.ShowResultColumn = configuration.ShowResultColumn;
             existing.ShowTimestampColumn = configuration.ShowTimestampColumn;
@@ -267,13 +268,12 @@ public class ConfigurationController : ControllerBase
             
             // Update runtime configuration
             var switchSuccess = await _configurationService.SwitchToConfigurationAsync(
-                config.Ip, 
-                config.Path, 
+                config.Ip,
+                config.Path,
                 config.SubsystemId.ToString(),
                 config.RemoteUrl ?? string.Empty,
                 config.ApiPassword ?? string.Empty,
                 config.OrderMode,
-                config.DisableWatchdog,
                 config.ShowStateColumn,
                 config.ShowResultColumn,
                 config.ShowTimestampColumn,
@@ -310,6 +310,7 @@ public class ConfigurationController : ControllerBase
     /// This allows the frontend to dynamically discover the backend port for SignalR connections
     /// without relying on environment variables that are fixed at startup.
     /// </summary>
+    [AllowAnonymous]
     [HttpGet("runtime")]
     public async Task<ActionResult<FrontendRuntimeConfig>> GetRuntimeConfiguration()
     {
@@ -375,7 +376,6 @@ public class ConfigurationController : ControllerBase
                 RemoteUrl = _configurationService.RemoteUrl,
                 ApiPassword = _configurationService.ApiPassword,
                 OrderMode = _configurationService.OrderMode,
-                DisableWatchdog = _configurationService.DisableWatchdog,
                 ShowStateColumn = _configurationService.ShowStateColumn,
                 ShowResultColumn = _configurationService.ShowResultColumn,
                 ShowTimestampColumn = _configurationService.ShowTimestampColumn,
@@ -420,7 +420,6 @@ public class ConfigurationController : ControllerBase
                 request.RemoteUrl ?? string.Empty,
                 request.ApiPassword ?? string.Empty,
                 request.OrderMode ?? false,
-                request.DisableWatchdog ?? false,
                 request.ShowStateColumn ?? true,
                 request.ShowResultColumn ?? true,
                 request.ShowTimestampColumn ?? true,
@@ -452,7 +451,6 @@ public class ConfigurationController : ControllerBase
                 ip = request.Ip,
                 path = request.Path,
                 subsystemId = request.SubsystemId,
-                disableWatchdog = request.DisableWatchdog,
                 ioCount = ioCount
             });
         }
@@ -472,7 +470,6 @@ public class ConfigJsonUpdateRequest
     public string? RemoteUrl { get; set; }
     public string? ApiPassword { get; set; }
     public bool? OrderMode { get; set; }
-    public bool? DisableWatchdog { get; set; }
     public bool? ShowStateColumn { get; set; }
     public bool? ShowResultColumn { get; set; }
     public bool? ShowTimestampColumn { get; set; }

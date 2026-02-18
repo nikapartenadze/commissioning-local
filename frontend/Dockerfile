@@ -1,43 +1,39 @@
-# Multi-stage Dockerfile for Next.js frontend
-FROM node:20-alpine AS base
+# Frontend Dockerfile - Next.js with standalone output
+# Using node-slim instead of alpine for Prisma SSL compatibility
+FROM node:20-slim AS builder
+WORKDIR /app
+
+# Install OpenSSL for Prisma
+RUN apt-get update && apt-get install -y openssl libssl-dev && rm -rf /var/lib/apt/lists/*
+
+# Copy package files
+COPY package*.json ./
+COPY prisma ./prisma/
 
 # Install dependencies
-FROM base AS deps
-RUN apk add --no-cache libc6-compat
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts
+RUN npm ci
+
+# Copy source
+COPY . .
 
 # Build
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-# Production
-FROM base AS runner
+# Production image
+FROM node:20-slim AS runner
 WORKDIR /app
+
+# Install OpenSSL for Prisma runtime
+RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
+# Copy standalone build
 COPY --from=builder /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-RUN --mount=from=builder,source=/app,target=/source \
-    mkdir -p ./public && \
-    if [ -d "/source/public" ]; then cp -r /source/public/* ./public/ 2>/dev/null || true; fi
+COPY --from=builder /app/.next/static ./.next/static
 
-USER nextjs
-
-EXPOSE 3002
-ENV PORT=3002
-ENV HOSTNAME="0.0.0.0"
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3002/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))"
+EXPOSE 3000
 
 CMD ["node", "server.js"]

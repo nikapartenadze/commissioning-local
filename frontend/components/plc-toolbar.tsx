@@ -13,8 +13,16 @@ import {
   Settings,
   Zap,
   ZapOff,
+  AlertTriangle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+
+interface TagStatus {
+  totalTags: number
+  successfulTags: number
+  failedTags: number
+  hasErrors: boolean
+}
 
 interface PlcToolbarProps {
   isTesting: boolean
@@ -35,6 +43,8 @@ interface PlcToolbarProps {
   isSimulatorEnabled?: boolean
   activeFilter?: 'failed' | 'not-tested' | 'passed' | null
   onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | null) => void
+  tagStatus?: TagStatus | null
+  onShowTagStatus?: () => void
 }
 
 export function PlcToolbar({
@@ -55,7 +65,9 @@ export function PlcToolbar({
   onToggleSimulator,
   isSimulatorEnabled = false,
   activeFilter = null,
-  onFilterChange
+  onFilterChange,
+  tagStatus = null,
+  onShowTagStatus
 }: PlcToolbarProps) {
   const progressPercent = totalIos > 0 ? ((passedIos + failedIos) / totalIos) * 100 : 0
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
@@ -71,32 +83,20 @@ export function PlcToolbar({
             "h-14 px-6 text-lg font-bold uppercase tracking-wider transition-all min-w-[160px]",
             isTesting
               ? "bg-red-600 hover:bg-red-700 text-white animate-pulse"
-              : !isPlcConnected
-                ? "bg-gray-400 text-gray-200 cursor-not-allowed"
-                : "bg-green-600 hover:bg-green-700 text-white"
+              : "bg-green-600 hover:bg-green-700 text-white"
           )}
           onClick={onToggleTesting}
-          disabled={!isTesting && !isPlcConnected}
-          title={!isPlcConnected && !isTesting
-            ? "Click PLC button on right to configure connection"
-            : (isTesting ? "Click to stop testing mode" : "Click to start testing mode")}
+          title={isTesting ? "Click to stop testing mode" : "Click to start testing mode"}
         >
           {isTesting ? (
             <>
               <Square className="w-6 h-6 mr-2" />
-              TESTING
-            </>
-          ) : isPlcConnected ? (
-            <>
-              <Play className="w-6 h-6 mr-2" />
-              START
+              STOP
             </>
           ) : (
             <>
-              <Play className="w-6 h-6 mr-2 opacity-50" />
-              <span className="flex flex-col items-start leading-tight">
-                <span className="text-sm">NO PLC</span>
-              </span>
+              <Play className="w-6 h-6 mr-2" />
+              START
             </>
           )}
         </Button>
@@ -256,6 +256,30 @@ export function PlcToolbar({
             </span>
           </Button>
 
+          {/* Tag Status Indicator */}
+          {tagStatus && tagStatus.totalTags > 0 && (
+            <Button
+              variant={tagStatus.hasErrors ? "outline" : "ghost"}
+              size="lg"
+              className={cn(
+                "h-12 px-3 gap-1.5",
+                tagStatus.hasErrors
+                  ? "text-amber-600 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20"
+                  : "text-green-600"
+              )}
+              onClick={onShowTagStatus}
+              title={tagStatus.hasErrors
+                ? `${tagStatus.failedTags} tags have errors - click for details`
+                : `All ${tagStatus.totalTags} tags working`}
+            >
+              {tagStatus.hasErrors && <AlertTriangle className="w-4 h-4" />}
+              <span className="text-xs font-mono">
+                {tagStatus.successfulTags}/{tagStatus.totalTags}
+              </span>
+              <span className="text-[10px] uppercase hidden lg:inline">TAGS</span>
+            </Button>
+          )}
+
           {/* Cloud Status */}
           <Button
             variant="ghost"
@@ -277,16 +301,6 @@ export function PlcToolbar({
             </span>
           </Button>
 
-          {/* Config Button */}
-          <Button
-            variant="ghost"
-            size="lg"
-            className="h-12 w-12 p-0"
-            onClick={onShowConfig}
-            title="Settings"
-          >
-            <Settings className="w-6 h-6" />
-          </Button>
         </div>
       </div>
     </div>

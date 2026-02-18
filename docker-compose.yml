@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   backend:
     build:
@@ -6,27 +8,28 @@ services:
     ports:
       - "5000:5000"
     volumes:
+      - ./backend/config.json:/app/config.json:ro
       - backend-data:/data
     environment:
-      - DATA_DIR=/data
-      - ASPNETCORE_ENVIRONMENT=Production
-    restart: unless-stopped
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:5000
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5000/api/status || exit 1"]
-      interval: 30s
-      timeout: 10s
-      start_period: 15s
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/api/status"]
+      interval: 10s
+      timeout: 5s
       retries: 3
+      start_period: 15s
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3002:3002"
+      - "3002:3000"
     environment:
-      - BACKEND_URL=http://backend:5000
       - NODE_ENV=production
+      - BACKEND_URL=http://backend:5000
     depends_on:
       backend:
         condition: service_healthy
@@ -34,4 +37,3 @@ services:
 
 volumes:
   backend-data:
-    driver: local

@@ -27,6 +27,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ResilientCloudSyncService> _logger;
     private readonly IErrorDialogService _errorDialogService;
+    private readonly ISignalRService _signalRService;
 
     // Connection state management
     private string? _cloudUrl;
@@ -58,13 +59,15 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         IConfigurationService configService,
         IServiceProvider serviceProvider,
         ILogger<ResilientCloudSyncService> logger,
-        IErrorDialogService errorDialogService)
+        IErrorDialogService errorDialogService,
+        ISignalRService signalRService)
     {
         _httpClient = httpClient;
         _configService = configService;
         _serviceProvider = serviceProvider;
         _logger = logger;
         _errorDialogService = errorDialogService;
+        _signalRService = signalRService;
         
         // Get fresh cloud URL from configuration service
         _cloudUrl = _configService.RemoteUrl;
@@ -742,6 +745,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
                     _isConnected = false;
                     ConnectionStateChanged?.Invoke();
                     _logger.LogWarning(error, "SignalR connection lost, attempting to reconnect...");
+                    _ = _signalRService.BroadcastError("cloud", "Cloud sync connection lost — reconnecting", "warning");
                     return Task.CompletedTask;
                 };
 
@@ -750,6 +754,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
                     _isConnected = true;
                     ConnectionStateChanged?.Invoke();
                     _logger.LogInformation("SignalR reconnected, scheduling pending syncs...");
+                    _ = _signalRService.BroadcastError("cloud", "Cloud sync reconnected", "info");
                     // Delay sync attempt to ensure stable connection
                     _ = Task.Run(async () =>
                     {
@@ -951,6 +956,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error during fresh cloud sync");
+            _ = _signalRService.BroadcastError("cloud", $"Cloud sync failed: {ex.Message}", "error");
             return false;
         }
     }
@@ -1081,6 +1087,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         {
             _logger.LogError("Authentication failed - invalid API password");
             _errorDialogService.ShowAuthenticationError();
+            _ = _signalRService.BroadcastError("cloud", "Cloud authentication failed — check API password", "error");
             return true;
         }
         return false;

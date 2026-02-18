@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using IO_Checkout_Tool.Models;
 using IO_Checkout_Tool.Repositories;
 using IO_Checkout_Tool.Services;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IO_Checkout_Tool.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/users")]
 public class UserController : ControllerBase
@@ -48,6 +50,7 @@ public class UserController : ControllerBase
         }
     }
 
+    [AllowAnonymous]
     [HttpGet("active")]
     public async Task<ActionResult<IEnumerable<object>>> GetActiveUsers()
     {

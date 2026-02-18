@@ -58,18 +58,7 @@ function handleMessage(ws, message) {
       console.log('📋 PLC configuration received:', message.data);
       startRealTimeUpdates();
       break;
-    case 'watchdog-ping':
-      handleWatchdogPing(ws);
-      break;
   }
-}
-
-function handleWatchdogPing(ws) {
-  // Send watchdog response
-  ws.send(JSON.stringify({
-    type: 'watchdog-status',
-    data: { active: true, timestamp: new Date().toISOString() }
-  }));
 }
 
 function startRealTimeUpdates() {

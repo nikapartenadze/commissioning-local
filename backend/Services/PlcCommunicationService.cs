@@ -625,15 +625,16 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
     private void OnConnectionStatusChanged(bool isConnected)
     {
         SetPlcConnectionStatus(isConnected);
-        
+
         if (isConnected)
         {
             // Stop reconnection attempts when connection is restored
             StopReconnectionTimer();
-            
+
             // Mark that we need reinitialization after reconnection
             _needsReinitialization = true;
             _logger.LogInformation("PLC reconnected - marking for reinitialization");
+            _ = _signalRService.BroadcastError("plc", "PLC connection restored", "info");
         }
         else
         {
@@ -642,6 +643,7 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
             _logger.LogInformation("PLC disconnected - TagReaderService will handle clean reconnection");
             StopReconnectionTimer(); // Make sure old timer is stopped
             _disableTesting = true; // Reset testing state for reconnection
+            _ = _signalRService.BroadcastError("plc", "PLC connection lost — attempting reconnection", "error");
         }
     }
 

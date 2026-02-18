@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { FileDown, Search } from "lucide-react"
-import { API_ENDPOINTS } from "@/lib/api-config"
+import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 type TestHistoryRecord = {
   id: number
@@ -48,7 +48,7 @@ export function AllTestHistoryDialog({
   const fetchHistory = async () => {
     setLoading(true)
     try {
-      const response = await fetch(API_ENDPOINTS.history)
+      const response = await authFetch(API_ENDPOINTS.history)
       if (response.ok) {
         const data = await response.json()
         setHistory(data)

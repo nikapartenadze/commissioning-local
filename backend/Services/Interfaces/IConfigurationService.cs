@@ -8,7 +8,6 @@ public interface IConfigurationService
     string RemoteUrl { get; }
     string ApiPassword { get; }
     bool OrderMode { get; }
-    bool DisableWatchdog { get; }
     bool IsReinitializing { get; } // Indicates if configuration reinitialization is currently in progress
     
     // Column visibility settings
@@ -27,9 +26,9 @@ public interface IConfigurationService
     Task SaveUISettingsAsync();
     
     // New methods for config editing (requires reload)
-    Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
+    Task<bool> UpdateConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
     Task ReinitializeApplicationAsync();
     
     // Runtime configuration switching (no reload required)
-    Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool disableWatchdog, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
+    Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
 } 

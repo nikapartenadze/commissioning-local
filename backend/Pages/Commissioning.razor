@@ -13,7 +13,7 @@
 @using IO_Checkout_Tool.Components;
 @using MudBlazor;
 
-<LoadingOverlay IsLoading="@(PlcCommunication.Loading || Watchdog.Loading)" />
+<LoadingOverlay IsLoading="@PlcCommunication.Loading" />
 
 <GraphOverlay 
     ShowGraph="@AppState.UiState.ShowGraph"
@@ -22,14 +22,14 @@
     OnClose="@(() => AppState.UiState.ShowGraph = false)" />
 
 <IOTestToolbar 
-    TestingStarted="@Watchdog.TestingStarted"
-    WatchdogColor="@Watchdog.WatchdogColor"
+    TestingStarted="@false"
+    WatchdogColor=""
     DisableTesting="@PlcCommunication.DisableTesting"
     ShowOrderModeButton="@Configuration.OrderMode"
     PassAnimation="@AppState.UiState.PassAnimation"
     IsCloudConnected="@_isCloudConnected"
     IsPlcConnected="@_isPlcConnected"
-    OnToggleWatchdog="@(() => _ = Watchdog.ToggleWatchdogAsync())"
+    OnToggleWatchdog="@(() => { })"
     OnShowGraph="@ShowGraph"
     OnDownloadCsv="@CsvDownload"
     OnShowHistory="@ShowAllHistory"
@@ -40,7 +40,7 @@
 <TestControlView 
     ShowTestControl="@(!AppState.UiState.ShowTable)"
     IsOrderMode="@Configuration.OrderMode"
-    TestingStarted="@Watchdog.TestingStarted"
+    TestingStarted="@false"
     CurrentTestTag="@AppState.TestState.TestTag"
     TestButtonStyle="@AppState.UiState.TestButtonStyle"
     OnFireUp="@((tag) => FireUp(tag))"
@@ -55,7 +55,7 @@
     ShowResultColumn="@Configuration.ShowResultColumn"
     ShowTimestampColumn="@Configuration.ShowTimestampColumn"
     ShowHistoryColumn="@Configuration.ShowHistoryColumn"
-    TestingStarted="@Watchdog.TestingStarted"
+    TestingStarted="@false"
     Items="@PlcCommunication.TagList"
     QuickFilter="@_quickFilter"
     RowStyleFunc="@_rowStyleFunc"
