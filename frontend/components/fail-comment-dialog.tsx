@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AlertCircle } from "lucide-react"
-import { API_ENDPOINTS } from "@/lib/api-config"
+import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { toast } from "@/hooks/use-toast"
 
 interface IoItem {
@@ -175,15 +175,17 @@ export function FailCommentDialog({
               <Textarea
                 id="comment"
                 placeholder={
-                  failureMode === 'Other' 
-                    ? "Required - explain the specific issue..." 
+                  failureMode === 'Other'
+                    ? "Required - explain the specific issue..."
                     : "Optional - add any additional notes..."
                 }
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
+                maxLength={500}
                 rows={4}
                 className="resize-none"
               />
+              <p className="text-xs text-muted-foreground text-right">{comment.length}/500</p>
             </div>
           </div>
 

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using IO_Checkout_Tool.Services;
 using IO_Checkout_Tool.Services.Interfaces;
 using Shared.Library.Models.Entities;
@@ -6,6 +7,7 @@ using Shared.Library.Repositories.Interfaces;
 
 namespace IO_Checkout_Tool.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/simulator")]
 public class SimulatorController : ControllerBase

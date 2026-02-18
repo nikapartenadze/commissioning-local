@@ -15,6 +15,11 @@ using IO_Checkout_Tool.Models;
 using System.Diagnostics;
 using IO_Checkout_Tool.Extensions;
 using System.IO.Compression;
+using System.Text;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
 
 if (!args.Contains("--allow-multiple-instances") && IO_Checkout_Tool.Extensions.ServiceCollectionExtensions.IsApplicationAlreadyRunning())
@@ -84,7 +89,6 @@ if (!File.Exists(configPath))
             { "remoteUrl", "" },
             { "ApiPassword", "" },
             { "orderMode", "0" },
-            { "disableWatchdog", false },
             { "syncBatchSize", 50 },
             { "syncBatchDelayMs", 500 }
         };
@@ -145,7 +149,11 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("NextJsFrontend", policy =>
     {
-        policy.SetIsOriginAllowed(_ => true)
+        policy.SetIsOriginAllowed(origin =>
+              {
+                  var uri = new Uri(origin);
+                  return uri.Port == 5000 || uri.Port == 3002;
+              })
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
@@ -154,6 +162,51 @@ builder.Services.AddCors(options =>
 
 // Add API controllers
 builder.Services.AddControllers();
+
+// Add JWT authentication
+var jwtSecretKey = builder.Configuration["Jwt:SecretKey"] ?? "F4ct0ry-C0mm1ss10n1ng-JWT-S3cr3t-K3y-2026!";
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "io-checkout-tool",
+            ValidAudience = builder.Configuration["Jwt:Audience"] ?? "io-checkout-frontend",
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecretKey))
+        };
+
+        // Extract token from SignalR query string
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hub"))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            }
+        };
+    });
+builder.Services.AddAuthorization();
+
+// Rate limiting for login endpoint
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("AuthRateLimit", limiterOptions =>
+    {
+        limiterOptions.PermitLimit = 5;
+        limiterOptions.Window = TimeSpan.FromMinutes(1);
+        limiterOptions.QueueLimit = 0;
+    });
+    options.RejectionStatusCode = 429;
+});
 
 StaticWebAssetsLoader.UseStaticWebAssets(builder.Environment, builder.Configuration);
 
@@ -212,6 +265,9 @@ app.UseCors("NextJsFrontend");
 
 app.UseStaticFiles();
 app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseRateLimiter();
 app.UseAntiforgery();
 
 // Map API controllers

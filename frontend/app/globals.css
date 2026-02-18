@@ -1,51 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 30 10% 8%;
+    /* Industrial Light Theme - High Contrast */
+    --background: 210 20% 98%;
+    --foreground: 220 20% 10%;
     --card: 0 0% 100%;
-    --card-foreground: 30 10% 8%;
+    --card-foreground: 220 20% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 30 10% 8%;
-    --primary: 43 96% 56%;
-    --primary-foreground: 30 10% 8%;
-    --secondary: 40 20% 94%;
-    --secondary-foreground: 30 10% 8%;
-    --muted: 40 20% 94%;
-    --muted-foreground: 30 10% 40%;
-    --accent: 40 20% 94%;
-    --accent-foreground: 30 10% 8%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 40 15% 88%;
-    --input: 40 15% 88%;
-    --ring: 43 96% 56%;
-    --radius: 0.5rem;
+    --popover-foreground: 220 20% 10%;
+    --primary: 45 100% 51%;
+    --primary-foreground: 220 20% 10%;
+    --secondary: 210 15% 92%;
+    --secondary-foreground: 220 20% 10%;
+    --muted: 210 15% 92%;
+    --muted-foreground: 220 10% 40%;
+    --accent: 210 15% 92%;
+    --accent-foreground: 220 20% 10%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 210 15% 85%;
+    --input: 210 15% 85%;
+    --ring: 45 100% 51%;
+    --radius: 0.375rem;
   }
 
   .dark {
-    --background: 0 0% 5%;
-    --foreground: 40 20% 95%;
-    --card: 0 0% 7%;
-    --card-foreground: 40 20% 95%;
-    --popover: 0 0% 7%;
-    --popover-foreground: 40 20% 95%;
-    --primary: 43 96% 56%;
-    --primary-foreground: 0 0% 5%;
-    --secondary: 30 8% 14%;
-    --secondary-foreground: 40 20% 95%;
-    --muted: 30 8% 14%;
-    --muted-foreground: 40 10% 55%;
-    --accent: 30 8% 14%;
-    --accent-foreground: 40 20% 95%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 30 8% 16%;
-    --input: 30 8% 16%;
-    --ring: 43 96% 56%;
+    /* Industrial Dark Theme - Control Room */
+    --background: 220 20% 7%;
+    --foreground: 210 20% 95%;
+    --card: 220 20% 10%;
+    --card-foreground: 210 20% 95%;
+    --popover: 220 20% 10%;
+    --popover-foreground: 210 20% 95%;
+    --primary: 45 100% 51%;
+    --primary-foreground: 220 20% 7%;
+    --secondary: 220 15% 18%;
+    --secondary-foreground: 210 20% 95%;
+    --muted: 220 15% 18%;
+    --muted-foreground: 210 10% 55%;
+    --accent: 220 15% 18%;
+    --accent-foreground: 210 20% 95%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 15% 20%;
+    --input: 220 15% 20%;
+    --ring: 45 100% 51%;
   }
 }
 
@@ -55,67 +59,162 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+
+  /* Industrial monospace for data */
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
   }
 }
 
-/* Custom scrollbar - Sleek and modern */
+/* Custom scrollbar - Industrial */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 12px;
+  height: 12px;
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-transparent;
+  @apply bg-muted/50;
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-muted-foreground/20 rounded-full;
+  @apply bg-muted-foreground/30 rounded;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-muted-foreground/40;
+  @apply bg-muted-foreground/50;
 }
 
 /* Firefox scrollbar */
 * {
-  scrollbar-width: thin;
+  scrollbar-width: auto;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.3) hsl(var(--muted) / 0.5);
 }
 
-/* Mobile-specific improvements */
-@media (max-width: 640px) {
-  /* Better touch targets for mobile */
+/* Row styling for test results - Bold industrial colors */
+.row-passed {
+  background-color: #22c55e !important;
+  color: #052e16 !important;
+}
+
+.row-failed {
+  background-color: #ef4444 !important;
+  color: #450a0a !important;
+}
+
+.row-default {
+  background-color: hsl(var(--card)) !important;
+}
+
+/* Hover states - subtle darkening */
+.row-passed:hover {
+  background-color: #16a34a !important;
+}
+
+.row-failed:hover {
+  background-color: #dc2626 !important;
+}
+
+.row-default:hover {
+  background-color: hsl(var(--muted)) !important;
+}
+
+/* Dark mode row colors */
+.dark .row-passed {
+  background-color: #166534 !important;
+  color: #bbf7d0 !important;
+}
+
+.dark .row-failed {
+  background-color: #991b1b !important;
+  color: #fecaca !important;
+}
+
+.dark .row-default {
+  background-color: hsl(var(--card)) !important;
+}
+
+.dark .row-passed:hover {
+  background-color: #15803d !important;
+}
+
+.dark .row-failed:hover {
+  background-color: #b91c1c !important;
+}
+
+.dark .row-default:hover {
+  background-color: hsl(var(--muted)) !important;
+}
+
+/* Drag-to-scroll */
+.grab-scroll {
+  cursor: grab;
+}
+
+.grab-scroll:active,
+.grab-scroll.dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* Industrial button styles */
+.btn-industrial {
+  @apply font-semibold uppercase tracking-wide;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.1);
+}
+
+/* Large touch targets for factory floor */
+@media (pointer: coarse) {
   button, [role="button"] {
-    min-height: 44px;
-    min-width: 44px;
+    min-height: 48px;
+    min-width: 48px;
   }
-  
-  /* Improve table scrolling on mobile */
-  .overflow-x-auto {
-    -webkit-overflow-scrolling: touch;
-  }
-  
-  /* Better spacing for mobile cards */
-  .card {
-    margin-bottom: 1rem;
-  }
-  
-  /* Improve text readability on mobile */
-  .text-xs {
-    font-size: 0.75rem;
-    line-height: 1.2;
-  }
-  
-  /* Better date input touch targets */
-  input[type="date"] {
-    min-height: 44px;
-    padding: 12px 16px; /* Normal padding, no extra space for icon */
-    font-size: 16px; /* Prevents zoom on iOS */
-    cursor: pointer;
-  }
-  
 }
 
-/* Hide the default calendar picker globally (all screen sizes) */
+/* Progress bar glow effect */
+.progress-glow {
+  box-shadow: 0 0 10px currentColor;
+}
+
+/* Status indicator pulse */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.status-pulse {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+/* Testing mode indicator */
+@keyframes testing-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(34, 197, 94, 0);
+  }
+}
+
+.testing-active {
+  animation: testing-pulse 1.5s ease-in-out infinite;
+}
+
+/* Grid header sticky styling */
+.grid-header {
+  @apply sticky top-0 z-20 bg-muted font-semibold uppercase text-xs tracking-wider;
+}
+
+/* Compact date input */
+input[type="date"] {
+  min-height: 44px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
 input[type="date"]::-webkit-calendar-picker-indicator {
   position: absolute;
   top: 0;
@@ -129,44 +228,3 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
   opacity: 0;
 }
-
-/* Ensure the input field itself is clickable */
-input[type="date"] {
-  position: relative;
-  z-index: 1;
-}
-
-/* Firefox scrollbar color */
-* {
-  scrollbar-color: hsl(var(--muted-foreground) / 0.2) transparent;
-}
-
-/* Row styling for test results - matching C# app colors */
-.row-passed {
-  background-color: #90EE90 !important;
-}
-
-.row-failed {
-  background-color: #ff5555 !important;
-}
-
-.row-default {
-  background-color: #ffffff !important;
-}
-
-/* Dark mode support */
-.dark .row-passed {
-  background-color: #177217 !important; /* Dark green */
-}
-
-.dark .row-failed {
-  background-color: #711818 !important; /* Dark red */
-}
-
-.dark .row-default {
-  background-color: #0d0d0d !important;
-}
-
-/* Enhanced IO Grid - Clean styling like basic io-data-grid */
-
-

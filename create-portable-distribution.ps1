@@ -6,6 +6,20 @@ Write-Host "  IO Checkout Tool - Distribution Builder" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Check if running from a network/shared folder (causes npm symlink issues)
+$currentPath = (Get-Location).Path
+if ($currentPath -match "^\\\\|^[A-Z]:\\.*VBox|^[A-Z]:\\.*shared" -or (Get-PSDrive -Name $currentPath.Substring(0,1) -ErrorAction SilentlyContinue).DisplayRoot -like "\\*") {
+    Write-Host "WARNING: Running from a network or shared folder!" -ForegroundColor Red
+    Write-Host "Network folders don't support symlinks, which npm requires." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Please copy the project to a local drive first:" -ForegroundColor Yellow
+    Write-Host "  xcopy /E /I `"$currentPath`" `"C:\commissioning-local`"" -ForegroundColor Cyan
+    Write-Host "  cd C:\commissioning-local" -ForegroundColor Cyan
+    Write-Host "  .\create-portable-distribution.ps1" -ForegroundColor Cyan
+    Write-Host ""
+    $continue = Read-Host "Press Enter to try anyway, or Ctrl+C to cancel"
+}
+
 $distributionFolder = "portable"
 $backendSource = "backend"
 $frontendSource = "frontend"
@@ -39,7 +53,23 @@ New-Item -ItemType Directory -Path "$distributionFolder\nodejs" -Force | Out-Nul
 
 # Step 2: Build .NET backend (self-contained)
 Write-Host "[2/5] Building .NET backend (self-contained)..." -ForegroundColor Yellow
+
+# Clean build artifacts from ALL projects to prevent static asset path issues
+# (cached paths may reference a different machine's NuGet cache)
+Write-Host "Cleaning build artifacts from all projects..." -ForegroundColor Cyan
+Remove-Item -Path "$backendSource\obj", "$backendSource\bin" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "Shared.Library\obj", "Shared.Library\bin" -Recurse -Force -ErrorAction SilentlyContinue
+
+# Clear NuGet cache to ensure fresh package downloads
+Write-Host "Clearing NuGet cache..." -ForegroundColor Cyan
+dotnet nuget locals all --clear 2>$null
+
 Push-Location $backendSource
+dotnet restore
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "WARNING: Package restore had issues, continuing anyway..." -ForegroundColor Yellow
+}
+
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o "..\$distributionFolder\backend"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Failed to build backend!" -ForegroundColor Red
@@ -56,6 +86,15 @@ Copy-Item -Path "$backendSource\config-help.txt" -Destination "$distributionFold
 # Step 3: Build Next.js frontend
 Write-Host "[3/5] Building Next.js frontend..." -ForegroundColor Yellow
 Push-Location $frontendSource
+
+Write-Host "Installing frontend dependencies..." -ForegroundColor Cyan
+npm install
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Failed to install frontend dependencies!" -ForegroundColor Red
+    Pop-Location
+    exit 1
+}
+
 npm run build
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Failed to build frontend!" -ForegroundColor Red
@@ -467,7 +506,6 @@ The config.json file settings:
   subsystemId   Unique ID for this test station (required)
   orderMode     "0" = test in any order, "1" = must follow order
   remoteUrl     Cloud sync URL (leave empty if not using)
-  disableWatchdog  Set to true if PLC has no watchdog tag
 
 See config-help.txt for more details.
 

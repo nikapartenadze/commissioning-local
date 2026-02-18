@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Loader2 } from 'lucide-react'
+import { authFetch } from '@/lib/api-config'
 
 interface SubsystemConfigDialogProps {
   open: boolean
@@ -82,7 +83,6 @@ export function SubsystemConfigDialog({
             subsystemName,
             ...config,
             orderMode: false,
-            disableWatchdog: true,
             showStateColumn: true,
             showResultColumn: true,
             showTimestampColumn: true,
@@ -94,14 +94,13 @@ export function SubsystemConfigDialog({
             subsystemName,
             ...config,
             orderMode: false,
-            disableWatchdog: true,
             showStateColumn: true,
             showResultColumn: true,
             showTimestampColumn: true,
             showHistoryColumn: true
           }
 
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

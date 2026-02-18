@@ -12,15 +12,18 @@ public class PlcConnectionService : IPlcConnectionService
 {
     private readonly IConfigurationService _configService;
     private readonly IErrorDialogService _errorDialogService;
+    private readonly ISignalRService _signalRService;
     private readonly ILogger<PlcConnectionService> _logger;
 
     public PlcConnectionService(
         IConfigurationService configService,
         IErrorDialogService errorDialogService,
+        ISignalRService signalRService,
         ILogger<PlcConnectionService> logger)
     {
         _configService = configService;
         _errorDialogService = errorDialogService;
+        _signalRService = signalRService;
         _logger = logger;
     }
 
@@ -32,9 +35,10 @@ public class PlcConnectionService : IPlcConnectionService
         if (string.IsNullOrEmpty(_configService.Ip))
         {
             _logger.LogError("PLC IP address is not configured");
+            _ = _signalRService.BroadcastError("plc", "PLC IP address is not configured", "error");
             if (showErrorDialog)
             {
-                _errorDialogService.ShowError("Configuration Error", 
+                _errorDialogService.ShowError("Configuration Error",
                     "<p><strong>PLC IP address is not configured.</strong></p>" +
                     "<br/>" +
                     "<p>Please check your configuration settings and ensure a valid IP address is provided.</p>");
@@ -58,6 +62,7 @@ public class PlcConnectionService : IPlcConnectionService
             else
             {
                 _logger.LogError("Network connectivity test timed out after {TimeoutMs}ms - PLC not reachable at {IpAddress}:{Port}", timeoutMs, _configService.Ip, ethernetIpPort);
+                _ = _signalRService.BroadcastError("plc", $"PLC not reachable at {_configService.Ip} — connection timed out", "error");
                 if (showErrorDialog)
                 {
                     var localIp = GetLocalIpAddress();
@@ -85,7 +90,8 @@ public class PlcConnectionService : IPlcConnectionService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Network connectivity test failed with exception - PLC not reachable at {IpAddress}:{Port}", _configService.Ip, ethernetIpPort);
-            
+            _ = _signalRService.BroadcastError("plc", $"PLC network error at {_configService.Ip}: {ex.Message}", "error");
+
             if (showErrorDialog)
             {
                 var localIp = GetLocalIpAddress();

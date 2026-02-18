@@ -153,7 +153,6 @@ PLC (Ethernet/IP) <-> plctag.dll <-> TagReaderService (continuous read loop)
 | `ConfigurationService` | Runtime config management, supports hot-switching subsystems without restart |
 | `ConfigFileWatcherService` | Monitors config.json for external changes, triggers reinitialization |
 | `StartupCoordinationService` | Orchestrates service initialization order at boot |
-| `WatchdogService` | PLC connection health monitoring |
 | `AppStateService` | Centralized in-memory state (UI, filter, test, graph states) |
 
 ## Database
