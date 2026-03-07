@@ -196,7 +196,7 @@ public class SignalRCloudSyncService : ICloudSyncService, IAsyncDisposable
         return Task.FromResult(false);
     }
 
-    public async Task<bool> TriggerFreshSyncAsync()
+    public async Task<bool> TriggerFreshSyncAsync(bool skipPlcInitialization = false)
     {
         _logger.LogInformation("TriggerFreshSyncAsync not fully implemented in SignalRCloudSyncService - use ResilientCloudSyncService for full functionality");
         

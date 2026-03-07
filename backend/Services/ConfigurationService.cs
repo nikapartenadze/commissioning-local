@@ -193,6 +193,61 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Lightweight update of cloud settings only (no PLC reinitialization).
+    /// Used by Pull IOs to quickly update remoteUrl/apiPassword before pulling.
+    /// </summary>
+    public async Task UpdateCloudSettingsAsync(string remoteUrl, string apiPassword, string subsystemId)
+    {
+        try
+        {
+            _logger.LogInformation("Updating cloud settings: RemoteUrl={Url}, SubsystemId={Id}", remoteUrl, subsystemId);
+
+            // Read the current config file to preserve all existing settings
+            var currentConfig = new Dictionary<string, object>();
+
+            if (File.Exists(DatabaseConstants.ConfigFilePath))
+            {
+                var existingJson = await File.ReadAllTextAsync(DatabaseConstants.ConfigFilePath);
+                if (!string.IsNullOrEmpty(existingJson))
+                {
+                    var existingConfig = JsonSerializer.Deserialize<Dictionary<string, object>>(existingJson);
+                    if (existingConfig != null)
+                    {
+                        currentConfig = existingConfig;
+                    }
+                }
+            }
+
+            // Update cloud-related settings
+            currentConfig[DatabaseConstants.ConfigKeys.REMOTE_URL] = remoteUrl;
+            currentConfig["ApiPassword"] = apiPassword;
+            currentConfig[DatabaseConstants.ConfigKeys.SUBSYSTEM_ID] = subsystemId;
+
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            var jsonString = JsonSerializer.Serialize(currentConfig, options);
+
+            // Notify file watcher that this is an internal write (prevent triggering reinitialization)
+            ConfigFileWatcherService.NotifyInternalWrite();
+            await File.WriteAllTextAsync(DatabaseConstants.ConfigFilePath, jsonString);
+
+            // Update in-memory values directly (no full reload needed)
+            RemoteUrl = remoteUrl.TrimEnd('/');
+            ApiPassword = apiPassword;
+            SubsystemId = subsystemId;
+
+            // Also reload the IConfiguration to pick up the new values
+            ((IConfigurationRoot)_configuration).Reload();
+
+            _logger.LogInformation("Cloud settings updated successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating cloud settings");
+            throw;
+        }
+    }
+
     public async Task ReinitializeApplicationAsync()
     {
         // Use a timeout to prevent indefinite blocking

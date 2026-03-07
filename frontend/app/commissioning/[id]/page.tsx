@@ -105,7 +105,7 @@ export default function CommissioningPage() {
   // State management
   const [ios, setIos] = useState<IoItem[]>([])
   const [filteredIos, setFilteredIos] = useState<IoItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [plcService, setPlcService] = useState<PlcCommunicationService | null>(null)
   const [plcStatus, setPlcStatus] = useState<PlcConnectionStatus>({
     isConnected: false,
@@ -293,16 +293,16 @@ export default function CommissioningPage() {
     }
   }, [])
 
-  // Load initial data
+  // Load initial config only - don't auto-fetch IOs or auto-connect
+  // User must explicitly pull IOs via config dialog
   useEffect(() => {
-    loadIos()
     loadPlcConfig()
-    
+
     // Refresh status every 5 seconds to keep connection state in sync (but not testing state)
     const interval = setInterval(() => {
       loadPlcConfig(false) // Don't override testing state
     }, 5000)
-    
+
     return () => clearInterval(interval)
   }, [projectId, loadPlcConfig])
 
@@ -838,11 +838,13 @@ export default function CommissioningPage() {
     setPlcConfig(newConfig)
     setShowConfigDialog(false)
 
-    // Wait a bit for C# backend to process the config change
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    // Refetch IOs from backend (data should already be synced)
+    await loadIos()
 
-    // Reload the page to ensure fresh data
-    window.location.reload()
+    // Connect SignalR for real-time updates now that we have data
+    if (!signalR.isConnected) {
+      signalR.connect()
+    }
   }
 
   const handleTestConnection = async (): Promise<boolean> => {

@@ -10,7 +10,7 @@ public interface ICloudSyncService
     Task<bool> SyncIoUpdatesAsync(List<IoUpdateDto> updates);
     Task<bool> SyncTestHistoriesAsync(int subsystemId, List<TestHistoryDto> histories);
     Task<bool> IsCloudAvailable();
-    Task<bool> TriggerFreshSyncAsync();
+    Task<bool> TriggerFreshSyncAsync(bool skipPlcInitialization = false);
     bool IsConnected { get; }
     event Action? ConnectionStateChanged;
 } 
