@@ -864,6 +864,67 @@ public class ApiController : ControllerBase
     }
 
     /// <summary>
+    /// Pull fresh IOs from cloud - triggers a fresh sync from remote database
+    /// Optionally accepts config params to update cloud settings without full PLC reinitialization
+    /// </summary>
+    [HttpPost("cloud/pull")]
+    public async Task<ActionResult<object>> PullFromCloud([FromBody] CloudPullRequest? request = null)
+    {
+        try
+        {
+            // If config params provided, update cloud settings directly (lightweight, no PLC reinit)
+            if (request != null && !string.IsNullOrEmpty(request.RemoteUrl))
+            {
+                _logger.LogInformation("Updating cloud settings: RemoteUrl={Url}, SubsystemId={Id}",
+                    request.RemoteUrl, request.SubsystemId);
+
+                // Update config file directly without PLC reinitialization
+                await _configuration.UpdateCloudSettingsAsync(
+                    request.RemoteUrl,
+                    request.ApiPassword ?? "",
+                    request.SubsystemId ?? _configuration.SubsystemId
+                );
+            }
+
+            _logger.LogInformation("Pulling fresh IOs from cloud...");
+
+            // Trigger a fresh sync from cloud (skip PLC initialization - just fetch data)
+            var success = await _cloudSyncService.TriggerFreshSyncAsync(skipPlcInitialization: true);
+
+            if (success)
+            {
+                // Get the count of IOs after sync
+                var subsystemId = int.Parse(_configuration.SubsystemId);
+                var ios = await _ioRepository.GetBySubsystemIdAsync(subsystemId);
+                var ioCount = ios.Count;
+
+                _logger.LogInformation("Successfully pulled {Count} IOs from cloud", ioCount);
+                return Ok(new {
+                    success = true,
+                    message = $"Successfully pulled {ioCount} IOs from cloud",
+                    ioCount = ioCount
+                });
+            }
+            else
+            {
+                _logger.LogWarning("Failed to pull IOs from cloud");
+                return BadRequest(new {
+                    success = false,
+                    message = "Failed to pull IOs from cloud. Check remote URL and API password."
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error pulling from cloud");
+            return StatusCode(500, new {
+                success = false,
+                message = "Internal server error during pull"
+            });
+        }
+    }
+
+    /// <summary>
     /// Trigger value changed event for output testing (matches C# app behavior)
     /// </summary>
     private async Task TriggerOutputValueChangedAsync(Io outputTag)
@@ -916,4 +977,11 @@ public class FireOutputRequest
 public class UpdateCommentRequest
 {
     public string? Comments { get; set; }
+}
+
+public class CloudPullRequest
+{
+    public string? RemoteUrl { get; set; }
+    public string? ApiPassword { get; set; }
+    public string? SubsystemId { get; set; }
 }

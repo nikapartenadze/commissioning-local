@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Enable standalone output for Docker
+  // Standalone output for Docker (custom server wraps this)
   output: 'standalone',
   
   experimental: {

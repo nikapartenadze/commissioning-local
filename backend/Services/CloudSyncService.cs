@@ -76,7 +76,7 @@ public class CloudSyncService : ICloudSyncService
         return Task.FromResult(false);
     }
 
-    public async Task<bool> TriggerFreshSyncAsync()
+    public async Task<bool> TriggerFreshSyncAsync(bool skipPlcInitialization = false)
     {
         _logger.LogInformation("TriggerFreshSyncAsync not fully implemented in CloudSyncService - use ResilientCloudSyncService for full functionality");
         

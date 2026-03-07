@@ -1,0 +1,68 @@
+# =============================================================================
+# IO Checkout Tool - C# Backend Dockerfile
+# =============================================================================
+
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# Copy solution file and project files first for better layer caching
+COPY ["backend/IO Checkout Tool.sln", "backend/"]
+COPY ["backend/IO Checkout Tool.csproj", "backend/"]
+COPY ["Shared.Library/Shared.Library.csproj", "Shared.Library/"]
+
+# Restore dependencies
+RUN dotnet restore "backend/IO Checkout Tool.csproj"
+
+# Copy all source code
+COPY ["backend/", "backend/"]
+COPY ["Shared.Library/", "Shared.Library/"]
+
+WORKDIR /src/backend
+
+# Build
+RUN dotnet build "IO Checkout Tool.csproj" -c Release -o /app/build
+
+# Publish
+RUN dotnet publish "IO Checkout Tool.csproj" -c Release -o /app/publish /p:UseAppHost=false
+
+# =============================================================================
+# Runtime image - Use Noble (Ubuntu 24.04) for newer glibc
+# =============================================================================
+FROM mcr.microsoft.com/dotnet/aspnet:9.0-noble AS runtime
+WORKDIR /app
+
+# Install dependencies and libplctag native library
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install libplctag for Linux x64 (using latest release)
+ARG LIBPLCTAG_VERSION=2.6.15
+RUN curl -L "https://github.com/libplctag/libplctag/releases/download/v${LIBPLCTAG_VERSION}/libplctag_${LIBPLCTAG_VERSION}_ubuntu_x64.zip" \
+    -o /tmp/libplctag.zip \
+    && mkdir -p /tmp/libplctag \
+    && unzip /tmp/libplctag.zip -d /tmp/libplctag \
+    && find /tmp/libplctag -name "libplctag.so*" -exec cp {} /usr/lib/ \; \
+    && ldconfig \
+    && rm -rf /tmp/libplctag /tmp/libplctag.zip
+
+# Copy published app
+COPY --from=build /app/publish .
+
+# Copy config template as default config
+COPY backend/config.json.template /app/config.json
+
+# Create data directory for SQLite database
+RUN mkdir -p /app/data
+
+# Expose port
+EXPOSE 5000
+
+# Set environment variables
+ENV ASPNETCORE_URLS=http://+:5000
+ENV ASPNETCORE_ENVIRONMENT=Development
+
+# Entry point
+ENTRYPOINT ["dotnet", "IO Checkout Tool.dll"]
