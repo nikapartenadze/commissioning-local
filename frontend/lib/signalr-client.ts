@@ -378,11 +378,10 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     errorCallbacksRef.current.delete(callback)
   }
 
-  // Auto-connect on mount
+  // Don't auto-connect - wait for user to explicitly connect via UI
+  // Connection will be triggered when user pulls IOs or starts testing
   useEffect(() => {
-    connect()
-
-    // Cleanup on unmount
+    // Cleanup on unmount only
     return () => {
       disconnect()
     }

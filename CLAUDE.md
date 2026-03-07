@@ -7,23 +7,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Industrial I/O Checkout Tool for commissioning PLC (Programmable Logic Controller) systems. Technicians use this to test and validate Input/Output points during factory commissioning.
 
 **How it works:**
-1. I/O definitions are fetched from remote PostgreSQL database and cached in local SQLite
-2. Backend connects to PLC via libplctag (native DLL, P/Invoke), continuously reads tag states (75ms intervals)
-3. Tag states are matched to I/O definitions and broadcast via SignalR to frontend
-4. Frontend shows real-time I/O state changes - when state transitions (FALSE->TRUE), prompts technician to mark Pass/Fail
-5. Test results are stored locally and synced to remote PostgreSQL (with offline queue if cloud unavailable)
+1. User opens app → sees empty state (no auto-connect, no auto-load)
+2. User clicks "Pull IOs" → fetches I/O definitions from remote PostgreSQL, stores in local SQLite
+3. Backend connects to PLC via libplctag (native DLL), continuously reads tag states (75ms intervals)
+4. Tag states are broadcast via SignalR to frontend
+5. Frontend shows real-time I/O state changes - when state transitions (FALSE→TRUE), prompts technician to mark Pass/Fail
+6. Test results are stored locally and synced to remote PostgreSQL (with offline queue if cloud unavailable)
 
 ## Tech Stack
 
-- **Backend**: .NET 9.0 (C#), ASP.NET Core, Entity Framework Core, SQLite (local), SignalR, libplctag (native P/Invoke) for Ethernet/IP PLC communication, MudBlazor (Razor components for legacy UI)
-- **Frontend**: Next.js 14, React 18, TypeScript, Tailwind CSS, shadcn/ui (Radix UI primitives), Zustand, SignalR client, TanStack Table + Virtual
-- **Shared Library**: `Shared.Library/` - shared C# models (entities: Io, TestHistory, PendingSync, Project, Subsystem, TagTypeDiagnostic), DTOs, repository interfaces
+- **Backend**: .NET 9.0 (C#), ASP.NET Core, Entity Framework Core, SQLite (local), SignalR, libplctag (native P/Invoke) for Ethernet/IP PLC communication
+- **Frontend**: Next.js 14, React 18, TypeScript, Tailwind CSS, shadcn/ui (Radix UI primitives), SignalR client, TanStack Virtual
+- **Shared Library**: `Shared.Library/` - shared C# models (Io, TestHistory, PendingSync, Project, Subsystem, TagTypeDiagnostic), DTOs, repository interfaces
 - **Remote Database**: PostgreSQL (cloud server for I/O definitions and synced results)
-- **Deployment**: Docker, Drone CI, portable self-contained distribution (Windows)
+- **Deployment**: Docker (Linux), portable self-contained distribution (Windows)
 
 ## Common Commands
 
-### Development
+### Development (Docker - recommended for Linux)
+```bash
+# Start backend in Docker (port 5000)
+cd docker && docker compose up -d backend
+
+# Start frontend locally (port 3020)
+cd frontend && npm run dev
+
+# View backend logs
+docker logs -f docker-backend-1
+```
+
+### Development (Windows - native)
 ```bash
 # Start both backend and frontend
 start-dev.bat
@@ -31,8 +44,8 @@ start-dev.bat
 # Backend only (port 5000)
 cd backend && dotnet run
 
-# Frontend only (port 3002)
-cd frontend && PORT=3002 npm run dev
+# Frontend only (port 3020)
+cd frontend && npm run dev
 ```
 
 ### Build & Test
@@ -46,8 +59,23 @@ cd "backend/IO Checkout Tool.Tests" && dotnet test
 # Frontend build
 cd frontend && npm run build
 
-# Frontend linting
+# Frontend lint
 cd frontend && npm run lint
+```
+
+### Docker
+```bash
+# Build and start all services
+cd docker && docker compose up -d --build
+
+# Start only backend (expose port 5000)
+cd docker && docker compose up -d backend
+
+# Stop all
+cd docker && docker compose down
+
+# View logs
+docker logs -f docker-backend-1
 ```
 
 ### PLC Simulator (for testing without hardware)
@@ -68,74 +96,96 @@ curl http://localhost:5000/api/simulator/status
 ## Architecture
 
 ```
-commissioning-local/
+local-tool/
 ├── backend/                 # C# ASP.NET Core application
-│   ├── Controllers/         # API endpoints (Api, Auth, Config, Simulator, Diagnostic, etc.)
+│   ├── Controllers/         # API endpoints (Api, Auth, Config, Simulator, Diagnostic)
 │   ├── Services/            # Business logic (PLC, testing, sync, config)
 │   │   ├── Interfaces/      # Service contracts
 │   │   ├── PlcTags/         # Native P/Invoke layer (LibPlcTag.Native.cs, NativeTag.cs)
-│   │   └── State/           # In-memory state management (AppStateService, TestState, etc.)
+│   │   └── State/           # In-memory state management
 │   ├── Models/              # EF Core entities and TagsContext
-│   ├── Repositories/        # Data access layer
 │   ├── Hubs/                # SignalR hub
-│   ├── Extensions/          # DI registration extensions
-│   ├── Components/          # MudBlazor Razor components (legacy UI)
 │   └── Program.cs           # DI and startup configuration
-├── frontend/                # Next.js application
+├── frontend/                # Next.js application (port 3020)
 │   ├── app/                 # App Router pages and API routes
-│   │   └── api/backend/[...path]/ # Catch-all proxy to C# backend
+│   │   ├── commissioning/   # Main commissioning page
+│   │   └── api/backend/     # Catch-all proxy to C# backend
 │   ├── components/          # React components (shadcn/ui based)
-│   ├── lib/                 # Utilities (signalr-client, api-config, auth)
-│   └── types/               # TypeScript definitions
+│   │   └── plc-config-dialog.tsx  # Config & Pull IOs dialog
+│   └── lib/                 # Utilities (signalr-client, api-config, auth)
+├── docker/                  # Docker deployment
+│   ├── docker-compose.yml   # Service definitions
+│   ├── Dockerfile.backend   # Backend image
+│   └── Dockerfile.frontend  # Frontend image
 ├── Shared.Library/          # Shared C# models, DTOs, repository interfaces
-└── IO-Checkout-Solution.sln # Solution file (includes IO-Checkout-Cloud project)
+└── IO-Checkout-Solution.sln # Solution file
 ```
 
 ## Key Architectural Patterns
 
+### No Auto-Connect on Startup
+The app does NOT auto-connect to PLC or cloud on startup. User must:
+1. Open config dialog (gear icon)
+2. Configure Remote URL, Subsystem ID, API Password
+3. Click "Pull IOs" to fetch data from cloud
+4. SignalR connects only after successful data pull
+
 ### Frontend Proxy Pattern
 All frontend API calls go through a catch-all Next.js API route that proxies to the C# backend:
 ```
-Browser -> /api/backend/{path} -> Next.js proxy -> http://localhost:5000/api/{path}
+Browser → /api/backend/{path} → Next.js proxy → http://localhost:5000/api/{path}
 ```
-This eliminates CORS issues. The proxy is at `frontend/app/api/backend/[...path]/route.ts`. API endpoints are centralized in `frontend/lib/api-config.ts` (see `API_ENDPOINTS` object).
+This eliminates CORS issues. The proxy is at `frontend/app/api/backend/[...path]/route.ts`.
 
 ### SignalR Hub
-The hub URL is `/hub` (not `/signalr`). SignalR connects directly from browser to backend port 5000 (bypasses the Next.js proxy). Connection logic is in `frontend/lib/signalr-client.ts`.
+Hub URL: `/hub` (proxied through Next.js custom server to avoid exposing backend port)
 - `UpdateState(id, state)` - PLC state changes (TRUE/FALSE)
 - `UpdateIO(id, result, state, timestamp, comments)` - Test result updates
+- SignalR does NOT auto-connect - connects only after user pulls IOs
+- Direct backend connection: `http://localhost:5000/hub` (for debugging)
 
 ### Config Hot-Reload
-Backend watches `config.json` via `ConfigFileWatcherService`. Editing the file triggers automatic reinitialization (PLC reconnect, cloud sync refresh) without restarting the app. The frontend polls `/api/backend/configuration/runtime` for dynamic config and shows a `config-reload-banner` component during reloads.
+Backend watches `config.json` via `ConfigFileWatcherService`. Editing the file triggers automatic reinitialization without restart.
 
-### Startup Coordination
-`StartupCoordinationService` orchestrates boot order: Database init -> Cloud sync (fetch I/O definitions) -> PLC initialization -> Offline sync processing -> Config file watcher. See `backend/Services/*HostedService.cs` files.
-
-### PLC Communication Layer
-Uses native P/Invoke to `plctag.dll` (not the NuGet package). The call chain is:
-- `PlcCommunicationService` (orchestrator, in-memory state cache)
-- `TagReaderService.Native.cs` (parallel reading: batches of 25, 6 concurrent readers)
-- `PlcTags/LibPlcTag.Native.cs` (raw P/Invoke declarations)
-- `PlcTags/NativeTag.cs` (safe wrapper around native tag handles)
+### Pull IOs Flow
+```
+User clicks "Pull IOs"
+    ↓
+Frontend calls POST /api/backend/cloud/pull
+    ↓
+Backend updates config (remoteUrl, apiPassword, subsystemId)
+    ↓
+Backend calls TriggerFreshSyncAsync(skipPlcInitialization: true)
+    ↓
+Fetches IOs from cloud PostgreSQL
+    ↓
+Stores in local SQLite
+    ↓
+Refreshes in-memory TagList (NO PLC connection)
+    ↓
+Frontend calls loadIos() to refresh UI
+    ↓
+SignalR connects for real-time updates
+```
 
 ## Data Flow
 
 ```
-Remote PostgreSQL -> CloudSyncService -> Local SQLite (Ios table)
-                                              |
-                                   PlcCommunicationService
-                                              |
-PLC (Ethernet/IP) <-> plctag.dll <-> TagReaderService (continuous read loop)
-                                              |
-                                   SignalR Hub broadcasts state
-                                              |
-                                   Frontend receives UpdateState/UpdateIO
-                                              |
-                                   UI shows state change -> Test dialog
-                                              |
-                                   Technician marks Pass/Fail
-                                              |
-                              API updates SQLite + syncs to PostgreSQL
+Remote PostgreSQL → CloudSyncService → Local SQLite (Ios table)
+                                            ↓
+                                 PlcCommunicationService
+                                            ↓
+PLC (Ethernet/IP) ↔ plctag.dll ↔ TagReaderService (continuous read loop)
+                                            ↓
+                                 SignalR Hub broadcasts state
+                                            ↓
+                                 Frontend receives UpdateState/UpdateIO
+                                            ↓
+                                 UI shows state change → Test dialog
+                                            ↓
+                                 Technician marks Pass/Fail
+                                            ↓
+                            API updates SQLite + syncs to PostgreSQL
 ```
 
 ## Key Backend Services
@@ -144,62 +194,100 @@ PLC (Ethernet/IP) <-> plctag.dll <-> TagReaderService (continuous read loop)
 |---------|----------------|
 | `PlcCommunicationService` | Entry point for PLC ops, manages tag lifecycle, in-memory state cache |
 | `TagReaderService.Native` | High-performance parallel tag reading (batches of 25, 6 concurrent readers) |
-| `PlcTagFactoryService` | Creates NativeTag objects from I/O definitions |
-| `PlcSimulatorService` | Simulates PLC tag state changes for testing without hardware |
+| `ResilientCloudSyncService` | Real-time sync + offline queue (PendingSyncs table) |
 | `IoTestService` | Test result recording, creates TestHistory audit trail |
 | `SignalRService` | Broadcasts state/result updates to all connected browsers |
-| `ResilientCloudSyncService` | Real-time sync + offline queue (PendingSyncs table) |
-| `CloudSyncService` | Fetches I/O definitions from remote PostgreSQL |
-| `ConfigurationService` | Runtime config management, supports hot-switching subsystems without restart |
-| `ConfigFileWatcherService` | Monitors config.json for external changes, triggers reinitialization |
-| `StartupCoordinationService` | Orchestrates service initialization order at boot |
-| `AppStateService` | Centralized in-memory state (UI, filter, test, graph states) |
+| `ConfigurationService` | Runtime config management, `UpdateCloudSettingsAsync()` for lightweight config updates |
+| `PlcSimulatorService` | Simulates PLC tag state changes for testing without hardware |
 
 ## Database
 
 ### Local SQLite (`backend/database.db`)
-- **Ios**: I/O definitions with Result, Timestamp, Comments (State is NOT persisted - always live from PLC)
-- **TestHistories**: Audit trail of all test results (who, when, what, comments)
-- **TagTypeDiagnostics**: Diagnostic data for tag types (linked to Ios for failure analysis)
+- **Ios**: I/O definitions with Result, Timestamp, Comments, TagType (State is NOT persisted - always live from PLC)
+- **TestHistories**: Audit trail of all test results
+- **TagTypeDiagnostics**: Diagnostic help data for tag types
 - **PendingSyncs**: Offline queue for cloud sync when disconnected
-- **SubsystemConfigurations**: Multi-PLC/project support with runtime switching
 - **Users**: PIN-based auth with BCrypt hashing
-
-SQLite optimized with WAL mode for multi-user concurrent access.
 
 ## Configuration
 
 ### Backend (`backend/config.json`)
 ```json
 {
-  "Plc": {
-    "Ip": "192.168.1.100",
-    "Path": "1,0",
-    "SubsystemId": "16",
-    "RemoteUrl": "https://...",
-    "ApiPassword": "secret",
-    "OrderMode": "0"
-  }
+  "ip": "192.168.1.100",
+  "path": "1,0",
+  "remoteUrl": "https://commissioning.lci.ge",
+  "ApiPassword": "",
+  "subsystemId": "16",
+  "orderMode": "0",
+  "syncBatchSize": 50,
+  "syncBatchDelayMs": 500
 }
 ```
-Copy `config.json.template` to `config.json` for first-time setup. Configuration can also be managed via the UI (stored in SubsystemConfigurations table) and switched at runtime without restarting.
+| Setting | Description |
+|---------|-------------|
+| `orderMode` | `0` = test any order, `1` = sequential testing |
+| `syncBatchSize` | Number of records per cloud sync batch |
+| `syncBatchDelayMs` | Delay between sync batches |
 
-### Frontend
-Backend URL hardcoded to `http://localhost:5000` in `frontend/lib/api-config.ts` and `frontend/app/api/backend/[...path]/route.ts`. Ports: backend 5000, frontend 3002.
+Copy `config.json.template` to `config.json` for first-time setup.
+
+### Ports
+- **Backend**: 5000
+- **Frontend**: 3020 (dev), 3000 (Docker), 3002 (portable production)
+
+### Frontend Config
+Backend URL configured in `frontend/lib/api-config.ts`:
+- `BACKEND_PORT = 5000`
+- `getBackendUrl()` returns `http://localhost:5000` (or `BACKEND_URL` env var in Docker)
+
+## Important Caveats
+
+- **libplctag native library**: Backend requires `plctag.dll` (Windows) or `libplctag.so` (Linux). On Linux, use Docker which includes the library.
+- **No auto-connect**: App intentionally does NOT auto-connect on startup. User must explicitly pull IOs.
+- **SignalR lazy connect**: SignalR only connects after successful Pull IOs, not on page load.
+- **TagType for Help buttons**: Help buttons only appear when IO has `tagType` set. This is local-only, not synced from cloud.
 
 ## Testing Workflow
 
-1. **Input Points**: Wait for state transition (FALSE->TRUE) -> Dialog appears -> Mark Pass/Fail
-2. **Output Points**: Click "Fire Output" -> Backend writes to PLC -> Observe physical response -> Mark Pass/Fail
-3. All results create audit trail in TestHistories
-4. Real-time sync to cloud (or queued if offline)
+1. **Configure**: Open config dialog → set Remote URL, Subsystem ID, API Password
+2. **Pull IOs**: Click "Pull IOs" → fetches from cloud
+3. **Test Inputs**: Wait for state transition (FALSE→TRUE) → Dialog appears → Mark Pass/Fail
+4. **Test Outputs**: Click "Fire Output" → Backend writes to PLC → Observe physical response → Mark Pass/Fail
+5. Results sync to cloud (or queued if offline)
 
-## Factory Deployment
+## Factory Deployment (Windows)
 
-The `portable/` folder contains pre-built distribution:
+The `IO-Checkout-Tool-Portable/` folder contains pre-built distribution:
 - Self-contained .NET backend (no .NET install required)
 - Pre-built Next.js frontend with standalone server
 - Portable Node.js runtime included
 - START.bat / STOP.bat / STATUS.bat scripts
 
 Build with: `REBUILD-DISTRIBUTION.bat`
+
+### Windows Services (Production)
+Install as auto-starting Windows services using NSSM:
+```powershell
+# Run as Administrator in portable/ folder
+.\service.ps1 install     # Install both services
+.\service.ps1 start       # Start services
+.\service.ps1 status      # Check status
+.\service.ps1 stop        # Stop services
+.\service.ps1 uninstall   # Remove services
+```
+
+### Backend CLI Flags
+```bash
+# Allow multiple instances (bypasses single-instance check)
+dotnet run -- --allow-multiple-instances
+
+# Seed database with 1000 test tags (for testing)
+dotnet run -- --seed-database
+```
+
+## Authentication
+- PIN-based login (6-digit codes)
+- Default admin PIN: `852963`
+- JWT tokens for API authentication
+- Rate limiting: 5 login attempts per minute

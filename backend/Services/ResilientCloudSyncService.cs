@@ -642,18 +642,24 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
             return false;
         }
 
-        // First try a simple HTTP health check - this is more reliable for determining basic availability
+        // Simple HTTP health check - SignalR is optional (cloud app uses SSE instead)
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             var response = await _httpClient.GetAsync($"{cloudUrl}/api/sync/health", cts.Token);
-            
+
             if (response.IsSuccessStatusCode)
             {
-                // If HTTP health check passes, try SignalR connection
-                return await EnsureConnectionAsync();
+                _logger.LogInformation("Cloud HTTP health check passed for {CloudUrl}", cloudUrl);
+                // Try SignalR connection in background (non-blocking) for real-time sync
+                // But don't require it - HTTP is sufficient for Pull IOs
+                _ = Task.Run(async () => {
+                    try { await EnsureConnectionAsync(); }
+                    catch { /* SignalR is optional */ }
+                });
+                return true;
             }
-            
+
             return false;
         }
         catch (Exception ex)
@@ -843,9 +849,9 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         _connectionLock?.Dispose();
     }
 
-    public async Task<bool> TriggerFreshSyncAsync()
+    public async Task<bool> TriggerFreshSyncAsync(bool skipPlcInitialization = false)
     {
-        _logger.LogInformation("Triggering fresh sync from remote database with pre-nuclear sync pattern...");
+        _logger.LogInformation("Triggering fresh sync from remote database with pre-nuclear sync pattern (skipPlcInit={Skip})...", skipPlcInitialization);
         
         try
         {
@@ -935,18 +941,28 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
             
             if (success)
             {
-                // Notify PlcCommunicationService to reload data with new tag definitions
+                // Notify PlcCommunicationService to reload data
                 var plcCommService = _serviceProvider.GetService<IPlcCommunicationService>();
                 if (plcCommService != null)
                 {
-                    _logger.LogInformation("Notifying PlcCommunicationService to reload data after fresh cloud sync");
-                    await plcCommService.ReloadDataAfterCloudSyncAsync();
-                    
+                    if (skipPlcInitialization)
+                    {
+                        // Just refresh tag list from database without PLC connection
+                        _logger.LogInformation("Refreshing TagList from database (skipping PLC initialization)");
+                        await plcCommService.RefreshTagListFromDatabaseAsync();
+                    }
+                    else
+                    {
+                        // Full reload with PLC connection test
+                        _logger.LogInformation("Notifying PlcCommunicationService to reload data after fresh cloud sync");
+                        await plcCommService.ReloadDataAfterCloudSyncAsync();
+                    }
+
                     // Log the final result
                     var finalTagCount = plcCommService.TagList.Count;
                     _logger.LogInformation("PlcCommunicationService reload completed - {TagCount} IOs now available for UI", finalTagCount);
                 }
-                
+
                 _logger.LogInformation("Fresh sync from remote database completed successfully with pre-nuclear sync pattern");
                 return true;
             }

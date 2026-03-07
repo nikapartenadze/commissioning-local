@@ -1,9 +1,9 @@
 {
   "ip": "192.168.1.100",
   "path": "1,0",
-  "remoteUrl": "",
+  "remoteUrl": "https://commissioning.lci.ge",
   "ApiPassword": "",
-  "subsystemId": "1",
+  "subsystemId": "16",
   "orderMode": "0",
   "syncBatchSize": 50,
   "syncBatchDelayMs": 500
