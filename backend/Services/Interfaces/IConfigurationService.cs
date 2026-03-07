@@ -31,4 +31,7 @@ public interface IConfigurationService
     
     // Runtime configuration switching (no reload required)
     Task<bool> SwitchToConfigurationAsync(string ip, string path, string subsystemId, string remoteUrl, string apiPassword, bool orderMode, bool showStateColumn, bool showResultColumn, bool showTimestampColumn, bool showHistoryColumn);
+
+    // Lightweight cloud settings update (no PLC reinitialization)
+    Task UpdateCloudSettingsAsync(string remoteUrl, string apiPassword, string subsystemId);
 } 

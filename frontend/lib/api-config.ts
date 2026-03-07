@@ -168,25 +168,27 @@ export function getBackendUrl(): string {
 
 /**
  * Get the SignalR hub URL.
- * SignalR must connect directly to the backend, but we use the current hostname.
+ * SignalR is proxied through the Next.js server at /hub to avoid exposing backend port.
+ * This allows phone access with only port 3000 open.
  */
 export function getSignalRHubUrl(): string {
   if (typeof window !== 'undefined') {
-    // Use the same hostname as the page, but with backend port
-    return `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}/hub`
+    // Use same origin - SignalR is proxied through Next.js custom server
+    return `${window.location.origin}/hub`
   }
-  return `http://localhost:${BACKEND_PORT}/hub`
+  return `http://localhost:${FRONTEND_PORT}/hub`
 }
 
 /**
  * Get the WebSocket URL for SignalR.
+ * Uses same origin - proxied through Next.js custom server.
  */
 export function getSignalRWsUrl(): string {
   if (typeof window !== 'undefined') {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${wsProtocol}//${window.location.hostname}:${BACKEND_PORT}/hub`
+    return `${wsProtocol}//${window.location.host}/hub`
   }
-  return `ws://localhost:${BACKEND_PORT}/hub`
+  return `ws://localhost:${FRONTEND_PORT}/hub`
 }
 
 /**
@@ -232,6 +234,7 @@ export const API_ENDPOINTS = {
 
   // Cloud Sync
   cloudSync: '/api/backend/cloud/sync',
+  cloudPull: '/api/backend/cloud/pull',
 
   // Simulator
   simulatorStatus: '/api/backend/simulator/status',

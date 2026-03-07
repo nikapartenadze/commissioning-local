@@ -152,7 +152,8 @@ builder.Services.AddCors(options =>
         policy.SetIsOriginAllowed(origin =>
               {
                   var uri = new Uri(origin);
-                  return uri.Port == 5000 || uri.Port == 3002;
+                  // Allow frontend ports: 3000 (Docker), 3002 (dev), 5000 (backend)
+                  return uri.Port == 5000 || uri.Port == 3002 || uri.Port == 3000;
               })
               .AllowAnyHeader()
               .AllowAnyMethod()

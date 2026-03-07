@@ -1,5 +1,4 @@
-# Frontend Dockerfile - Next.js with standalone output
-# Using node-slim instead of alpine for Prisma SSL compatibility
+# Frontend Dockerfile - Next.js with custom server for WebSocket proxy
 FROM node:20-slim AS builder
 WORKDIR /app
 
@@ -16,7 +15,7 @@ RUN npm ci
 # Copy source
 COPY . .
 
-# Build
+# Build Next.js (standalone mode)
 RUN npm run build
 
 # Production image
@@ -33,7 +32,15 @@ ENV HOSTNAME=0.0.0.0
 # Copy standalone build
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+
+# Install http-proxy for WebSocket proxying (standalone doesn't include it)
+RUN npm install http-proxy@1.18.1
+
+# Copy custom server that wraps standalone + handles WebSocket proxy
+COPY --from=builder /app/server.js ./custom-server.js
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+# Use custom server for WebSocket proxy support
+CMD ["node", "custom-server.js"]

@@ -313,9 +313,9 @@ public class TagsContext : DbContext
                     );
                 ");
                 
-                // Create default admin user with PIN: 852963 (only if it doesn't exist)
+                // Create default admin user with PIN: 111111 (only if it doesn't exist)
                 // Hash the PIN using BCrypt (work factor 11)
-                var adminPinHash = BCrypt.Net.BCrypt.HashPassword("852963", workFactor: 11);
+                var adminPinHash = BCrypt.Net.BCrypt.HashPassword("111111", workFactor: 11);
                 this.Database.ExecuteSqlRaw($@"
                     INSERT OR IGNORE INTO Users (FullName, Pin, IsAdmin, IsActive, CreatedAt)
                     VALUES ('Admin', '{adminPinHash}', 1, 1, datetime('now'));
