@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using IO_Checkout_Tool.Models.Configuration;
 using IO_Checkout_Tool.Services.Interfaces;
@@ -42,7 +43,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
     // Batch sync configuration - use defaults, can be made configurable later if needed
     private readonly int _batchSize = 50;
     private readonly int _batchDelayMs = 500;
-    private readonly TimeSpan _connectionTimeout = TimeSpan.FromSeconds(30); // Increased for industrial/field environments
+    private readonly TimeSpan _connectionTimeout = TimeSpan.FromSeconds(10); // Quick timeout - don't block Pull IOs
     
     // Offline queue management
     private readonly Queue<IoUpdateDto> _offlineQueue = new();
@@ -73,7 +74,7 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         _cloudUrl = _configService.RemoteUrl;
         
         // Configure HttpClient for reasonable timeouts in industrial environments
-        _httpClient.Timeout = TimeSpan.FromSeconds(30); // Increased from 5 seconds
+        _httpClient.Timeout = TimeSpan.FromSeconds(90); // Allow time for large subsystem queries
     }
 
     // Existing methods remain the same...
@@ -651,12 +652,8 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
             if (response.IsSuccessStatusCode)
             {
                 _logger.LogInformation("Cloud HTTP health check passed for {CloudUrl}", cloudUrl);
-                // Try SignalR connection in background (non-blocking) for real-time sync
-                // But don't require it - HTTP is sufficient for Pull IOs
-                _ = Task.Run(async () => {
-                    try { await EnsureConnectionAsync(); }
-                    catch { /* SignalR is optional */ }
-                });
+                // Don't try SignalR here - it causes lock contention during Pull IOs
+                // SignalR will be established lazily when needed for real-time sync
                 return true;
             }
 
@@ -851,128 +848,64 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
 
     public async Task<bool> TriggerFreshSyncAsync(bool skipPlcInitialization = false)
     {
-        _logger.LogInformation("Triggering fresh sync from remote database with pre-nuclear sync pattern (skipPlcInit={Skip})...", skipPlcInitialization);
-        
+        _logger.LogInformation("Pulling fresh IOs from cloud (skipPlcInit={Skip})...", skipPlcInitialization);
+
         try
         {
-            if (string.IsNullOrEmpty(_cloudUrl))
-            {
-                _logger.LogWarning("Cloud URL not configured - cannot sync");
-                return false;
-            }
-
-            // Get fresh configuration values from configuration service
             var cloudUrl = _configService.RemoteUrl;
             if (string.IsNullOrEmpty(cloudUrl))
             {
-                _logger.LogWarning("Remote URL not configured - cannot sync");
+                _logger.LogWarning("Remote URL not configured - cannot pull IOs");
                 return false;
             }
-            
-            // Update cached cloud URL
             _cloudUrl = cloudUrl;
 
-            // Check if cloud is available
-            _logger.LogInformation("Checking cloud availability at {CloudUrl}...", _cloudUrl);
-            var isAvailable = await IsCloudAvailable();
-            if (!isAvailable)
-            {
-                _logger.LogWarning("Cloud service is not available at {RemoteUrl}", _cloudUrl);
-                return false;
-            }
-
-            _logger.LogInformation("Cloud service is available, starting pre-nuclear sync...");
-
-            // STEP 1: Pre-Nuclear Sync - Attempt to sync all pending local changes first
-            _logger.LogInformation("Pre-nuclear sync: Attempting to sync pending local changes...");
-            
-            // Check if we have pending changes and ensure we can actually sync them
-            using var preSyncScope = _serviceProvider.CreateScope();
-            var pendingSyncRepo = preSyncScope.ServiceProvider.GetRequiredService<IPendingSyncRepository>();
-            var pendingCount = await pendingSyncRepo.GetPendingSyncCountAsync();
-            
-            if (pendingCount > 0)
-            {
-                _logger.LogInformation("Found {Count} pending changes, attempting to preserve them before nuclear sync", pendingCount);
-                
-                // Try to sync pending changes - abort nuclear sync if this fails due to connectivity
-                try
-                {
-                    var pendingSyncCount = await SyncPendingUpdatesWithVersionControl();
-                    _logger.LogInformation("Pre-nuclear sync completed: {Count} changes synced, remaining rejected due to version conflicts", pendingSyncCount);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Pre-nuclear sync failed due to connectivity issues - aborting nuclear sync to preserve local work");
-                    return false;
-                }
-                
-                // Double-check cloud is still available after pre-sync attempts
-                if (!await IsCloudAvailable())
-                {
-                    _logger.LogWarning("Cloud became unavailable during pre-nuclear sync - aborting nuclear sync to preserve remaining local work");
-                    return false;
-                }
-            }
-            else
-            {
-                _logger.LogInformation("No pending changes to preserve, proceeding directly to nuclear sync");
-            }
-
-            // STEP 2: Nuclear Sync - Pull fresh authoritative data from cloud
-            _logger.LogInformation("Nuclear sync: Fetching fresh IOs from cloud...");
+            // Just fetch the data — no SignalR, no pending sync, no health check
             var subsystemId = int.Parse(_configService.SubsystemId);
-            _logger.LogInformation("Using subsystem ID {SubsystemId} from fresh configuration", subsystemId);
-            
+            _logger.LogInformation("Fetching IOs for subsystem {SubsystemId} from {CloudUrl}...", subsystemId, cloudUrl);
+
             var cloudIos = await GetSubsystemIosAsync(subsystemId);
-            
+
             if (!cloudIos.Any())
             {
                 _logger.LogWarning("No IOs retrieved from cloud for subsystem {SubsystemId}", subsystemId);
                 return false;
             }
 
-            _logger.LogInformation("Retrieved {Count} IOs from cloud, syncing to local database...", cloudIos.Count);
+            _logger.LogInformation("Retrieved {Count} IOs from cloud, saving to local database...", cloudIos.Count);
 
-            // Sync cloud IOs to local database
+            // Save to local database
             using var scope = _serviceProvider.CreateScope();
             var ioRepository = scope.ServiceProvider.GetRequiredService<IIoRepository>();
             var success = await SyncCloudIosToLocal(cloudIos, ioRepository, subsystemId);
-            
+
             if (success)
             {
-                // Notify PlcCommunicationService to reload data
+                // Refresh in-memory tag list
                 var plcCommService = _serviceProvider.GetService<IPlcCommunicationService>();
                 if (plcCommService != null)
                 {
                     if (skipPlcInitialization)
                     {
-                        // Just refresh tag list from database without PLC connection
-                        _logger.LogInformation("Refreshing TagList from database (skipping PLC initialization)");
                         await plcCommService.RefreshTagListFromDatabaseAsync();
                     }
                     else
                     {
-                        // Full reload with PLC connection test
-                        _logger.LogInformation("Notifying PlcCommunicationService to reload data after fresh cloud sync");
                         await plcCommService.ReloadDataAfterCloudSyncAsync();
                     }
 
-                    // Log the final result
-                    var finalTagCount = plcCommService.TagList.Count;
-                    _logger.LogInformation("PlcCommunicationService reload completed - {TagCount} IOs now available for UI", finalTagCount);
+                    _logger.LogInformation("Pull complete - {TagCount} IOs now available", plcCommService.TagList.Count);
                 }
 
-                _logger.LogInformation("Fresh sync from remote database completed successfully with pre-nuclear sync pattern");
                 return true;
             }
-            
+
             return false;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error during fresh cloud sync");
-            _ = _signalRService.BroadcastError("cloud", $"Cloud sync failed: {ex.Message}", "error");
+            _logger.LogError(ex, "Error pulling IOs from cloud");
+            _ = _signalRService.BroadcastError("cloud", $"Pull IOs failed: {ex.Message}", "error");
             return false;
         }
     }
@@ -982,35 +915,40 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         try
         {
             _logger.LogInformation("Starting fresh sync of {Count} cloud IOs to local database for subsystem {SubsystemId}", cloudIos.Count, subsystemId);
-            
-            // Clear all existing data since tool only works with one subsystem at a time
-            await ClearAllLocalData(ioRepository);
-            
-            var addedCount = 0;
-            
-            // Add all IOs from cloud for the new subsystem with ALL authoritative data preserved
-            foreach (var cloudIo in cloudIos)
-            {
-                if (string.IsNullOrEmpty(cloudIo.Name) || cloudIo.Id <= 0) continue;
 
-                var newIo = new Io
+            // Bulk delete all existing IOs using raw SQL (TestHistories are in a separate table, unaffected)
+            await ClearAllLocalData(ioRepository);
+
+            // Build list of IOs to insert in bulk
+            var iosToAdd = cloudIos
+                .Where(cloudIo => !string.IsNullOrEmpty(cloudIo.Name) && cloudIo.Id > 0)
+                .Select(cloudIo => new Io
                 {
-                    Id = cloudIo.Id,  // Preserve the cloud's ID
+                    Id = cloudIo.Id,
                     SubsystemId = subsystemId,
                     Name = cloudIo.Name,
                     Description = cloudIo.Description,
                     Order = cloudIo.Order,
-                    Result = cloudIo.Result, // Preserve authoritative cloud result
-                    Timestamp = cloudIo.Timestamp, // Preserve authoritative cloud timestamp
-                    Comments = cloudIo.Comments, // Preserve authoritative cloud comments
-                    Version = cloudIo.Version // Preserve authoritative cloud version
-                    // State should not be initialized here - only by PLC reads
-                };
-                await ioRepository.AddWithSpecificIdAsync(newIo);
-                addedCount++;
-                _logger.LogDebug("Added IO: {Name} (ID: {Id}) with cloud data - Result: {Result}, Version: {Version}", 
-                    cloudIo.Name, cloudIo.Id, cloudIo.Result ?? "null", cloudIo.Version);
+                    Result = cloudIo.Result,
+                    Timestamp = cloudIo.Timestamp,
+                    Comments = cloudIo.Comments,
+                    Version = cloudIo.Version,
+                    TagType = cloudIo.TagType
+                })
+                .ToList();
+
+            // Bulk insert using raw SQL for speed (EF AddRange with explicit IDs is slow on SQLite)
+            using var scope = _serviceProvider.CreateScope();
+            var contextFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Models.TagsContext>>();
+            using var db = await contextFactory.CreateDbContextAsync();
+
+            foreach (var io in iosToAdd)
+            {
+                db.Database.ExecuteSql(
+                    $"INSERT INTO Ios (Id, SubsystemId, Name, Description, [Order], Result, Timestamp, Comments, Version, TagType) VALUES ({io.Id}, {io.SubsystemId}, {io.Name}, {io.Description ?? ""}, {io.Order}, {io.Result}, {io.Timestamp}, {io.Comments}, {io.Version}, {io.TagType})");
             }
+
+            var addedCount = iosToAdd.Count;
 
             _logger.LogInformation("Completed fresh sync to local database. Added: {AddedCount} IOs for subsystem {SubsystemId}", 
                 addedCount, subsystemId);
@@ -1030,62 +968,20 @@ public class ResilientCloudSyncService : ICloudSyncService, IAsyncDisposable
         {
             _logger.LogInformation("Clearing local IO data (preserving TestHistories audit trail)...");
 
-            var allLocalIos = await ioRepository.GetAllAsync();
+            // Use raw SQL for instant bulk delete — TestHistories are in a separate table, unaffected
+            using var scope = _serviceProvider.CreateScope();
+            var contextFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<Models.TagsContext>>();
+            using var db = await contextFactory.CreateDbContextAsync();
 
-            if (!allLocalIos.Any())
-            {
-                _logger.LogInformation("No existing local data to clear");
-                return;
-            }
+            var pendingCount = await db.Database.ExecuteSqlRawAsync("DELETE FROM PendingSyncs");
+            var ioCount = await db.Database.ExecuteSqlRawAsync("DELETE FROM Ios");
 
-            _logger.LogInformation("Found {Count} existing IOs to clear (TestHistories will be preserved)", allLocalIos.Count);
-
-            foreach (var ioToDelete in allLocalIos)
-            {
-                if (ioToDelete.Id <= 0) continue;
-
-                try
-                {
-                    await DeleteIoPreservingHistory(ioToDelete.Id);
-                    _logger.LogDebug("Cleared IO: {Name} (ID: {Id})", ioToDelete.Name, ioToDelete.Id);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to clear IO {Id} ({Name})", ioToDelete.Id, ioToDelete.Name);
-                }
-            }
-
-            _logger.LogInformation("Completed clearing local IO data (TestHistories preserved)");
+            _logger.LogInformation("Cleared {IoCount} IOs and {PendingCount} pending syncs (TestHistories preserved)", ioCount, pendingCount);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error clearing existing local data");
         }
-    }
-
-    private async Task DeleteIoPreservingHistory(int ioId)
-    {
-        // Use a new scope for each deletion to avoid transaction conflicts
-        using var deleteScope = _serviceProvider.CreateScope();
-        var deleteIoRepo = deleteScope.ServiceProvider.GetRequiredService<IIoRepository>();
-        var deletePendingRepo = deleteScope.ServiceProvider.GetRequiredService<IPendingSyncRepository>();
-
-        // NOTE: TestHistories are intentionally NOT deleted here.
-        // The audit trail (who tested what, when, with what comments) must survive nuclear syncs.
-        // TestHistories reference IoId which will be re-created with the same ID from cloud.
-
-        // Remove any pending syncs for this IO (already attempted pre-sync above)
-        var pendingSyncs = await deletePendingRepo.GetAllPendingSyncsAsync();
-        var syncsToRemove = pendingSyncs.Where(ps => ps.IoId == ioId)
-            .Select(ps => ps.Id).ToList();
-
-        if (syncsToRemove.Any())
-        {
-            await deletePendingRepo.RemovePendingSyncsAsync(syncsToRemove);
-        }
-
-        // Delete the IO itself (will be re-created from cloud data)
-        await deleteIoRepo.DeleteAsync(ioId);
     }
 
     private void AddApiKeyHeader(HttpRequestMessage request)

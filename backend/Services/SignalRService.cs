@@ -55,8 +55,8 @@ public class SignalRService : ISignalRService
                 Id = io.Id,
                 Result = io.Result ?? "Not Tested",
                 State = io.State ?? "FALSE", // Default to FALSE instead of UNKNOWN
-                Timestamp = io.Timestamp ?? DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
-                Comments = io.Comments ?? ""
+                Timestamp = io.Timestamp, // Preserve null so frontend can detect trigger events
+                Comments = io.Comments // Preserve null so frontend can detect trigger events
             };
 
             await _hubContext.Clients.All.SendAsync("UpdateIO", update.Id, update.Result, update.State, update.Timestamp, update.Comments);

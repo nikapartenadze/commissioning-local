@@ -47,7 +47,7 @@ interface EnhancedIoDataGridProps {
   onRowClick?: (io: IoItem) => void
   onShowFireOutputDialog?: (io: IoItem) => void
   onCommentChange?: (io: IoItem, comment: string) => void
-  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | null
+  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null
 }
 
 // Define column widths - LARGER for factory floor visibility
@@ -179,6 +179,14 @@ export function EnhancedIoDataGrid({
       if (activeQuickFilter === 'failed' && io.result !== 'Failed') return false
       if (activeQuickFilter === 'not-tested' && io.result) return false
       if (activeQuickFilter === 'passed' && io.result !== 'Passed') return false
+      if (activeQuickFilter === 'outputs') {
+        const name = io.name || ''
+        if (!(name.includes(':O.') || name.includes(':SO.'))) return false
+      }
+      if (activeQuickFilter === 'inputs') {
+        const name = io.name || ''
+        if (name.includes(':O.') || name.includes(':SO.')) return false
+      }
 
       if (filterTags.length === 0 && !searchTerm.trim()) return true
 

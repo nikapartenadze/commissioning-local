@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.EntityFrameworkCore;
 using IO_Checkout_Tool.Services.Interfaces;
 using IO_Checkout_Tool.Constants;
 using System.Text.Json;
@@ -546,19 +547,19 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
                 await pendingSyncRepo.ClearAllAsync();
             }
 
+            // Bulk delete all IOs using raw SQL (TestHistories in separate table, unaffected)
             _logger.LogInformation("Clearing local IOs for subsystem switch (TestHistories preserved)...");
-            var existingIos = await ioRepository.GetAllAsync();
-            if (existingIos.Any())
-            {
-                await ioRepository.DeleteRangeAsync(existingIos);
-            }
+            var contextFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<IO_Checkout_Tool.Models.TagsContext>>();
+            using var db = await contextFactory.CreateDbContextAsync();
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM PendingSyncs");
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM Ios");
 
-            // 4. Save new IOs to local database
+            // 4. Bulk insert new IOs using raw SQL for speed
             _logger.LogInformation("Saving {Count} IOs to local database...", cloudIos.Count);
             foreach (var io in cloudIos)
             {
-                io.State = null;
-                await ioRepository.AddAsync(io);
+                db.Database.ExecuteSql(
+                    $"INSERT INTO Ios (Id, SubsystemId, Name, Description, [Order], Result, Timestamp, Comments, Version, TagType) VALUES ({io.Id}, {io.SubsystemId}, {io.Name}, {io.Description ?? ""}, {io.Order}, {io.Result}, {io.Timestamp}, {io.Comments}, {io.Version}, {io.TagType})");
             }
 
             _logger.LogInformation("Successfully synced {Count} IOs from cloud to local database", cloudIos.Count);
