@@ -13,8 +13,9 @@ public interface IPlcCommunicationService
     event Action? PlcConnectionChanged;
     
     Task<bool> InitializeAsync();
-    void InitializeOutputTag(Io tag);
-    void ToggleBit();
+    bool InitializeOutputTag(Io tag);
+    (bool success, string? error) ToggleBit();
+    (bool success, string? error) SetBit(int value);
     Task ReloadDataAsync();
     Task ReloadDataAfterCloudSyncAsync();
     void UpdatePlcConnectionStatus(bool isConnected);

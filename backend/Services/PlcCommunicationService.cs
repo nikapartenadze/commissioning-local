@@ -110,23 +110,28 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
         SetPlcConnectionStatus(isConnected);
     }
     
-    public void InitializeOutputTag(Io tag)
+    public bool InitializeOutputTag(Io tag)
     {
-        _tagWriter.InitializeOutputTag(tag);
+        return _tagWriter.InitializeOutputTag(tag);
     }
-    
-    public void ToggleBit()
+
+    public (bool success, string? error) ToggleBit()
     {
-        _tagWriter.ToggleBit();
+        return _tagWriter.ToggleBit();
     }
-    
+
+    public (bool success, string? error) SetBit(int value)
+    {
+        return _tagWriter.SetBit(value);
+    }
+
     public async Task ReloadDataAsync()
     {
         // Reload data from database
         await LoadDatabaseDataAsync();
         
         // If we have tags now, try to initialize PLC connection
-        if (_tags.Any() && _disableTesting)
+        if (_tags.Any())
         {
             // Try to establish PLC connection with all tags
             var initSuccess = await InitializeTagReading();
