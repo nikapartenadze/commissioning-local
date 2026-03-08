@@ -8,8 +8,9 @@ public class TagConnectionStatus
     public List<string> NotFoundTags { get; set; } = new();
     public List<string> IllegalTags { get; set; } = new();
     public List<string> UnknownErrorTags { get; set; } = new();
+    public List<string> DintGroupFailures { get; set; } = new();
     public DateTime? LastUpdated { get; set; }
-    public bool HasErrors => FailedTags > 0;
+    public bool HasErrors => FailedTags > 0 || DintGroupFailures.Count > 0;
     public double SuccessRate => TotalTags > 0 ? (double)SuccessfulTags / TotalTags * 100 : 0;
 }
 

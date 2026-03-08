@@ -7,7 +7,7 @@ using IO_Checkout_Tool.Services.Interfaces;
 
 namespace IO_Checkout_Tool.Controllers;
 
-[Authorize]
+[AllowAnonymous]
 [Route("api/[controller]")]
 [ApiController]
 public class ConfigurationController : ControllerBase
@@ -405,6 +405,7 @@ public class ConfigurationController : ControllerBase
     }
 
     // POST: api/configuration/update-config-json
+    [AllowAnonymous]
     [HttpPost("update-config-json")]
     public async Task<IActionResult> UpdateConfigJson([FromBody] ConfigJsonUpdateRequest request)
     {
@@ -468,6 +469,76 @@ public class ConfigurationController : ControllerBase
     }
 
     // GET: api/configuration/logs?afterId=0
+    /// <summary>
+    /// Lightweight PLC connect: saves IP/Path config and initializes PLC tags from LOCAL database only.
+    /// Does NOT re-fetch from cloud. Use this when IOs are already loaded.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("connect-plc")]
+    public async Task<IActionResult> ConnectPlc([FromBody] ConfigJsonUpdateRequest request)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(request.Ip) || string.IsNullOrEmpty(request.Path))
+            {
+                return BadRequest("IP and Path are required");
+            }
+
+            // Update only PLC-related config (IP, Path) without triggering full reinitialization
+            var success = await _configurationService.UpdateConfigurationAsync(
+                request.Ip,
+                request.Path,
+                request.SubsystemId ?? _configurationService.SubsystemId,
+                request.RemoteUrl ?? _configurationService.RemoteUrl,
+                request.ApiPassword ?? "",
+                request.OrderMode ?? false,
+                request.ShowStateColumn ?? true,
+                request.ShowResultColumn ?? true,
+                request.ShowTimestampColumn ?? true,
+                request.ShowHistoryColumn ?? true
+            );
+
+            if (!success)
+            {
+                return StatusCode(500, "Failed to update configuration");
+            }
+
+            // Reload config from file
+            _configurationService.LoadConfiguration();
+
+            // Connect to PLC using existing local IOs — no cloud fetch
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Extend the internal-write grace period so ConfigFileWatcher doesn't
+                    // trigger a competing reinitialization that cancels our tag reading
+                    ConfigFileWatcherService.NotifyInternalWrite();
+                    _logger.LogInformation("Connecting to PLC at {Ip} via {Path} (local data only)...", request.Ip, request.Path);
+                    await _plcCommunicationService.ReloadDataAsync();
+                    _logger.LogInformation("PLC connection initialized from local data");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to connect to PLC");
+                }
+            });
+
+            return Ok(new {
+                message = "PLC connection started (using local data).",
+                ip = request.Ip,
+                path = request.Path,
+                reinitializing = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error connecting to PLC");
+            return StatusCode(500, "Error connecting to PLC");
+        }
+    }
+
+    [AllowAnonymous]
     [HttpGet("logs")]
     public ActionResult<object> GetRecentLogs([FromQuery] long afterId = 0)
     {

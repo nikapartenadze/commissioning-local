@@ -11,7 +11,7 @@ using IO_Checkout_Tool.Models.Configuration;
 
 namespace IO_Checkout_Tool.Controllers;
 
-[Authorize]
+[AllowAnonymous]
 [ApiController]
 [Route("api")]
 public class ApiController : ControllerBase
@@ -169,6 +169,7 @@ public class ApiController : ControllerBase
                 notFoundTags = tagStatus.NotFoundTags,
                 illegalTags = tagStatus.IllegalTags,
                 unknownErrorTags = tagStatus.UnknownErrorTags,
+                dintGroupFailures = tagStatus.DintGroupFailures,
                 lastUpdated = tagStatus.LastUpdated,
                 plcIp = _configuration.Ip,
                 plcPath = _configuration.Path
@@ -708,6 +709,7 @@ public class ApiController : ControllerBase
     /// <summary>
     /// Fire output (start/stop) - matches C# app behavior
     /// </summary>
+    [AllowAnonymous]
     [HttpPost("ios/{id}/fire-output")]
     public async Task<ActionResult<object>> FireOutput(int id, [FromBody] FireOutputRequest request)
     {
@@ -733,31 +735,45 @@ public class ApiController : ControllerBase
                 return BadRequest("Output tag not found in PLC communication service");
             }
 
-            // Initialize the output tag for writing (same as C# app)
-            _plcCommunication.InitializeOutputTag(actualTag);
+            // Initialize the output tag for writing
+            var initSuccess = _plcCommunication.InitializeOutputTag(actualTag);
+            if (!initSuccess)
+            {
+                _logger.LogWarning("Output tag init failed for {IoName}, attempting write anyway", io.Name);
+            }
 
             if (request.Action == "start")
             {
-                // Fire the output ON (same as C# app's FireDown)
-                _plcCommunication.ToggleBit();
-                _logger.LogInformation("Output {IoName} fired ON", io.Name);
+                // Set output ON (not toggle) — deterministic behavior
+                var (success, error) = _plcCommunication.SetBit(1);
+                if (success)
+                {
+                    _logger.LogInformation("Output {IoName} set ON", io.Name);
+                    return Ok(new { message = $"Output start command executed", success = true });
+                }
+                else
+                {
+                    _logger.LogWarning("Output {IoName} set ON failed: {Error}", io.Name, error);
+                    return Ok(new { message = $"Output fire may have failed: {error}", success = false, error });
+                }
             }
             else if (request.Action == "stop")
             {
-                // Fire the output OFF (same as C# app's FireUp)
-                _plcCommunication.ToggleBit();
-                _logger.LogInformation("Output {IoName} fired OFF", io.Name);
-                
-                // After stopping the output, trigger the ValueChanged flow (same as C# app)
-                // This will show the Pass/Fail dialog for output testing
-                await Task.Delay(250); // Same delay as C# app (TestConstants.UI_DELAY_MS)
-                
-                // Trigger the value changed event for the output
-                // This simulates what happens in C# app's FireUp method
-                await TriggerOutputValueChangedAsync(actualTag);
+                // Set output OFF (not toggle) — deterministic behavior
+                var (success, error) = _plcCommunication.SetBit(0);
+                if (success)
+                {
+                    _logger.LogInformation("Output {IoName} set OFF", io.Name);
+                }
+                else
+                {
+                    _logger.LogWarning("Output {IoName} set OFF failed: {Error}", io.Name, error);
+                }
+
+                return Ok(new { message = $"Output stop command executed", success, error });
             }
 
-            return Ok(new { message = $"Output {request.Action} command executed" });
+            return Ok(new { message = $"Output {request.Action} command executed", success = true });
         }
         catch (Exception ex)
         {
@@ -903,6 +919,7 @@ public class ApiController : ControllerBase
     /// Pull fresh IOs from cloud - triggers a fresh sync from remote database
     /// Optionally accepts config params to update cloud settings without full PLC reinitialization
     /// </summary>
+    [AllowAnonymous]
     [HttpPost("cloud/pull")]
     public async Task<ActionResult<object>> PullFromCloud([FromBody] CloudPullRequest? request = null)
     {

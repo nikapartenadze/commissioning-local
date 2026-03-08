@@ -518,9 +518,8 @@ public class ConfigurationService : IConfigurationService, IAsyncDisposable
         {
             var subsystemId = int.Parse(SubsystemId);
 
-            // 1. Sync any unsaved test results to cloud BEFORE switching
-            _logger.LogInformation("Syncing pending changes before subsystem switch...");
-            await SyncPendingChangesBeforeSwitch(cloudSyncService);
+            // Cloud sync is manual-only — skip automatic sync before subsystem switch
+            _logger.LogInformation("Skipping auto-sync before subsystem switch (sync is manual-only)");
 
             // 2. Fetch IOs from cloud for the NEW subsystem
             _logger.LogInformation("Fetching IOs from cloud for subsystem {SubsystemId}...", subsystemId);

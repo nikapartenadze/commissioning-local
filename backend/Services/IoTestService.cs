@@ -169,41 +169,12 @@ public class IoTestService : IIoTestService
         }
     }
 
-    private async Task SyncToCloudAsync(Io io, string? state = null)
+    private Task SyncToCloudAsync(Io io, string? state = null)
     {
-        try
-        {
-            if (io.Id <= 0) return;
-
-            // Get TestedBy from the most recent TestHistory record (not Environment.UserName)
-            var history = await _historyService.GetHistoryForIoAsync(io.Id);
-            var testedBy = history.FirstOrDefault()?.TestedBy ?? "Unknown";
-
-            var update = new IoUpdateDto
-            {
-                Id = io.Id,
-                Result = io.Result,
-                Timestamp = io.Timestamp,
-                Comments = io.Comments,
-                TestedBy = testedBy, // Use actual user from TestHistory
-                State = state,
-                Version = io.Version
-            };
-
-            // Don't await - let it run in background
-            _ = _cloudSyncService.SyncIoUpdateAsync(update).ContinueWith(task =>
-            {
-                if (!task.Result)
-                {
-                    _logger.LogWarning("Failed to sync IO {IoId} to cloud (will retry from queue)", io.Id);
-                }
-            }, TaskContinuationOptions.OnlyOnRanToCompletion);
-        }
-        catch (Exception ex)
-        {
-            // Log but don't fail the local operation
-            _logger.LogError(ex, "Error syncing IO {IoId} to cloud", io.Id);
-        }
+        // Cloud sync is manual-only — user must press the Sync button.
+        // Results are stored locally and uploaded on demand via POST /api/cloud/sync.
+        _logger.LogDebug("Skipping auto-sync for IO {IoId} - sync is manual only", io.Id);
+        return Task.CompletedTask;
     }
 
     private async Task SyncClearedToCloudAsync(Io io, string? state, string? historyResult, string? clearedComment)

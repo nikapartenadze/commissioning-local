@@ -138,8 +138,9 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<DatabaseInitializationHostedService>();
         services.AddHostedService<CloudSyncHostedService>();           // Run cloud sync FIRST
         services.AddHostedService<PlcInitializationHostedService>();   // Run PLC init AFTER cloud sync
-        services.AddHostedService<OfflineSyncHostedService>();
-        services.AddHostedService<CloudReconnectionHostedService>();
+        // Disabled: sync is manual-only (user presses Sync button)
+        // services.AddHostedService<OfflineSyncHostedService>();
+        // services.AddHostedService<CloudReconnectionHostedService>();
 
         // Config file watcher for auto-reinitialization on external config.json changes
         services.AddHostedService<ConfigFileWatcherService>();
