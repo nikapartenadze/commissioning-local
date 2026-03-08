@@ -16,6 +16,7 @@ export interface TagStatus {
   notFoundTags: string[]
   illegalTags: string[]
   unknownErrorTags: string[]
+  dintGroupFailures: string[]
   lastUpdated: string | null
   plcIp: string
   plcPath: string
@@ -208,6 +209,28 @@ export function TagStatusDialog({ open, onOpenChange, tagStatus }: TagStatusDial
                       ))}
                     </ul>
                   </div>
+                </div>
+              )}
+
+              {/* DINT Group Failures */}
+              {tagStatus.dintGroupFailures && tagStatus.dintGroupFailures.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs border-orange-500 text-orange-600">DINT GROUP</Badge>
+                    <span className="text-xs text-muted-foreground">
+                      Group reads failing ({tagStatus.dintGroupFailures.length})
+                    </span>
+                  </div>
+                  <div className="bg-orange-500/10 border border-orange-500/20 rounded p-2 max-h-32 overflow-y-auto">
+                    <ul className="text-xs font-mono space-y-0.5">
+                      {tagStatus.dintGroupFailures.map((group, i) => (
+                        <li key={i} className="text-orange-600 dark:text-orange-400">{group}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    These tags are read individually instead. This does not affect functionality.
+                  </p>
                 </div>
               )}
             </div>

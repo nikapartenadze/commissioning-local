@@ -27,7 +27,7 @@ public class ConfigFileWatcherService : BackgroundService
 
     // Track if the change came from our own UpdateConfigurationAsync (skip reinitializing)
     private static DateTime _lastInternalWrite = DateTime.MinValue;
-    private const int InternalWriteGracePeriodMs = 2000;
+    private const int InternalWriteGracePeriodMs = 5000;
 
     public ConfigFileWatcherService(
         ILogger<ConfigFileWatcherService> logger,

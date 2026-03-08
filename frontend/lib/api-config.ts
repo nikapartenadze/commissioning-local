@@ -173,10 +173,10 @@ export function getBackendUrl(): string {
  */
 export function getSignalRHubUrl(): string {
   if (typeof window !== 'undefined') {
-    // In dev mode, connect directly to backend (Next.js dev server can't proxy WebSockets)
-    // In production, custom server.js proxies /hub to backend
+    // Dev mode: connect directly to backend (Next.js dev server can't proxy WebSockets/long-polling)
+    // Production: server.js proxies /hub WebSocket to backend (same origin, no CORS)
     if (window.location.port === '3020' || window.location.port === '3002') {
-      return `http://localhost:${BACKEND_PORT}/hub`
+      return `http://${window.location.hostname}:${BACKEND_PORT}/hub`
     }
     return `${window.location.origin}/hub`
   }
@@ -234,6 +234,7 @@ export const API_ENDPOINTS = {
   // Configuration
   configuration: '/api/backend/configuration',
   configurationUpdate: '/api/backend/configuration/update-config-json',
+  configurationConnectPlc: '/api/backend/configuration/connect-plc',
   configurationRuntime: '/api/backend/configuration/runtime',
   configurationLogs: '/api/backend/configuration/logs',
 

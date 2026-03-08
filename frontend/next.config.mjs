@@ -28,21 +28,13 @@ const nextConfig = {
     ignoreDuringBuilds: true,
   },
 
-  // Proxy API and SignalR to C# backend
+  // Proxy API calls to C# backend (SignalR proxied via /app/api/hub/ routes)
   async rewrites() {
     const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000'
     return [
       {
         source: '/api/backend/:path*',
         destination: `${backendUrl}/api/:path*`,
-      },
-      {
-        source: '/hub',
-        destination: `${backendUrl}/hub`,
-      },
-      {
-        source: '/hub/:path*',
-        destination: `${backendUrl}/hub/:path*`,
       },
     ]
   },

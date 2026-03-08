@@ -49,6 +49,27 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
     private long _totalReadTimeMs = 0;
     private readonly object _perfLock = new object();
 
+    // Write gate: when a write is in progress, readers pause to free up the PLC session
+    // Static because TagWriterService needs to signal it from outside this instance
+    private static readonly SemaphoreSlim _writeGate = new(1, 1);
+
+    /// <summary>
+    /// Acquire exclusive access to the PLC session for writing.
+    /// Readers will pause at the start of their next cycle until released.
+    /// </summary>
+    public static async Task<bool> AcquireWriteGateAsync(int timeoutMs = 2000)
+    {
+        return await _writeGate.WaitAsync(timeoutMs);
+    }
+
+    /// <summary>
+    /// Release the write gate so readers can resume.
+    /// </summary>
+    public static void ReleaseWriteGate()
+    {
+        try { _writeGate.Release(); } catch (SemaphoreFullException) { }
+    }
+
     public event Action<Io>? TagValueChanged;
     public event Action? StateChanged;
     public event Action<bool>? ConnectionStatusChanged;
@@ -83,10 +104,18 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
             return false;
         }
         
-        // Clear any existing tags first (important for reconnection scenarios)
+        // Cancel any existing reading operations FIRST, then wait before disposing tags
+        if (_readingCancellationToken != null)
+        {
+            _readingCancellationToken.Cancel();
+            // Give readers time to exit their current cycle and see the cancellation
+            await Task.Delay(300);
+        }
+
+        // Now safe to dispose tags — readers have stopped
         if (_tags.Any())
         {
-            _logger.LogWarning("Clearing {Count} existing tags before reinitializing", _tags.Count);
+            _logger.LogInformation("Clearing {Count} existing tags after readers stopped", _tags.Count);
             foreach (var existingTag in _tags)
             {
                 try
@@ -100,9 +129,13 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
             }
             _tags.Clear();
         }
-        
-        // Cancel any existing reading operations
-        _readingCancellationToken?.Cancel();
+
+        // Also dispose DINT groups
+        foreach (var group in _dintGroups)
+        {
+            try { group.Dispose(); } catch { }
+        }
+        _dintGroups.Clear();
         
         // Clear any existing tag error lists for clean initialization
         _notFoundTags.Clear();
@@ -385,8 +418,15 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                  }
                 
                 stopwatch.Stop();
-                _logger.LogInformation("Reconnection initialization completed in {ElapsedMs}ms: {SuccessCount}/{TotalCount} tags ready", 
+                var failedCount = tags.Count - successfulTags.Count;
+                _logger.LogInformation("Reconnection initialization completed in {ElapsedMs}ms: {SuccessCount}/{TotalCount} tags ready",
                     stopwatch.ElapsedMilliseconds, successfulTags.Count, tags.Count);
+
+                // Update TagStatus so the frontend knows how many tags are reading
+                _errorDialogService.TagStatus.TotalTags = tags.Count;
+                _errorDialogService.TagStatus.SuccessfulTags = successfulTags.Count;
+                _errorDialogService.TagStatus.FailedTags = failedCount;
+                _errorDialogService.TagStatus.LastUpdated = DateTime.UtcNow;
             }
             
             // Set initial State based on actual tag values after validation
@@ -406,14 +446,16 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
             // Notify general state change
             StateChanged?.Invoke();
 
-            // ===== DINT GROUP OPTIMIZATION =====
-            // Group validated tags by parent DINT to reduce CIP requests from ~2000 to ~80
+            // ===== DINT GROUP OPTIMIZATION (DISABLED) =====
+            // DINT grouping is disabled because the DINT parent tags (e.g. Local:7:I.Data)
+            // fail during continuous reading even though individual boolean tags work fine.
+            // The reduction is negligible (15 tags → 1 read) vs 650 total reads.
             var allTagNames = successfulTags.Select(t => t.Name).ToList();
             var groupingAnalysis = TagGroupingService.Analyze(allTagNames, _logger);
 
             List<NativeTag> ungroupedTags;
 
-            if (groupingAnalysis.Groups.Count > 0 && _tagFactory != null)
+            if (false && groupingAnalysis.Groups.Count > 0 && _tagFactory != null)
             {
                 _logger.LogInformation(
                     "DINT optimization: {Original} individual reads → {Optimized} total reads ({DintGroups} DINT groups + {Individual} individual) = {Ratio:F1}x reduction",
@@ -715,6 +757,10 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         {
             try
             {
+                // Wait for write gate — if a write is in progress, pause this cycle
+                await _writeGate.WaitAsync(cancellationToken);
+                _writeGate.Release();
+
                 stopwatch.Restart();
 
                 // Read all DINT groups concurrently
@@ -780,36 +826,33 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
                     }
                 }
 
-                // Connection error handling (same logic as individual batch reading)
+                // DINT group errors should NOT trigger full PLC disconnect.
+                // Individual batch readers are the source of truth for PLC connectivity.
+                // DINT groups may fail due to tag path issues (e.g., BAD_PARAM) while
+                // individual tag reading continues to work fine.
                 var hasConnectionIssue = timeoutCount > 0 || failedCount > 0;
+
+                if (hasConnectionIssue)
+                {
+                    // Track failing DINT groups in TagStatus (report once, then every 500 cycles)
+                    if (cycleCount == 1 || cycleCount % 500 == 0)
+                    {
+                        _logger.LogWarning("DINT group reader: {Failed}/{Total} groups failed ({Timeouts} timeouts) in cycle {Cycle} (not triggering disconnect - individual batches OK)",
+                            failedCount, groups.Count, timeoutCount, cycleCount);
+
+                        // Update TagStatus with DINT group failure info
+                        var failedGroupNames = new List<string>();
+                        foreach (var group in groups)
+                        {
+                            failedGroupNames.Add($"{group.ParentTagPath} ({group.MemberCount} tags)");
+                        }
+                        _errorDialogService.TagStatus.DintGroupFailures = failedGroupNames;
+                    }
+                }
 
                 lock (_errorStateLock)
                 {
-                    if (hasConnectionIssue)
-                    {
-                        _logger.LogWarning("DINT group reader: {Failed}/{Total} groups failed ({Timeouts} timeouts) in cycle {Cycle}",
-                            failedCount, groups.Count, timeoutCount, cycleCount);
-
-                        _consecutiveErrorCycles++;
-
-                        if (timeoutCount > 0 || _consecutiveErrorCycles >= 2)
-                        {
-                            if (!_tagReadError && !_reconnectionInProgress && !_isResetting)
-                            {
-                                _tagReadError = true;
-                                _logger.LogError("PLC communication lost (DINT groups): {Failed} failures, {Timeouts} timeouts",
-                                    failedCount, timeoutCount);
-                                ReportConnectionStatus(false);
-                                ShowRuntimeCommunicationError();
-
-                                if (!_hasConfigurationErrors)
-                                {
-                                    _ = Task.Run(async () => await CleanDisconnectionAsync());
-                                }
-                            }
-                        }
-                    }
-                    else
+                    if (!hasConnectionIssue)
                     {
                         if (_tagReadError && _consecutiveErrorCycles == 0)
                         {
@@ -882,8 +925,12 @@ public class NativeTagReaderService : ITagReaderService, IDisposable
         {
             try
             {
+                // Wait for write gate — if a write is in progress, pause this cycle
+                await _writeGate.WaitAsync(cancellationToken);
+                _writeGate.Release();
+
                 stopwatch.Restart();
-                
+
                 // Read all tags in the batch concurrently using optimized async
                 var readTasks = batch.Select(async tag =>
                 {
