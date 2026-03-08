@@ -16,6 +16,7 @@ interface TagStatus {
   notFoundTags: string[]
   illegalTags: string[]
   unknownErrorTags: string[]
+  dintGroupFailures: string[]
   lastUpdated: string | null
   plcIp: string
   plcPath: string
@@ -79,7 +80,7 @@ export function TagStatusPanel({ className }: { className?: string }) {
           )}
           <span className="font-semibold">
             {status.hasErrors
-              ? `Tag Errors: ${status.failedTags} of ${status.totalTags} tags failed`
+              ? `Tag Errors: ${status.failedTags} of ${status.totalTags} tags failed${status.dintGroupFailures?.length ? ` + ${status.dintGroupFailures.length} DINT group(s)` : ''}`
               : `All ${status.totalTags} tags connected`}
           </span>
           <span className="text-sm text-muted-foreground">
@@ -166,6 +167,29 @@ export function TagStatusPanel({ className }: { className?: string }) {
                   </code>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* DINT Group Failures */}
+          {status.dintGroupFailures?.length > 0 && (
+            <div>
+              <h4 className="font-semibold text-orange-600 flex items-center gap-2 mb-2">
+                <AlertTriangle className="w-4 h-4" />
+                DINT Group Failures ({status.dintGroupFailures.length})
+              </h4>
+              <div className="flex flex-wrap gap-1">
+                {status.dintGroupFailures.map((group, i) => (
+                  <code
+                    key={i}
+                    className="px-2 py-0.5 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded text-xs font-mono"
+                  >
+                    {group}
+                  </code>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                These tags are read individually instead. Functionality is not affected.
+              </p>
             </div>
           )}
 

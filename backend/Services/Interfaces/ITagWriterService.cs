@@ -4,7 +4,8 @@ namespace IO_Checkout_Tool.Services.Interfaces;
 
 public interface ITagWriterService
 {
-    void InitializeOutputTag(Io tag);
-    void ToggleBit();
+    bool InitializeOutputTag(Io tag);
+    (bool success, string? error) ToggleBit();
+    (bool success, string? error) SetBit(int value);
     void Dispose();
 } 

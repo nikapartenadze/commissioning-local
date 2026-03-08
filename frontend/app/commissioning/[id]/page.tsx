@@ -386,13 +386,14 @@ export default function CommissioningPage() {
       // Add to error log (newest first, max 50)
       setErrorLog(prev => [event, ...prev].slice(0, 50))
 
+      // Skip toast for SignalR retry messages — they spam during PLC init
+      if (event.source === 'signalr' && event.message.includes('connecting')) {
+        return
+      }
+
       // Show toast for errors and warnings
       if (event.severity === 'error') {
         toast({ title: event.message, variant: "destructive" })
-      } else if (event.severity === 'warning') {
-        toast({ title: event.message })
-      } else if (event.severity === 'info') {
-        toast({ title: event.message })
       }
     }
 
@@ -419,95 +420,98 @@ export default function CommissioningPage() {
     }
   }, [signalR.onReconnected, signalR.offReconnected])
 
-  // Handle SignalR real-time updates
+  // Track SignalR connected state for UI purposes
   useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      console.log('🔗 SignalR connection status:', signalR.isConnected)
-    }
     if (signalR.isConnected) {
       setSignalRWasConnected(true)
       if (process.env.NODE_ENV === 'development') {
         console.log('🔗 SignalR connected - listening for real-time IO updates')
       }
-      
-      const handleIOUpdate = (update: IOUpdate) => {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('📡 SignalR Update received:', update)
-        }
-        
-        setIos(prevIos => 
-          prevIos.map(io => {
-            if (io.id === update.Id) {
-              // Check if this is a state-only update (from continuous PLC reader via UpdateState)
-              // or a full IO update (from result changes via UpdateIO)
-              // State-only: Result='Not Tested', no timestamp, no comments — applies to ALL tags (inputs AND outputs)
-              const isStateOnlyUpdate = update.Result === 'Not Tested' && !update.Timestamp && !update.Comments
-              
-              let updatedIo
-              if (isStateOnlyUpdate) {
-                // State-only update: only update the state, preserve result/timestamp/comments
-                updatedIo = {
-                  ...io,
-                  state: update.State
-                }
-                if (process.env.NODE_ENV === 'development') {
-                  console.log('📡 State-only update for:', io.name, 'New state:', update.State, 'Preserved result:', io.result)
-                }
-              } else {
-                // Full IO update: update everything (result changes from Pass/Fail/Clear)
-                updatedIo = {
-                  ...io,
-                  state: update.State,
-                  result: update.Result === "Not Tested" ? null : update.Result,
-                  timestamp: update.Timestamp || io.timestamp,
-                  comments: update.Comments !== undefined ? update.Comments : io.comments // Handle null comments explicitly
-                }
-                if (process.env.NODE_ENV === 'development') {
-                  console.log('📡 Full IO update for:', io.name, 'New state:', update.State, 'New result:', updatedIo.result)
-                }
-              }
-              
-              // Use refs for current values to avoid dependency issues
-              const currentPlcStatus = plcStatusRef.current
-              const currentOutputFiring = outputFiringInProgressRef.current
-              const currentPreviousStates = previousStatesRef.current
-              
-              // Check if we should show the value change dialog
-              const shouldShowDialog = currentPlcStatus.isTesting && !io.result && (
-                // For inputs: show when state changes to TRUE
-                (!isOutput(io.name) && currentPreviousStates[io.id] !== update.State && update.State === 'TRUE') ||
-                // For outputs: show only when user explicitly fired from UI (firing flag is set)
-                (isOutput(io.name) && currentOutputFiring[io.id])
-              )
-              
-              if (shouldShowDialog) {
-                if (process.env.NODE_ENV === 'development') {
-                  console.log('💡 Triggering ValueChangeDialog for:', io.name, 'Type:', isOutput(io.name) ? 'OUTPUT' : 'INPUT', 'Current state:', update.State, 'Current result:', io.result)
-                }
-                // Add to queue instead of showing immediately
-                addToDialogQueue(updatedIo)
-              }
-              
-              // Update previous state
-              setPreviousStates(prev => ({
-                ...prev,
-                [io.id]: update.State
-              }))
-              
-              return updatedIo
-            }
-            return io
-          })
-        )
-      }
-
-      signalR.onIOUpdate(handleIOUpdate)
-
-      return () => {
-        signalR.offIOUpdate(handleIOUpdate)
-      }
     }
-  }, [signalR.isConnected, addToDialogQueue]) // Removed frequently changing dependencies, using refs instead
+  }, [signalR.isConnected])
+
+  // Register SignalR handlers ALWAYS — not gated behind isConnected
+  // This ensures handlers are ready BEFORE the connection delivers messages
+  useEffect(() => {
+    const handleIOUpdate = (update: IOUpdate) => {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 SignalR Update received:', update)
+      }
+
+      setIos(prevIos =>
+        prevIos.map(io => {
+          if (io.id === update.Id) {
+            // Check if this is a state-only update (from continuous PLC reader via UpdateState)
+            // or a full IO update (from result changes via UpdateIO)
+            // State-only: Result='Not Tested', no timestamp, no comments — applies to ALL tags (inputs AND outputs)
+            const isStateOnlyUpdate = update.Result === 'Not Tested' && !update.Timestamp && !update.Comments
+
+            let updatedIo
+            if (isStateOnlyUpdate) {
+              // State-only update: only update the state, preserve result/timestamp/comments
+              updatedIo = {
+                ...io,
+                state: update.State
+              }
+              if (process.env.NODE_ENV === 'development') {
+                console.log('📡 State-only update for:', io.name, 'New state:', update.State, 'Preserved result:', io.result)
+              }
+            } else {
+              // Full IO update: update everything (result changes from Pass/Fail/Clear)
+              updatedIo = {
+                ...io,
+                state: update.State,
+                result: update.Result === "Not Tested" ? null : update.Result,
+                timestamp: update.Timestamp || io.timestamp,
+                comments: update.Comments !== undefined ? update.Comments : io.comments // Handle null comments explicitly
+              }
+              if (process.env.NODE_ENV === 'development') {
+                console.log('📡 Full IO update for:', io.name, 'New state:', update.State, 'New result:', updatedIo.result)
+              }
+            }
+
+            // Use refs for current values to avoid dependency issues
+            const currentPlcStatus = plcStatusRef.current
+            const currentOutputFiring = outputFiringInProgressRef.current
+            const currentPreviousStates = previousStatesRef.current
+
+            // Check if we should show the value change dialog
+            const stateActuallyChanged = currentPreviousStates[io.id] !== update.State
+            const shouldShowDialog = currentPlcStatus.isTesting && !io.result && stateActuallyChanged && (
+              // For inputs: show when state changes to TRUE (physical activation)
+              (!isOutput(io.name) && update.State === 'TRUE') ||
+              // For outputs: show when state changed AND user explicitly fired from UI
+              // This proves the PLC actually responded to our write command
+              (isOutput(io.name) && currentOutputFiring[io.id] && update.State === 'TRUE')
+            )
+
+            if (shouldShowDialog) {
+              if (process.env.NODE_ENV === 'development') {
+                console.log('💡 Triggering ValueChangeDialog for:', io.name, 'Type:', isOutput(io.name) ? 'OUTPUT' : 'INPUT', 'Current state:', update.State, 'Current result:', io.result)
+              }
+              // Add to queue instead of showing immediately
+              addToDialogQueue(updatedIo)
+            }
+
+            // Update previous state
+            setPreviousStates(prev => ({
+              ...prev,
+              [io.id]: update.State
+            }))
+
+            return updatedIo
+          }
+          return io
+        })
+      )
+    }
+
+    signalR.onIOUpdate(handleIOUpdate)
+
+    return () => {
+      signalR.offIOUpdate(handleIOUpdate)
+    }
+  }, [addToDialogQueue]) // Handlers registered once, use refs for mutable state
 
   const loadIos = async () => {
     try {
@@ -518,6 +522,11 @@ export default function CommissioningPage() {
         const data = await response.json()
         setIos(data)
         setFilteredIos(data)
+
+        // Auto-connect SignalR when IOs are loaded (for real-time state updates)
+        if (data.length > 0 && !signalR.isConnected) {
+          signalR.connect()
+        }
 
         // Restore dialog queue from localStorage (survives page refresh)
         try {
@@ -561,34 +570,54 @@ export default function CommissioningPage() {
         // Mark that output firing is in progress for this IO
         setOutputFiringInProgress(prev => ({ ...prev, [io.id]: true }))
       } else if (action === 'stop') {
-        // Clear the firing flag after a longer delay to ensure SignalR update arrives first
-        // Backend sends the trigger after 250ms, so we need at least that + network delay
+        // Clear the firing flag after delay to allow SignalR update to arrive
+        // Backend: 250ms delay + network latency. Use 3000ms for robustness.
         setTimeout(() => {
           setOutputFiringInProgress(prev => ({ ...prev, [io.id]: false }))
-        }, 1000) // Increased to 1000ms to ensure SignalR update arrives before clearing flag
+        }, 3000)
       }
 
       if (process.env.NODE_ENV === 'development') {
-        console.log(`🔥 Firing output ${action} for ${io.name}...`)
+        console.log(`Firing output ${action} for ${io.name}...`)
       }
       const response = await authFetch(API_ENDPOINTS.ioFireOutput(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action })
       })
-      
+
       if (response.ok) {
+        const result = await response.json()
         if (process.env.NODE_ENV === 'development') {
-          const result = await response.json()
-          console.log(`✅ Output ${action} command sent for ${io.name}:`, result)
+          console.log(`Output ${action} command sent for ${io.name}:`, result)
         }
-        // SignalR will handle the real-time update
+        // Show warning if PLC write failed
+        if (result.success === false && result.error) {
+          toast({
+            title: `Output write failed`,
+            description: `${io.name}: ${result.error}. The output may not have changed.`,
+            variant: 'destructive'
+          })
+        }
+        // Dialog is triggered ONLY via SignalR state change — not here.
+        // The flow: fire start → PLC changes → reader detects → SignalR UpdateState →
+        // frontend sees state change while outputFiringInProgress is set → dialog appears.
       } else {
         const errorText = await response.text()
         logger.error(`Failed to ${action} output:`, response.status, errorText)
+        toast({
+          title: `Failed to ${action} output`,
+          description: `${io.name}: Server returned ${response.status}`,
+          variant: 'destructive'
+        })
       }
     } catch (error) {
       logger.error(`Error ${action}ing output:`, error)
+      toast({
+        title: `Error firing output`,
+        description: `${io.name}: Network error`,
+        variant: 'destructive'
+      })
     }
   }
 
@@ -860,13 +889,8 @@ export default function CommissioningPage() {
     logger.log('PLC connect triggered with config:', newConfig)
     setPlcConfig(newConfig)
 
-    // Refetch IOs from backend
-    await loadIos()
-
-    // Update URL if subsystem changed (use replace to avoid full reload)
-    if (newConfig.subsystemId !== params.id) {
-      router.replace(`/commissioning/${newConfig.subsystemId}`)
-    }
+    // Refetch IOs from backend (non-blocking — don't await to avoid dialog reset)
+    loadIos()
 
     // Connect SignalR for real-time PLC updates
     if (!signalR.isConnected) {

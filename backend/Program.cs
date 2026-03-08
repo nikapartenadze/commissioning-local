@@ -158,8 +158,8 @@ builder.Services.AddCors(options =>
         policy.SetIsOriginAllowed(origin =>
               {
                   var uri = new Uri(origin);
-                  // Allow frontend ports: 3000 (Docker), 3002 (dev), 5000 (backend)
-                  return uri.Port == 5000 || uri.Port == 3002 || uri.Port == 3000;
+                  // Allow frontend ports: 3000 (Docker), 3002 (production), 3020 (dev), 5000 (backend)
+                  return uri.Port == 5000 || uri.Port == 3002 || uri.Port == 3020 || uri.Port == 3000;
               })
               .AllowAnyHeader()
               .AllowAnyMethod()
@@ -267,11 +267,12 @@ if (!app.Environment.IsDevelopment())
 // Enable response compression in all environments for better performance
 app.UseResponseCompression();
 
-// Enable CORS
-app.UseCors("NextJsFrontend");
-
 app.UseStaticFiles();
 app.UseRouting();
+
+// CORS must be after UseRouting for SignalR endpoint CORS to work
+app.UseCors("NextJsFrontend");
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();

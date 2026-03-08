@@ -62,6 +62,7 @@ export function PlcConfigDialog({
   const pullLogEndRef = useRef<HTMLDivElement | null>(null)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const logSeqRef = useRef<number>(0)
+  const pendingConnectConfigRef = useRef<PlcConfig | null>(null)
 
   const addPullLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString()
@@ -230,8 +231,13 @@ export function PlcConfigDialog({
       addPlcLog(`Subsystem: ${localConfig.subsystemId}`)
       setPlcStatus({ type: 'loading', message: 'Saving configuration...' })
 
-      addPlcLog('Sending config to backend...')
-      const response = await authFetch(API_ENDPOINTS.configurationUpdate, {
+      // Always use lightweight PLC-only connect endpoint
+      // The full configurationUpdate endpoint triggers cloud sync and full reinitialization
+      const endpoint = API_ENDPOINTS.configurationConnectPlc
+
+      addPlcLog('Connecting to PLC...')
+
+      const response = await authFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -302,7 +308,8 @@ export function PlcConfigDialog({
               }
               setPlcStatus({ type: 'success', message: `Connected to PLC at ${localConfig.ip}` })
               setIsConnecting(false)
-              onPlcConnect(localConfig)
+              addPlcLog('Close this dialog to start testing.')
+              pendingConnectConfigRef.current = localConfig
               return
             }
           }
@@ -322,7 +329,7 @@ export function PlcConfigDialog({
           addPlcLog('Config was saved. You can retry or check network.')
           setPlcStatus({ type: 'error', message: `PLC not reachable at ${localConfig.ip}` })
           setIsConnecting(false)
-          onPlcConnect(localConfig)
+          pendingConnectConfigRef.current = localConfig
         }
       }, 1000)
     } catch (error: any) {
@@ -367,7 +374,15 @@ export function PlcConfigDialog({
   const busy = isPulling || isConnecting || isDisconnecting
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!busy) onOpenChange(v) }}>
+    <Dialog open={open} onOpenChange={(v) => {
+      if (!busy) {
+        if (!v && pendingConnectConfigRef.current) {
+          onPlcConnect(pendingConnectConfigRef.current)
+          pendingConnectConfigRef.current = null
+        }
+        onOpenChange(v)
+      }
+    }}>
       <DialogContent className="max-w-2xl h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0">
         {/* Tabs */}
         <div className="flex border-b">

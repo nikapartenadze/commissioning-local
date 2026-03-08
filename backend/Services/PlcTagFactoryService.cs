@@ -47,8 +47,14 @@ public class PlcTagFactoryService : IPlcTagFactoryService
 
     public NativeTag CreateWriteTag(string tagName)
     {
-        // For native implementation, read and write tags are the same
-        return CreateReadTag(tagName);
+        // Write tags need longer timeout since they're created on-demand (not in tight read loop)
+        var logger = _loggerFactory.CreateLogger<NativeTag>();
+        return new NativeTag(
+            tagName,
+            _configService.Ip,
+            _configService.Path,
+            timeout: 5000, // 5s timeout for write tags (vs 800ms for read tags)
+            logger: logger);
     }
 
     /// <summary>
