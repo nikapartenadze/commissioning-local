@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -33,39 +33,46 @@ export function FireOutputDialog({
   isTesting
 }: FireOutputDialogProps) {
   const [isFiring, setIsFiring] = useState(false)
+  const isFiringRef = useRef(false)
+  const ioRef = useRef(io)
 
-  if (!io) return null
+  useEffect(() => { ioRef.current = io }, [io])
 
-  const handleMouseDown = () => {
-    if (!isTesting) return
-    setIsFiring(true)
-    onFireOutput(io, 'start')
-  }
-
-  const handleMouseUp = () => {
-    if (!isFiring) return
-    setIsFiring(false)
-    onFireOutput(io, 'stop')
-    // Do NOT close — stay open so electrician sees the state change via SignalR.
-    // The pass/fail dialog will appear when SignalR confirms the PLC state changed.
-  }
-
-  const handleMouseLeave = () => {
-    if (isFiring) {
+  // Reset when dialog closes
+  useEffect(() => {
+    if (!open) {
+      isFiringRef.current = false
       setIsFiring(false)
-      onFireOutput(io, 'stop')
-      // Do NOT close — same reason as above
     }
-  }
+  }, [open])
 
-  const handleClose = () => {
-    // If still firing when closing, stop first
-    if (isFiring) {
+  // Simple click toggle: click once = start, click again = stop
+  const handleToggleFire = useCallback(() => {
+    if (!isTesting || !ioRef.current) return
+
+    if (isFiringRef.current) {
+      // Currently firing → stop
+      isFiringRef.current = false
       setIsFiring(false)
-      onFireOutput(io, 'stop')
+      onFireOutput(ioRef.current, 'stop')
+    } else {
+      // Not firing → start
+      isFiringRef.current = true
+      setIsFiring(true)
+      onFireOutput(ioRef.current, 'start')
+    }
+  }, [isTesting, onFireOutput])
+
+  const handleClose = useCallback(() => {
+    if (isFiringRef.current && ioRef.current) {
+      isFiringRef.current = false
+      setIsFiring(false)
+      onFireOutput(ioRef.current, 'stop')
     }
     onOpenChange(false)
-  }
+  }, [onFireOutput, onOpenChange])
+
+  if (!io) return null
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => {
@@ -105,37 +112,30 @@ export function FireOutputDialog({
             </div>
           </div>
 
-          {/* Warning for outputs */}
+          {/* Instructions */}
           <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-amber-500 rounded-full"></div>
-              <span className="text-sm text-amber-700 dark:text-amber-300">
-                Hold the button to fire. Watch the State change while holding.
-                Release when done — pass/fail prompt will appear if PLC responded.
-              </span>
-            </div>
+            <span className="text-sm text-amber-700 dark:text-amber-300">
+              Click <strong>FIRE</strong> to turn output ON. Click <strong>STOP</strong> to turn it OFF.
+              Watch the State badge update. Pass/fail prompt appears after stopping if PLC responded.
+            </span>
           </div>
 
-          {/* Fire Button */}
+          {/* Fire / Stop Button */}
           <div className="flex flex-col items-center gap-3">
             <Button
               size="lg"
-              className={`w-40 h-20 text-lg font-bold transition-all duration-150 select-none ${
+              className={`w-40 h-20 text-lg font-bold select-none ${
                 isFiring
-                  ? 'bg-red-600 hover:bg-red-700 text-white scale-95 ring-4 ring-red-300'
+                  ? 'bg-red-600 hover:bg-red-700 text-white ring-4 ring-red-300'
                   : 'bg-green-500 hover:bg-green-600 text-white'
               } ${!isTesting ? 'opacity-50 cursor-not-allowed' : ''}`}
-              onMouseDown={handleMouseDown}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseLeave}
-              onTouchStart={handleMouseDown}
-              onTouchEnd={handleMouseUp}
+              onClick={handleToggleFire}
               disabled={!isTesting}
             >
               {isFiring ? (
                 <>
                   <Square className="w-5 h-5 mr-2" />
-                  HOLDING...
+                  STOP
                 </>
               ) : (
                 <>
@@ -146,7 +146,7 @@ export function FireOutputDialog({
             </Button>
             {isFiring && (
               <span className="text-sm text-red-600 font-medium animate-pulse">
-                Output is being fired — release when done
+                Output is ON — click STOP when done
               </span>
             )}
           </div>
