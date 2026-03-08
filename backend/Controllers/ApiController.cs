@@ -271,6 +271,7 @@ public class ApiController : ControllerBase
             io.Result = "Passed";
             io.Timestamp = DateTime.UtcNow.ToString("MM/dd/yy h:mm:ss.fff tt");
             io.Comments = request?.Comments ?? null;
+            io.Version += 1;
 
             // Add test history in the same transaction
             var testHistory = new TestHistory
@@ -284,7 +285,14 @@ public class ApiController : ControllerBase
             };
             db.TestHistories.Add(testHistory);
 
-            await db.SaveChangesAsync();
+            try
+            {
+                await db.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return Conflict(new { error = "IO_CONFLICT", message = "Another user updated this IO. Please refresh." });
+            }
             await transaction.CommitAsync();
 
             // Post-transaction: refresh, broadcast, sync (non-critical)
@@ -295,6 +303,10 @@ public class ApiController : ControllerBase
             await _signalRService.SendIOUpdateAsync(io);
 
             return Ok(new { success = true, message = "IO marked as passed" });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { error = "IO_CONFLICT", message = "Another user updated this IO. Please refresh." });
         }
         catch (Exception ex)
         {
@@ -331,6 +343,7 @@ public class ApiController : ControllerBase
             io.Result = "Failed";
             io.Timestamp = DateTime.UtcNow.ToString("MM/dd/yy h:mm:ss.fff tt");
             io.Comments = request?.Comments ?? io.Comments;
+            io.Version += 1;
 
             // Add test history in the same transaction
             var testHistory = new TestHistory
@@ -345,7 +358,14 @@ public class ApiController : ControllerBase
             };
             db.TestHistories.Add(testHistory);
 
-            await db.SaveChangesAsync();
+            try
+            {
+                await db.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return Conflict(new { error = "IO_CONFLICT", message = "Another user updated this IO. Please refresh." });
+            }
             await transaction.CommitAsync();
 
             // Post-transaction: refresh, broadcast, sync (non-critical)
@@ -356,6 +376,10 @@ public class ApiController : ControllerBase
             await _signalRService.SendIOUpdateAsync(io);
 
             return Ok(new { success = true, message = "IO marked as failed" });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { error = "IO_CONFLICT", message = "Another user updated this IO. Please refresh." });
         }
         catch (Exception ex)
         {
@@ -418,8 +442,16 @@ public class ApiController : ControllerBase
             io.Result = null;
             io.Timestamp = null;
             io.Comments = null;
+            io.Version += 1;
 
-            await db.SaveChangesAsync();
+            try
+            {
+                await db.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return Conflict(new { error = "IO_CONFLICT", message = "Another user updated this IO. Please refresh." });
+            }
             await transaction.CommitAsync();
 
             // Post-transaction: sync to cloud (non-critical, fire-and-forget)
@@ -452,6 +484,10 @@ public class ApiController : ControllerBase
             await _signalRService.SendIOUpdateAsync(io);
 
             return Ok(new { success = true, message = "IO result cleared" });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { error = "IO_CONFLICT", message = "Another user updated this IO. Please refresh." });
         }
         catch (Exception ex)
         {
@@ -931,23 +967,10 @@ public class ApiController : ControllerBase
     {
         try
         {
-            // This simulates the C# app's ValueChanged flow after output firing
-            // The output should trigger a Pass/Fail dialog for testing
-            
-            // Create a temporary IO object with "Not Tested" result to trigger the dialog
-            // Even if the IO already has a result, we want to trigger the dialog for testing
-            var triggerIo = new Io
-            {
-                Id = outputTag.Id,
-                Name = outputTag.Name,
-                Result = null, // Set to null so SignalR will send "Not Tested"
-                State = outputTag.State ?? "FALSE",
-                Timestamp = null, // No timestamp so frontend knows this is a trigger
-                Comments = null // No comments so frontend knows this is a trigger
-            };
-
-            await _signalRService.SendIOUpdateAsync(triggerIo);
-            _logger.LogInformation("Triggered output value changed for {TagName}", outputTag.Name);
+            // Send a state update so the frontend sees the current output state
+            // The pass/fail dialog is triggered by the frontend's outputFiringInProgress flag
+            await _signalRService.SendStateUpdateAsync(outputTag);
+            _logger.LogInformation("Triggered output state update for {TagName} - State: {State}", outputTag.Name, outputTag.State);
         }
         catch (Exception ex)
         {
