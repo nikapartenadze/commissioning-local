@@ -359,7 +359,7 @@ public class TagsContext : DbContext
             entity.Ignore(e => e.State);
             entity.Ignore(e => e.Subsystem);
             entity.Property(e => e.Comments).HasMaxLength(1000);
-            entity.Property(e => e.Version).IsRequired().HasDefaultValue(0L);
+            entity.Property(e => e.Version).IsRequired().HasDefaultValue(0L).IsConcurrencyToken();
             entity.Property(e => e.TagType).HasMaxLength(100);
             entity.Property(e => e.NetworkDeviceName).HasMaxLength(100);
         });

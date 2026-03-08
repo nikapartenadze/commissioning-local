@@ -51,6 +51,9 @@ if (!Directory.Exists(logsDir))
     Directory.CreateDirectory(logsDir);
 }
 
+// In-memory log sink for streaming logs to frontend
+var recentLogSink = new IO_Checkout_Tool.Services.RecentLogService();
+
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
     .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
@@ -63,7 +66,10 @@ Log.Logger = new LoggerConfiguration()
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 30,
         outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}")
+    .WriteTo.Sink(recentLogSink)
     .CreateLogger();
+
+builder.Services.AddSingleton(recentLogSink);
 
 builder.Host.UseSerilog();
 

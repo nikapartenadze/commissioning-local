@@ -54,6 +54,8 @@ export interface SignalRConnection {
   offNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
   onError: (callback: (event: ErrorEvent) => void) => void
   offError: (callback: (event: ErrorEvent) => void) => void
+  onReconnected: (callback: () => void) => void
+  offReconnected: (callback: () => void) => void
 }
 
 export function useSignalR(hubUrl?: string): SignalRConnection {
@@ -70,6 +72,7 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
   const commentCallbacksRef = useRef<Set<(update: CommentUpdate) => void>>(new Set())
   const networkStatusCallbacksRef = useRef<Set<(update: NetworkStatusUpdate) => void>>(new Set())
   const errorCallbacksRef = useRef<Set<(event: ErrorEvent) => void>>(new Set())
+  const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
 
   const connect = async () => {
     if (connectionRef.current?.state === 'Connected') {
@@ -290,6 +293,7 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
           timestamp: new Date()
         }
         errorCallbacksRef.current.forEach(cb => { try { cb(event) } catch {} })
+        reconnectedCallbacksRef.current.forEach(cb => { try { cb() } catch {} })
       })
 
       // Start the connection
@@ -303,15 +307,23 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
       setIsConnected(true)
 
     } catch (error) {
-      logger.error('SignalR connection failed:', error)
+      logger.error('SignalR connection failed, will retry:', error)
       setIsConnected(false)
       const event: ErrorEvent = {
         source: 'signalr',
-        message: 'Failed to connect to backend server',
-        severity: 'error',
+        message: 'SignalR connecting... backend may be busy initializing PLC tags',
+        severity: 'warning' as any,
         timestamp: new Date()
       }
       errorCallbacksRef.current.forEach(cb => { try { cb(event) } catch {} })
+
+      // Auto-retry after 5 seconds
+      setTimeout(() => {
+        if (!connectionRef.current || connectionRef.current.state !== 'Connected') {
+          logger.log('SignalR auto-retrying connection...')
+          connect()
+        }
+      }, 5000)
     }
   }
 
@@ -378,6 +390,14 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     errorCallbacksRef.current.delete(callback)
   }
 
+  const onReconnected = (callback: () => void) => {
+    reconnectedCallbacksRef.current.add(callback)
+  }
+
+  const offReconnected = (callback: () => void) => {
+    reconnectedCallbacksRef.current.delete(callback)
+  }
+
   // Don't auto-connect - wait for user to explicitly connect via UI
   // Connection will be triggered when user pulls IOs or starts testing
   useEffect(() => {
@@ -405,7 +425,9 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     onNetworkStatusChange,
     offNetworkStatusChange,
     onError,
-    offError
+    offError,
+    onReconnected,
+    offReconnected
   }
 }
 
