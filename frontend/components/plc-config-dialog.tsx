@@ -5,15 +5,13 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { TestTube, Unplug, CloudDownload, Terminal } from "lucide-react"
+import { CloudDownload, Terminal, Cpu, Wifi, WifiOff } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 interface PlcConfig {
@@ -28,7 +26,8 @@ interface PlcConfigDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   config: PlcConfig
-  onConfigChange: (config: PlcConfig) => void
+  onCloudPull: (config: PlcConfig) => void
+  onPlcConnect: (config: PlcConfig) => void
   onTestConnection: () => Promise<boolean>
 }
 
@@ -36,102 +35,202 @@ export function PlcConfigDialog({
   open,
   onOpenChange,
   config,
-  onConfigChange,
+  onCloudPull,
+  onPlcConnect,
   onTestConnection
 }: PlcConfigDialogProps) {
+  const [activeTab, setActiveTab] = useState<'cloud' | 'plc'>('cloud')
   const [localConfig, setLocalConfig] = useState<PlcConfig>({
-    ip: "",
-    path: "",
-    subsystemId: "",
-    apiPassword: "",
-    remoteUrl: ""
+    ip: "", path: "", subsystemId: "", apiPassword: "", remoteUrl: ""
   })
-  const [isSaving, setIsSaving] = useState(false)
-  const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [isPulling, setIsPulling] = useState(false)
+  const [isConnecting, setIsConnecting] = useState(false)
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
-  const [activityLog, setActivityLog] = useState<string[]>([])
-  const [elapsedTime, setElapsedTime] = useState(0)
-  const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Helper to add log entry
-  const addLog = (message: string) => {
+  const [pullStatus, setPullStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
+  const [plcStatus, setPlcStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
+
+  const [pullLog, setPullLog] = useState<string[]>([])
+  const [plcLog, setPlcLog] = useState<string[]>([])
+
+  const [pullElapsed, setPullElapsed] = useState(0)
+  const [plcElapsed, setPlcElapsed] = useState(0)
+  const pullTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const plcTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const plcLogEndRef = useRef<HTMLDivElement | null>(null)
+  const pullLogEndRef = useRef<HTMLDivElement | null>(null)
+  const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const logSeqRef = useRef<number>(0)
+
+  const addPullLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString()
-    setActivityLog(prev => [...prev.slice(-9), `[${timestamp}] ${message}`])
-    console.log(`[PLC Config] ${message}`)
+    setPullLog(prev => [...prev, `[${timestamp}] ${message}`])
   }
 
-  // Start/stop elapsed timer when loading
-  useEffect(() => {
-    if (saveStatus.type === 'loading') {
-      setElapsedTime(0)
-      timerRef.current = setInterval(() => {
-        setElapsedTime(prev => prev + 1)
-      }, 1000)
-    } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
-    }
-  }, [saveStatus.type])
+  const addPlcLog = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString()
+    setPlcLog(prev => [...prev, `[${timestamp}] ${message}`])
+  }
 
-  // Load actual config from C# backend when dialog opens
+  // Auto-scroll logs
+  useEffect(() => { plcLogEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [plcLog])
+  useEffect(() => { pullLogEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [pullLog])
+
+  // Timers
+  useEffect(() => {
+    if (pullStatus.type === 'loading') {
+      setPullElapsed(0)
+      pullTimerRef.current = setInterval(() => setPullElapsed(prev => prev + 1), 1000)
+    } else {
+      if (pullTimerRef.current) { clearInterval(pullTimerRef.current); pullTimerRef.current = null }
+    }
+    return () => { if (pullTimerRef.current) clearInterval(pullTimerRef.current) }
+  }, [pullStatus.type])
+
+  useEffect(() => {
+    if (plcStatus.type === 'loading') {
+      setPlcElapsed(0)
+      plcTimerRef.current = setInterval(() => setPlcElapsed(prev => prev + 1), 1000)
+    } else {
+      if (plcTimerRef.current) { clearInterval(plcTimerRef.current); plcTimerRef.current = null }
+    }
+    return () => { if (plcTimerRef.current) clearInterval(plcTimerRef.current) }
+  }, [plcStatus.type])
+
+  // Cleanup poll on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
+
+  // Load config when dialog opens
   useEffect(() => {
     if (open) {
-      // Add a small delay to prevent rapid successive calls
-      const timer = setTimeout(() => {
-        loadActualConfig()
-      }, 100)
-      
+      const timer = setTimeout(() => loadActualConfig(), 100)
       return () => clearTimeout(timer)
     }
   }, [open])
 
   const loadActualConfig = async () => {
-    if (isLoadingConfig) {
-      console.log('⏳ Config already loading, skipping...')
-      return
-    }
-    
+    if (isLoadingConfig) return
     try {
       setIsLoadingConfig(true)
-      console.log('🔄 Loading actual config from C# backend...')
       const response = await authFetch(API_ENDPOINTS.status)
       if (response.ok) {
         const status = await response.json()
-        console.log('📡 Raw status response from C# backend:', status)
-        
-        const actualConfig: PlcConfig = {
-          ip: status.plcIp || "192.168.20.14",
-          path: status.plcPath || "1,1",
-          subsystemId: status.subsystemId || "16",
+        setLocalConfig({
+          ip: status.plcIp || "",
+          path: status.plcPath || "1,0",
+          subsystemId: status.subsystemId || "",
           apiPassword: status.apiPassword || "",
-          remoteUrl: status.remoteUrl || ""
-        }
-        setLocalConfig(actualConfig)
-        
-        console.log('✅ Loaded actual config from C# backend:', actualConfig)
-      } else {
-        console.error('❌ Failed to get status from C# backend:', response.status, response.statusText)
+          remoteUrl: status.remoteUrl || "https://commissioning.lci.ge"
+        })
       }
     } catch (error) {
-      console.error('❌ Failed to load actual config from C# backend:', error)
+      console.error('Failed to load config:', error)
     } finally {
       setIsLoadingConfig(false)
     }
   }
 
-  const handleSave = async () => {
+  // ── Pull IOs from Cloud ──
+  const handlePullIos = async () => {
     try {
-      setIsSaving(true)
-      setSaveStatus({ type: 'loading', message: 'Saving configuration and connecting...' })
-      console.log('💾 Saving configuration with values:', localConfig)
+      setIsPulling(true)
+      setPullLog([])
+      addPullLog(`Pull from ${localConfig.remoteUrl}`)
+      addPullLog(`Subsystem ID: ${localConfig.subsystemId}`)
+      setPullStatus({ type: 'loading', message: 'Connecting to cloud...' })
 
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 120000)
+
+      addPullLog('Sending request...')
+      setPullStatus({ type: 'loading', message: `Fetching IOs for subsystem ${localConfig.subsystemId}...` })
+
+      // Snapshot log sequence before pull
+      try {
+        const logRes = await authFetch(`${API_ENDPOINTS.configurationLogs}?afterId=0`)
+        if (logRes.ok) {
+          const logData = await logRes.json()
+          const entries = logData.entries || []
+          logSeqRef.current = entries.length > 0 ? entries[entries.length - 1].id : 0
+        }
+      } catch { /* ignore */ }
+
+      const response = await authFetch(API_ENDPOINTS.cloudPull, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          remoteUrl: localConfig.remoteUrl || "",
+          apiPassword: localConfig.apiPassword || "",
+          subsystemId: localConfig.subsystemId
+        }),
+        signal: controller.signal
+      })
+
+      clearTimeout(timeoutId)
+
+      // Fetch backend logs that happened during the pull
+      try {
+        const logRes = await authFetch(`${API_ENDPOINTS.configurationLogs}?afterId=${logSeqRef.current}`)
+        if (logRes.ok) {
+          const logData = await logRes.json()
+          for (const entry of (logData.entries || [])) {
+            const time = new Date(entry.timestamp).toLocaleTimeString()
+            addPullLog(`${entry.level}: ${entry.message}`)
+            logSeqRef.current = entry.id
+          }
+        }
+      } catch { /* ignore */ }
+
+      addPullLog(`Response: ${response.status} ${response.statusText}`)
+
+      if (response.ok) {
+        const result = await response.json()
+        addPullLog(`${result.ioCount} IOs retrieved`)
+
+        if (result.ioCount === 0) {
+          addPullLog('No IOs found - check subsystem ID')
+          setPullStatus({ type: 'error', message: `No IOs found for subsystem ${localConfig.subsystemId}` })
+        } else {
+          setPullStatus({ type: 'success', message: `Pulled ${result.ioCount} IOs` })
+          onCloudPull(localConfig)
+        }
+      } else {
+        let errorMsg = ''
+        try {
+          const errorData = await response.json()
+          errorMsg = errorData.message || JSON.stringify(errorData)
+        } catch {
+          errorMsg = await response.text() || response.statusText
+        }
+        addPullLog(`ERROR: ${response.status} - ${errorMsg}`)
+        setPullStatus({ type: 'error', message: errorMsg })
+      }
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        addPullLog('Timed out after 2 minutes')
+        setPullStatus({ type: 'error', message: 'Request timed out' })
+      } else {
+        addPullLog(`ERROR: ${error.message}`)
+        setPullStatus({ type: 'error', message: error.message })
+      }
+    } finally {
+      setIsPulling(false)
+    }
+  }
+
+  // ── Connect to PLC ──
+  const handlePlcConnect = async () => {
+    try {
+      setIsConnecting(true)
+      setPlcLog([])
+      addPlcLog(`Config: IP=${localConfig.ip}, Path=${localConfig.path}`)
+      addPlcLog(`Subsystem: ${localConfig.subsystemId}`)
+      setPlcStatus({ type: 'loading', message: 'Saving configuration...' })
+
+      addPlcLog('Sending config to backend...')
       const response = await authFetch(API_ENDPOINTS.configurationUpdate, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -144,325 +243,344 @@ export function PlcConfigDialog({
         })
       })
 
-      if (response.ok) {
-        const result = await response.json()
-        console.log('✅ Configuration updated successfully:', result)
-
-        // Show success with details
-        const ioCount = result.ioCount || 0
-        const message = ioCount > 0
-          ? `Configuration saved! Loaded ${ioCount} IOs from cloud.`
-          : 'Configuration saved! Check backend logs for connection status.'
-
-        setSaveStatus({ type: 'success', message })
-
-        // Notify parent to refresh data
-        onConfigChange(localConfig)
-
-        // Auto-close after showing success for 2 seconds
-        setTimeout(() => {
-          setSaveStatus({ type: null, message: '' })
-          onOpenChange(false)
-        }, 2000)
-      } else {
+      if (!response.ok) {
         const error = await response.text()
-        console.error('❌ Failed to update configuration:', response.status, error)
-        setSaveStatus({ type: 'error', message: `Failed: ${error || response.statusText}` })
+        addPlcLog(`Config save failed: ${error || response.statusText}`)
+        setPlcStatus({ type: 'error', message: `Failed: ${error || response.statusText}` })
+        setIsConnecting(false)
+        return
       }
+
+      addPlcLog('Config saved, reinitialization started...')
+      setPlcStatus({ type: 'loading', message: `Connecting to ${localConfig.ip}...` })
+
+      // Snapshot current log sequence so we only show new entries
+      try {
+        const logRes = await authFetch(`${API_ENDPOINTS.configurationLogs}?afterId=0`)
+        if (logRes.ok) {
+          const logData = await logRes.json()
+          const entries = logData.entries || []
+          logSeqRef.current = entries.length > 0 ? entries[entries.length - 1].id : 0
+        }
+      } catch { /* ignore */ }
+
+      // Poll backend status + logs for PLC connection result
+      let attempts = 0
+      const maxAttempts = 120
+
+      // Clear any existing poll
+      if (pollRef.current) clearInterval(pollRef.current)
+
+      pollRef.current = setInterval(async () => {
+        attempts++
+        try {
+          // Fetch backend logs
+          try {
+            const logRes = await authFetch(`${API_ENDPOINTS.configurationLogs}?afterId=${logSeqRef.current}`)
+            if (logRes.ok) {
+              const logData = await logRes.json()
+              const entries = logData.entries || []
+              for (const entry of entries) {
+                const time = new Date(entry.timestamp).toLocaleTimeString()
+                const msg = `[${time}] ${entry.level}: ${entry.message}`
+                setPlcLog(prev => [...prev, msg])
+                logSeqRef.current = entry.id
+              }
+            }
+          } catch { /* ignore log fetch errors */ }
+
+          // Check PLC status
+          const statusRes = await authFetch(API_ENDPOINTS.status)
+          if (statusRes.ok) {
+            const status = await statusRes.json()
+
+            if (status.plcConnected) {
+              if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+              addPlcLog(`PLC connected!`)
+              if (status.totalIos > 0) {
+                addPlcLog(`${status.totalIos} tags loaded`)
+              }
+              setPlcStatus({ type: 'success', message: `Connected to PLC at ${localConfig.ip}` })
+              setIsConnecting(false)
+              onPlcConnect(localConfig)
+              return
+            }
+          }
+        } catch { /* ignore poll errors */ }
+
+        if (attempts >= maxAttempts) {
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+          addPlcLog('---')
+          addPlcLog('PLC connection timed out after 120s')
+          addPlcLog('Possible causes:')
+          addPlcLog('  - PLC is not powered on')
+          addPlcLog('  - Wrong IP address')
+          addPlcLog('  - Not on the same network/VLAN')
+          addPlcLog('  - Firewall blocking port 44818')
+          addPlcLog('  - Wrong communication path')
+          addPlcLog('---')
+          addPlcLog('Config was saved. You can retry or check network.')
+          setPlcStatus({ type: 'error', message: `PLC not reachable at ${localConfig.ip}` })
+          setIsConnecting(false)
+          onPlcConnect(localConfig)
+        }
+      }, 1000)
     } catch (error: any) {
-      console.error('❌ Error updating configuration:', error)
-      setSaveStatus({ type: 'error', message: `Error: ${error.message}. Is backend running?` })
-    } finally {
-      setIsSaving(false)
+      addPlcLog(`ERROR: ${error.message}`)
+      setPlcStatus({ type: 'error', message: error.message })
+      setIsConnecting(false)
     }
   }
 
+  // ── Disconnect PLC ──
   const handleDisconnect = async () => {
+    // Stop any ongoing poll
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+
     try {
       setIsDisconnecting(true)
-      const wasSaving = isSaving
-      setSaveStatus({ type: 'loading', message: wasSaving ? 'Cancelling connection attempt...' : 'Disconnecting from PLC...' })
-      console.log('🔌 Disconnecting from PLC...')
+      setIsConnecting(false)
+      addPlcLog('Disconnecting...')
+      setPlcStatus({ type: 'loading', message: 'Disconnecting...' })
 
       const response = await authFetch(API_ENDPOINTS.plcDisconnect, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
 
-      // Reset saving state since we're cancelling
-      if (wasSaving) {
-        setIsSaving(false)
-      }
-
       if (response.ok) {
-        const result = await response.json()
-        console.log('✅ PLC disconnected successfully:', result)
-        setSaveStatus({ type: 'success', message: wasSaving ? 'Connection cancelled. You can now change configuration.' : 'PLC disconnected. You can now change configuration.' })
-
-        // Clear status after 3 seconds
-        setTimeout(() => {
-          setSaveStatus({ type: null, message: '' })
-        }, 3000)
+        addPlcLog('PLC disconnected')
+        setPlcStatus({ type: 'success', message: 'Disconnected' })
       } else {
         const error = await response.text()
-        console.error('❌ Failed to disconnect:', response.status, error)
-        setSaveStatus({ type: 'error', message: `Failed to disconnect: ${error || response.statusText}` })
+        addPlcLog(`Disconnect failed: ${error}`)
+        setPlcStatus({ type: 'error', message: error || response.statusText })
       }
     } catch (error: any) {
-      console.error('❌ Error disconnecting from PLC:', error)
-      setSaveStatus({ type: 'error', message: `Error: ${error.message}` })
+      addPlcLog(`ERROR: ${error.message}`)
+      setPlcStatus({ type: 'error', message: error.message })
     } finally {
       setIsDisconnecting(false)
     }
   }
 
-  const handlePullIos = async () => {
-    try {
-      setIsPulling(true)
-      setActivityLog([]) // Clear previous log
-      addLog(`Starting pull from ${localConfig.remoteUrl}`)
-      addLog(`Subsystem ID: ${localConfig.subsystemId}`)
-      setSaveStatus({ type: 'loading', message: 'Connecting to cloud...' })
-
-      // Create abort controller for timeout
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
-
-      try {
-        addLog('Sending request to backend...')
-        setSaveStatus({ type: 'loading', message: `Fetching IOs for subsystem ${localConfig.subsystemId}...` })
-
-        const response = await authFetch(API_ENDPOINTS.cloudPull, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            remoteUrl: localConfig.remoteUrl || "",
-            apiPassword: localConfig.apiPassword || "",
-            subsystemId: localConfig.subsystemId
-          }),
-          signal: controller.signal
-        })
-
-        clearTimeout(timeoutId)
-        addLog(`Response received: ${response.status} ${response.statusText}`)
-
-        if (response.ok) {
-          const result = await response.json()
-          addLog(`Success: ${result.ioCount} IOs retrieved`)
-
-          if (result.ioCount === 0) {
-            addLog('ERROR: No IOs found - check subsystem ID')
-            setSaveStatus({ type: 'error', message: `No IOs found for subsystem ${localConfig.subsystemId}. Check subsystem ID and API password.` })
-          } else {
-            setSaveStatus({ type: 'success', message: result.message || `Pulled ${result.ioCount} IOs from cloud` })
-            // Notify parent to refresh data
-            onConfigChange(localConfig)
-            // Clear status after 3 seconds
-            setTimeout(() => {
-              setSaveStatus({ type: null, message: '' })
-            }, 3000)
-          }
-        } else {
-          let errorMsg = ''
-          try {
-            const errorData = await response.json()
-            errorMsg = errorData.message || errorData.error || JSON.stringify(errorData)
-          } catch {
-            errorMsg = await response.text() || response.statusText
-          }
-          addLog(`ERROR: ${response.status} - ${errorMsg}`)
-
-          // Provide helpful error messages
-          if (response.status === 401 || response.status === 403) {
-            setSaveStatus({ type: 'error', message: `Authentication failed. Check API password.` })
-          } else if (response.status === 404) {
-            setSaveStatus({ type: 'error', message: `Subsystem ${localConfig.subsystemId} not found. Check subsystem ID.` })
-          } else {
-            setSaveStatus({ type: 'error', message: `Failed (${response.status}): ${errorMsg}` })
-          }
-        }
-      } catch (fetchError: any) {
-        clearTimeout(timeoutId)
-        if (fetchError.name === 'AbortError') {
-          addLog('ERROR: Request timed out after 30s')
-          setSaveStatus({ type: 'error', message: 'Request timed out. Check network and cloud URL.' })
-        } else {
-          throw fetchError
-        }
-      }
-    } catch (error: any) {
-      addLog(`ERROR: ${error.message}`)
-      setSaveStatus({ type: 'error', message: `Error: ${error.message}. Is backend running?` })
-    } finally {
-      setIsPulling(false)
-    }
-  }
-
-  const handleCancel = () => {
-    // Reset to empty values - will be reloaded when dialog opens again
-    setLocalConfig({
-      ip: "",
-      path: "",
-      subsystemId: "",
-      apiPassword: "",
-      remoteUrl: ""
-    })
-    onOpenChange(false)
-  }
+  const busy = isPulling || isConnecting || isDisconnecting
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col border-2 border-primary/20 bg-gradient-to-br from-background to-muted/30">
-        <DialogHeader className="border-b border-primary/10 pb-4">
-          <DialogTitle className="flex items-center gap-2 text-xl font-bold text-primary">
-            <TestTube className="w-6 h-6 text-primary" />
-            PLC Configuration
-          </DialogTitle>
-          <DialogDescription className="text-muted-foreground/80">
-            Configure the PLC connection settings for real-time IO monitoring and testing.
-          </DialogDescription>
-        </DialogHeader>
+    <Dialog open={open} onOpenChange={(v) => { if (!busy) onOpenChange(v) }}>
+      <DialogContent className="max-w-2xl h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0">
+        {/* Tabs */}
+        <div className="flex border-b">
+          <button
+            onClick={() => setActiveTab('cloud')}
+            className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+              activeTab === 'cloud'
+                ? 'border-b-2 border-blue-500 text-blue-600 bg-blue-50/50 dark:bg-blue-950/20'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            }`}
+          >
+            <CloudDownload className="w-4 h-4" />
+            Cloud Data
+            {pullStatus.type === 'loading' && <div className="animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full" />}
+            {pullStatus.type === 'success' && <span className="w-2 h-2 rounded-full bg-green-500" />}
+            {pullStatus.type === 'error' && <span className="w-2 h-2 rounded-full bg-red-500" />}
+          </button>
+          <button
+            onClick={() => setActiveTab('plc')}
+            className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+              activeTab === 'plc'
+                ? 'border-b-2 border-green-500 text-green-600 bg-green-50/50 dark:bg-green-950/20'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            }`}
+          >
+            <Cpu className="w-4 h-4" />
+            PLC Connection
+            {plcStatus.type === 'loading' && <div className="animate-spin h-3 w-3 border-2 border-green-500 border-t-transparent rounded-full" />}
+            {plcStatus.type === 'success' && <span className="w-2 h-2 rounded-full bg-green-500" />}
+            {plcStatus.type === 'error' && <span className="w-2 h-2 rounded-full bg-red-500" />}
+          </button>
+        </div>
 
-        <div className="space-y-6 overflow-y-auto flex-1">
-          {/* Connection Settings */}
-          <Card className="border-primary/20 bg-card/80 backdrop-blur-sm">
-            <CardHeader className="bg-primary/5 border-b border-primary/10">
-              <CardTitle className="text-lg text-primary font-semibold">Connection Settings</CardTitle>
-              <CardDescription className="text-muted-foreground">
-                Configure the network connection to your PLC
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4 pt-6">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="ip">PLC IP Address</Label>
-                  <Input
-                    id="ip"
-                    value={localConfig.ip}
-                    onChange={(e) => setLocalConfig({ ...localConfig, ip: e.target.value })}
-                    placeholder="192.168.1.100"
-                  />
+        {/* Tab Content */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+
+          {/* ═══ CLOUD TAB ═══ */}
+          {activeTab === 'cloud' && (
+            <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
+                    <Input
+                      id="subsystemId"
+                      value={localConfig.subsystemId}
+                      onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
+                      placeholder="16"
+                      disabled={busy}
+                      className="h-8 text-sm"
+                    />
+                  </div>
+                  <div className="col-span-2 space-y-1">
+                    <Label htmlFor="remoteUrl" className="text-xs">Remote URL</Label>
+                    <Input
+                      id="remoteUrl"
+                      value={localConfig.remoteUrl || ""}
+                      onChange={(e) => setLocalConfig({ ...localConfig, remoteUrl: e.target.value })}
+                      placeholder="https://your-cloud-service.com"
+                      disabled={busy}
+                      className="h-8 text-sm"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="path">Communication Path</Label>
-                  <Input
-                    id="path"
-                    value={localConfig.path}
-                    onChange={(e) => setLocalConfig({ ...localConfig, path: e.target.value })}
-                    placeholder="1,0"
-                  />
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="subsystemId">Subsystem ID</Label>
-                  <Input
-                    id="subsystemId"
-                    value={localConfig.subsystemId}
-                    onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
-                    placeholder="1"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="apiPassword">API Password</Label>
+                <div className="space-y-1">
+                  <Label htmlFor="apiPassword" className="text-xs">API Password</Label>
                   <Input
                     id="apiPassword"
                     type="text"
                     value={localConfig.apiPassword || ""}
                     onChange={(e) => setLocalConfig({ ...localConfig, apiPassword: e.target.value })}
                     placeholder="Project API password"
+                    disabled={busy}
+                    className="h-8 text-sm"
                   />
                 </div>
-              </div>
 
-              {/* Remote URL Field */}
-              <div className="space-y-2">
-                <Label htmlFor="remoteUrl">Remote URL</Label>
-                <Input
-                  id="remoteUrl"
-                  type="text"
-                  value={localConfig.remoteUrl || ""}
-                  onChange={(e) => setLocalConfig({ ...localConfig, remoteUrl: e.target.value })}
-                  placeholder="https://your-cloud-service.com"
-                />
-              </div>
+                <Button
+                  onClick={handlePullIos}
+                  disabled={busy || !localConfig.subsystemId || !localConfig.remoteUrl}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white h-10"
+                >
+                  <CloudDownload className="w-4 h-4 mr-2" />
+                  {isPulling ? `Pulling... (${pullElapsed}s)` : "Pull IOs from Cloud"}
+                </Button>
 
-            </CardContent>
-          </Card>
-
-        </div>
-
-        {/* Status Message */}
-        {saveStatus.type && (
-          <div className={`p-4 rounded-lg border-2 ${
-            saveStatus.type === 'loading' ? 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950 dark:border-amber-800 dark:text-amber-200' :
-            saveStatus.type === 'success' ? 'bg-green-50 border-green-200 text-green-800 dark:bg-green-950 dark:border-green-800 dark:text-green-200' :
-            'bg-red-50 border-red-200 text-red-800 dark:bg-red-950 dark:border-red-800 dark:text-red-200'
-          }`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                {saveStatus.type === 'loading' && (
-                  <div className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
+                {/* Status */}
+                {pullStatus.type && (
+                  <div className={`px-3 py-2 rounded-md text-sm font-medium ${
+                    pullStatus.type === 'loading' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200' :
+                    pullStatus.type === 'success' ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200' :
+                    'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      {pullStatus.type === 'loading' && <div className="animate-spin h-3.5 w-3.5 border-2 border-current border-t-transparent rounded-full" />}
+                      <span>{pullStatus.message}</span>
+                    </div>
+                  </div>
                 )}
-                {saveStatus.type === 'success' && <span>✅</span>}
-                {saveStatus.type === 'error' && <span>❌</span>}
-                <span className="font-medium">{saveStatus.message}</span>
               </div>
-              {saveStatus.type === 'loading' && elapsedTime > 0 && (
-                <span className="text-sm opacity-75">{elapsedTime}s</span>
+
+              {/* Log takes remaining space */}
+              {pullLog.length > 0 && (
+                <div className="flex-1 min-h-0 rounded border bg-black/95 dark:bg-black flex flex-col overflow-hidden">
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-green-400 uppercase tracking-wider border-b border-gray-800">
+                    <Terminal className="w-3 h-3" />
+                    Log
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-0.5">
+                    {pullLog.map((log, i) => (
+                      <div key={i} className={
+                        log.includes('ERROR') || log.includes('failed') ? 'text-red-400' :
+                        log.includes('retrieved') || log.includes('Success') || log.includes('Pulled') ? 'text-green-400' :
+                        'text-gray-400'
+                      }>{log}</div>
+                    ))}
+                    <div ref={pullLogEndRef} />
+                  </div>
+                </div>
               )}
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Activity Log */}
-        {activityLog.length > 0 && (
-          <div className="p-3 rounded-lg border bg-muted/50 dark:bg-muted/20">
-            <div className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
-              <Terminal className="w-3 h-3" />
-              Activity Log
-            </div>
-            <div className="font-mono text-xs space-y-0.5 max-h-24 overflow-y-auto">
-              {activityLog.map((log, i) => (
-                <div key={i} className={log.includes('ERROR') ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}>
-                  {log}
+          {/* ═══ PLC TAB ═══ */}
+          {activeTab === 'plc' && (
+            <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="ip" className="text-xs">PLC IP Address</Label>
+                    <Input
+                      id="ip"
+                      value={localConfig.ip}
+                      onChange={(e) => setLocalConfig({ ...localConfig, ip: e.target.value })}
+                      placeholder="192.168.1.100"
+                      disabled={busy}
+                      className="h-8 text-sm"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="path" className="text-xs">Communication Path</Label>
+                    <Input
+                      id="path"
+                      value={localConfig.path}
+                      onChange={(e) => setLocalConfig({ ...localConfig, path: e.target.value })}
+                      placeholder="1,0"
+                      disabled={busy}
+                      className="h-8 text-sm"
+                    />
+                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
 
-        <DialogFooter className="mt-6 border-t border-primary/10 pt-4 flex flex-wrap justify-between gap-2">
-          <div className="flex gap-2">
-            <Button
-              variant="destructive"
-              onClick={handleDisconnect}
-              disabled={isDisconnecting || isPulling}
-              className="min-w-[140px]"
-            >
-              <Unplug className="w-4 h-4 mr-2" />
-              {isDisconnecting ? "Disconnecting..." : isSaving ? "Cancel" : "Disconnect"}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handlePullIos}
-              className="border-blue-500/50 text-blue-600 hover:bg-blue-50 min-w-[100px]"
-              disabled={isPulling || isSaving || isDisconnecting}
-            >
-              <CloudDownload className="w-4 h-4 mr-2" />
-              {isPulling ? "Pulling..." : "Pull IOs"}
-            </Button>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleCancel} className="border-primary/30 hover:bg-muted/50" disabled={isSaving || isDisconnecting || isPulling}>
-              Cancel
-            </Button>
-            <Button onClick={handleSave} className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold min-w-[160px]" disabled={isSaving || isDisconnecting || isPulling}>
-              {isSaving ? "Saving..." : "Save & Reconnect"}
-            </Button>
-          </div>
-        </DialogFooter>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handlePlcConnect}
+                    disabled={busy || !localConfig.ip}
+                    className="flex-1 bg-green-600 hover:bg-green-700 text-white h-10"
+                  >
+                    <Wifi className="w-4 h-4 mr-2" />
+                    {isConnecting ? `Connecting... (${plcElapsed}s)` : "Connect to PLC"}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={handleDisconnect}
+                    disabled={isDisconnecting || isPulling}
+                    className="min-w-[120px] h-10"
+                  >
+                    <WifiOff className="w-4 h-4 mr-2" />
+                    {isDisconnecting ? "..." : isConnecting ? "Cancel" : "Disconnect"}
+                  </Button>
+                </div>
+
+                {/* Status */}
+                {plcStatus.type && (
+                  <div className={`px-3 py-2 rounded-md text-sm font-medium ${
+                    plcStatus.type === 'loading' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200' :
+                    plcStatus.type === 'success' ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200' :
+                    'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      {plcStatus.type === 'loading' && <div className="animate-spin h-3.5 w-3.5 border-2 border-current border-t-transparent rounded-full" />}
+                      <span>{plcStatus.message}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Log takes remaining space */}
+              <div className="flex-1 min-h-0 rounded border bg-black/95 dark:bg-black flex flex-col overflow-hidden">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-green-400 uppercase tracking-wider border-b border-gray-800">
+                  <Terminal className="w-3 h-3" />
+                  PLC Log
+                </div>
+                <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-0.5">
+                  {plcLog.length === 0 ? (
+                    <div className="text-gray-600">Waiting for connection...</div>
+                  ) : (
+                    plcLog.map((log, i) => (
+                      <div key={i} className={
+                        log.includes('ERROR') || log.includes('failed') || log.includes('timed out') || log.includes('not reachable') ? 'text-red-400' :
+                        log.includes('connected') || log.includes('saved') || log.includes('loaded') || log.includes('Disconnected') ? 'text-green-400' :
+                        log.startsWith('[') ? 'text-gray-400' :
+                        'text-gray-500'
+                      }>{log}</div>
+                    ))
+                  )}
+                  <div ref={plcLogEndRef} />
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
       </DialogContent>
     </Dialog>
   )

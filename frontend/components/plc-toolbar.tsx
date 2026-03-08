@@ -41,8 +41,8 @@ interface PlcToolbarProps {
   currentUser?: { isAdmin: boolean; fullName: string } | null
   onToggleSimulator?: () => void
   isSimulatorEnabled?: boolean
-  activeFilter?: 'failed' | 'not-tested' | 'passed' | null
-  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | null) => void
+  activeFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null
+  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null) => void
   tagStatus?: TagStatus | null
   onShowTagStatus?: () => void
 }
@@ -75,7 +75,7 @@ export function PlcToolbar({
   return (
     <div className="bg-card border-y border-border">
       {/* Main Toolbar Row */}
-      <div className="flex items-center gap-2 p-2">
+      <div className="flex items-center gap-2 p-2 flex-wrap">
         {/* START/STOP Button - Large and prominent */}
         <Button
           size="lg"
@@ -144,10 +144,36 @@ export function PlcToolbar({
             <span className="text-2xl font-bold leading-none">{notTestedIos}</span>
             <span className="text-[10px] uppercase tracking-wider font-sans opacity-80">Remaining</span>
           </button>
+
+          <div className="w-px h-8 bg-border mx-1" />
+
+          <button
+            onClick={() => onFilterChange?.(activeFilter === 'inputs' ? null : 'inputs')}
+            className={cn(
+              "h-14 px-4 flex items-center justify-center rounded-md transition-all text-sm font-medium",
+              activeFilter === 'inputs'
+                ? "bg-blue-600 text-white"
+                : "bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400"
+            )}
+          >
+            Inputs
+          </button>
+
+          <button
+            onClick={() => onFilterChange?.(activeFilter === 'outputs' ? null : 'outputs')}
+            className={cn(
+              "h-14 px-4 flex items-center justify-center rounded-md transition-all text-sm font-medium",
+              activeFilter === 'outputs'
+                ? "bg-orange-600 text-white"
+                : "bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400"
+            )}
+          >
+            Outputs
+          </button>
         </div>
 
         {/* Progress Bar - Flex grow to fill space */}
-        <div className="flex-1 mx-4">
+        <div className="flex-1 mx-4 min-w-[200px]">
           <div className="flex items-center gap-3">
             <div className="flex-1 h-8 bg-muted rounded-full overflow-hidden relative">
               {/* Passed portion (green) */}

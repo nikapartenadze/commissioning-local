@@ -25,10 +25,8 @@ import { UserMenu } from "@/components/user-menu"
 import { Download, Settings, BarChart3, History } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import {
-  PlcCommunicationService,
   PlcConfig,
   PlcConnectionStatus,
-  IoState
 } from "@/lib/plc-communication"
 import { useSignalR, IOUpdate, CommentUpdate, ErrorEvent } from "@/lib/signalr-client"
 import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/lib/api-config"
@@ -106,7 +104,7 @@ export default function CommissioningPage() {
   const [ios, setIos] = useState<IoItem[]>([])
   const [filteredIos, setFilteredIos] = useState<IoItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [plcService, setPlcService] = useState<PlcCommunicationService | null>(null)
+  const [signalRWasConnected, setSignalRWasConnected] = useState(false)
   const [plcStatus, setPlcStatus] = useState<PlcConnectionStatus>({
     isConnected: false,
     isTesting: false,
@@ -129,11 +127,27 @@ export default function CommissioningPage() {
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
   const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false)
-  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | null>(null)
+  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null>(null)
   const [confirmClearIo, setConfirmClearIo] = useState<IoItem | null>(null)
   const [errorLog, setErrorLog] = useState<ErrorEvent[]>([])
   const [tagStatus, setTagStatus] = useState<TagStatus | null>(null)
   const [showTagStatusDialog, setShowTagStatusDialog] = useState(false)
+
+  // localStorage key for dialog queue persistence
+  const DIALOG_QUEUE_STORAGE_KEY = 'io-checkout-dialog-queue'
+
+  // Persist dialog queue + currentDialogIo to localStorage
+  useEffect(() => {
+    const allQueuedIds: number[] = [
+      ...(currentDialogIo ? [currentDialogIo.id] : []),
+      ...dialogQueue.map(io => io.id)
+    ]
+    if (allQueuedIds.length > 0) {
+      localStorage.setItem(DIALOG_QUEUE_STORAGE_KEY, JSON.stringify(allQueuedIds))
+    } else {
+      localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
+    }
+  }, [dialogQueue, currentDialogIo])
 
   // Fetch tag status periodically
   useEffect(() => {
@@ -293,10 +307,10 @@ export default function CommissioningPage() {
     }
   }, [])
 
-  // Load initial config only - don't auto-fetch IOs or auto-connect
-  // User must explicitly pull IOs via config dialog
+  // Load config and existing IOs on page mount (no PLC or SignalR connection)
   useEffect(() => {
     loadPlcConfig()
+    loadIos()
 
     // Refresh status every 5 seconds to keep connection state in sync (but not testing state)
     const interval = setInterval(() => {
@@ -306,46 +320,8 @@ export default function CommissioningPage() {
     return () => clearInterval(interval)
   }, [projectId, loadPlcConfig])
 
-  // Initialize PLC service
-  useEffect(() => {
-    if (plcConfig) {
-      const service = new PlcCommunicationService(plcConfig)
-      setPlcService(service)
-      
-      // DON'T subscribe to status updates - we manage testing state locally
-      // const unsubscribeStatus = service.subscribeToStatus((status) => {
-      //   setPlcStatus(status)
-      // })
-      
-      // Subscribe to IO state updates
-      const unsubscribeIoState = service.subscribeToIoState((ioStates) => {
-        // Update IO states in real-time
-        setIos(prevIos => 
-          prevIos.map(io => {
-            const ioState = ioStates.find(state => state.id === io.id)
-            return ioState ? { ...io, state: ioState.state } : io
-          })
-        )
-      })
-      
-      // Initialize PLC connection
-      service.initialize().then(success => {
-        if (process.env.NODE_ENV === 'development') {
-          if (success) {
-            console.log('✅ PLC service initialized successfully')
-          } else {
-            console.log('❌ PLC service initialization failed')
-          }
-        }
-      })
-      
-      return () => {
-        // unsubscribeStatus()
-        unsubscribeIoState()
-        service.disconnect()
-      }
-    }
-  }, [plcConfig])
+  // PlcCommunicationService is not used - real-time updates come via SignalR
+  // PLC connection is managed by the C# backend, not the frontend
 
   // Use refs for frequently changing values to avoid re-registering SignalR handlers
   const plcStatusRef = useRef(plcStatus)
@@ -427,12 +403,29 @@ export default function CommissioningPage() {
     }
   }, [signalR.onError, signalR.offError])
 
+  // Re-fetch IOs when SignalR reconnects after a disconnect
+  useEffect(() => {
+    const handleReconnected = () => {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('🔄 SignalR reconnected - re-fetching IOs to sync state')
+      }
+      loadIos()
+    }
+
+    signalR.onReconnected(handleReconnected)
+
+    return () => {
+      signalR.offReconnected(handleReconnected)
+    }
+  }, [signalR.onReconnected, signalR.offReconnected])
+
   // Handle SignalR real-time updates
   useEffect(() => {
     if (process.env.NODE_ENV === 'development') {
       console.log('🔗 SignalR connection status:', signalR.isConnected)
     }
     if (signalR.isConnected) {
+      setSignalRWasConnected(true)
       if (process.env.NODE_ENV === 'development') {
         console.log('🔗 SignalR connected - listening for real-time IO updates')
       }
@@ -445,10 +438,10 @@ export default function CommissioningPage() {
         setIos(prevIos => 
           prevIos.map(io => {
             if (io.id === update.Id) {
-              // Check if this is a state-only update or a full IO update
-              // For outputs, if timestamp and comments are missing but result is "Not Tested", 
-              // it might be a trigger from output firing (not a state-only update)
-              const isStateOnlyUpdate = update.Result === 'Not Tested' && !update.Timestamp && !update.Comments && !isOutput(io.name)
+              // Check if this is a state-only update (from continuous PLC reader via UpdateState)
+              // or a full IO update (from result changes via UpdateIO)
+              // State-only: Result='Not Tested', no timestamp, no comments — applies to ALL tags (inputs AND outputs)
+              const isStateOnlyUpdate = update.Result === 'Not Tested' && !update.Timestamp && !update.Comments
               
               let updatedIo
               if (isStateOnlyUpdate) {
@@ -483,12 +476,8 @@ export default function CommissioningPage() {
               const shouldShowDialog = currentPlcStatus.isTesting && !io.result && (
                 // For inputs: show when state changes to TRUE
                 (!isOutput(io.name) && currentPreviousStates[io.id] !== update.State && update.State === 'TRUE') ||
-                // For outputs: show when triggered by output firing
-                // Either firing is in progress OR we got a "Not Tested" update without timestamp/comments (trigger from backend)
-                (isOutput(io.name) && update.Result === "Not Tested" && (
-                  currentOutputFiring[io.id] || // Firing flag is set
-                  (!update.Timestamp && !update.Comments) // Backend trigger (no timestamp/comments means it's a trigger)
-                ))
+                // For outputs: show only when user explicitly fired from UI (firing flag is set)
+                (isOutput(io.name) && currentOutputFiring[io.id])
               )
               
               if (shouldShowDialog) {
@@ -529,9 +518,27 @@ export default function CommissioningPage() {
         const data = await response.json()
         setIos(data)
         setFilteredIos(data)
-        
-        // First untested IO found (for future use)
-        // const firstUntested = data.find((io: IoItem) => !io.result)
+
+        // Restore dialog queue from localStorage (survives page refresh)
+        try {
+          const savedQueueIds = localStorage.getItem(DIALOG_QUEUE_STORAGE_KEY)
+          if (savedQueueIds) {
+            const ids = JSON.parse(savedQueueIds) as number[]
+            const restoredQueue = (data as IoItem[]).filter(
+              (io: IoItem) => ids.includes(io.id) && (!io.result || io.result === 'Not Tested')
+            )
+            if (restoredQueue.length > 0) {
+              setDialogQueue(restoredQueue)
+              if (process.env.NODE_ENV === 'development') {
+                console.log('📋 Restored dialog queue from localStorage:', restoredQueue.map((io: IoItem) => io.name))
+              }
+            }
+            localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
+          }
+        } catch (e) {
+          // Ignore localStorage errors
+          localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
+        }
       } else {
         logger.error('Failed to load IOs from C# backend:', response.status)
         toast({ title: "Failed to load IO data", description: `Backend returned ${response.status}`, variant: "destructive" })
@@ -833,15 +840,35 @@ export default function CommissioningPage() {
     }
   }
 
-  const handleConfigChange = async (newConfig: PlcConfig) => {
-    logger.log('Config change triggered with:', newConfig)
+  const handleCloudPull = async (newConfig: PlcConfig) => {
+    logger.log('Cloud pull completed with config:', newConfig)
     setPlcConfig(newConfig)
     setShowConfigDialog(false)
 
     // Refetch IOs from backend (data should already be synced)
     await loadIos()
 
-    // Connect SignalR for real-time updates now that we have data
+    // Update URL if subsystem changed
+    if (newConfig.subsystemId !== params.id) {
+      router.push(`/commissioning/${newConfig.subsystemId}`)
+    }
+
+    // Do NOT connect SignalR - Pull IOs is a cloud download only
+  }
+
+  const handlePlcConnect = async (newConfig: PlcConfig) => {
+    logger.log('PLC connect triggered with config:', newConfig)
+    setPlcConfig(newConfig)
+
+    // Refetch IOs from backend
+    await loadIos()
+
+    // Update URL if subsystem changed (use replace to avoid full reload)
+    if (newConfig.subsystemId !== params.id) {
+      router.replace(`/commissioning/${newConfig.subsystemId}`)
+    }
+
+    // Connect SignalR for real-time PLC updates
     if (!signalR.isConnected) {
       signalR.connect()
     }
@@ -949,7 +976,7 @@ export default function CommissioningPage() {
       </header>
 
       {/* SignalR Connection Warning - Shows when real-time updates are disconnected */}
-      {!signalR.isConnected && (
+      {signalRWasConnected && !signalR.isConnected && (
         <div className="bg-red-500/10 border-b border-red-500/30 px-4 py-2 flex items-center gap-2 flex-shrink-0">
           <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
           <span className="text-sm text-red-600 dark:text-red-400 font-medium">
@@ -1041,7 +1068,8 @@ export default function CommissioningPage() {
           open={showConfigDialog}
           onOpenChange={setShowConfigDialog}
           config={plcConfig}
-          onConfigChange={handleConfigChange}
+          onCloudPull={handleCloudPull}
+          onPlcConnect={handlePlcConnect}
           onTestConnection={handleTestConnection}
         />
 

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using IO_Checkout_Tool.Models;
+using IO_Checkout_Tool.Services;
 using IO_Checkout_Tool.Services.Interfaces;
 
 namespace IO_Checkout_Tool.Controllers;
@@ -15,17 +16,20 @@ public class ConfigurationController : ControllerBase
     private readonly IConfigurationService _configurationService;
     private readonly IPlcCommunicationService _plcCommunicationService;
     private readonly ILogger<ConfigurationController> _logger;
+    private readonly RecentLogService _recentLogService;
 
     public ConfigurationController(
         IDbContextFactory<TagsContext> contextFactory,
         IConfigurationService configurationService,
         IPlcCommunicationService plcCommunicationService,
-        ILogger<ConfigurationController> logger)
+        ILogger<ConfigurationController> logger,
+        RecentLogService recentLogService)
     {
         _contextFactory = contextFactory;
         _configurationService = configurationService;
         _plcCommunicationService = plcCommunicationService;
         _logger = logger;
+        _recentLogService = recentLogService;
     }
 
     // GET: api/configuration
@@ -431,27 +435,29 @@ public class ConfigurationController : ControllerBase
                 return StatusCode(500, "Failed to update configuration");
             }
 
-            // Reinitialize the application with new settings
-            await _configurationService.ReinitializeApplicationAsync();
-
-            // Get IO count after reinitialization
-            int ioCount = 0;
-            try
+            // Fire reinitialization in the background — don't block the HTTP response.
+            // The frontend polls /api/status to detect when PLC connects.
+            _ = Task.Run(async () =>
             {
-                var plcService = HttpContext.RequestServices.GetService<IPlcCommunicationService>();
-                ioCount = plcService?.TagList?.Count ?? 0;
-            }
-            catch { /* Ignore errors getting IO count */ }
+                try
+                {
+                    await _configurationService.ReinitializeApplicationAsync();
+                }
+                catch (Exception bgEx)
+                {
+                    _logger.LogError(bgEx, "Background reinitialization failed");
+                }
+            });
 
-            _logger.LogInformation("Updated config.json and reinitialized application. IP={Ip}, Path={Path}, SubsystemId={SubsystemId}, IOs={IoCount}",
-                request.Ip, request.Path, request.SubsystemId, ioCount);
+            _logger.LogInformation("Config saved, reinitialization started in background. IP={Ip}, Path={Path}, SubsystemId={SubsystemId}",
+                request.Ip, request.Path, request.SubsystemId);
 
             return Ok(new {
-                message = "Configuration updated and application reinitialized successfully",
+                message = "Configuration saved. Reinitialization in progress.",
                 ip = request.Ip,
                 path = request.Path,
                 subsystemId = request.SubsystemId,
-                ioCount = ioCount
+                reinitializing = true
             });
         }
         catch (Exception ex)
@@ -459,6 +465,14 @@ public class ConfigurationController : ControllerBase
             _logger.LogError(ex, "Error updating config.json");
             return StatusCode(500, "Error updating configuration");
         }
+    }
+
+    // GET: api/configuration/logs?afterId=0
+    [HttpGet("logs")]
+    public ActionResult<object> GetRecentLogs([FromQuery] long afterId = 0)
+    {
+        var entries = _recentLogService.GetEntriesSince(afterId);
+        return Ok(new { entries });
     }
 }
 
