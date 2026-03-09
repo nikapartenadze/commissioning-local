@@ -23,16 +23,18 @@ interface ValueChangeDialogProps {
   onYes: (io: IoItem) => void
   onNo: (io: IoItem) => void
   onCancel: (io: IoItem) => void
+  onClearAll?: () => void
 }
 
-export function ValueChangeDialog({ 
-  open, 
-  onOpenChange, 
+export function ValueChangeDialog({
+  open,
+  onOpenChange,
   io,
   remainingCount = 0,
   onYes,
   onNo,
-  onCancel
+  onCancel,
+  onClearAll
 }: ValueChangeDialogProps) {
   if (!io) return null
 
@@ -120,9 +122,18 @@ export function ValueChangeDialog({
             {/* Live counter for remaining dialogs */}
             {remainingCount > 0 && (
               <div className="p-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                <div className="text-xs font-medium text-center text-yellow-600 dark:text-yellow-400 flex items-center justify-center gap-1">
-                  <span>⏳</span>
+                <div className="text-xs font-medium text-center text-yellow-600 dark:text-yellow-400 flex items-center justify-center gap-2">
                   <span>{remainingCount} more {remainingCount === 1 ? 'test' : 'tests'} waiting...</span>
+                  {onClearAll && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-100"
+                      onClick={onClearAll}
+                    >
+                      Clear All
+                    </Button>
+                  )}
                 </div>
               </div>
             )}

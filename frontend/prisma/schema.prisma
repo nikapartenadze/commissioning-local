@@ -1,66 +1,123 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// Prisma schema for local SQLite database
+// Replaces Entity Framework Core's TagsContext
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
+// Project for organizing subsystems
 model Project {
-  id         Int         @id @default(autoincrement())
-  name       String      @unique
-  apiKey     String?     @map("api_key") @db.VarChar(255)
+  id          Int         @id @default(autoincrement())
+  name        String      @map("Name")
+  description String?     @map("Description")
+  createdAt   DateTime    @default(now()) @map("CreatedAt")
+  updatedAt   DateTime?   @map("UpdatedAt")
+
   subsystems Subsystem[]
 
-  @@map("projects")
+  @@map("Projects")
 }
 
+// Subsystem within a project
 model Subsystem {
-  id        Int     @id @default(autoincrement())
-  projectId Int     @map("project_id")
-  name      String?
-  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  ios       Io[]
+  id        Int      @id @default(autoincrement())
+  projectId Int      @map("ProjectId")
+  name      String?  @map("Name")
+  createdAt DateTime @default(now()) @map("CreatedAt")
 
-  @@index([projectId])
-  @@map("subsystems")
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ios     Io[]
+
+  @@index([projectId], name: "idx_subsystems_projectid")
+  @@map("Subsystems")
 }
 
+// I/O point for PLC testing
 model Io {
-  id           Int           @id @default(autoincrement())
-  subsystemId  Int           @map("subsystemid")
-  name         String        @db.VarChar(100)
-  description  String?       @db.VarChar(500)
-  result       String?       @db.VarChar(50)
-  timestamp    String?
-  comments     String?       @db.VarChar(1000)
-  order        Int?          @map("Order")
-  version      BigInt        @default(0)
-  subsystem    Subsystem     @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
+  id                Int       @id @default(autoincrement())
+  subsystemId       Int       @map("SubsystemId")
+  name              String?   @map("Name")
+  description       String?   @map("Description")
+  result            String?   @map("Result")
+  timestamp         String?   @map("Timestamp")
+  comments          String?   @map("Comments")
+  order             Int?      @map("Order")
+  version           BigInt    @default(0) @map("Version")
+  tagType           String?   @map("TagType")
+  cloudSyncedAt     DateTime? @map("CloudSyncedAt")
+  networkDeviceName String?   @map("NetworkDeviceName")
+
+  subsystem     Subsystem     @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
   testHistories TestHistory[]
 
   @@index([subsystemId], name: "idx_ios_subsystemid")
-  @@index([name], name: "idx_ios_name")
-  @@index([version], name: "idx_ios_version")
-  @@map("ios")
+  @@index([result], name: "idx_ios_result")
+  @@map("Ios")
 }
 
+// Audit trail of test results
 model TestHistory {
-  id        Int      @id @default(autoincrement())
-  ioId      Int      @map("ioid")
-  result    String?  @db.VarChar(50)
-  state     String?  @db.VarChar(50)
-  comments  String?  @db.VarChar(1000)
-  testedBy  String?  @map("testedby") @db.VarChar(100)
-  timestamp String
-  io        Io       @relation(fields: [ioId], references: [id], onDelete: Cascade)
+  id          Int     @id @default(autoincrement())
+  ioId        Int     @map("IoId")
+  result      String? @map("Result")
+  timestamp   String  @map("Timestamp")
+  comments    String? @map("Comments")
+  testedBy    String? @map("TestedBy")
+  state       String? @map("State")
+  failureMode String? @map("FailureMode")
 
-  @@index([ioId], name: "idx_testhistories_ioid")
+  io Io @relation(fields: [ioId], references: [id], onDelete: Cascade)
+
+  @@index([ioId])
   @@index([timestamp], name: "idx_testhistories_timestamp")
-  @@map("testhistories")
+  @@map("TestHistories")
 }
 
+// User authentication with PIN
+model User {
+  id         Int      @id @default(autoincrement())
+  fullName   String   @unique @map("FullName")
+  pin        String   @map("Pin")
+  isAdmin    Boolean  @default(false) @map("IsAdmin")
+  isActive   Boolean  @default(true) @map("IsActive")
+  createdAt  String   @map("CreatedAt")
+  lastUsedAt String?  @map("LastUsedAt")
+
+  @@map("Users")
+}
+
+// Offline queue for cloud sync
+model PendingSync {
+  id            Int      @id @default(autoincrement())
+  ioId          Int      @map("IoId")
+  inspectorName String?  @map("InspectorName")
+  testResult    String?  @map("TestResult")
+  comments      String?  @map("Comments")
+  state         String?  @map("State")
+  timestamp     DateTime? @map("Timestamp")
+  createdAt     DateTime @default(now()) @map("CreatedAt")
+  retryCount    Int      @default(0) @map("RetryCount")
+  lastError     String?  @map("LastError")
+  version       BigInt   @default(0) @map("Version")
+
+  @@index([ioId], name: "idx_pendingsyncs_ioid")
+  @@index([createdAt], name: "idx_pendingsyncs_createdat")
+  @@map("PendingSyncs")
+}
+
+// Diagnostic troubleshooting steps for tag types
+model TagTypeDiagnostic {
+  tagType         String   @map("TagType")
+  failureMode     String   @map("FailureMode")
+  diagnosticSteps String   @map("DiagnosticSteps")
+  createdAt       DateTime @default(now()) @map("CreatedAt")
+  updatedAt       DateTime? @map("UpdatedAt")
+
+  @@id([tagType, failureMode])
+  @@map("TagTypeDiagnostics")
+}

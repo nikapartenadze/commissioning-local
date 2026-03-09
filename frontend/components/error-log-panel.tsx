@@ -46,6 +46,7 @@ export function ErrorLogPanel({ errors, onClear, className }: ErrorLogPanelProps
       case 'cloud': return 'Cloud'
       case 'tags': return 'Tags'
       case 'signalr': return 'Connection'
+      case 'websocket': return 'Connection'
       case 'system': return 'System'
       default: return source
     }
@@ -76,13 +77,16 @@ export function ErrorLogPanel({ errors, onClear, className }: ErrorLogPanelProps
               {warningCount} {warningCount === 1 ? 'warning' : 'warnings'}
             </span>
           )}
-          <button
+          <div
+            role="button"
+            tabIndex={0}
             onClick={(e) => { e.stopPropagation(); onClear() }}
-            className="p-1 hover:bg-muted rounded"
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onClear() }}}
+            className="p-1 hover:bg-muted rounded cursor-pointer"
             title="Clear all"
           >
             <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-          </button>
+          </div>
           {expanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
         </div>
       </button>

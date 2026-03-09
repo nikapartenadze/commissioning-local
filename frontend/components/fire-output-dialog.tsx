@@ -46,22 +46,31 @@ export function FireOutputDialog({
     }
   }, [open])
 
-  // Simple click toggle: click once = start, click again = stop
-  const handleToggleFire = useCallback(() => {
-    if (!isTesting || !ioRef.current) return
+  // Hold-to-fire: press and hold to keep output ON, release to turn OFF
+  const handleFireStart = useCallback(() => {
+    if (!isTesting || !ioRef.current || isFiringRef.current) return
 
-    if (isFiringRef.current) {
-      // Currently firing → stop
+    isFiringRef.current = true
+    setIsFiring(true)
+    onFireOutput(ioRef.current, 'start')
+  }, [isTesting, onFireOutput])
+
+  const handleFireStop = useCallback(() => {
+    if (!isFiringRef.current || !ioRef.current) return
+
+    isFiringRef.current = false
+    setIsFiring(false)
+    onFireOutput(ioRef.current, 'stop')
+  }, [onFireOutput])
+
+  // Handle mouse/touch leaving the button area while pressed
+  const handleFireCancel = useCallback(() => {
+    if (isFiringRef.current && ioRef.current) {
       isFiringRef.current = false
       setIsFiring(false)
       onFireOutput(ioRef.current, 'stop')
-    } else {
-      // Not firing → start
-      isFiringRef.current = true
-      setIsFiring(true)
-      onFireOutput(ioRef.current, 'start')
     }
-  }, [isTesting, onFireOutput])
+  }, [onFireOutput])
 
   const handleClose = useCallback(() => {
     if (isFiringRef.current && ioRef.current) {
@@ -115,38 +124,43 @@ export function FireOutputDialog({
           {/* Instructions */}
           <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
             <span className="text-sm text-amber-700 dark:text-amber-300">
-              Click <strong>FIRE</strong> to turn output ON. Click <strong>STOP</strong> to turn it OFF.
-              Watch the State badge update. Pass/fail prompt appears after stopping if PLC responded.
+              <strong>HOLD</strong> the FIRE button to keep output ON. <strong>RELEASE</strong> to turn it OFF.
+              Watch the State badge update. Pass/fail prompt appears after release.
             </span>
           </div>
 
-          {/* Fire / Stop Button */}
+          {/* Fire Button - Hold to Fire */}
           <div className="flex flex-col items-center gap-3">
             <Button
               size="lg"
-              className={`w-40 h-20 text-lg font-bold select-none ${
+              className={`w-48 h-24 text-xl font-bold select-none touch-none ${
                 isFiring
-                  ? 'bg-red-600 hover:bg-red-700 text-white ring-4 ring-red-300'
+                  ? 'bg-red-600 hover:bg-red-600 text-white ring-4 ring-red-300 animate-pulse scale-105'
                   : 'bg-green-500 hover:bg-green-600 text-white'
-              } ${!isTesting ? 'opacity-50 cursor-not-allowed' : ''}`}
-              onClick={handleToggleFire}
+              } ${!isTesting ? 'opacity-50 cursor-not-allowed' : ''} transition-transform`}
+              onMouseDown={handleFireStart}
+              onMouseUp={handleFireStop}
+              onMouseLeave={handleFireCancel}
+              onTouchStart={handleFireStart}
+              onTouchEnd={handleFireStop}
+              onTouchCancel={handleFireCancel}
               disabled={!isTesting}
             >
               {isFiring ? (
                 <>
-                  <Square className="w-5 h-5 mr-2" />
-                  STOP
+                  <Square className="w-6 h-6 mr-2" />
+                  FIRING...
                 </>
               ) : (
                 <>
-                  <Play className="w-5 h-5 mr-2" />
-                  FIRE
+                  <Play className="w-6 h-6 mr-2" />
+                  HOLD TO FIRE
                 </>
               )}
             </Button>
             {isFiring && (
               <span className="text-sm text-red-600 font-medium animate-pulse">
-                Output is ON — click STOP when done
+                Output is ON — release to stop
               </span>
             )}
           </div>

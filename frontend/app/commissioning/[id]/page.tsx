@@ -74,14 +74,23 @@ export default function CommissioningPage() {
   const params = useParams()
   const router = useRouter()
   const { currentUser, isLoading: userLoading } = useUser()
-  const projectId = parseInt(params.id as string)
-  
+  const paramId = params.id as string
+  const projectId = paramId === '_' ? 0 : parseInt(paramId)
+  const isUnconfigured = paramId === '_' || isNaN(projectId)
+
   // Redirect to login if not authenticated
   useEffect(() => {
     if (!userLoading && !currentUser) {
       router.push('/')
     }
   }, [currentUser, userLoading, router])
+
+  // Auto-open config dialog when not configured
+  useEffect(() => {
+    if (isUnconfigured && currentUser) {
+      setShowConfigDialog(true)
+    }
+  }, [isUnconfigured, currentUser])
 
   // Check simulator status on mount
   useEffect(() => {
@@ -176,8 +185,9 @@ export default function CommissioningPage() {
 
   // Auto-show next dialog from queue
   useEffect(() => {
-    // Don't advance queue if FailCommentDialog is open
-    if (showFailCommentDialog) {
+    // Don't advance queue if FailCommentDialog or FireOutputDialog is open
+    // This ensures Pass/Fail dialog waits until user is done with Fire dialog
+    if (showFailCommentDialog || showFireOutputDialog) {
       return
     }
 
@@ -194,7 +204,7 @@ export default function CommissioningPage() {
       // Close dialog when queue is empty
       setShowValueChangeDialog(false)
     }
-  }, [dialogQueue, currentDialogIo, showFailCommentDialog])
+  }, [dialogQueue, currentDialogIo, showFailCommentDialog, showFireOutputDialog])
 
   // Add IO to dialog queue
   const addToDialogQueue = useCallback((io: IoItem) => {
@@ -236,7 +246,7 @@ export default function CommissioningPage() {
   const handleSwitchSubsystem = async (subsystemId: number) => {
     try {
       // In a real implementation, this would:
-      // 1. Update the C# backend configuration with the new subsystem ID
+      // 1. Update the backend configuration with the new subsystem ID
       // 2. Trigger a reconnection to the new subsystem
       // 3. Navigate to the new subsystem's testing page
       
@@ -297,12 +307,12 @@ export default function CommissioningPage() {
         }))
         
         if (process.env.NODE_ENV === 'development') {
-          console.log('✅ Loaded PLC config from C# backend:', status)
+          console.log('✅ Loaded PLC config from backend:', status)
         }
       }
     } catch (error) {
       if (process.env.NODE_ENV === 'development') {
-        console.error('❌ Failed to load PLC config from C# backend:', error)
+        console.error('❌ Failed to load PLC config from backend:', error)
       }
     }
   }, [])
@@ -329,7 +339,7 @@ export default function CommissioningPage() {
   }, [projectId]) // Only re-run when projectId changes
 
   // PlcCommunicationService is not used - real-time updates come via SignalR
-  // PLC connection is managed by the C# backend, not the frontend
+  // PLC connection is managed by the backend, not the frontend
 
   // Use refs for frequently changing values to avoid re-registering SignalR handlers
   const plcStatusRef = useRef(plcStatus)
@@ -394,8 +404,8 @@ export default function CommissioningPage() {
       // Add to error log (newest first, max 50)
       setErrorLog(prev => [event, ...prev].slice(0, 50))
 
-      // Skip toast for SignalR retry messages — they spam during PLC init
-      if (event.source === 'signalr' && event.message.includes('connecting')) {
+      // Skip toast for WebSocket/SignalR retry messages — they spam during PLC init
+      if ((event.source === 'websocket') && event.message.includes('connecting')) {
         return
       }
 
@@ -524,17 +534,28 @@ export default function CommissioningPage() {
   const loadIos = async () => {
     try {
       setLoading(true)
-      // Load IOs from C# backend (real PLC data) - retry on failure
+      // Load IOs from backend (real PLC data) - retry on failure
       const response = await fetchWithRetry(API_ENDPOINTS.ios)
       if (response.ok) {
         const data = await response.json()
         setIos(data)
         setFilteredIos(data)
 
-        // Auto-connect SignalR when IOs are loaded (for real-time state updates)
-        if (data.length > 0 && !signalR.isConnected) {
-          signalR.connect()
+        // Initialize previousStates with current states to prevent flood of dialogs on load
+        // Without this, every TRUE state would be treated as a "change" from undefined
+        const initialStates: Record<number, string> = {}
+        for (const io of data as IoItem[]) {
+          if (io.state) {
+            initialStates[io.id] = io.state
+          }
         }
+        setPreviousStates(initialStates)
+        if (process.env.NODE_ENV === 'development') {
+          console.log('📊 Initialized previousStates for', Object.keys(initialStates).length, 'IOs')
+        }
+
+        // Note: Don't auto-connect WebSocket here - only connect when PLC is connected
+        // WebSocket is for real-time PLC tag updates, not needed for just viewing IOs
 
         // Restore dialog queue from localStorage (survives page refresh)
         try {
@@ -557,7 +578,7 @@ export default function CommissioningPage() {
           localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
         }
       } else {
-        logger.error('Failed to load IOs from C# backend:', response.status)
+        logger.error('Failed to load IOs from backend:', response.status)
         toast({ title: "Failed to load IO data", description: `Backend returned ${response.status}`, variant: "destructive" })
         setIos([])
         setFilteredIos([])
@@ -641,12 +662,13 @@ export default function CommissioningPage() {
       ))
 
       if (process.env.NODE_ENV === 'development') {
-        console.log('Calling C# backend to mark IO as passed:', io.id, io.name)
+        console.log('Calling backend to mark IO as passed:', io.id, io.name)
       }
       const response = await authFetch(API_ENDPOINTS.ioPass(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          result: 'Pass',
           comments: '',
           currentUser: currentUser?.fullName || 'Unknown'
         })
@@ -686,12 +708,13 @@ export default function CommissioningPage() {
       ))
 
       if (process.env.NODE_ENV === 'development') {
-        console.log('Calling C# backend to mark IO as failed:', io.id, io.name, comments, failureMode)
+        console.log('Calling backend to mark IO as failed:', io.id, io.name, comments, failureMode)
       }
       const response = await authFetch(API_ENDPOINTS.ioFail(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          result: 'Fail',
           comments,
           currentUser: currentUser?.fullName || 'Unknown',
           failureMode
@@ -720,7 +743,17 @@ export default function CommissioningPage() {
   }
 
   const handleClearResult = async (io: IoItem) => {
+    // Save previous state for rollback
+    const previousResult = io.result
+    const previousComments = io.comments
+    const previousTimestamp = io.timestamp
+
     try {
+      // Optimistically update UI immediately
+      setIos(prevIos => prevIos.map(i =>
+        i.id === io.id ? { ...i, result: null, comments: null, timestamp: null } : i
+      ))
+
       const response = await authFetch(API_ENDPOINTS.ioClear(io.id), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -728,17 +761,26 @@ export default function CommissioningPage() {
           currentUser: currentUser?.fullName || 'Unknown'
         })
       })
-      
+
       if (response.ok) {
         if (process.env.NODE_ENV === 'development') {
-          console.log('✅ IO cleared via C# backend')
+          console.log('✅ IO cleared via backend')
         }
-        // SignalR will handle the real-time update
       } else {
         logger.error('Failed to clear IO:', response.status)
+        // Rollback optimistic update
+        setIos(prevIos => prevIos.map(i =>
+          i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+        ))
+        toast({ title: "Failed to clear result", variant: "destructive" })
       }
     } catch (error) {
       logger.error('Error clearing IO:', error)
+      // Rollback optimistic update
+      setIos(prevIos => prevIos.map(i =>
+        i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+      ))
+      toast({ title: "Failed to clear result", description: "Network error", variant: "destructive" })
     }
   }
 
@@ -798,6 +840,19 @@ export default function CommissioningPage() {
     }
     // Clear current dialog and show next in queue
     setCurrentDialogIo(null)
+  }
+
+  const handleClearAllDialogs = () => {
+    // Clear all pending dialogs without marking any Pass/Fail
+    if (process.env.NODE_ENV === 'development') {
+      console.log('🛑 Clearing all pending dialogs')
+    }
+    setDialogQueue([])
+    setCurrentDialogIo(null)
+    setPendingFailIo(null)
+    setShowValueChangeDialog(false)
+    setShowFailCommentDialog(false)
+    localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
   }
 
   const handleCommentChange = async (io: IoItem, comment: string) => {
@@ -885,9 +940,9 @@ export default function CommissioningPage() {
     // Refetch IOs from backend (data should already be synced)
     await loadIos()
 
-    // Update URL if subsystem changed
-    if (newConfig.subsystemId !== params.id) {
-      router.push(`/commissioning/${newConfig.subsystemId}`)
+    // Update URL without navigation/remount (just for bookmarking)
+    if (newConfig.subsystemId && newConfig.subsystemId !== params.id) {
+      window.history.replaceState(null, '', `/commissioning/${newConfig.subsystemId}`)
     }
 
     // Do NOT connect SignalR - Pull IOs is a cloud download only
@@ -907,7 +962,7 @@ export default function CommissioningPage() {
   }
 
   const handleTestConnection = async (): Promise<boolean> => {
-    // Test connection via C# backend (real PLC communication)
+    // Test connection via backend (real PLC communication)
     try {
       const response = await authFetch(API_ENDPOINTS.plcTestConnection, {
         method: 'POST',
@@ -920,7 +975,7 @@ export default function CommissioningPage() {
       const result = await response.json()
       return result.success
     } catch (error) {
-      logger.error('C# backend connection test failed:', error)
+      logger.error('backend connection test failed:', error)
       return false
     }
   }
@@ -935,6 +990,20 @@ export default function CommissioningPage() {
       if (response.ok) {
         const result = await response.json()
         logger.log('Testing toggled:', result.isTesting)
+
+        // If testing is being turned OFF, clear all pending dialogs
+        if (!result.isTesting) {
+          setDialogQueue([])
+          setCurrentDialogIo(null)
+          setPendingFailIo(null)
+          setShowValueChangeDialog(false)
+          setShowFailCommentDialog(false)
+          setShowFireOutputDialog(false)
+          localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
+          if (process.env.NODE_ENV === 'development') {
+            console.log('🛑 Testing stopped - cleared all pending dialogs')
+          }
+        }
 
         setPlcStatus(prev => ({
           ...prev,
@@ -1009,10 +1078,15 @@ export default function CommissioningPage() {
 
       {/* SignalR Connection Warning - Shows when real-time updates are disconnected */}
       {signalRWasConnected && !signalR.isConnected && (
-        <div className="bg-red-500/10 border-b border-red-500/30 px-4 py-2 flex items-center gap-2 flex-shrink-0">
-          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-          <span className="text-sm text-red-600 dark:text-red-400 font-medium">
-            Real-time connection lost — Reconnecting...
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+            <span className="text-sm text-amber-600 dark:text-amber-400 font-medium">
+              Live updates paused — Reconnecting to server...
+            </span>
+          </div>
+          <span className="text-xs text-amber-500/70">
+            PLC data may be stale until reconnected
           </span>
         </div>
       )}
@@ -1139,6 +1213,7 @@ export default function CommissioningPage() {
           onYes={handleValueChangeYes}
           onNo={handleValueChangeNo}
           onCancel={handleValueChangeCancel}
+          onClearAll={handleClearAllDialogs}
         />
 
         {/* Fail Comment Dialog - use current IO from array to get live state updates */}
