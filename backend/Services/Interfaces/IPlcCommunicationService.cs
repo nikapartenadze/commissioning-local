@@ -16,7 +16,7 @@ public interface IPlcCommunicationService
     bool InitializeOutputTag(Io tag);
     (bool success, string? error) ToggleBit();
     (bool success, string? error) SetBit(int value);
-    Task ReloadDataAsync();
+    Task ReloadDataAsync(string? excludePatterns = null);
     Task ReloadDataAfterCloudSyncAsync();
     void UpdatePlcConnectionStatus(bool isConnected);
     Task ReinitializePlcConnectionAsync();
