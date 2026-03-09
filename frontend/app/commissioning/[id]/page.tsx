@@ -307,18 +307,26 @@ export default function CommissioningPage() {
     }
   }, [])
 
+  // Track initialization to prevent duplicate calls from StrictMode or re-renders
+  const isInitializedRef = useRef(false)
+
   // Load config and existing IOs on page mount (no PLC or SignalR connection)
+  // No polling needed - SignalR provides real-time updates for state changes
   useEffect(() => {
+    // Prevent duplicate initialization (React StrictMode runs effects twice)
+    if (isInitializedRef.current) {
+      return
+    }
+    isInitializedRef.current = true
+
     loadPlcConfig()
     loadIos()
 
-    // Refresh status every 5 seconds to keep connection state in sync (but not testing state)
-    const interval = setInterval(() => {
-      loadPlcConfig(false) // Don't override testing state
-    }, 5000)
-
-    return () => clearInterval(interval)
-  }, [projectId, loadPlcConfig])
+    return () => {
+      isInitializedRef.current = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]) // Only re-run when projectId changes
 
   // PlcCommunicationService is not used - real-time updates come via SignalR
   // PLC connection is managed by the C# backend, not the frontend
