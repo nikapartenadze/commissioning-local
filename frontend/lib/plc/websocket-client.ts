@@ -1,0 +1,681 @@
+"use client"
+
+/**
+ * WebSocket Client for Real-time PLC Updates
+ * React hook for connecting to the PLC WebSocket server
+ */
+
+import { useEffect, useRef, useState, useCallback } from 'react'
+import type {
+  PlcWebSocketMessage,
+  UpdateStateMessage,
+  UpdateIOMessage,
+  CommentUpdateMessage,
+  NetworkStatusChangedMessage,
+  ErrorEventMessage
+} from './websocket-server'
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface IOUpdate {
+  Id: number
+  Result: 'Passed' | 'Failed' | 'Cleared' | 'Not Tested'
+  State: 'TRUE' | 'FALSE'
+  Timestamp?: string
+  Comments?: string
+}
+
+export interface ConfigurationEvent {
+  type: 'reloading' | 'reloaded'
+}
+
+export interface CommentUpdate {
+  ioId: number
+  comments: string
+}
+
+export interface NetworkStatusUpdate {
+  moduleName: string
+  status: string
+  errorCount: number
+}
+
+export interface ErrorEvent {
+  source: 'plc' | 'cloud' | 'tags' | 'system' | 'websocket'
+  message: string
+  severity: 'error' | 'warning' | 'info'
+  timestamp: Date
+}
+
+export interface WebSocketConnectionOptions {
+  url?: string
+  reconnectInterval?: number
+  maxReconnectAttempts?: number
+  /** If false, won't auto-connect. Default: true */
+  enabled?: boolean
+}
+
+export interface WebSocketConnection {
+  isConnected: boolean
+  isConfigReloading: boolean
+  isTesting: boolean
+  connect: () => void
+  disconnect: () => void
+  onIOUpdate: (callback: (update: IOUpdate) => void) => void
+  offIOUpdate: (callback: (update: IOUpdate) => void) => void
+  onConfigurationChange: (callback: (event: ConfigurationEvent) => void) => void
+  offConfigurationChange: (callback: (event: ConfigurationEvent) => void) => void
+  onTestingStateChange: (callback: (isTesting: boolean) => void) => void
+  offTestingStateChange: (callback: (isTesting: boolean) => void) => void
+  onCommentUpdate: (callback: (update: CommentUpdate) => void) => void
+  offCommentUpdate: (callback: (update: CommentUpdate) => void) => void
+  onNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
+  offNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
+  onError: (callback: (event: ErrorEvent) => void) => void
+  offError: (callback: (event: ErrorEvent) => void) => void
+  onReconnected: (callback: () => void) => void
+  offReconnected: (callback: () => void) => void
+}
+
+// ============================================================================
+// Default Configuration
+// ============================================================================
+
+const DEFAULT_WS_URL = 'ws://localhost:3001'
+const DEFAULT_RECONNECT_INTERVAL = 3000
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
+
+function getDefaultWebSocketUrl(): string {
+  if (typeof window === 'undefined') {
+    return DEFAULT_WS_URL
+  }
+  // Use the same host as the page but with WebSocket protocol
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.hostname}:3001`
+}
+
+// ============================================================================
+// React Hook
+// ============================================================================
+
+export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSocketConnection {
+  const {
+    url = getDefaultWebSocketUrl(),
+    reconnectInterval = DEFAULT_RECONNECT_INTERVAL,
+    maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+    enabled = true
+  } = options
+
+  const [isConnected, setIsConnected] = useState(false)
+  const [isConfigReloading, setIsConfigReloading] = useState(false)
+  const [isTesting, setIsTesting] = useState(false)
+
+  const wsRef = useRef<WebSocket | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const isManualDisconnectRef = useRef(false)
+
+  // Callback refs
+  const ioCallbacksRef = useRef<Set<(update: IOUpdate) => void>>(new Set())
+  const configCallbacksRef = useRef<Set<(event: ConfigurationEvent) => void>>(new Set())
+  const testingCallbacksRef = useRef<Set<(isTesting: boolean) => void>>(new Set())
+  const commentCallbacksRef = useRef<Set<(update: CommentUpdate) => void>>(new Set())
+  const networkStatusCallbacksRef = useRef<Set<(update: NetworkStatusUpdate) => void>>(new Set())
+  const errorCallbacksRef = useRef<Set<(event: ErrorEvent) => void>>(new Set())
+  const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
+
+  const handleMessage = useCallback((event: MessageEvent) => {
+    try {
+      const message: PlcWebSocketMessage = JSON.parse(event.data)
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[PlcWebSocket] Received:', message.type)
+      }
+
+      switch (message.type) {
+        case 'UpdateState': {
+          const stateMsg = message as UpdateStateMessage
+          const update: IOUpdate = {
+            Id: stateMsg.id,
+            Result: 'Not Tested',
+            State: stateMsg.state ? 'TRUE' : 'FALSE',
+            Timestamp: undefined,
+            Comments: undefined
+          }
+          ioCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(update)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in IO callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'UpdateIO': {
+          const ioMsg = message as UpdateIOMessage
+          const update: IOUpdate = {
+            Id: ioMsg.id,
+            Result: ioMsg.result,
+            State: ioMsg.state ? 'TRUE' : 'FALSE',
+            Timestamp: ioMsg.timestamp,
+            Comments: ioMsg.comments
+          }
+          ioCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(update)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in IO callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'ConfigurationReloading': {
+          setIsConfigReloading(true)
+          const event: ConfigurationEvent = { type: 'reloading' }
+          configCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(event)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in config callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'ConfigurationReloaded': {
+          setIsConfigReloading(false)
+          const event: ConfigurationEvent = { type: 'reloaded' }
+          configCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(event)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in config callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'TestingStateChanged': {
+          const testingMsg = message
+          setIsTesting(testingMsg.isTesting)
+          testingCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(testingMsg.isTesting)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in testing callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'CommentUpdate': {
+          const commentMsg = message as CommentUpdateMessage
+          const update: CommentUpdate = {
+            ioId: commentMsg.ioId,
+            comments: commentMsg.comments
+          }
+          commentCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(update)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in comment callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'NetworkStatusChanged': {
+          const netMsg = message as NetworkStatusChangedMessage
+          const update: NetworkStatusUpdate = {
+            moduleName: netMsg.moduleName,
+            status: netMsg.status,
+            errorCount: netMsg.errorCount
+          }
+          networkStatusCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(update)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in network status callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'ErrorEvent': {
+          const errMsg = message as ErrorEventMessage
+          const event: ErrorEvent = {
+            source: errMsg.source,
+            message: errMsg.message,
+            severity: errMsg.severity,
+            timestamp: new Date(errMsg.timestamp)
+          }
+          errorCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(event)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in error callback:', error)
+            }
+          })
+          break
+        }
+      }
+    } catch (error) {
+      console.error('[PlcWebSocket] Error parsing message:', error)
+    }
+  }, [])
+
+  const scheduleReconnect = useCallback(() => {
+    if (isManualDisconnectRef.current) {
+      return
+    }
+
+    if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+      console.log('[PlcWebSocket] Max reconnect attempts reached')
+      const errorEvent: ErrorEvent = {
+        source: 'websocket',
+        message: 'Failed to reconnect after maximum attempts',
+        severity: 'error',
+        timestamp: new Date()
+      }
+      errorCallbacksRef.current.forEach((cb) => {
+        try {
+          cb(errorEvent)
+        } catch {}
+      })
+      return
+    }
+
+    reconnectTimeoutRef.current = setTimeout(() => {
+      console.log(
+        `[PlcWebSocket] Reconnecting (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})...`
+      )
+      reconnectAttemptsRef.current++
+      connect()
+    }, reconnectInterval)
+  }, [maxReconnectAttempts, reconnectInterval])
+
+  const connect = useCallback(() => {
+    // Clear any pending reconnect
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+
+    // Close existing connection
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
+    isManualDisconnectRef.current = false
+
+    try {
+      const ws = new WebSocket(url)
+
+      ws.onopen = () => {
+        console.log('[PlcWebSocket] Connected')
+        setIsConnected(true)
+        reconnectAttemptsRef.current = 0
+
+        // Notify reconnected callbacks if this was a reconnection
+        if (reconnectAttemptsRef.current > 0) {
+          reconnectedCallbacksRef.current.forEach((cb) => {
+            try {
+              cb()
+            } catch {}
+          })
+        }
+      }
+
+      ws.onmessage = handleMessage
+
+      ws.onclose = (event) => {
+        console.log('[PlcWebSocket] Disconnected:', event.code, event.reason)
+        setIsConnected(false)
+        wsRef.current = null
+
+        // Code 1005 = No Status Received (normal during page navigation)
+        // Code 1000 = Normal closure
+        // Don't show errors for these normal close codes
+        const isNormalClose = event.code === 1005 || event.code === 1000
+
+        if (!isManualDisconnectRef.current && !isNormalClose) {
+          const errorEvent: ErrorEvent = {
+            source: 'websocket',
+            message: 'Lost connection to server',
+            severity: 'error',
+            timestamp: new Date()
+          }
+          errorCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(errorEvent)
+            } catch {}
+          })
+        }
+
+        // Still reconnect unless it was manual
+        if (!isManualDisconnectRef.current) {
+          scheduleReconnect()
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error('[PlcWebSocket] Error:', error)
+        const errorEvent: ErrorEvent = {
+          source: 'websocket',
+          message: 'WebSocket connection error',
+          severity: 'error',
+          timestamp: new Date()
+        }
+        errorCallbacksRef.current.forEach((cb) => {
+          try {
+            cb(errorEvent)
+          } catch {}
+        })
+      }
+
+      wsRef.current = ws
+    } catch (error) {
+      console.error('[PlcWebSocket] Failed to create WebSocket:', error)
+      scheduleReconnect()
+    }
+  }, [url, handleMessage, scheduleReconnect])
+
+  const disconnect = useCallback(() => {
+    isManualDisconnectRef.current = true
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
+    setIsConnected(false)
+    reconnectAttemptsRef.current = 0
+    console.log('[PlcWebSocket] Manually disconnected')
+  }, [])
+
+  // Callback registration functions
+  const onIOUpdate = useCallback((callback: (update: IOUpdate) => void) => {
+    ioCallbacksRef.current.add(callback)
+  }, [])
+
+  const offIOUpdate = useCallback((callback: (update: IOUpdate) => void) => {
+    ioCallbacksRef.current.delete(callback)
+  }, [])
+
+  const onConfigurationChange = useCallback((callback: (event: ConfigurationEvent) => void) => {
+    configCallbacksRef.current.add(callback)
+  }, [])
+
+  const offConfigurationChange = useCallback((callback: (event: ConfigurationEvent) => void) => {
+    configCallbacksRef.current.delete(callback)
+  }, [])
+
+  const onTestingStateChange = useCallback((callback: (isTesting: boolean) => void) => {
+    testingCallbacksRef.current.add(callback)
+  }, [])
+
+  const offTestingStateChange = useCallback((callback: (isTesting: boolean) => void) => {
+    testingCallbacksRef.current.delete(callback)
+  }, [])
+
+  const onCommentUpdate = useCallback((callback: (update: CommentUpdate) => void) => {
+    commentCallbacksRef.current.add(callback)
+  }, [])
+
+  const offCommentUpdate = useCallback((callback: (update: CommentUpdate) => void) => {
+    commentCallbacksRef.current.delete(callback)
+  }, [])
+
+  const onNetworkStatusChange = useCallback((callback: (update: NetworkStatusUpdate) => void) => {
+    networkStatusCallbacksRef.current.add(callback)
+  }, [])
+
+  const offNetworkStatusChange = useCallback((callback: (update: NetworkStatusUpdate) => void) => {
+    networkStatusCallbacksRef.current.delete(callback)
+  }, [])
+
+  const onError = useCallback((callback: (event: ErrorEvent) => void) => {
+    errorCallbacksRef.current.add(callback)
+  }, [])
+
+  const offError = useCallback((callback: (event: ErrorEvent) => void) => {
+    errorCallbacksRef.current.delete(callback)
+  }, [])
+
+  const onReconnected = useCallback((callback: () => void) => {
+    reconnectedCallbacksRef.current.add(callback)
+  }, [])
+
+  const offReconnected = useCallback((callback: () => void) => {
+    reconnectedCallbacksRef.current.delete(callback)
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      disconnect()
+    }
+  }, [disconnect])
+
+  return {
+    isConnected,
+    isConfigReloading,
+    isTesting,
+    connect,
+    disconnect,
+    onIOUpdate,
+    offIOUpdate,
+    onConfigurationChange,
+    offConfigurationChange,
+    onTestingStateChange,
+    offTestingStateChange,
+    onCommentUpdate,
+    offCommentUpdate,
+    onNetworkStatusChange,
+    offNetworkStatusChange,
+    onError,
+    offError,
+    onReconnected,
+    offReconnected
+  }
+}
+
+// ============================================================================
+// Standalone WebSocket Client (non-React)
+// ============================================================================
+
+export class PlcWebSocketClient {
+  private ws: WebSocket | null = null
+  private url: string
+  private reconnectInterval: number
+  private maxReconnectAttempts: number
+  private reconnectAttempts = 0
+  private reconnectTimeout: NodeJS.Timeout | null = null
+  private isManualDisconnect = false
+  private _isConnected = false
+
+  private ioCallbacks: Set<(update: IOUpdate) => void> = new Set()
+  private errorCallbacks: Set<(event: ErrorEvent) => void> = new Set()
+  private reconnectedCallbacks: Set<() => void> = new Set()
+
+  constructor(options: WebSocketConnectionOptions = {}) {
+    this.url = options.url || getDefaultWebSocketUrl()
+    this.reconnectInterval = options.reconnectInterval || DEFAULT_RECONNECT_INTERVAL
+    this.maxReconnectAttempts = options.maxReconnectAttempts || DEFAULT_MAX_RECONNECT_ATTEMPTS
+  }
+
+  get isConnected(): boolean {
+    return this._isConnected
+  }
+
+  connect(): void {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = null
+    }
+
+    if (this.ws) {
+      this.ws.close()
+      this.ws = null
+    }
+
+    this.isManualDisconnect = false
+
+    try {
+      this.ws = new WebSocket(this.url)
+
+      this.ws.onopen = () => {
+        console.log('[PlcWebSocketClient] Connected')
+        this._isConnected = true
+        const wasReconnect = this.reconnectAttempts > 0
+        this.reconnectAttempts = 0
+
+        if (wasReconnect) {
+          this.reconnectedCallbacks.forEach((cb) => {
+            try {
+              cb()
+            } catch {}
+          })
+        }
+      }
+
+      this.ws.onmessage = (event) => {
+        this.handleMessage(event)
+      }
+
+      this.ws.onclose = () => {
+        console.log('[PlcWebSocketClient] Disconnected')
+        this._isConnected = false
+        this.ws = null
+
+        if (!this.isManualDisconnect) {
+          this.scheduleReconnect()
+        }
+      }
+
+      this.ws.onerror = (error) => {
+        console.error('[PlcWebSocketClient] Error:', error)
+        const errorEvent: ErrorEvent = {
+          source: 'websocket',
+          message: 'WebSocket connection error',
+          severity: 'error',
+          timestamp: new Date()
+        }
+        this.errorCallbacks.forEach((cb) => {
+          try {
+            cb(errorEvent)
+          } catch {}
+        })
+      }
+    } catch (error) {
+      console.error('[PlcWebSocketClient] Failed to create WebSocket:', error)
+      this.scheduleReconnect()
+    }
+  }
+
+  disconnect(): void {
+    this.isManualDisconnect = true
+
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = null
+    }
+
+    if (this.ws) {
+      this.ws.close()
+      this.ws = null
+    }
+
+    this._isConnected = false
+    this.reconnectAttempts = 0
+  }
+
+  private scheduleReconnect(): void {
+    if (this.isManualDisconnect) {
+      return
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.log('[PlcWebSocketClient] Max reconnect attempts reached')
+      return
+    }
+
+    this.reconnectTimeout = setTimeout(() => {
+      this.reconnectAttempts++
+      console.log(
+        `[PlcWebSocketClient] Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`
+      )
+      this.connect()
+    }, this.reconnectInterval)
+  }
+
+  private handleMessage(event: MessageEvent): void {
+    try {
+      const message: PlcWebSocketMessage = JSON.parse(event.data)
+
+      if (message.type === 'UpdateState') {
+        const stateMsg = message as UpdateStateMessage
+        const update: IOUpdate = {
+          Id: stateMsg.id,
+          Result: 'Not Tested',
+          State: stateMsg.state ? 'TRUE' : 'FALSE'
+        }
+        this.ioCallbacks.forEach((cb) => {
+          try {
+            cb(update)
+          } catch {}
+        })
+      } else if (message.type === 'UpdateIO') {
+        const ioMsg = message as UpdateIOMessage
+        const update: IOUpdate = {
+          Id: ioMsg.id,
+          Result: ioMsg.result,
+          State: ioMsg.state ? 'TRUE' : 'FALSE',
+          Timestamp: ioMsg.timestamp,
+          Comments: ioMsg.comments
+        }
+        this.ioCallbacks.forEach((cb) => {
+          try {
+            cb(update)
+          } catch {}
+        })
+      }
+    } catch (error) {
+      console.error('[PlcWebSocketClient] Error parsing message:', error)
+    }
+  }
+
+  onIOUpdate(callback: (update: IOUpdate) => void): void {
+    this.ioCallbacks.add(callback)
+  }
+
+  offIOUpdate(callback: (update: IOUpdate) => void): void {
+    this.ioCallbacks.delete(callback)
+  }
+
+  onError(callback: (event: ErrorEvent) => void): void {
+    this.errorCallbacks.add(callback)
+  }
+
+  offError(callback: (event: ErrorEvent) => void): void {
+    this.errorCallbacks.delete(callback)
+  }
+
+  onReconnected(callback: () => void): void {
+    this.reconnectedCallbacks.add(callback)
+  }
+
+  offReconnected(callback: () => void): void {
+    this.reconnectedCallbacks.delete(callback)
+  }
+}

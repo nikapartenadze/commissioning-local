@@ -254,7 +254,7 @@ export class PlcCommunicationService {
       const response = await fetch(API_ENDPOINTS.ioFail(ioId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ comments })
+        body: JSON.stringify({ result: 'Fail', comments })
       })
 
       return response.ok
@@ -270,7 +270,7 @@ export class PlcCommunicationService {
       const response = await fetch(API_ENDPOINTS.ioPass(ioId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ comments: '' })
+        body: JSON.stringify({ result: 'Pass', comments: '' })
       })
 
       return response.ok

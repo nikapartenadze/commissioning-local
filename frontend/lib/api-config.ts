@@ -2,28 +2,19 @@
  * API Configuration
  *
  * This module provides centralized API URL configuration.
- * All API calls should go through the Next.js API routes (proxy pattern)
- * to avoid CORS issues when accessing from different machines.
+ * All API calls are now handled by Next.js API routes directly.
  *
- * Architecture:
- * Browser → Next.js Frontend (same origin) → Next.js API Routes → Backend
+ * Architecture (Node.js-only):
+ * Browser -> Next.js Frontend (same origin) -> Next.js API Routes -> SQLite/PLC
  *
- * This eliminates CORS issues because:
- * 1. Browser only talks to Next.js (same origin)
- * 2. Next.js server talks to backend (server-to-server, no CORS)
- *
- * Hot-Reload Support:
- * The frontend can now fetch runtime configuration dynamically from the backend
- * via the /api/configuration/runtime endpoint. This eliminates the need for
- * environment variables that are fixed at startup.
+ * No external backend is required. The application is fully self-contained.
  */
 
 /**
- * Runtime configuration fetched from backend.
- * Allows frontend to dynamically adapt to backend configuration changes.
+ * Runtime configuration.
+ * Now fetched from Next.js API routes instead of external backend.
  */
 export interface RuntimeConfig {
-  backendPort: number
   subsystemId: string
   plcIp: string
   cloudConnected: boolean
@@ -41,7 +32,7 @@ let cachedRuntimeConfig: RuntimeConfig | null = null
 let runtimeConfigFetchPromise: Promise<RuntimeConfig> | null = null
 
 /**
- * Fetches runtime configuration from the backend.
+ * Fetches runtime configuration from the API.
  * Caches the result to avoid repeated API calls.
  * Use refreshRuntimeConfig() to force a refresh.
  */
@@ -86,9 +77,8 @@ export function clearRuntimeConfigCache(): void {
 
 async function fetchRuntimeConfigInternal(): Promise<RuntimeConfig> {
   try {
-    // Use the proxy path to avoid CORS issues
     const apiBaseUrl = getApiBaseUrl()
-    const response = await fetch(`${apiBaseUrl}/api/backend/configuration/runtime`, {
+    const response = await fetch(`${apiBaseUrl}/api/configuration/runtime`, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
     })
@@ -100,7 +90,6 @@ async function fetchRuntimeConfigInternal(): Promise<RuntimeConfig> {
 
     const data = await response.json()
     return {
-      backendPort: data.backendPort || 5000,
       subsystemId: data.subsystemId || '',
       plcIp: data.plcIp || '',
       cloudConnected: data.cloudConnected || false,
@@ -110,7 +99,7 @@ async function fetchRuntimeConfigInternal(): Promise<RuntimeConfig> {
       showTimestampColumn: data.showTimestampColumn ?? true,
       showHistoryColumn: data.showHistoryColumn ?? true,
       orderMode: data.orderMode || false,
-      signalRHubUrl: data.signalRHubUrl || getSignalRHubUrl(),
+      signalRHubUrl: data.signalRHubUrl || getWebSocketUrl(),
     }
   } catch (error) {
     console.warn('Error fetching runtime config, using defaults:', error)
@@ -120,7 +109,6 @@ async function fetchRuntimeConfigInternal(): Promise<RuntimeConfig> {
 
 function getDefaultRuntimeConfig(): RuntimeConfig {
   return {
-    backendPort: 5000,
     subsystemId: '',
     plcIp: '',
     cloudConnected: false,
@@ -130,15 +118,15 @@ function getDefaultRuntimeConfig(): RuntimeConfig {
     showTimestampColumn: true,
     showHistoryColumn: true,
     orderMode: false,
-    signalRHubUrl: getSignalRHubUrl(),
+    signalRHubUrl: getWebSocketUrl(),
   }
 }
 
 // ===========================================
-// HARDCODED PORTS - No .env configuration needed
+// Port Configuration
 // ===========================================
-const BACKEND_PORT = 5000
-const FRONTEND_PORT = 3002
+const FRONTEND_PORT = 3020 // Development port
+const BACKEND_PORT = 5000 // C# backend port
 // ===========================================
 
 /**
@@ -167,99 +155,108 @@ export function getBackendUrl(): string {
 }
 
 /**
+ * Get the WebSocket URL for real-time updates.
+ * WebSocket server runs on port 3001.
+ */
+export function getWebSocketUrl(): string {
+  const WS_PORT = 3001
+  if (typeof window !== 'undefined') {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.hostname
+    return `${wsProtocol}//${host}:${WS_PORT}`
+  }
+  return `ws://localhost:${WS_PORT}`
+}
+
+/**
  * Get the SignalR hub URL.
- * SignalR is proxied through the Next.js server at /hub to avoid exposing backend port.
- * This allows phone access with only port 3000 open.
+ * @deprecated Use getWebSocketUrl() instead - SignalR is no longer used
  */
 export function getSignalRHubUrl(): string {
-  if (typeof window !== 'undefined') {
-    // Dev mode: connect directly to backend (Next.js dev server can't proxy WebSockets/long-polling)
-    // Production: server.js proxies /hub WebSocket to backend (same origin, no CORS)
-    if (window.location.port === '3020' || window.location.port === '3002') {
-      return `http://${window.location.hostname}:${BACKEND_PORT}/hub`
-    }
-    return `${window.location.origin}/hub`
-  }
-  return `http://localhost:${BACKEND_PORT}/hub`
+  return getWebSocketUrl()
 }
 
 /**
  * Get the WebSocket URL for SignalR.
- * Uses same origin - proxied through Next.js custom server.
+ * @deprecated Use getWebSocketUrl() instead - SignalR is no longer used
  */
 export function getSignalRWsUrl(): string {
-  if (typeof window !== 'undefined') {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${wsProtocol}//${window.location.host}/hub`
-  }
-  return `ws://localhost:${FRONTEND_PORT}/hub`
+  return getWebSocketUrl()
 }
 
 /**
  * Get the configured ports for reference.
  */
 export function getPorts() {
-  return { backend: BACKEND_PORT, frontend: FRONTEND_PORT }
+  return { frontend: FRONTEND_PORT }
 }
 
 // API endpoint paths (relative to API base)
 export const API_ENDPOINTS = {
   // Status & Connection
-  status: '/api/backend/status',
-  tagStatus: '/api/backend/tag-status',
-  plcTestConnection: '/api/backend/plc/test-connection',
-  plcDisconnect: '/api/backend/plc/disconnect',
+  status: '/api/plc/status',
+  tagStatus: '/api/plc/tags',
+  plcTestConnection: '/api/plc/test-connection',
+  plcDisconnect: '/api/plc/disconnect',
+  plcConnect: '/api/plc/connect',
 
   // IOs
-  ios: '/api/backend/ios',
-  ioById: (id: number) => `/api/backend/ios/${id}`,
-  ioHistory: (id: number) => `/api/backend/ios/${id}/history`,
-  ioPass: (id: number) => `/api/backend/ios/${id}/pass`,
-  ioFail: (id: number) => `/api/backend/ios/${id}/fail`,
-  ioClear: (id: number) => `/api/backend/ios/${id}/clear`,
-  ioFireOutput: (id: number) => `/api/backend/ios/${id}/fire-output`,
-  ioComment: (id: number) => `/api/backend/ios/${id}/comment`,
+  ios: '/api/ios',
+  ioById: (id: number) => `/api/ios/${id}`,
+  ioHistory: (id: number) => `/api/history/${id}`,
+  ioTest: (id: number) => `/api/ios/${id}/test`,
+  ioPass: (id: number) => `/api/ios/${id}/test`,
+  ioFail: (id: number) => `/api/ios/${id}/test`,
+  ioClear: (id: number) => `/api/ios/${id}/reset`,
+  ioFireOutput: (id: number) => `/api/ios/${id}/fire-output`,
+  ioComment: (id: number) => `/api/ios/${id}`,
+  ioStats: '/api/ios/stats',
 
   // Testing
-  testingToggle: '/api/backend/testing/toggle',
+  testingToggle: '/api/plc/toggle-testing',
 
   // Users & Auth
-  users: '/api/backend/users',
-  usersActive: '/api/backend/users/active',
-  userById: (id: number) => `/api/backend/users/${id}`,
-  userResetPin: (id: number) => `/api/backend/users/${id}/reset-pin`,
-  userToggleActive: (id: number) => `/api/backend/users/${id}/toggle-active`,
-  authLogin: '/api/backend/auth/login',
+  users: '/api/users',
+  usersActive: '/api/users/active',
+  userById: (id: number) => `/api/users/${id}`,
+  userResetPin: (id: number) => `/api/users/${id}/reset-pin`,
+  userToggleActive: (id: number) => `/api/users/${id}/toggle-active`,
+  authLogin: '/api/auth/login',
+  authVerify: '/api/auth/verify',
 
   // Configuration
-  configuration: '/api/backend/configuration',
-  configurationUpdate: '/api/backend/configuration/update-config-json',
-  configurationConnectPlc: '/api/backend/configuration/connect-plc',
-  configurationRuntime: '/api/backend/configuration/runtime',
-  configurationLogs: '/api/backend/configuration/logs',
+  configuration: '/api/configuration',
+  configurationUpdate: '/api/configuration',
+  configurationConnectPlc: '/api/configuration/connect',
+  configurationRuntime: '/api/configuration/runtime',
+  configurationLogs: '/api/configuration/logs',
 
   // Cloud Sync
-  cloudSync: '/api/backend/cloud/sync',
-  cloudPull: '/api/backend/cloud/pull',
+  cloudSync: '/api/cloud/sync',
+  cloudPull: '/api/cloud/pull',
+  cloudStatus: '/api/cloud/status',
 
   // Simulator
-  simulatorStatus: '/api/backend/simulator/status',
-  simulatorEnable: '/api/backend/simulator/enable',
-  simulatorDisable: '/api/backend/simulator/disable',
+  simulatorStatus: '/api/simulator/status',
+  simulatorEnable: '/api/simulator/enable',
+  simulatorDisable: '/api/simulator/disable',
 
   // Diagnostics
-  diagnosticSteps: '/api/backend/diagnostics/steps',
-  diagnosticFailureModes: '/api/backend/diagnostics/failure-modes',
+  diagnosticSteps: '/api/diagnostics/steps',
+  diagnosticFailureModes: '/api/diagnostics/failure-modes',
 
   // Network Status
-  networkChainStatus: '/api/backend/network/chain-status',
-  networkModules: '/api/backend/network/modules',
-  networkDevices: '/api/backend/network/devices',
+  networkChainStatus: '/api/network/chain-status',
+  networkModules: '/api/network/modules',
+  networkDevices: '/api/network/devices',
 
   // History
-  history: '/api/backend/history',
-  historyExport: '/api/backend/history/export',
-  historySyncToCloud: '/api/backend/history/sync-to-cloud',
+  history: '/api/history',
+  historyExport: '/api/history/export',
+  historySyncToCloud: '/api/history/sync-to-cloud',
+
+  // Health
+  health: '/api/health',
 } as const
 
 /**
@@ -290,7 +287,7 @@ export async function authFetch(
   })
 
   if (response.status === 401) {
-    // Token expired or invalid — clear and redirect to login
+    // Token expired or invalid - clear and redirect to login
     if (typeof window !== 'undefined') {
       localStorage.removeItem('authToken')
       localStorage.removeItem('currentUser')
@@ -303,7 +300,7 @@ export async function authFetch(
 }
 
 /**
- * Helper function to make API calls through the proxy.
+ * Helper function to make API calls.
  * Automatically handles the base URL and error handling.
  */
 export async function apiCall<T = unknown>(
@@ -344,7 +341,7 @@ export async function fetchWithRetry(
       if (response.ok || response.status === 401 || response.status === 403) {
         return response
       }
-      // Server error — retry
+      // Server error - retry
       lastError = new Error(`HTTP ${response.status}`)
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
