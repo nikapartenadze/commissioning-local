@@ -2,155 +2,175 @@
 
 /**
  * PLC WebSocket Server
- * Runs alongside the Next.js app to provide real-time PLC communication
+ * Runs alongside the Next.js app to provide real-time PLC communication.
+ *
+ * Features:
+ * - WebSocket server on port 3001 for browser connections
+ * - HTTP API on port 3101 to receive broadcasts from PLC client
+ * - Real-time IO state updates
  */
 
 const WebSocket = require('ws');
-const { PrismaClient } = require('@prisma/client');
+const http = require('http');
 
-const prisma = new PrismaClient();
-const port = process.env.PLC_WS_PORT || 3001;
+const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3001', 10);
+const HTTP_PORT = WS_PORT + 100; // 3101 for HTTP API
 
 // Create WebSocket server
-const wss = new WebSocket.Server({ port });
+const wss = new WebSocket.Server({ port: WS_PORT });
 
-console.log(`🔌 PLC WebSocket server listening on port ${port}`);
+console.log(`🔌 PLC WebSocket server listening on ws://localhost:${WS_PORT}`);
 
 // Store connected clients
-const clients = new Map();
-let updateInterval = null;
+const clients = new Set();
+let heartbeatInterval = null;
 
-// Handle new connections
+// Handle new WebSocket connections
 wss.on('connection', (ws) => {
-  console.log('🔌 New PLC WebSocket client connected');
-  
+  console.log('🔌 New WebSocket client connected');
+  clients.add(ws);
+
+  // Mark connection as alive for heartbeat
+  ws.isAlive = true;
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
   ws.on('message', (data) => {
     try {
       const message = JSON.parse(data.toString());
-      handleMessage(ws, message);
+      console.log(`📨 Received: ${message.type}`);
     } catch (error) {
       console.error('Error parsing WebSocket message:', error);
     }
   });
 
   ws.on('close', () => {
-    console.log('🔌 PLC WebSocket client disconnected');
+    console.log('🔌 WebSocket client disconnected');
     clients.delete(ws);
-    
-    // Stop updates if no clients
-    if (clients.size === 0 && updateInterval) {
-      clearInterval(updateInterval);
-      updateInterval = null;
-      console.log('🛑 Stopped real-time updates (no clients)');
-    }
   });
 
   ws.on('error', (error) => {
-    console.error('PLC WebSocket error:', error);
+    console.error('WebSocket error:', error.message);
     clients.delete(ws);
   });
 });
 
-function handleMessage(ws, message) {
-  switch (message.type) {
-    case 'config':
-      clients.set(ws, message.data);
-      console.log('📋 PLC configuration received:', message.data);
-      startRealTimeUpdates();
-      break;
+// Start heartbeat to detect dead connections
+heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      console.log('🔌 Terminating dead connection');
+      clients.delete(ws);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+/**
+ * Broadcast message to all connected clients
+ */
+function broadcast(message) {
+  const data = JSON.stringify(message);
+  let sentCount = 0;
+
+  clients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+      sentCount++;
+    }
+  });
+
+  if (sentCount > 0) {
+    console.log(`📡 Broadcast ${message.type} to ${sentCount} clients`);
   }
 }
 
-function startRealTimeUpdates() {
-  if (updateInterval) return;
-  
-  console.log('🔄 Starting real-time IO updates');
-  
-  updateInterval = setInterval(async () => {
-    await broadcastIoUpdates();
-  }, 1000); // Update every second
-}
+// ============================================================================
+// HTTP API for receiving broadcasts from PLC client
+// ============================================================================
 
-async function broadcastIoUpdates() {
-  if (clients.size === 0) return;
+const httpServer = http.createServer((req, res) => {
+  // CORS headers for local development
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  try {
-    // Get all IOs from database
-    // Note: state is not stored in database - it's a runtime PLC value
-    const ios = await prisma.io.findMany({
-      select: {
-        id: true,
-        name: true,
-        result: true,
-        timestamp: true,
-        comments: true
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/broadcast') {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk.toString();
+    });
+    req.on('end', () => {
+      try {
+        const message = JSON.parse(body);
+        broadcast(message);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, clientCount: clients.size }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
       }
     });
-
-    // Simulate real-time state changes (state comes from PLC, not database)
-    const iosWithSimulatedState = ios.map(io => ({
-      ...io,
-      state: simulateIoState(io.name || '', null) // State is simulated/generated, not from DB
+  } else if (req.method === 'GET' && req.url === '/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      running: true,
+      clientCount: clients.size,
+      wsPort: WS_PORT,
+      httpPort: HTTP_PORT,
     }));
-
-    // Broadcast to all connected clients
-    const message = JSON.stringify({
-      type: 'io-update',
-      data: iosWithSimulatedState
-    });
-
-    clients.forEach((config, ws) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(message);
-      }
-    });
-  } catch (error) {
-    console.error('Error broadcasting IO updates:', error);
-  }
-}
-
-function simulateIoState(ioName, currentState) {
-  // Simulate realistic PLC states
-  // Note: currentState parameter is unused - state is generated, not from database
-  // In production, this would read actual PLC states
-  
-  // Simulate realistic PLC states like the C# app
-  if (ioName.includes(':O.') || ioName.includes('.O.') || ioName.includes('.Outputs.')) {
-    // Output - simulate on/off states with visual indicators
-    return Math.random() > 0.7 ? 'ON' : 'OFF';
-  } else if (ioName.includes(':I.') || ioName.includes('.I.')) {
-    // Input - simulate various states with visual indicators
-    const states = ['HIGH', 'LOW', 'PULSE', 'STABLE'];
-    return states[Math.floor(Math.random() * states.length)];
   } else {
-    // Other types - simulate basic states
-    return Math.random() > 0.5 ? 'ACTIVE' : 'INACTIVE';
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not Found' }));
   }
-}
+});
+
+httpServer.listen(HTTP_PORT, () => {
+  console.log(`📡 HTTP broadcast API listening on http://localhost:${HTTP_PORT}`);
+  console.log(`   POST /broadcast - Send a message to all WebSocket clients`);
+  console.log(`   GET /status - Get server status`);
+});
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+function shutdown() {
   console.log('\n🛑 Shutting down PLC WebSocket server...');
-  
-  if (updateInterval) {
-    clearInterval(updateInterval);
-  }
-  
-  wss.close(() => {
-    console.log('✅ PLC WebSocket server stopped');
-    process.exit(0);
-  });
-});
 
-process.on('SIGTERM', () => {
-  console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
-  
-  if (updateInterval) {
-    clearInterval(updateInterval);
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
   }
-  
-  wss.close(() => {
-    console.log('✅ PLC WebSocket server stopped');
-    process.exit(0);
+
+  // Close all client connections
+  clients.forEach((ws) => {
+    try { ws.close(); } catch (e) { /* ignore */ }
   });
-});
+  clients.clear();
+
+  // Close servers
+  wss.close(() => {
+    console.log('✅ WebSocket server stopped');
+    httpServer.close(() => {
+      console.log('✅ HTTP server stopped');
+      process.exit(0);
+    });
+  });
+
+  // Force exit after 5 seconds
+  setTimeout(() => {
+    console.log('⚠️ Force exiting...');
+    process.exit(0);
+  }, 5000);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

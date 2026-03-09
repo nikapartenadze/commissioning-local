@@ -299,11 +299,14 @@ export function EnhancedIoDataGrid({
   // Match backend Io.IsOutput property - check for O after colon before dot
   const isOutput = (ioName: string) =>
     ioName.includes(':O.') ||
-    ioName.includes(':SO.') ||   // Serial Output: SIO:SO.Data
+    ioName.includes(':SO.') ||   // Safety Output - cannot be fired directly
     ioName.includes('.O.') ||
     ioName.includes(':O:') ||
     ioName.includes('.Outputs.') ||
     ioName.endsWith('.DO')
+
+  // Safety outputs cannot be written - they're controlled by safety PLC
+  const isSafetyOutput = (ioName: string) => ioName.includes(':SO.')
 
   const handleShowDiagnostic = async (io: IoItem) => {
     // If IO doesn't have failureMode, fetch it from history
@@ -712,20 +715,26 @@ export function EnhancedIoDataGrid({
                     onClick={(e) => e.stopPropagation()}
                   >
                     {isOutput(io.name) ? (
-                      <Button
-                        variant="default"
-                        size="sm"
-                        className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold shadow-md disabled:opacity-30 disabled:bg-amber-500/50"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onShowFireOutputDialog?.(io)
-                        }}
-                        disabled={!isTesting}
-                        title="Fire Output"
-                      >
-                        <Play className="h-4 w-4 mr-1" />
-                        FIRE
-                      </Button>
+                      isSafetyOutput(io.name) ? (
+                        <span className="text-xs text-muted-foreground/50 px-2" title="Safety outputs cannot be fired directly">
+                          SAFETY
+                        </span>
+                      ) : (
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold shadow-md disabled:opacity-30 disabled:bg-amber-500/50"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onShowFireOutputDialog?.(io)
+                          }}
+                          disabled={!isTesting}
+                          title="Fire Output"
+                        >
+                          <Play className="h-4 w-4 mr-1" />
+                          FIRE
+                        </Button>
+                      )
                     ) : (
                       <span className="text-muted-foreground/30">—</span>
                     )}
