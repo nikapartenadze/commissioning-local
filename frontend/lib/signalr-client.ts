@@ -1,7 +1,7 @@
 "use client"
 
 import { HubConnection, HubConnectionBuilder, LogLevel } from '@microsoft/signalr'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { getSignalRHubUrl, refreshRuntimeConfig, clearRuntimeConfigCache } from './api-config'
 import { logger } from './logger'
 
@@ -342,61 +342,61 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     }
   }
 
-  const onIOUpdate = (callback: (update: IOUpdate) => void) => {
+  const onIOUpdate = useCallback((callback: (update: IOUpdate) => void) => {
     callbacksRef.current.add(callback)
-  }
+  }, [])
 
-  const offIOUpdate = (callback: (update: IOUpdate) => void) => {
+  const offIOUpdate = useCallback((callback: (update: IOUpdate) => void) => {
     callbacksRef.current.delete(callback)
-  }
+  }, [])
 
-  const onConfigurationChange = (callback: (event: ConfigurationEvent) => void) => {
+  const onConfigurationChange = useCallback((callback: (event: ConfigurationEvent) => void) => {
     configCallbacksRef.current.add(callback)
-  }
+  }, [])
 
-  const offConfigurationChange = (callback: (event: ConfigurationEvent) => void) => {
+  const offConfigurationChange = useCallback((callback: (event: ConfigurationEvent) => void) => {
     configCallbacksRef.current.delete(callback)
-  }
+  }, [])
 
-  const onTestingStateChange = (callback: (isTesting: boolean) => void) => {
+  const onTestingStateChange = useCallback((callback: (isTesting: boolean) => void) => {
     testingCallbacksRef.current.add(callback)
-  }
+  }, [])
 
-  const offTestingStateChange = (callback: (isTesting: boolean) => void) => {
+  const offTestingStateChange = useCallback((callback: (isTesting: boolean) => void) => {
     testingCallbacksRef.current.delete(callback)
-  }
+  }, [])
 
-  const onCommentUpdate = (callback: (update: CommentUpdate) => void) => {
+  const onCommentUpdate = useCallback((callback: (update: CommentUpdate) => void) => {
     commentCallbacksRef.current.add(callback)
-  }
+  }, [])
 
-  const offCommentUpdate = (callback: (update: CommentUpdate) => void) => {
+  const offCommentUpdate = useCallback((callback: (update: CommentUpdate) => void) => {
     commentCallbacksRef.current.delete(callback)
-  }
+  }, [])
 
-  const onNetworkStatusChange = (callback: (update: NetworkStatusUpdate) => void) => {
+  const onNetworkStatusChange = useCallback((callback: (update: NetworkStatusUpdate) => void) => {
     networkStatusCallbacksRef.current.add(callback)
-  }
+  }, [])
 
-  const offNetworkStatusChange = (callback: (update: NetworkStatusUpdate) => void) => {
+  const offNetworkStatusChange = useCallback((callback: (update: NetworkStatusUpdate) => void) => {
     networkStatusCallbacksRef.current.delete(callback)
-  }
+  }, [])
 
-  const onError = (callback: (event: ErrorEvent) => void) => {
+  const onError = useCallback((callback: (event: ErrorEvent) => void) => {
     errorCallbacksRef.current.add(callback)
-  }
+  }, [])
 
-  const offError = (callback: (event: ErrorEvent) => void) => {
+  const offError = useCallback((callback: (event: ErrorEvent) => void) => {
     errorCallbacksRef.current.delete(callback)
-  }
+  }, [])
 
-  const onReconnected = (callback: () => void) => {
+  const onReconnected = useCallback((callback: () => void) => {
     reconnectedCallbacksRef.current.add(callback)
-  }
+  }, [])
 
-  const offReconnected = (callback: () => void) => {
+  const offReconnected = useCallback((callback: () => void) => {
     reconnectedCallbacksRef.current.delete(callback)
-  }
+  }, [])
 
   // Don't auto-connect - wait for user to explicitly connect via UI
   // Connection will be triggered when user pulls IOs or starts testing

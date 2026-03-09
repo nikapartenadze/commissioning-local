@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import * as VisuallyHidden from "@radix-ui/react-visually-hidden"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -50,6 +51,7 @@ export function PlcConfigDialog({
 
   const [pullStatus, setPullStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
   const [plcStatus, setPlcStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
+  const [excludePatterns, setExcludePatterns] = useState('')
 
   const [pullLog, setPullLog] = useState<string[]>([])
   const [plcLog, setPlcLog] = useState<string[]>([])
@@ -229,6 +231,9 @@ export function PlcConfigDialog({
       setPlcLog([])
       addPlcLog(`Config: IP=${localConfig.ip}, Path=${localConfig.path}`)
       addPlcLog(`Subsystem: ${localConfig.subsystemId}`)
+      if (excludePatterns.trim()) {
+        addPlcLog(`Excluding tags: ${excludePatterns}`)
+      }
       setPlcStatus({ type: 'loading', message: 'Saving configuration...' })
 
       // Always use lightweight PLC-only connect endpoint
@@ -245,7 +250,8 @@ export function PlcConfigDialog({
           path: localConfig.path,
           subsystemId: localConfig.subsystemId,
           apiPassword: localConfig.apiPassword || "",
-          remoteUrl: localConfig.remoteUrl || ""
+          remoteUrl: localConfig.remoteUrl || "",
+          excludePatterns: excludePatterns.trim() || null
         })
       })
 
@@ -383,7 +389,10 @@ export function PlcConfigDialog({
         onOpenChange(v)
       }
     }}>
-      <DialogContent className="max-w-2xl h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0">
+      <DialogContent className="max-w-2xl h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0" aria-describedby={undefined}>
+        <VisuallyHidden.Root>
+          <DialogTitle>PLC Configuration</DialogTitle>
+        </VisuallyHidden.Root>
         {/* Tabs */}
         <div className="flex border-b">
           <button
@@ -533,6 +542,19 @@ export function PlcConfigDialog({
                       className="h-8 text-sm"
                     />
                   </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="excludePatterns" className="text-xs">Skip Tags Containing (comma-separated)</Label>
+                  <Input
+                    id="excludePatterns"
+                    value={excludePatterns}
+                    onChange={(e) => setExcludePatterns(e.target.value)}
+                    placeholder="NCP1_4A_VFD, Spare_, Offline_"
+                    disabled={busy}
+                    className="h-8 text-sm font-mono"
+                  />
+                  <p className="text-[10px] text-muted-foreground">Tags matching these patterns will be skipped during validation (saves time for offline modules)</p>
                 </div>
 
                 <div className="flex gap-2">
