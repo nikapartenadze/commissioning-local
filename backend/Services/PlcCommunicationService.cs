@@ -125,22 +125,49 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
         return _tagWriter.SetBit(value);
     }
 
-    public async Task ReloadDataAsync()
+    public async Task ReloadDataAsync(string? excludePatterns = null)
     {
         // Reload data from database
         await LoadDatabaseDataAsync();
-        
+
         // If we have tags now, try to initialize PLC connection
         if (_tags.Any())
         {
-            // Try to establish PLC connection with all tags
-            var initSuccess = await InitializeTagReading();
+            var tagsToInitialize = _tags;
+            var iosToUse = TagList;
+
+            // Filter out tags matching exclude patterns
+            if (!string.IsNullOrWhiteSpace(excludePatterns))
+            {
+                var patterns = excludePatterns.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var excludedTagNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                tagsToInitialize = _tags.Where(tag =>
+                {
+                    var shouldExclude = patterns.Any(p => tag.Name?.Contains(p, StringComparison.OrdinalIgnoreCase) == true);
+                    if (shouldExclude && tag.Name != null) excludedTagNames.Add(tag.Name);
+                    return !shouldExclude;
+                }).ToList();
+
+                // Also filter TagList to match
+                iosToUse = TagList.Where(io =>
+                    io.Name == null || !excludedTagNames.Contains(io.Name)
+                ).ToList();
+
+                _logger.LogInformation("Excluding {ExcludedCount} tags matching patterns: {Patterns}",
+                    _tags.Count - tagsToInitialize.Count, excludePatterns);
+                _logger.LogInformation("Initializing {TagCount} tags (skipped {ExcludedCount} excluded)",
+                    tagsToInitialize.Count, _tags.Count - tagsToInitialize.Count);
+            }
+
+            // Try to establish PLC connection with filtered tags
+            var initSuccess = await InitializeTagReading(tagsToInitialize, iosToUse);
             if (!initSuccess)
             {
                 _logger.LogError("Failed to initialize tag reading during data reload");
             }
         }
-        
+
         // Notify UI to refresh
         _loading = false;
         NotifyState?.Invoke();
@@ -448,9 +475,12 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
         }
     }
     
-    private async Task<bool> InitializeTagReading()
+    private async Task<bool> InitializeTagReading(List<NativeTag>? tagsOverride = null, List<Io>? iosOverride = null)
     {
-        _logger.LogInformation("InitializeTagReading starting with {TagCount} tags, {IoCount} IOs", _tags.Count, TagList.Count);
+        var tagsToUse = tagsOverride ?? _tags;
+        var iosToUse = iosOverride ?? TagList;
+
+        _logger.LogInformation("InitializeTagReading starting with {TagCount} tags, {IoCount} IOs", tagsToUse.Count, iosToUse.Count);
 
         // Reset the global abort flag before starting new operations
         NativeTag.ResetAbort();
@@ -462,26 +492,26 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
         var cancellationToken = _connectionCts.Token;
 
         // Pass the actual TagList that the UI is bound to
-        var success = await _tagReader.InitializeReadingAsync(_tags, TagList, skipErrorDetection: false, cancellationToken: cancellationToken);
+        var success = await _tagReader.InitializeReadingAsync(tagsToUse, iosToUse, skipErrorDetection: false, cancellationToken: cancellationToken);
         _logger.LogInformation("TagReader initialization result: {Success}", success);
-        
+
         if (success)
         {
             _disableTesting = false;
             _logger.LogInformation("Tag reading enabled - disableTesting set to false");
-            
+
             // Update cache with initial states from PLC
-            foreach (var tag in TagList)
+            foreach (var tag in iosToUse)
             {
                 if (tag.Name != null && tag.State != null && tag.State != "UNKNOWN")
                 {
                     _stateCache[tag.Name] = tag.State;
                 }
             }
-            
+
             // Update PLC connection status - successful tag reading means we're connected
             SetPlcConnectionStatus(true);
-            
+
             // Force UI refresh after initial states are set
             NotifyState?.Invoke();
         }
@@ -492,10 +522,10 @@ public class PlcCommunicationService : IPlcCommunicationService, IDisposable
             SetPlcConnectionStatus(false);
         }
         _loading = false;
-        
+
         // Notify UI to refresh after tag initialization
         NotifyState?.Invoke();
-        
+
         return success;
     }
     

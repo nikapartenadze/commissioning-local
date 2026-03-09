@@ -507,6 +507,7 @@ public class ConfigurationController : ControllerBase
             _configurationService.LoadConfiguration();
 
             // Connect to PLC using existing local IOs — no cloud fetch
+            var excludePatterns = request.ExcludePatterns;
             _ = Task.Run(async () =>
             {
                 try
@@ -515,7 +516,11 @@ public class ConfigurationController : ControllerBase
                     // trigger a competing reinitialization that cancels our tag reading
                     ConfigFileWatcherService.NotifyInternalWrite();
                     _logger.LogInformation("Connecting to PLC at {Ip} via {Path} (local data only)...", request.Ip, request.Path);
-                    await _plcCommunicationService.ReloadDataAsync();
+                    if (!string.IsNullOrWhiteSpace(excludePatterns))
+                    {
+                        _logger.LogInformation("Excluding tags matching patterns: {Patterns}", excludePatterns);
+                    }
+                    await _plcCommunicationService.ReloadDataAsync(excludePatterns);
                     _logger.LogInformation("PLC connection initialized from local data");
                 }
                 catch (Exception ex)
@@ -559,6 +564,12 @@ public class ConfigJsonUpdateRequest
     public bool? ShowResultColumn { get; set; }
     public bool? ShowTimestampColumn { get; set; }
     public bool? ShowHistoryColumn { get; set; }
+    /// <summary>
+    /// Comma-separated patterns to exclude from PLC tag validation.
+    /// Tags containing any of these patterns will be skipped.
+    /// Example: "NCP1_4A_VFD, Spare_, Offline_"
+    /// </summary>
+    public string? ExcludePatterns { get; set; }
 }
 
 /// <summary>
