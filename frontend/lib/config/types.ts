@@ -1,0 +1,121 @@
+/**
+ * Configuration Types
+ *
+ * TypeScript interfaces matching the C# backend configuration structure.
+ * Based on backend/config.json schema.
+ */
+
+/**
+ * Application configuration matching config.json structure.
+ * This is the core configuration for PLC connection and cloud sync.
+ */
+export interface AppConfig {
+  /** PLC IP address (e.g., "192.168.1.100") */
+  ip: string;
+
+  /** PLC path for Ethernet/IP routing (e.g., "1,0") */
+  path: string;
+
+  /** Remote cloud server URL for syncing (e.g., "https://commissioning.lci.ge") */
+  remoteUrl: string;
+
+  /** API password for cloud authentication */
+  apiPassword: string;
+
+  /** Subsystem ID for filtering IOs */
+  subsystemId: string;
+
+  /** Order mode: "0" = test any order, "1" = sequential testing */
+  orderMode: string;
+
+  /** Number of records per cloud sync batch */
+  syncBatchSize: number;
+
+  /** Delay in milliseconds between sync batches */
+  syncBatchDelayMs: number;
+}
+
+/**
+ * Extended configuration with column visibility settings.
+ * Used for UI state persistence.
+ */
+export interface AppConfigExtended extends AppConfig {
+  /** Show state column in IO table */
+  showStateColumn?: boolean;
+
+  /** Show result column in IO table */
+  showResultColumn?: boolean;
+
+  /** Show timestamp column in IO table */
+  showTimestampColumn?: boolean;
+
+  /** Show history column in IO table */
+  showHistoryColumn?: boolean;
+}
+
+/**
+ * Configuration update request (partial config).
+ * All fields are optional to allow partial updates.
+ */
+export interface ConfigUpdateRequest {
+  ip?: string;
+  path?: string;
+  remoteUrl?: string;
+  apiPassword?: string;
+  subsystemId?: string;
+  orderMode?: string;
+  syncBatchSize?: number;
+  syncBatchDelayMs?: number;
+  showStateColumn?: boolean;
+  showResultColumn?: boolean;
+  showTimestampColumn?: boolean;
+  showHistoryColumn?: boolean;
+}
+
+/**
+ * PLC connection request.
+ * Used when connecting to PLC with specific IP and path.
+ */
+export interface PlcConnectRequest {
+  ip: string;
+  path: string;
+  subsystemId?: string;
+  remoteUrl?: string;
+  apiPassword?: string;
+  orderMode?: boolean;
+  showStateColumn?: boolean;
+  showResultColumn?: boolean;
+  showTimestampColumn?: boolean;
+  showHistoryColumn?: boolean;
+  /** Comma-separated patterns to exclude from PLC tag validation */
+  excludePatterns?: string;
+}
+
+/**
+ * Default configuration values.
+ * Used when config.json doesn't exist or has missing fields.
+ */
+export const DEFAULT_CONFIG: AppConfig = {
+  ip: '',
+  path: '1,0',
+  remoteUrl: '',
+  apiPassword: '',
+  subsystemId: '',
+  orderMode: '0',
+  syncBatchSize: 50,
+  syncBatchDelayMs: 500,
+};
+
+/**
+ * Configuration change event type.
+ */
+export type ConfigChangeEvent = {
+  previousConfig: AppConfig | null;
+  currentConfig: AppConfig;
+  changedFields: (keyof AppConfig)[];
+};
+
+/**
+ * Configuration change listener function type.
+ */
+export type ConfigChangeListener = (event: ConfigChangeEvent) => void;

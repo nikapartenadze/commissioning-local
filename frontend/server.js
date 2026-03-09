@@ -1,30 +1,113 @@
 /**
  * Custom server that wraps Next.js standalone output.
  * Provides WebSocket proxy for SignalR so only port 3000 needs to be exposed.
+ * Also starts the PLC WebSocket server for real-time tag state updates.
  *
  * Architecture:
  * Phone/Browser → :3000 (this server) → Next.js (internal) for pages/API
  *                                     → Backend :5000 for SignalR /hub
+ *                                     → :3001 for PLC WebSocket
  */
 
 const { createServer } = require('http');
 const { parse } = require('url');
 const httpProxy = require('http-proxy');
 const path = require('path');
+const WebSocket = require('ws');
 
 // Start the Next.js standalone server on internal port
-const NEXT_PORT = 3001;
+const NEXT_PORT = 3002; // Changed to avoid conflict with PLC WebSocket
 const EXTERNAL_PORT = parseInt(process.env.PORT || '3000', 10);
+const PLC_WS_PORT = parseInt(process.env.PLC_WS_PORT || '3001', 10);
 const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
 
 console.log('='.repeat(60));
-console.log('Custom Server with SignalR Proxy');
+console.log('Custom Server with SignalR Proxy + PLC WebSocket');
 console.log('='.repeat(60));
 console.log(`External port: ${EXTERNAL_PORT}`);
 console.log(`Next.js internal port: ${NEXT_PORT}`);
+console.log(`PLC WebSocket port: ${PLC_WS_PORT}`);
 console.log(`Backend URL (SignalR): ${BACKEND_URL}`);
 console.log('='.repeat(60));
+
+// ============================================================================
+// PLC WebSocket Server
+// ============================================================================
+
+let plcWss = null;
+const plcClients = new Set();
+
+function startPlcWebSocketServer() {
+  plcWss = new WebSocket.Server({ port: PLC_WS_PORT });
+
+  plcWss.on('connection', (ws) => {
+    console.log('[PLC WebSocket] New client connected');
+    plcClients.add(ws);
+
+    // Mark connection as alive for heartbeat
+    ws.isAlive = true;
+
+    ws.on('pong', () => {
+      ws.isAlive = true;
+    });
+
+    ws.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        console.log('[PLC WebSocket] Received:', message.type);
+      } catch (error) {
+        console.error('[PLC WebSocket] Error parsing message:', error);
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('[PLC WebSocket] Client disconnected');
+      plcClients.delete(ws);
+    });
+
+    ws.on('error', (error) => {
+      console.error('[PLC WebSocket] Client error:', error);
+      plcClients.delete(ws);
+    });
+  });
+
+  // Heartbeat to detect dead connections
+  const heartbeatInterval = setInterval(() => {
+    plcWss.clients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        plcClients.delete(ws);
+        return ws.terminate();
+      }
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+
+  plcWss.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
+
+  console.log(`[PLC WebSocket] Server listening on port ${PLC_WS_PORT}`);
+}
+
+/**
+ * Broadcast a message to all PLC WebSocket clients
+ */
+function broadcastToPlcClients(message) {
+  const data = JSON.stringify(message);
+  plcClients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+    }
+  });
+}
+
+// Export broadcast function for use by other modules
+global.broadcastToPlcClients = broadcastToPlcClients;
+
+// Start PLC WebSocket server
+startPlcWebSocketServer();
 
 // Create proxy for WebSocket connections to backend
 const wsProxy = httpProxy.createProxyServer({
@@ -141,6 +224,7 @@ waitForNextJs().then(() => {
     console.log('='.repeat(60));
     console.log(`> Server ready on http://${HOSTNAME}:${EXTERNAL_PORT}`);
     console.log(`> SignalR proxy: /hub -> ${BACKEND_URL}/hub`);
+    console.log(`> PLC WebSocket: ws://${HOSTNAME}:${PLC_WS_PORT}`);
     console.log(`> All other requests -> Next.js on :${NEXT_PORT}`);
     console.log('='.repeat(60));
   });
@@ -151,6 +235,9 @@ process.on('SIGTERM', () => {
   console.log('Received SIGTERM, shutting down...');
   nextServer.kill();
   server.close();
+  if (plcWss) {
+    plcWss.close();
+  }
   process.exit(0);
 });
 
@@ -158,5 +245,8 @@ process.on('SIGINT', () => {
   console.log('Received SIGINT, shutting down...');
   nextServer.kill();
   server.close();
+  if (plcWss) {
+    plcWss.close();
+  }
   process.exit(0);
 });

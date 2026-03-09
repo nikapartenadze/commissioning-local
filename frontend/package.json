@@ -3,13 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3020",
+    "dev": "node server.dev.js",
+    "dev:next": "next dev -p 3020",
+    "dev:ws": "node scripts/plc-websocket-server.js",
+    "dev:ts": "tsx scripts/start-server.ts",
+    "dev:full": "concurrently \"npm run dev:next\" \"npm run dev:ws\"",
     "build": "next build",
     "start": "next start -p 3020",
     "lint": "next lint",
     "postinstall": "prisma generate",
     "plc-server": "node scripts/plc-websocket-server.js",
-    "dev:full": "concurrently \"npm run dev\" \"npm run plc-server\""
+    "test:plc": "tsx test-plc.ts",
+    "test:plc:simple": "tsx test-plc-simple.ts",
+    "test:e2e": "tsx test-e2e.ts"
   },
   "dependencies": {
     "@microsoft/signalr": "^9.0.6",
@@ -27,11 +33,18 @@
     "@radix-ui/react-toast": "^1.2.1",
     "@tanstack/react-table": "^8.20.1",
     "@tanstack/react-virtual": "^3.10.8",
+    "@types/bcrypt": "^6.0.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
     "ethernet-ip": "^1.2.5",
+    "ffi-rs": "^1.3.1",
     "http-proxy": "^1.18.1",
+    "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.435.0",
     "next": "14.2.8",
     "next-auth": "^4.24.7",
@@ -42,7 +55,7 @@
     "recharts": "^2.12.7",
     "tailwind-merge": "^2.5.2",
     "tailwindcss-animate": "^1.0.7",
-    "ws": "^8.18.0",
+    "ws": "^8.19.0",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
@@ -56,6 +69,7 @@
     "postcss": "^8.4.41",
     "prisma": "^5.19.0",
     "tailwindcss": "^3.4.10",
+    "tsx": "^4.21.0",
     "typescript": "^5.5.4"
   }
 }

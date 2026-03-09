@@ -58,6 +58,13 @@ export function PlcConfigDialog({
 
   const [pullElapsed, setPullElapsed] = useState(0)
   const [plcElapsed, setPlcElapsed] = useState(0)
+
+  // Current live PLC status
+  const [liveStatus, setLiveStatus] = useState<{
+    plcConnected: boolean
+    tagCount: number
+    plcIp: string
+  } | null>(null)
   const pullTimerRef = useRef<NodeJS.Timeout | null>(null)
   const plcTimerRef = useRef<NodeJS.Timeout | null>(null)
   const plcLogEndRef = useRef<HTMLDivElement | null>(null)
@@ -128,6 +135,16 @@ export function PlcConfigDialog({
           apiPassword: status.apiPassword || "",
           remoteUrl: status.remoteUrl || "https://commissioning.lci.ge"
         })
+        // Set live status for showing connection state
+        setLiveStatus({
+          plcConnected: status.plcConnected || false,
+          tagCount: status.tagCount || 0,
+          plcIp: status.plcIp || ""
+        })
+        // If already connected, set success status
+        if (status.plcConnected) {
+          setPlcStatus({ type: 'success', message: `Connected to ${status.plcIp} (${status.tagCount} tags)` })
+        }
       }
     } catch (error) {
       console.error('Failed to load config:', error)
@@ -149,6 +166,7 @@ export function PlcConfigDialog({
       const timeoutId = setTimeout(() => controller.abort(), 120000)
 
       addPullLog('Sending request...')
+      addPullLog(`API Password: ${localConfig.apiPassword ? `set (${localConfig.apiPassword.length} chars)` : 'NOT SET'}`)
       setPullStatus({ type: 'loading', message: `Fetching IOs for subsystem ${localConfig.subsystemId}...` })
 
       // Snapshot log sequence before pull
@@ -313,6 +331,11 @@ export function PlcConfigDialog({
                 addPlcLog(`${status.totalIos} tags loaded`)
               }
               setPlcStatus({ type: 'success', message: `Connected to PLC at ${localConfig.ip}` })
+              setLiveStatus({
+                plcConnected: true,
+                tagCount: status.tagCount || status.totalIos || 0,
+                plcIp: localConfig.ip
+              })
               setIsConnecting(false)
               addPlcLog('Close this dialog to start testing.')
               pendingConnectConfigRef.current = localConfig
@@ -345,6 +368,15 @@ export function PlcConfigDialog({
     }
   }
 
+  // ── Cancel connection attempt ──
+  const handleCancelConnect = () => {
+    // Stop any ongoing poll
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    setIsConnecting(false)
+    addPlcLog('Connection attempt cancelled')
+    setPlcStatus({ type: null, message: '' })
+  }
+
   // ── Disconnect PLC ──
   const handleDisconnect = async () => {
     // Stop any ongoing poll
@@ -364,6 +396,7 @@ export function PlcConfigDialog({
       if (response.ok) {
         addPlcLog('PLC disconnected')
         setPlcStatus({ type: 'success', message: 'Disconnected' })
+        setLiveStatus(prev => prev ? { ...prev, plcConnected: false, tagCount: 0 } : null)
       } else {
         const error = await response.text()
         addPlcLog(`Disconnect failed: ${error}`)
@@ -519,6 +552,35 @@ export function PlcConfigDialog({
           {activeTab === 'plc' && (
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <div className="space-y-3">
+                {/* Current Connection Status Banner */}
+                {liveStatus && (
+                  <div className={`px-3 py-2.5 rounded-lg border-2 ${
+                    liveStatus.plcConnected
+                      ? 'bg-green-50 dark:bg-green-950/30 border-green-500/50'
+                      : 'bg-gray-50 dark:bg-gray-900/50 border-gray-300 dark:border-gray-700'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2.5 h-2.5 rounded-full ${
+                          liveStatus.plcConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
+                        }`} />
+                        <span className={`text-sm font-medium ${
+                          liveStatus.plcConnected ? 'text-green-700 dark:text-green-400' : 'text-gray-600 dark:text-gray-400'
+                        }`}>
+                          {liveStatus.plcConnected
+                            ? `Connected to ${liveStatus.plcIp}`
+                            : 'Not connected'}
+                        </span>
+                      </div>
+                      {liveStatus.plcConnected && (
+                        <span className="text-xs text-green-600 dark:text-green-500 font-mono">
+                          {liveStatus.tagCount} tags
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label htmlFor="ip" className="text-xs">PLC IP Address</Label>
@@ -561,15 +623,23 @@ export function PlcConfigDialog({
                   <Button
                     onClick={handlePlcConnect}
                     disabled={busy || !localConfig.ip}
-                    className="flex-1 bg-green-600 hover:bg-green-700 text-white h-10"
+                    className={`flex-1 h-10 ${
+                      liveStatus?.plcConnected
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        : 'bg-green-600 hover:bg-green-700 text-white'
+                    }`}
                   >
                     <Wifi className="w-4 h-4 mr-2" />
-                    {isConnecting ? `Connecting... (${plcElapsed}s)` : "Connect to PLC"}
+                    {isConnecting
+                      ? `Connecting... (${plcElapsed}s)`
+                      : liveStatus?.plcConnected
+                        ? "Reconnect"
+                        : "Connect to PLC"}
                   </Button>
                   <Button
                     variant="destructive"
-                    onClick={handleDisconnect}
-                    disabled={isDisconnecting || isPulling}
+                    onClick={isConnecting ? handleCancelConnect : handleDisconnect}
+                    disabled={isDisconnecting || isPulling || (!liveStatus?.plcConnected && !isConnecting)}
                     className="min-w-[120px] h-10"
                   >
                     <WifiOff className="w-4 h-4 mr-2" />
