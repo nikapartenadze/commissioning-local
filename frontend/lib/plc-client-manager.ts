@@ -192,6 +192,9 @@ export async function connectPlc(config: PlcConnectionConfig): Promise<{
   success: boolean;
   status: ConnectionStatus;
   error?: string;
+  tagsSuccessful?: number;
+  tagsFailed?: number;
+  failedTags?: Array<{ name: string; error: string }>;
 }> {
   try {
     const client = getPlcClient();
@@ -199,12 +202,15 @@ export async function connectPlc(config: PlcConnectionConfig): Promise<{
     state.currentConnectionConfig = config;
     syncState();
 
-    const success = await client.connect(config);
+    const result = await client.connect(config);
 
     return {
-      success,
+      success: result.success,
       status: client.getConnectionStatus(),
-      error: success ? undefined : 'Failed to connect to PLC',
+      error: result.error,
+      tagsSuccessful: result.tagsSuccessful,
+      tagsFailed: result.tagsFailed,
+      failedTags: result.failedTags,
     };
   } catch (error) {
     return {

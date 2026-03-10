@@ -23,7 +23,6 @@ interface FireOutputDialogProps {
   onOpenChange: (open: boolean) => void
   io: IoItem | null
   onFireOutput: (io: IoItem, action: 'start' | 'stop' | 'toggle') => void
-  isTesting: boolean
 }
 
 export function FireOutputDialog({
@@ -31,7 +30,6 @@ export function FireOutputDialog({
   onOpenChange,
   io,
   onFireOutput,
-  isTesting
 }: FireOutputDialogProps) {
   const [isHolding, setIsHolding] = useState(false)
   const ioRef = useRef(io)
