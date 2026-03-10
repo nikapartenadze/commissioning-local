@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPlcSimulator } from '@/lib/services/plc-simulator-service';
-import { getPlcWebSocketServer } from '@/lib/plc/websocket-server';
+import { getWsBroadcastUrl } from '@/lib/plc-client-manager';
 
 /**
  * POST /api/simulator/enable
@@ -29,17 +29,18 @@ export async function POST(request: NextRequest) {
 
     const simulator = getPlcSimulator();
 
-    // Set up event listener to broadcast state changes via WebSocket
-    const wsServer = getPlcWebSocketServer();
-
-    // Remove any existing listeners to avoid duplicates
     simulator.removeAllListeners('stateChanged');
 
-    // Add listener to broadcast state changes
     simulator.on('stateChanged', (event) => {
-      if (wsServer) {
-        wsServer.broadcastStateUpdate(event.id, event.newState === 'TRUE');
-      }
+      fetch(getWsBroadcastUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'UpdateState',
+          id: event.id,
+          state: event.newState === 'TRUE',
+        }),
+      }).catch(() => {});
     });
 
     // Enable the simulator

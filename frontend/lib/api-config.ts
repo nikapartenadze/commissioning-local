@@ -1,18 +1,14 @@
 /**
  * API Configuration
  *
- * This module provides centralized API URL configuration.
- * All API calls are now handled by Next.js API routes directly.
- *
  * Architecture (Node.js-only):
- * Browser -> Next.js Frontend (same origin) -> Next.js API Routes -> SQLite/PLC
+ * Browser -> Next.js API Routes (same origin) -> SQLite/PLC
  *
- * No external backend is required. The application is fully self-contained.
+ * Fully self-contained — no external backend required.
  */
 
 /**
- * Runtime configuration.
- * Now fetched from Next.js API routes instead of external backend.
+ * Runtime configuration fetched from Next.js API routes.
  */
 export interface RuntimeConfig {
   subsystemId: string
@@ -122,73 +118,32 @@ function getDefaultRuntimeConfig(): RuntimeConfig {
   }
 }
 
-// ===========================================
-// Port Configuration
-// ===========================================
-const FRONTEND_PORT = 3020 // Development port
-const BACKEND_PORT = 5000 // C# backend port
-// ===========================================
-
 /**
  * Get the base URL for API calls from the browser.
  * Returns empty string for relative URLs (same origin).
  */
 export function getApiBaseUrl(): string {
-  // In the browser, use relative URLs (same origin as the page)
-  if (typeof window !== 'undefined') {
-    return '' // Relative to current origin
-  }
-  // Server-side, use the full URL
   return ''
 }
 
 /**
- * Get the backend URL for server-side API routes.
- * This is the actual C# backend URL, only used in Next.js API routes.
- * Configurable via BACKEND_URL env var for Docker deployment.
- */
-export function getBackendUrl(): string {
-  if (typeof process !== 'undefined' && process.env?.BACKEND_URL) {
-    return process.env.BACKEND_URL
-  }
-  return `http://localhost:${BACKEND_PORT}`
-}
-
-/**
  * Get the WebSocket URL for real-time updates.
- * WebSocket server runs on port 3001.
  */
 export function getWebSocketUrl(): string {
-  const WS_PORT = 3001
+  const WS_PORT = 3002
   if (typeof window !== 'undefined') {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.hostname
     return `${wsProtocol}//${host}:${WS_PORT}`
   }
-  return `ws://localhost:${WS_PORT}`
+  return `ws://localhost:3002`
 }
 
 /**
- * Get the SignalR hub URL.
- * @deprecated Use getWebSocketUrl() instead - SignalR is no longer used
+ * @deprecated Alias for getWebSocketUrl() — kept for backward compatibility.
  */
 export function getSignalRHubUrl(): string {
   return getWebSocketUrl()
-}
-
-/**
- * Get the WebSocket URL for SignalR.
- * @deprecated Use getWebSocketUrl() instead - SignalR is no longer used
- */
-export function getSignalRWsUrl(): string {
-  return getWebSocketUrl()
-}
-
-/**
- * Get the configured ports for reference.
- */
-export function getPorts() {
-  return { frontend: FRONTEND_PORT }
 }
 
 // API endpoint paths (relative to API base)

@@ -32,6 +32,10 @@ import { useSignalR, IOUpdate, CommentUpdate, ErrorEvent } from "@/lib/signalr-c
 import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/lib/api-config"
 import { logger } from "@/lib/logger"
 
+// Debug flags - set to true to enable specific logging
+const DEBUG_FIRE = true      // Fire output logs
+const DEBUG_OTHER = false    // All other logs
+
 interface IoItem {
   id: number
   name: string
@@ -119,6 +123,7 @@ export default function CommissioningPage() {
     isTesting: false,
     lastUpdate: new Date()
   })
+  const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
@@ -197,7 +202,7 @@ export default function CommissioningPage() {
       setCurrentDialogIo(nextIo)
       setDialogQueue(prev => prev.slice(1)) // Remove from queue
       setShowValueChangeDialog(true)
-      if (process.env.NODE_ENV === 'development') {
+      if (DEBUG_OTHER) {
         console.log('📋 Showing next dialog from queue:', nextIo.name, 'Remaining:', dialogQueue.length - 1)
       }
     } else if (!currentDialogIo && dialogQueue.length === 0) {
@@ -208,7 +213,7 @@ export default function CommissioningPage() {
 
   // Add IO to dialog queue
   const addToDialogQueue = useCallback((io: IoItem) => {
-    if (process.env.NODE_ENV === 'development') {
+    if (DEBUG_OTHER) {
       console.log('➕ Adding to dialog queue:', io.name)
     }
     
@@ -216,13 +221,13 @@ export default function CommissioningPage() {
       // Check if this IO is already in queue (avoid duplicates)
       const isAlreadyInQueue = prev.some(queuedIo => queuedIo.id === io.id)
       if (isAlreadyInQueue) {
-        if (process.env.NODE_ENV === 'development') {
+        if (DEBUG_OTHER) {
           console.log('⚠️ IO already in queue, skipping:', io.name)
         }
         return prev
       }
       const newQueue = [...prev, io]
-      if (process.env.NODE_ENV === 'development') {
+      if (DEBUG_OTHER) {
         console.log('📋 Queue updated. Total waiting:', newQueue.length)
       }
       return newQueue
@@ -231,7 +236,7 @@ export default function CommissioningPage() {
     // Also check if this IO is currently being shown (use state updater for latest value)
     setCurrentDialogIo(current => {
       if (current && current.id === io.id) {
-        if (process.env.NODE_ENV === 'development') {
+        if (DEBUG_OTHER) {
           console.log('⚠️ IO already being shown in dialog, removing from queue')
         }
         // Remove it from queue if it somehow got added
@@ -306,12 +311,12 @@ export default function CommissioningPage() {
           isTesting: updateTestingState ? (status.isTesting || false) : prev.isTesting
         }))
         
-        if (process.env.NODE_ENV === 'development') {
+        if (DEBUG_OTHER) {
           console.log('✅ Loaded PLC config from backend:', status)
         }
       }
     } catch (error) {
-      if (process.env.NODE_ENV === 'development') {
+      if (DEBUG_OTHER) {
         console.error('❌ Failed to load PLC config from backend:', error)
       }
     }
@@ -331,6 +336,12 @@ export default function CommissioningPage() {
 
     loadPlcConfig()
     loadIos()
+
+    // Check cloud status
+    fetch('/api/cloud/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setIsCloudConnected(data.connected === true) })
+      .catch(() => setIsCloudConnected(false))
 
     return () => {
       isInitializedRef.current = false
@@ -362,8 +373,8 @@ export default function CommissioningPage() {
   // Handle SignalR testing state changes
   useEffect(() => {
     const handleTestingStateChange = (newIsTesting: boolean) => {
-      if (process.env.NODE_ENV === 'development') {
-        console.log('📡 SignalR TestingStateChanged:', newIsTesting)
+      if (DEBUG_OTHER) {
+        console.log('📡 WebSocket TestingStateChanged:', newIsTesting)
       }
       setPlcStatus(prev => ({
         ...prev,
@@ -381,8 +392,8 @@ export default function CommissioningPage() {
   // Handle SignalR comment updates
   useEffect(() => {
     const handleCommentUpdate = (update: CommentUpdate) => {
-      if (process.env.NODE_ENV === 'development') {
-        console.log('📡 SignalR CommentUpdate:', update)
+      if (DEBUG_OTHER) {
+        console.log('📡 WebSocket CommentUpdate:', update)
       }
       setIos(prevIos =>
         prevIos.map(io =>
@@ -425,8 +436,8 @@ export default function CommissioningPage() {
   // Re-fetch IOs when SignalR reconnects after a disconnect
   useEffect(() => {
     const handleReconnected = () => {
-      if (process.env.NODE_ENV === 'development') {
-        console.log('🔄 SignalR reconnected - re-fetching IOs to sync state')
+      if (DEBUG_OTHER) {
+        console.log('🔄 WebSocket reconnected - re-fetching IOs to sync state')
       }
       loadIos()
     }
@@ -442,20 +453,30 @@ export default function CommissioningPage() {
   useEffect(() => {
     if (signalR.isConnected) {
       setSignalRWasConnected(true)
-      if (process.env.NODE_ENV === 'development') {
-        console.log('🔗 SignalR connected - listening for real-time IO updates')
+      if (DEBUG_OTHER) {
+        console.log('🔗 WebSocket connected - listening for real-time IO updates')
       }
     }
   }, [signalR.isConnected])
+
+  // Auto-connect WebSocket when IOs are loaded (once)
+  // This ensures real-time updates work without requiring explicit "Connect to PLC" button click
+  const hasAutoConnectedRef = useRef(false)
+  useEffect(() => {
+    if (ios.length > 0 && !hasAutoConnectedRef.current) {
+      hasAutoConnectedRef.current = true
+      if (DEBUG_OTHER) {
+        console.log('🔌 Auto-connecting WebSocket (IOs loaded)')
+      }
+      signalR.connect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ios.length]) // Only trigger on IOs loading, connect() is stable
 
   // Register SignalR handlers ALWAYS — not gated behind isConnected
   // This ensures handlers are ready BEFORE the connection delivers messages
   useEffect(() => {
     const handleIOUpdate = (update: IOUpdate) => {
-      if (process.env.NODE_ENV === 'development') {
-        console.log('📡 SignalR Update received:', update)
-      }
-
       setIos(prevIos =>
         prevIos.map(io => {
           if (io.id === update.Id) {
@@ -471,9 +492,6 @@ export default function CommissioningPage() {
                 ...io,
                 state: update.State
               }
-              if (process.env.NODE_ENV === 'development') {
-                console.log('📡 State-only update for:', io.name, 'New state:', update.State, 'Preserved result:', io.result)
-              }
             } else {
               // Full IO update: update everything (result changes from Pass/Fail/Clear)
               updatedIo = {
@@ -483,7 +501,7 @@ export default function CommissioningPage() {
                 timestamp: update.Timestamp || io.timestamp,
                 comments: update.Comments !== undefined ? update.Comments : io.comments // Handle null comments explicitly
               }
-              if (process.env.NODE_ENV === 'development') {
+              if (DEBUG_OTHER) {
                 console.log('📡 Full IO update for:', io.name, 'New state:', update.State, 'New result:', updatedIo.result)
               }
             }
@@ -504,7 +522,7 @@ export default function CommissioningPage() {
             )
 
             if (shouldShowDialog) {
-              if (process.env.NODE_ENV === 'development') {
+              if (DEBUG_OTHER) {
                 console.log('💡 Triggering ValueChangeDialog for:', io.name, 'Type:', isOutput(io.name) ? 'OUTPUT' : 'INPUT', 'Current state:', update.State, 'Current result:', io.result)
               }
               // Add to queue instead of showing immediately
@@ -550,7 +568,7 @@ export default function CommissioningPage() {
           }
         }
         setPreviousStates(initialStates)
-        if (process.env.NODE_ENV === 'development') {
+        if (DEBUG_OTHER) {
           console.log('📊 Initialized previousStates for', Object.keys(initialStates).length, 'IOs')
         }
 
@@ -567,7 +585,7 @@ export default function CommissioningPage() {
             )
             if (restoredQueue.length > 0) {
               setDialogQueue(restoredQueue)
-              if (process.env.NODE_ENV === 'development') {
+              if (DEBUG_OTHER) {
                 console.log('📋 Restored dialog queue from localStorage:', restoredQueue.map((io: IoItem) => io.name))
               }
             }
@@ -593,9 +611,9 @@ export default function CommissioningPage() {
     }
   }
 
-  const handleFireOutput = async (io: IoItem, action: 'start' | 'stop') => {
+  const handleFireOutput = async (io: IoItem, action: 'start' | 'stop' | 'toggle') => {
     try {
-      if (action === 'start') {
+      if (action === 'start' || action === 'toggle') {
         // Mark that output firing is in progress for this IO
         setOutputFiringInProgress(prev => ({ ...prev, [io.id]: true }))
       } else if (action === 'stop') {
@@ -606,8 +624,8 @@ export default function CommissioningPage() {
         }, 3000)
       }
 
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`Firing output ${action} for ${io.name}...`)
+      if (DEBUG_FIRE) {
+        console.log(`🔥 Firing output ${action} for ${io.name}...`)
       }
       const response = await authFetch(API_ENDPOINTS.ioFireOutput(io.id), {
         method: 'POST',
@@ -617,8 +635,8 @@ export default function CommissioningPage() {
 
       if (response.ok) {
         const result = await response.json()
-        if (process.env.NODE_ENV === 'development') {
-          console.log(`Output ${action} command sent for ${io.name}:`, result)
+        if (DEBUG_FIRE) {
+          console.log(`🔥 Output ${action} response for ${io.name}:`, result)
         }
         // Show warning if PLC write failed
         if (result.success === false && result.error) {
@@ -628,9 +646,16 @@ export default function CommissioningPage() {
             variant: 'destructive'
           })
         }
-        // Dialog is triggered ONLY via SignalR state change — not here.
-        // The flow: fire start → PLC changes → reader detects → SignalR UpdateState →
-        // frontend sees state change while outputFiringInProgress is set → dialog appears.
+
+        // Update UI directly from API response (don't wait for WebSocket)
+        if (result.success && result.state !== undefined) {
+          const newState = result.state ? 'TRUE' : 'FALSE'
+          setIos(prevIos =>
+            prevIos.map(item =>
+              item.id === io.id ? { ...item, state: newState } : item
+            )
+          )
+        }
       } else {
         const errorText = await response.text()
         logger.error(`Failed to ${action} output:`, response.status, errorText)
@@ -661,7 +686,7 @@ export default function CommissioningPage() {
         i.id === io.id ? { ...i, result: 'Passed', timestamp: new Date().toISOString() } : i
       ))
 
-      if (process.env.NODE_ENV === 'development') {
+      if (DEBUG_OTHER) {
         console.log('Calling backend to mark IO as passed:', io.id, io.name)
       }
       const response = await authFetch(API_ENDPOINTS.ioPass(io.id), {
@@ -707,7 +732,7 @@ export default function CommissioningPage() {
         i.id === io.id ? { ...i, result: 'Failed', comments, timestamp: new Date().toISOString() } : i
       ))
 
-      if (process.env.NODE_ENV === 'development') {
+      if (DEBUG_OTHER) {
         console.log('Calling backend to mark IO as failed:', io.id, io.name, comments, failureMode)
       }
       const response = await authFetch(API_ENDPOINTS.ioFail(io.id), {
@@ -763,7 +788,7 @@ export default function CommissioningPage() {
       })
 
       if (response.ok) {
-        if (process.env.NODE_ENV === 'development') {
+        if (DEBUG_OTHER) {
           console.log('✅ IO cleared via backend')
         }
       } else {
@@ -792,7 +817,7 @@ export default function CommissioningPage() {
 
   const handleValueChangeYes = (io: IoItem) => {
     // Mark as passed when user confirms the change
-    if (process.env.NODE_ENV === 'development') {
+    if (DEBUG_OTHER) {
       console.log('🎯 Pass button clicked for:', io.name)
     }
     handleMarkPassed(io)
@@ -802,7 +827,7 @@ export default function CommissioningPage() {
 
   const handleValueChangeNo = (io: IoItem) => {
     // Show comment dialog before marking as failed
-    if (process.env.NODE_ENV === 'development') {
+    if (DEBUG_OTHER) {
       console.log('🎯 Fail button clicked for:', io.name, '- Opening comment dialog')
     }
     setPendingFailIo(io)
@@ -814,7 +839,7 @@ export default function CommissioningPage() {
 
   const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string) => {
     // Mark as failed with the provided comment and failure mode
-    if (process.env.NODE_ENV === 'development') {
+    if (DEBUG_OTHER) {
       console.log('🎯 Marking as failed with comment:', io.name, comment, 'Failure mode:', failureMode)
     }
     handleMarkFailed(io, comment, failureMode)
@@ -825,7 +850,7 @@ export default function CommissioningPage() {
 
   const handleFailCommentCancel = () => {
     // User cancelled the fail comment dialog - don't mark as failed
-    if (process.env.NODE_ENV === 'development') {
+    if (DEBUG_OTHER) {
       console.log('🚫 Fail comment cancelled - not marking as failed')
     }
     setPendingFailIo(null)
@@ -835,7 +860,7 @@ export default function CommissioningPage() {
 
   const handleValueChangeCancel = (io: IoItem) => {
     // Do nothing, just close the dialog (no database update)
-    if (process.env.NODE_ENV === 'development') {
+    if (DEBUG_OTHER) {
       console.log('🚫 Value change dialog cancelled for', io.name, '- No database update')
     }
     // Clear current dialog and show next in queue
@@ -844,7 +869,7 @@ export default function CommissioningPage() {
 
   const handleClearAllDialogs = () => {
     // Clear all pending dialogs without marking any Pass/Fail
-    if (process.env.NODE_ENV === 'development') {
+    if (DEBUG_OTHER) {
       console.log('🛑 Clearing all pending dialogs')
     }
     setDialogQueue([])
@@ -862,7 +887,7 @@ export default function CommissioningPage() {
         i.id === io.id ? { ...i, comments: comment } : i
       ))
 
-      if (process.env.NODE_ENV === 'development') {
+      if (DEBUG_OTHER) {
         console.log('💬 Updating comment for IO:', io.id, io.name, comment)
       }
 
@@ -873,7 +898,7 @@ export default function CommissioningPage() {
       })
 
       if (response.ok) {
-        if (process.env.NODE_ENV === 'development') {
+        if (DEBUG_OTHER) {
           console.log('✅ Comment updated via backend')
         }
         // SignalR will broadcast the update to other clients
@@ -1000,7 +1025,7 @@ export default function CommissioningPage() {
           setShowFailCommentDialog(false)
           setShowFireOutputDialog(false)
           localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
-          if (process.env.NODE_ENV === 'development') {
+          if (DEBUG_OTHER) {
             console.log('🛑 Testing stopped - cleared all pending dialogs')
           }
         }
@@ -1111,7 +1136,7 @@ export default function CommissioningPage() {
         <PlcToolbar
           isTesting={plcStatus.isTesting}
           isPlcConnected={plcStatus.isConnected}
-          isCloudConnected={true}
+          isCloudConnected={isCloudConnected}
           totalIos={ios.length}
           passedIos={ios.filter(io => io.result === 'Passed').length}
           failedIos={ios.filter(io => io.result === 'Failed').length}

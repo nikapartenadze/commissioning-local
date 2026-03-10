@@ -47,25 +47,6 @@ export * from "./libplctag";
 // Re-export types
 export * from "./types";
 
-// Re-export WebSocket server
-export {
-  PlcWebSocketServer,
-  startPlcWebSocketServer,
-  getPlcWebSocketServer,
-  stopPlcWebSocketServer,
-  type PlcWebSocketServerOptions,
-  type PlcWebSocketMessage,
-  type MessageType,
-  type UpdateStateMessage,
-  type UpdateIOMessage,
-  type ConfigurationReloadingMessage,
-  type ConfigurationReloadedMessage,
-  type TestingStateChangedMessage,
-  type CommentUpdateMessage,
-  type NetworkStatusChangedMessage,
-  type ErrorEventMessage
-} from './websocket-server';
-
 // Re-export WebSocket client
 export {
   usePlcWebSocket,

@@ -57,18 +57,16 @@ function checkRateLimit(identifier: string): { allowed: boolean; remaining: numb
 }
 
 interface LoginRequest {
-  fullName: string;
+  fullName?: string;
   pin: string;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    // Get client identifier for rate limiting
     const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
       || request.headers.get('x-real-ip')
       || 'unknown';
 
-    // Check rate limit
     const rateLimit = checkRateLimit(clientIp);
 
     if (!rateLimit.allowed) {
@@ -87,7 +85,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Parse request body
     let body: LoginRequest;
     try {
       body = await request.json();
@@ -100,46 +97,55 @@ export async function POST(request: NextRequest) {
 
     const { fullName, pin } = body;
 
-    // Validate required fields
-    if (!fullName?.trim() || !pin?.trim()) {
+    if (!pin?.trim()) {
       return NextResponse.json(
-        { message: 'Full name and PIN are required' },
+        { message: 'PIN is required' },
         { status: 400 }
       );
     }
 
-    // Find user by full name
-    const user = await prisma.user.findFirst({
-      where: {
-        fullName: fullName.trim(),
-      },
-    });
+    let user;
 
-    if (!user) {
-      console.warn(`Login attempt for non-existent user: ${fullName}`);
-      return NextResponse.json(
-        { message: 'User not found' },
-        { status: 401 }
-      );
-    }
+    if (fullName?.trim()) {
+      // Named login: find by fullName and verify PIN
+      user = await prisma.user.findFirst({
+        where: { fullName: fullName.trim() },
+      });
 
-    // Check if user is active
-    if (!user.isActive) {
-      console.warn(`Login attempt for inactive user: ${fullName}`);
-      return NextResponse.json(
-        { message: 'User account is inactive' },
-        { status: 401 }
-      );
-    }
+      if (!user || !user.isActive) {
+        return NextResponse.json(
+          { message: 'Invalid credentials' },
+          { status: 401 }
+        );
+      }
 
-    // Verify PIN
-    const pinValid = await verifyPin(pin, user.pin);
-    if (!pinValid) {
-      console.warn(`Invalid PIN for user: ${fullName}`);
-      return NextResponse.json(
-        { message: 'Invalid PIN' },
-        { status: 401 }
-      );
+      const pinValid = await verifyPin(pin, user.pin);
+      if (!pinValid) {
+        return NextResponse.json(
+          { message: 'Invalid PIN' },
+          { status: 401 }
+        );
+      }
+    } else {
+      // PIN-only login: iterate users server-side
+      const activeUsers = await prisma.user.findMany({
+        where: { isActive: true },
+      });
+
+      for (const candidate of activeUsers) {
+        const isMatch = await verifyPin(pin, candidate.pin);
+        if (isMatch) {
+          user = candidate;
+          break;
+        }
+      }
+
+      if (!user) {
+        return NextResponse.json(
+          { message: 'Invalid PIN' },
+          { status: 401 }
+        );
+      }
     }
 
     // Update last used timestamp
@@ -148,14 +154,13 @@ export async function POST(request: NextRequest) {
       data: { lastUsedAt: new Date().toISOString().replace('T', ' ').substring(0, 19) },
     });
 
-    // Generate JWT token
     const token = generateToken({
       id: user.id,
       fullName: user.fullName,
       isAdmin: user.isAdmin,
     });
 
-    console.info(`User logged in successfully: ${fullName}`);
+    console.info(`User logged in: ${user.fullName}`);
 
     return NextResponse.json(
       {
