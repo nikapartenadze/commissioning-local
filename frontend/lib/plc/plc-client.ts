@@ -119,9 +119,15 @@ export class PlcClient extends EventEmitter {
   /**
    * Connect to PLC with the specified IP and path
    */
-  async connect(config: PlcConnectionConfig): Promise<boolean> {
+  async connect(config: PlcConnectionConfig): Promise<{
+    success: boolean;
+    tagsSuccessful: number;
+    tagsFailed: number;
+    failedTags: Array<{ name: string; error: string }>;
+    error?: string;
+  }> {
     if (this.connectionStatus === 'connecting') {
-      return false;
+      return { success: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: 'Already connecting' };
     }
 
     this.connectionConfig = config;
@@ -138,8 +144,15 @@ export class PlcClient extends EventEmitter {
 
         if (result.successful.length === 0) {
           this.setConnectionStatus('error');
-          this.emit('error', new Error('Failed to initialize any tags'));
-          return false;
+          const errorMsg = `No tags could be initialized (${result.failed.length} failed). Tag names may not match the PLC program.`;
+          this.emit('error', new Error(errorMsg));
+          return {
+            success: false,
+            tagsSuccessful: 0,
+            tagsFailed: result.failed.length,
+            failedTags: result.failed,
+            error: errorMsg,
+          };
         }
 
         // Start continuous reading
@@ -160,16 +173,27 @@ export class PlcClient extends EventEmitter {
 
         this.setConnectionStatus('connected');
         this.emit('initialized');
-        return true;
+
+        if (result.failed.length > 0) {
+          console.warn(`[PlcClient] Connected with ${result.failed.length} failed tags:`, result.failed.slice(0, 10).map(f => f.name));
+        }
+
+        return {
+          success: true,
+          tagsSuccessful: result.successful.length,
+          tagsFailed: result.failed.length,
+          failedTags: result.failed,
+        };
       }
 
       this.setConnectionStatus('connected');
-      return true;
+      return { success: true, tagsSuccessful: 0, tagsFailed: 0, failedTags: [] };
     } catch (error) {
       this.setConnectionStatus('error');
-      this.emit('error', error instanceof Error ? error : new Error(String(error)));
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.emit('error', error instanceof Error ? error : new Error(errorMsg));
       this.scheduleReconnect();
-      return false;
+      return { success: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: errorMsg };
     }
   }
 
@@ -206,7 +230,8 @@ export class PlcClient extends EventEmitter {
       return false;
     }
 
-    return this.connect(connectionConfig);
+    const result = await this.connect(connectionConfig);
+    return result.success;
   }
 
   /**

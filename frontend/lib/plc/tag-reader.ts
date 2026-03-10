@@ -113,16 +113,17 @@ export class TagReaderService extends EventEmitter {
   /**
    * Create and initialize a tag for reading
    * Has overall timeout protection to prevent hanging
+   * Returns { success, error? } so callers get the specific failure reason
    */
   async createTag(
     name: string,
     options: { elemSize?: number; elemCount?: number; timeout?: number } = {}
-  ): Promise<boolean> {
+  ): Promise<{ success: boolean; error?: string }> {
     const { elemSize = 1, elemCount = 1, timeout = 5000 } = options;
 
     // Wrap entire operation in a timeout
     const overallTimeout = timeout + 2000; // Add buffer for retries
-    const timeoutPromise = new Promise<boolean>((_, reject) => {
+    const timeoutPromise = new Promise<{ success: boolean; error?: string }>((_, reject) => {
       setTimeout(() => reject(new Error(`Tag ${name} creation timed out after ${overallTimeout}ms`)), overallTimeout);
     });
 
@@ -131,8 +132,9 @@ export class TagReaderService extends EventEmitter {
     try {
       return await Promise.race([createPromise, timeoutPromise]);
     } catch (error) {
-      this.emit('error', error instanceof Error ? error : new Error(String(error)), name);
-      return false;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.emit('error', error instanceof Error ? error : new Error(errorMsg), name);
+      return { success: false, error: errorMsg };
     }
   }
 
@@ -142,7 +144,7 @@ export class TagReaderService extends EventEmitter {
   private async createTagInternal(
     name: string,
     options: { elemSize: number; elemCount: number; timeout: number }
-  ): Promise<boolean> {
+  ): Promise<{ success: boolean; error?: string }> {
     const { elemSize, elemCount, timeout } = options;
     let handle: number = -1;
 
@@ -160,23 +162,25 @@ export class TagReaderService extends EventEmitter {
       if (handle < 0) {
         const errorMsg = getStatusMessage(handle);
         console.log(`[TagReader] Tag ${name} creation returned error: ${errorMsg}`);
-        return false;
+        return { success: false, error: `Create failed: ${errorMsg}` };
       }
 
       // Wait for tag creation to complete
       const status = await this.waitForStatus(handle, timeout);
       if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        console.log(`[TagReader] Tag ${name} status check failed: ${getStatusMessage(status)}`);
+        const errorMsg = getStatusMessage(status);
+        console.log(`[TagReader] Tag ${name} status check failed: ${errorMsg}`);
         plc_tag_destroy(handle);
-        return false;
+        return { success: false, error: `Status check failed: ${errorMsg}` };
       }
 
       // Perform initial read to validate tag exists
       const readStatus = await readTagAsync(handle, this.config.readTimeoutMs);
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        console.log(`[TagReader] Tag ${name} validation read failed: ${getStatusMessage(readStatus)}`);
+        const errorMsg = getStatusMessage(readStatus);
+        console.log(`[TagReader] Tag ${name} validation read failed: ${errorMsg}`);
         plc_tag_destroy(handle);
-        return false;
+        return { success: false, error: `Read failed: ${errorMsg}` };
       }
 
       // Get initial value using bit-level read (works correctly for all tag types)
@@ -194,7 +198,7 @@ export class TagReaderService extends EventEmitter {
       };
 
       this.tags.set(name, tagState);
-      return true;
+      return { success: true };
     } catch (error) {
       // Clean up handle if we created one
       if (handle >= 0) {
@@ -208,9 +212,12 @@ export class TagReaderService extends EventEmitter {
    * Create multiple tags in parallel batches
    * Includes early exit if PLC appears unreachable
    */
-  async createTags(tagNames: string[]): Promise<{ successful: string[]; failed: string[] }> {
+  async createTags(tagNames: string[]): Promise<{
+    successful: string[];
+    failed: Array<{ name: string; error: string }>;
+  }> {
     const successful: string[] = [];
-    const failed: string[] = [];
+    const failed: Array<{ name: string; error: string }> = [];
 
     if (tagNames.length === 0) {
       return { successful, failed };
@@ -231,8 +238,8 @@ export class TagReaderService extends EventEmitter {
 
       const results = await Promise.allSettled(
         batch.map(async (name) => {
-          const success = await this.createTag(name);
-          return { name, success };
+          const result = await this.createTag(name);
+          return { name, ...result };
         })
       );
 
@@ -245,12 +252,13 @@ export class TagReaderService extends EventEmitter {
             successful.push(result.value.name);
             batchSuccess++;
           } else {
-            failed.push(result.value.name);
+            failed.push({ name: result.value.name, error: result.value.error || 'Unknown error' });
             batchFailed++;
           }
         } else {
           // Promise rejected
-          failed.push(batch[results.indexOf(result)]);
+          const name = batch[results.indexOf(result)];
+          failed.push({ name, error: result.reason?.message || 'Exception' });
           batchFailed++;
         }
       }
@@ -263,7 +271,9 @@ export class TagReaderService extends EventEmitter {
         console.log('[TagReader] First batch failed completely - PLC may be unreachable, aborting');
         // Mark remaining tags as failed
         for (let i = 1; i < batches.length; i++) {
-          failed.push(...batches[i]);
+          for (const name of batches[i]) {
+            failed.push({ name, error: 'Skipped (PLC unreachable)' });
+          }
         }
         break;
       }
