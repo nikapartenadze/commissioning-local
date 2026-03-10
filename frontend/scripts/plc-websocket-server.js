@@ -135,7 +135,7 @@ const httpServer = http.createServer((req, res) => {
   }
 });
 
-httpServer.listen(HTTP_PORT, () => {
+httpServer.listen(HTTP_PORT, '127.0.0.1', () => {
   console.log(`📡 HTTP broadcast API listening on http://localhost:${HTTP_PORT}`);
   console.log(`   POST /broadcast - Send a message to all WebSocket clients`);
   console.log(`   GET /status - Get server status`);
