@@ -702,7 +702,7 @@ export function EnhancedIoDataGrid({
                         e.stopPropagation()
                         onClearResult?.(io)
                       }}
-                      disabled={!isTesting || !io.result}
+                      disabled={!io.result}
                       title="Clear"
                     >
                       <X className="h-5 w-5" />
@@ -728,7 +728,6 @@ export function EnhancedIoDataGrid({
                             e.stopPropagation()
                             onShowFireOutputDialog?.(io)
                           }}
-                          disabled={!isTesting}
                           title="Fire Output"
                         >
                           <Play className="h-4 w-4 mr-1" />
