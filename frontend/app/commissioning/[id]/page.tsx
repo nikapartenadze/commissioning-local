@@ -1219,7 +1219,6 @@ export default function CommissioningPage() {
           onOpenChange={setShowFireOutputDialog}
           io={selectedIo ? ios.find(i => i.id === selectedIo.id) || selectedIo : null}
           onFireOutput={handleFireOutput}
-          isTesting={plcStatus.isTesting}
         />
 
         {/* Value Change Dialog - use current IO from array to get live state updates */}
