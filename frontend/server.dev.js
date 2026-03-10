@@ -81,7 +81,7 @@ function startNextJs() {
   return new Promise((resolve, reject) => {
     console.log('[Next.js] Starting development server...');
 
-    const nextServer = spawn('npx', ['next', 'dev', '-p', NEXTJS_PORT.toString()], {
+    const nextServer = spawn('npx', ['next', 'dev', '-H', '0.0.0.0', '-p', NEXTJS_PORT.toString()], {
       env: {
         ...process.env,
         PORT: NEXTJS_PORT.toString(),
