@@ -5,16 +5,16 @@
  * Runs alongside the Next.js app to provide real-time PLC communication.
  *
  * Features:
- * - WebSocket server on port 3001 for browser connections
- * - HTTP API on port 3101 to receive broadcasts from PLC client
+ * - WebSocket server on port 3002 for browser connections
+ * - HTTP API on port 3102 to receive broadcasts from PLC client
  * - Real-time IO state updates
  */
 
 const WebSocket = require('ws');
 const http = require('http');
 
-const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3001', 10);
-const HTTP_PORT = WS_PORT + 100; // 3101 for HTTP API
+const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
+const HTTP_PORT = WS_PORT + 100; // 3102 for HTTP API
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ port: WS_PORT });

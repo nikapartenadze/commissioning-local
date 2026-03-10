@@ -27,7 +27,7 @@ export class PlcWebSocketServer {
   private updateInterval: NodeJS.Timeout | null = null
   private isRunning = false
 
-  constructor(port: number = 3001) {
+  constructor(port: number = 3002) {
     this.wss = new WebSocketServer({ port })
     this.setupWebSocketServer()
   }

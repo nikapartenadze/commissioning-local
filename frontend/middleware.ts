@@ -1,31 +1,36 @@
-// Authentication disabled for testing purposes
-// export { default } from "next-auth/middleware"
-
-// export const config = {
-//   matcher: [
-//     /*
-//      * Match all request paths except:
-//      * - api/auth (authentication endpoints)
-//      * - _next/static (static files)
-//      * - _next/image (image optimization)
-//      * - public folder
-//      */
-//     '/((?!api/auth|_next/static|_next/image|favicon.ico|auth/).*)',
-//   ],
-// }
-
-// Dummy middleware function to satisfy Next.js requirements
 import { NextRequest, NextResponse } from 'next/server'
 
+const PUBLIC_PATHS = ['/', '/api/auth/login', '/api/auth/verify', '/api/health']
+
 export function middleware(request: NextRequest) {
-  // No authentication - just pass through all requests
+  const { pathname } = request.nextUrl
+
+  // Always allow static assets, auth endpoints, and health
+  if (PUBLIC_PATHS.some(p => pathname === p) || pathname.startsWith('/_next/')) {
+    return NextResponse.next()
+  }
+
+  // API routes handle their own auth via requireAuth/withAuth
+  if (pathname.startsWith('/api/')) {
+    return NextResponse.next()
+  }
+
+  // For page routes, check for auth token in localStorage-synced cookie or header
+  // Client stores token in localStorage; we check if user has been authenticated
+  // by looking for the token cookie that the client can set
+  const token = request.cookies.get('authToken')?.value
+    || request.headers.get('authorization')?.replace('Bearer ', '')
+
+  if (!token) {
+    // Redirect unauthenticated page requests to login
+    return NextResponse.redirect(new URL('/', request.url))
+  }
+
   return NextResponse.next()
 }
 
 export const config = {
   matcher: [
-    // Match all paths - but do nothing (no authentication)
     '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
 }
-

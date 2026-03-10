@@ -284,3 +284,60 @@ export type TagHandle = number;
 export function isValidTagHandle(handle: TagHandle): boolean {
   return handle >= 0;
 }
+
+// ============================================================================
+// WebSocket Message Types
+// ============================================================================
+
+export interface UpdateStateMessage {
+  type: 'UpdateState'
+  id: number
+  state: boolean
+}
+
+export interface UpdateIOMessage {
+  type: 'UpdateIO'
+  id: number
+  result: string
+  state: string
+  timestamp: string
+  comments: string
+}
+
+export interface CommentUpdateMessage {
+  type: 'CommentUpdate'
+  ioId: number
+  comments: string
+}
+
+export interface NetworkStatusChangedMessage {
+  type: 'NetworkStatusChanged'
+  moduleName: string
+  isOnline: boolean
+  affectedTags: number[]
+}
+
+export interface ErrorEventMessage {
+  type: 'Error'
+  message: string
+  severity: 'warning' | 'error' | 'critical'
+}
+
+export interface TestingStateChangedMessage {
+  type: 'TestingStateChanged'
+  isTesting: boolean
+}
+
+export interface ConfigReloadMessage {
+  type: 'ConfigReload'
+  status: 'reloading' | 'reloaded'
+}
+
+export type PlcWebSocketMessage =
+  | UpdateStateMessage
+  | UpdateIOMessage
+  | CommentUpdateMessage
+  | NetworkStatusChangedMessage
+  | ErrorEventMessage
+  | TestingStateChangedMessage
+  | ConfigReloadMessage

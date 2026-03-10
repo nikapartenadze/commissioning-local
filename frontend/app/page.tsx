@@ -9,36 +9,28 @@ import { API_ENDPOINTS } from "@/lib/api-config"
 export default function HomePage() {
   const router = useRouter()
   const { currentUser, isLoading } = useUser()
-  const [configError, setConfigError] = useState(false)
   const [redirecting, setRedirecting] = useState(false)
 
   // Fetch config and redirect when user is logged in
   useEffect(() => {
     if (!isLoading && currentUser && !redirecting) {
+      setRedirecting(true)
       fetch(API_ENDPOINTS.configurationRuntime)
         .then(res => res.json())
         .then(data => {
           const subsystemId = data.subsystemId
           if (subsystemId && subsystemId !== '') {
-            setRedirecting(true)
             router.push(`/commissioning/${subsystemId}`)
           } else {
-            setConfigError(true)
+            // No subsystem configured - go to placeholder where config dialog opens
+            router.push('/commissioning/_')
           }
         })
         .catch(() => {
-          setConfigError(true)
+          router.push('/commissioning/_')
         })
     }
   }, [currentUser, isLoading, router, redirecting])
-
-  // Redirect to commissioning when config error
-  useEffect(() => {
-    if (configError && !redirecting) {
-      setRedirecting(true)
-      router.push('/commissioning')
-    }
-  }, [configError, router, redirecting])
 
   // Show loading while checking user state
   if (isLoading || redirecting) {

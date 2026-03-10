@@ -1,5 +1,4 @@
 // Prisma schema for local SQLite database
-// Replaces Entity Framework Core's TagsContext
 
 generator client {
   provider = "prisma-client-js"

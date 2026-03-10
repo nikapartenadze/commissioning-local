@@ -42,18 +42,16 @@ export interface SignalRConnection extends WebSocketConnection {
 export function useSignalR(hubUrl?: string): SignalRConnection {
   // Convert the old hubUrl format to WebSocket options if provided
   // The old hubUrl was like "http://localhost:5000/hub"
-  // The new WebSocket URL should be like "ws://localhost:3001"
+  // The new WebSocket URL should be like "ws://localhost:3002"
   const options: WebSocketConnectionOptions = {}
 
   if (hubUrl) {
-    // Parse the old URL and convert to WebSocket URL
     try {
       const url = new URL(hubUrl)
       const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-      // Use port 3001 for WebSocket server
-      options.url = `${wsProtocol}//${url.hostname}:3001`
+      options.url = `${wsProtocol}//${url.hostname}:3002`
     } catch {
-      // If URL parsing fails, ignore and use default
+      // If URL parsing fails, use default
     }
   }
 
