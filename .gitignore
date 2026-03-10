@@ -1,129 +1,47 @@
-# .NET Build Artifacts (applies to all directories)
-**/[Bb]in/
-**/[Oo]bj/
-**/.vs/
-**/tmpclaude-*
+# Dependencies
+node_modules/
 
-# User-specific files
-*.rsuser
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-
-# Build results
-[Dd]ebug/
-[Dd]ebugPublic/
-[Rr]elease/
-[Rr]eleases/
-x64/
-x86/
-[Ww][Ii][Nn]32/
-[Aa][Rr][Mm]/
-[Aa][Rr][Mm]64/
-bld/
-[Ll]og/
-[Ll]ogs/
-
-# Visual Studio cache/options directory
-.vs/
-
-# .NET Core
-project.lock.json
-project.fragment.lock.json
-artifacts/
-
-# Files built by Visual Studio
-*.ilk
-*.meta
-*.obj
-*.iobj
-*.pch
-*.pdb
-*.ipdb
-*.pgc
-*.pgd
-*.rsp
-*.sbr
-*.tlb
-*.tli
-*.tlh
-*.tmp
-*.tmp_proj
-*_wpftmp.csproj
-*.log
-*.tlog
-*.vspscc
-*.vssscc
-.builds
-*.pidb
-*.svclog
-*.scc
-
-# NuGet Packages
-*.nupkg
-*.snupkg
-**/[Pp]ackages/*
-!**/[Pp]ackages/build/
-*.nuget.props
-*.nuget.targets
-
-# SQLite database files (keep structure, ignore data)
-*.db
-*.db-wal
-*.db-shm
-
-# User-specific configuration files
-config.json
-
-# Next.js frontend
+# Next.js
 frontend/.next/
 frontend/out/
 frontend/build/
 frontend/dist/
 frontend/.env*.local
 
-# Node
-node_modules/
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
+# User-specific configuration
+config.json
+
+# Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# Vercel
-.vercel
-
-# TypeScript
-*.tsbuildinfo
-next-env.d.ts
-
 # OS Files
 .DS_Store
 Thumbs.db
-ehthumbs.db
 Desktop.ini
 
 # IDE
+.vs/
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Shared.Library build output (keep source, ignore compiled)
-Shared.Library/bin/
-Shared.Library/obj/
+# Temp files
+**/tmpclaude-*
 
-# Portable distribution (binary output, not source)
-portable/
-IO-Checkout-Tool-Portable/
-
-# Windows artifacts
-nul
-
-# Test results
-TestResults/
-*.trx
-*.coverage
-*.coveragexml
-
+# Vercel
+.vercel

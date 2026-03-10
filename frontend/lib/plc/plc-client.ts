@@ -2,7 +2,7 @@
  * High-Level PLC Client
  *
  * Provides a simple interface for connecting to PLCs, managing tags,
- * and reading/writing values. Based on the C# PlcCommunicationService pattern.
+ * and reading/writing values.
  */
 
 import { EventEmitter } from 'events';
@@ -248,10 +248,11 @@ export class PlcClient extends EventEmitter {
 
   /**
    * Initialize an output tag for writing (toggle/fire operations)
+   * Returns the current state (true/false) or null on failure
    */
-  initializeOutputTag(io: IoTag): boolean {
+  initializeOutputTag(io: IoTag): { success: boolean; currentState?: boolean } {
     if (!this.connectionConfig || !io.name) {
-      return false;
+      return { success: false };
     }
 
     // Clean up previous write tag
@@ -276,7 +277,7 @@ export class PlcClient extends EventEmitter {
 
       if (handle < 0) {
         this.emit('error', new Error(`Failed to create output tag ${io.name}: ${getStatusMessage(handle)}`));
-        return false;
+        return { success: false };
       }
 
       // Do initial read to verify tag exists and populate buffer (critical for writes)
@@ -284,15 +285,20 @@ export class PlcClient extends EventEmitter {
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         console.error(`[initializeOutputTag] Initial read failed for ${io.name}: ${getStatusMessage(readStatus)}`);
         plc_tag_destroy(handle);
-        return false;
+        return { success: false };
       }
+
+      // Use plc_tag_get_bit for correct boolean read (int8 returns garbage for DINT tags)
+      const currentValue = plc_tag_get_bit(handle, 0);
+      const currentState = currentValue === 1;
+      console.log(`[initializeOutputTag] ${io.name} bit value: ${currentValue}, state: ${currentState}`);
 
       this.writeTagHandle = handle;
       this.writeTagName = io.name;
-      return true;
+      return { success: true, currentState };
     } catch (error) {
       this.emit('error', error instanceof Error ? error : new Error(String(error)));
-      return false;
+      return { success: false };
     }
   }
 

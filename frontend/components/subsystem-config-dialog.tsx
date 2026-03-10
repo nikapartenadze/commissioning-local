@@ -69,10 +69,7 @@ export function SubsystemConfigDialog({
     setError(null)
 
     try {
-      const url = existingConfig
-        ? `/api/configurations/${existingConfig.id}`
-        : '/api/configurations'
-      
+      const url = '/api/configuration'
       const method = existingConfig ? 'PUT' : 'POST'
       
       const payload = existingConfig
@@ -115,7 +112,7 @@ export function SubsystemConfigDialog({
       }
     } catch (error) {
       console.error('Error saving configuration:', error)
-      setError('Error saving configuration. Make sure the C# backend is running.')
+      setError('Error saving configuration. Check your connection and try again.')
     } finally {
       setSaving(false)
     }

@@ -1,36 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { markTestFailedAsync } from '@/lib/services/io-test-service'
+import { getAuthUser } from '@/lib/auth/middleware'
 
 export async function POST(request: NextRequest) {
   try {
-    const { ioId, comments } = await request.json()
-    
-    console.log(`❌ Marking test as failed for IO ID: ${ioId}`)
-    
-    // Update the IO result in database
-    await prisma.io.update({
-      where: { id: ioId },
-      data: {
-        result: 'Failed',
-        comments: comments || '',
-        timestamp: new Date().toISOString()
-      }
+    const { ioId, comments, failureMode } = await request.json()
+
+    const authUser = await getAuthUser(request)
+    const currentUser = authUser?.fullName ?? 'Unknown'
+
+    const result = await markTestFailedAsync(ioId, {
+      currentUser,
+      comments,
+      failureMode,
     })
-    
-    // Create test history entry
-    await prisma.testHistory.create({
-      data: {
-        ioId: ioId,
-        result: 'Failed',
-        comments: comments || '',
-        testedBy: 'System', // In real app, this would be the current user
-        timestamp: new Date().toISOString()
-      }
-    })
-    
-    return NextResponse.json({ 
-      success: true, 
-      message: `Test marked as failed for IO ${ioId}` 
+
+    if (!result.success) {
+      return NextResponse.json(
+        { success: false, error: result.error },
+        { status: 400 }
+      )
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `Test marked as failed for IO ${ioId}`,
     })
   } catch (error) {
     console.error('Failed to mark test as failed:', error)

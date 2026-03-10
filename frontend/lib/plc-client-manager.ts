@@ -16,8 +16,15 @@ import {
   type IoTag,
 } from './plc';
 
-// WebSocket broadcast HTTP endpoint
-const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3101/broadcast';
+// WebSocket broadcast HTTP endpoint (WS port + 100 = HTTP broadcast port)
+const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast';
+
+/**
+ * Get the WebSocket broadcast URL. Shared by all API routes.
+ */
+export function getWsBroadcastUrl(): string {
+  return WS_BROADCAST_URL;
+}
 
 /**
  * Broadcast a message to all WebSocket clients via HTTP API
@@ -125,16 +132,7 @@ export function getPlcClient(): PlcClient {
  * Set up event listeners on PlcClient to broadcast updates
  */
 function setupClientEventListeners(client: PlcClient): void {
-  // Broadcast tag value changes (state updates)
-  client.on('tagValueChanged', (event) => {
-    broadcastToWebSocket({
-      type: 'UpdateState',
-      id: getIoIdByName(event.name),
-      state: event.newValue,
-    });
-  });
-
-  // Broadcast IO state changes
+  // Broadcast IO state changes (deduplicated - only fires on actual state transitions)
   client.on('ioStateChanged', (io, oldState, newState) => {
     console.log(`[PlcClientManager] IO ${io.id} (${io.name}): ${oldState} -> ${newState}`);
     broadcastToWebSocket({

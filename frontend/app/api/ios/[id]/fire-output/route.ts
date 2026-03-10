@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPlcClient } from '@/lib/plc-client-manager'
+import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { prisma } from '@/lib/db'
 
 /**
@@ -26,11 +26,13 @@ export async function POST(
     }
 
     // Get action from body (default to 'start' for backward compatibility)
-    let action: 'start' | 'stop' = 'start'
+    let action: 'start' | 'stop' | 'toggle' = 'start'
     try {
       const body = await request.json()
       if (body.action === 'stop') {
         action = 'stop'
+      } else if (body.action === 'toggle') {
+        action = 'toggle'
       }
     } catch {
       // No body or invalid JSON - default to 'start'
@@ -83,15 +85,45 @@ export async function POST(
       name: io.name,
       tagType: io.tagType ?? undefined
     })
-    if (!initResult) {
+    if (!initResult.success) {
       return NextResponse.json(
         { success: false, error: 'Failed to initialize output tag' },
         { status: 500 }
       )
     }
 
-    // Set the output value (1 for start, 0 for stop)
-    const value = action === 'start' ? 1 : 0
+    // Broadcast the actual current state to sync UI before any write
+    // This fixes the "click twice" issue where UI shows stale state
+    console.log(`[FireOutput] IO ${ioId} current PLC state: ${initResult.currentState}`)
+    if (initResult.currentState !== undefined) {
+      try {
+        await fetch(getWsBroadcastUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'UpdateState',
+            id: ioId,
+            state: initResult.currentState
+          })
+        })
+      } catch {
+        // WebSocket server might not be running
+      }
+    }
+
+    // Determine the target value based on action
+    let value: number
+    let newState: boolean
+    if (action === 'toggle') {
+      // Toggle: opposite of current state
+      value = initResult.currentState ? 0 : 1
+      newState = !initResult.currentState
+    } else {
+      // Start/Stop: explicit value
+      value = action === 'start' ? 1 : 0
+      newState = action === 'start'
+    }
+
     const result = await client.setBit(value)
 
     if (!result.success) {
@@ -104,27 +136,27 @@ export async function POST(
 
     // Broadcast state change to WebSocket clients
     try {
-      await fetch('http://localhost:3101/broadcast', {
+      await fetch(getWsBroadcastUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'UpdateState',
           id: ioId,
-          state: action === 'start'
+          state: newState
         })
       })
     } catch {
       // WebSocket server might not be running
     }
 
-    console.log(`[FireOutput] IO ${ioId} ${action === 'start' ? 'ON' : 'OFF'}`)
+    console.log(`[FireOutput] IO ${ioId} ${newState ? 'ON' : 'OFF'}`)
 
     return NextResponse.json({
       success: true,
       action,
       ioId,
-      state: action === 'start',
-      message: `Output ${action === 'start' ? 'fired' : 'stopped'}`
+      state: newState,
+      message: `Output ${newState ? 'ON' : 'OFF'}`
     })
   } catch (error) {
     console.error('[FireOutput] Error:', error)

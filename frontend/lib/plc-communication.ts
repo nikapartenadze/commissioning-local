@@ -1,7 +1,6 @@
 /**
  * PLC Communication Service
  * Handles real-time communication with PLC via WebSocket/HTTP
- * Simulates the C# app's PLC communication functionality
  */
 
 import { API_ENDPOINTS } from './api-config'
@@ -90,60 +89,9 @@ export class PlcCommunicationService {
     }
   }
 
-  // Connect to WebSocket for real-time updates
-  // NOTE: SignalR is already handling real-time updates via useSignalR hook
-  // This WebSocket connection is disabled to avoid conflicts
   private async connectWebSocket(): Promise<void> {
-    // Skip WebSocket connection - SignalR handles real-time updates
-    // The SignalR connection is managed separately via useSignalR hook
-    console.log('ℹ️ WebSocket connection skipped - using SignalR for real-time updates')
-    this.updateStatus({ isConnected: true }) // Mark as connected since SignalR handles it
+    this.updateStatus({ isConnected: true })
     return Promise.resolve()
-    
-    // OLD CODE - Disabled to prevent WebSocket errors with SignalR
-    /*
-    return new Promise((resolve, reject) => {
-      try {
-        const wsUrl = `ws://localhost:5000/hub` // C# SignalR hub
-        this.ws = new WebSocket(wsUrl)
-
-        this.ws.onopen = () => {
-          console.log('🔌 WebSocket connected to PLC service')
-          this.updateStatus({ isConnected: true })
-          
-          // Send configuration
-          this.ws?.send(JSON.stringify({
-            type: 'config',
-            data: this.config
-          }))
-          
-          resolve()
-        }
-
-        this.ws.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data)
-            this.handleWebSocketMessage(message)
-          } catch (error) {
-            console.error('Error parsing WebSocket message:', error)
-          }
-        }
-
-        this.ws.onclose = () => {
-          console.log('🔌 WebSocket disconnected')
-          this.updateStatus({ isConnected: false })
-          this.scheduleReconnect()
-        }
-
-        this.ws.onerror = (error) => {
-          console.error('WebSocket error:', error)
-          reject(error)
-        }
-      } catch (error) {
-        reject(error)
-      }
-    })
-    */
   }
 
   // Handle incoming WebSocket messages

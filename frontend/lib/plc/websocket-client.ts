@@ -13,7 +13,7 @@ import type {
   CommentUpdateMessage,
   NetworkStatusChangedMessage,
   ErrorEventMessage
-} from './websocket-server'
+} from './types'
 
 // ============================================================================
 // Types
@@ -83,9 +83,10 @@ export interface WebSocketConnection {
 // Default Configuration
 // ============================================================================
 
-const DEFAULT_WS_URL = 'ws://localhost:3001'
+const DEFAULT_WS_URL = 'ws://localhost:3002'
 const DEFAULT_RECONNECT_INTERVAL = 3000
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
+const WS_DEBUG = false // Set to true to enable WebSocket logging
 
 function getDefaultWebSocketUrl(): string {
   if (typeof window === 'undefined') {
@@ -93,7 +94,7 @@ function getDefaultWebSocketUrl(): string {
   }
   // Use the same host as the page but with WebSocket protocol
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.hostname}:3001`
+  return `${protocol}//${window.location.hostname}:3002`
 }
 
 // ============================================================================
@@ -131,7 +132,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
       const message: PlcWebSocketMessage = JSON.parse(event.data)
 
       if (process.env.NODE_ENV === 'development') {
-        console.log('[PlcWebSocket] Received:', message.type)
+        WS_DEBUG && console.log('[PlcWebSocket] Received:', message.type)
       }
 
       switch (message.type) {
@@ -274,7 +275,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     }
 
     if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-      console.log('[PlcWebSocket] Max reconnect attempts reached')
+      WS_DEBUG && console.log('[PlcWebSocket] Max reconnect attempts reached')
       const errorEvent: ErrorEvent = {
         source: 'websocket',
         message: 'Failed to reconnect after maximum attempts',
@@ -314,10 +315,11 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     isManualDisconnectRef.current = false
 
     try {
+      WS_DEBUG && console.log('[PlcWebSocket] Connecting to:', url)
       const ws = new WebSocket(url)
 
       ws.onopen = () => {
-        console.log('[PlcWebSocket] Connected')
+        WS_DEBUG && console.log('[PlcWebSocket] Connected to:', url)
         setIsConnected(true)
         reconnectAttemptsRef.current = 0
 
@@ -334,7 +336,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
       ws.onmessage = handleMessage
 
       ws.onclose = (event) => {
-        console.log('[PlcWebSocket] Disconnected:', event.code, event.reason)
+        WS_DEBUG && console.log('[PlcWebSocket] Disconnected:', event.code, event.reason)
         setIsConnected(false)
         wsRef.current = null
 
@@ -400,7 +402,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
 
     setIsConnected(false)
     reconnectAttemptsRef.current = 0
-    console.log('[PlcWebSocket] Manually disconnected')
+    WS_DEBUG && console.log('[PlcWebSocket] Manually disconnected')
   }, [])
 
   // Callback registration functions
@@ -535,7 +537,7 @@ export class PlcWebSocketClient {
       this.ws = new WebSocket(this.url)
 
       this.ws.onopen = () => {
-        console.log('[PlcWebSocketClient] Connected')
+        WS_DEBUG && console.log('[PlcWebSocketClient] Connected')
         this._isConnected = true
         const wasReconnect = this.reconnectAttempts > 0
         this.reconnectAttempts = 0
@@ -554,7 +556,7 @@ export class PlcWebSocketClient {
       }
 
       this.ws.onclose = () => {
-        console.log('[PlcWebSocketClient] Disconnected')
+        WS_DEBUG && console.log('[PlcWebSocketClient] Disconnected')
         this._isConnected = false
         this.ws = null
 
@@ -606,7 +608,7 @@ export class PlcWebSocketClient {
     }
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log('[PlcWebSocketClient] Max reconnect attempts reached')
+      WS_DEBUG && console.log('[PlcWebSocketClient] Max reconnect attempts reached')
       return
     }
 

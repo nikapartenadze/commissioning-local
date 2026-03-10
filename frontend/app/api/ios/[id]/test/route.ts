@@ -46,7 +46,6 @@ export async function POST(
       )
     }
 
-    // Normalize result to match C# constants
     const normalizedResult = result === 'Pass' || result === 'Passed'
       ? TEST_CONSTANTS.RESULT_PASSED
       : TEST_CONSTANTS.RESULT_FAILED
@@ -94,10 +93,10 @@ export async function POST(
           ioId,
           result: normalizedResult,
           timestamp,
-          comments: oldComment, // Store old comment in history
+          comments: oldComment,
           state: plcState,
-          testedBy: currentUser ?? 'Unknown'
-          // Note: failureMode would need schema update to store
+          testedBy: currentUser ?? 'Unknown',
+          failureMode: failureMode || null,
         }
       })
     ])
