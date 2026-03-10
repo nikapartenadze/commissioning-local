@@ -12,7 +12,7 @@ import * as VisuallyHidden from "@radix-ui/react-visually-hidden"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { CloudDownload, Terminal, Cpu, Wifi, WifiOff } from "lucide-react"
+import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
 interface PlcConfig {
@@ -55,6 +55,18 @@ export function PlcConfigDialog({
 
   const [pullLog, setPullLog] = useState<string[]>([])
   const [plcLog, setPlcLog] = useState<string[]>([])
+  const [copied, setCopied] = useState(false)
+
+  // Connection report for sharing with programmers
+  const [connectionReport, setConnectionReport] = useState<{
+    plcIp: string
+    plcPath: string
+    timestamp: string
+    totalTags: number
+    tagsSuccessful: number
+    tagsFailed: number
+    failedTags: Array<{ name: string; error: string }>
+  } | null>(null)
 
   const [pullElapsed, setPullElapsed] = useState(0)
   const [plcElapsed, setPlcElapsed] = useState(0)
@@ -273,15 +285,70 @@ export function PlcConfigDialog({
         })
       })
 
+      // Parse response — now always 200, check success field
+      const connectData = await response.json().catch(() => null)
+
       if (!response.ok) {
-        const error = await response.text()
-        addPlcLog(`Config save failed: ${error || response.statusText}`)
-        setPlcStatus({ type: 'error', message: `Failed: ${error || response.statusText}` })
+        // True server error (not tag mismatch)
+        addPlcLog(`ERROR: ${connectData?.error || response.statusText}`)
+        setPlcStatus({ type: 'error', message: connectData?.error || 'Server error' })
         setIsConnecting(false)
         return
       }
 
-      addPlcLog('Config saved, reinitialization started...')
+      // Store the connection report for the "Copy Report" feature
+      const failedTags: Array<{ name: string; error: string }> = connectData?.failedTags || []
+      if (connectData?.tagsFailed > 0) {
+        setConnectionReport({
+          plcIp: localConfig.ip,
+          plcPath: localConfig.path,
+          timestamp: connectData.timestamp || new Date().toISOString(),
+          totalTags: connectData.totalTags || 0,
+          tagsSuccessful: connectData.tagsSuccessful || 0,
+          tagsFailed: connectData.tagsFailed || 0,
+          failedTags,
+        })
+      }
+
+      // Connection returned but tags didn't match
+      if (connectData?.success === false) {
+        addPlcLog(`PLC reached at ${localConfig.ip} — but tags do not match.`)
+        addPlcLog(`${connectData.tagsSuccessful || 0} of ${connectData.totalTags || 0} tags OK, ${connectData.tagsFailed || 0} failed.`)
+
+        if (failedTags.length > 0) {
+          addPlcLog('---')
+          addPlcLog(`MISMATCH REPORT — ${failedTags.length} tags not found on PLC:`)
+          for (const tag of failedTags.slice(0, 40)) {
+            addPlcLog(`  ✗ ${tag.name}  →  ${tag.error}`)
+          }
+          if (failedTags.length > 40) {
+            addPlcLog(`  ... and ${failedTags.length - 40} more`)
+          }
+          addPlcLog('---')
+          addPlcLog('Tag names pulled from cloud do not match the PLC program.')
+          addPlcLog('Use "Copy Report" to share with the PLC programmer.')
+        }
+        setPlcStatus({ type: 'error', message: `${connectData.tagsFailed} of ${connectData.totalTags} tags failed` })
+        setIsConnecting(false)
+        return
+      }
+
+      // Success path
+      addPlcLog(`Connected to PLC at ${localConfig.ip}`)
+
+      if (connectData?.warning) {
+        addPlcLog(`⚠ ${connectData.warning}`)
+        if (failedTags.length > 0) {
+          for (const tag of failedTags.slice(0, 20)) {
+            addPlcLog(`  ✗ ${tag.name}  →  ${tag.error}`)
+          }
+          if (failedTags.length > 20) {
+            addPlcLog(`  ... and ${failedTags.length - 20} more`)
+          }
+          addPlcLog('Use "Copy Report" to share with the PLC programmer.')
+        }
+      }
+
       setPlcStatus({ type: 'loading', message: `Connecting to ${localConfig.ip}...` })
 
       // Snapshot current log sequence so we only show new entries
@@ -327,8 +394,13 @@ export function PlcConfigDialog({
             if (status.plcConnected) {
               if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
               addPlcLog(`PLC connected!`)
-              if (status.totalIos > 0) {
-                addPlcLog(`${status.totalIos} tags loaded`)
+              if (status.tagCount > 0 && status.totalIos > 0) {
+                addPlcLog(`${status.tagCount}/${status.totalIos} tags active`)
+                if (status.tagCount < status.totalIos) {
+                  addPlcLog(`⚠ ${status.totalIos - status.tagCount} tags failed — check tag names match PLC program`)
+                }
+              } else if (status.totalIos > 0) {
+                addPlcLog(`${status.totalIos} IOs in database`)
               }
               setPlcStatus({ type: 'success', message: `Connected to PLC at ${localConfig.ip}` })
               setLiveStatus({
@@ -664,9 +736,38 @@ export function PlcConfigDialog({
 
               {/* Log takes remaining space */}
               <div className="flex-1 min-h-0 rounded border bg-black/95 dark:bg-black flex flex-col overflow-hidden">
-                <div className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-green-400 uppercase tracking-wider border-b border-gray-800">
-                  <Terminal className="w-3 h-3" />
-                  PLC Log
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-800">
+                  <div className="flex items-center gap-1.5 text-[10px] font-medium text-green-400 uppercase tracking-wider">
+                    <Terminal className="w-3 h-3" />
+                    PLC Log
+                  </div>
+                  {connectionReport && connectionReport.tagsFailed > 0 && (
+                    <button
+                      onClick={() => {
+                        const report = [
+                          `PLC Tag Mismatch Report`,
+                          `========================`,
+                          `PLC IP: ${connectionReport.plcIp}`,
+                          `PLC Path: ${connectionReport.plcPath}`,
+                          `Date: ${new Date(connectionReport.timestamp).toLocaleString()}`,
+                          ``,
+                          `Total Tags: ${connectionReport.totalTags}`,
+                          `Successful: ${connectionReport.tagsSuccessful}`,
+                          `Failed: ${connectionReport.tagsFailed}`,
+                          ``,
+                          `Failed Tags:`,
+                          ...connectionReport.failedTags.map(t => `  ✗ ${t.name}  →  ${t.error}`),
+                        ].join('\n')
+                        navigator.clipboard.writeText(report)
+                        setCopied(true)
+                        setTimeout(() => setCopied(false), 2000)
+                      }}
+                      className="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
+                    >
+                      {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                      {copied ? 'Copied!' : 'Copy Report'}
+                    </button>
+                  )}
                 </div>
                 <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-0.5">
                   {plcLog.length === 0 ? (
@@ -674,8 +775,10 @@ export function PlcConfigDialog({
                   ) : (
                     plcLog.map((log, i) => (
                       <div key={i} className={
+                        log.includes('✗') ? 'text-yellow-400 pl-2' :
+                        log.includes('MISMATCH') || log.includes('do not match') ? 'text-red-400 font-semibold' :
                         log.includes('ERROR') || log.includes('failed') || log.includes('timed out') || log.includes('not reachable') ? 'text-red-400' :
-                        log.includes('connected') || log.includes('saved') || log.includes('loaded') || log.includes('Disconnected') ? 'text-green-400' :
+                        log.includes('Connected') || log.includes('saved') || log.includes('loaded') || log.includes('Disconnected') ? 'text-green-400' :
                         log.startsWith('[') ? 'text-gray-400' :
                         'text-gray-500'
                       }>{log}</div>

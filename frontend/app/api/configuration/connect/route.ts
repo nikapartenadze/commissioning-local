@@ -124,27 +124,43 @@ export async function POST(request: Request) {
       );
     }
 
+    // Build tag report
+    const failedTags = connectResult.failedTags || [];
+    const tagReport = {
+      plcIp: body.ip,
+      plcPath: body.path,
+      timestamp: new Date().toISOString(),
+      totalTags: ios.length,
+      tagsSuccessful: connectResult.tagsSuccessful || 0,
+      tagsFailed: connectResult.tagsFailed || 0,
+      failedTags: failedTags.slice(0, 100), // { name, error } pairs
+    };
+
     if (!connectResult.success) {
-      console.error('[Connect API] PLC connection failed:', connectResult.error);
-      return NextResponse.json(
-        { error: connectResult.error || 'Failed to connect to PLC' },
-        { status: 500 }
-      );
+      console.warn('[Connect API] PLC connection issue:', connectResult.error);
+      return NextResponse.json({
+        success: false,
+        error: connectResult.error || 'Failed to connect to PLC',
+        ...tagReport,
+      });
     }
 
     console.log('[Connect API] PLC connection successful:', {
       ip: body.ip,
       path: body.path,
       status: connectResult.status,
+      tagsSuccessful: tagReport.tagsSuccessful,
+      tagsFailed: tagReport.tagsFailed,
     });
 
     return NextResponse.json({
       success: true,
-      message: 'PLC connection started',
-      ip: body.ip,
-      path: body.path,
+      message: 'PLC connected',
       status: connectResult.status,
-      tagsLoaded: ios.length,
+      ...tagReport,
+      warning: tagReport.tagsFailed > 0
+        ? `${tagReport.tagsFailed} of ${tagReport.totalTags} tags failed — names may not match PLC program`
+        : undefined,
     });
   } catch (error) {
     console.error('[Connect API] Error connecting to PLC:', error);
