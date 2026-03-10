@@ -369,16 +369,15 @@ async function updateTestResultAsync(
         }
       })
 
-      // Create history record
       await tx.testHistory.create({
         data: {
           ioId,
           result,
           timestamp,
-          comments: io.comments, // Store old comment in history before clearing
+          comments: io.comments,
           state: plcState,
           testedBy: options.currentUser ?? 'Unknown',
-          // Note: failureMode is not in current schema, would need migration
+          failureMode: options.failureMode || null,
         }
       })
     })

@@ -38,47 +38,37 @@ export function PinLogin() {
       setLoading(true)
       setError('')
 
-      // First, get all users and try to match by PIN
-      const usersResponse = await fetch(API_ENDPOINTS.usersActive)
-      if (!usersResponse.ok) {
-        setError('Cannot connect to server')
+      const response = await fetch(API_ENDPOINTS.authLogin, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin }),
+      })
+
+      if (response.status === 429) {
+        setError('Too many attempts. Please wait a moment.')
         setPin('')
-        setLoading(false)
         return
       }
 
-      const users = await usersResponse.json()
-
-      // Try to login with each user's name until we find a match
-      let loggedIn = false
-      for (const user of users) {
-        const response = await fetch(API_ENDPOINTS.authLogin, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fullName: user.fullName, pin })
-        })
-
-        if (response.ok) {
-          const userData = await response.json()
-          if (userData.token) {
-            localStorage.setItem('authToken', userData.token)
-          }
-          setCurrentUser({
-            fullName: userData.fullName,
-            isAdmin: userData.isAdmin,
-            loginTime: new Date()
-          })
-          loggedIn = true
-          break
-        }
-      }
-
-      if (!loggedIn) {
+      if (!response.ok) {
         setError('Invalid PIN')
         setPin('')
+        return
       }
-    } catch (err) {
-      setError('Login failed - cannot connect to backend')
+
+      const userData = await response.json()
+      if (userData.token) {
+        localStorage.setItem('authToken', userData.token)
+        // Set cookie for middleware auth (middleware can't read localStorage)
+        document.cookie = `authToken=${userData.token}; path=/; max-age=28800; SameSite=Lax`
+      }
+      setCurrentUser({
+        fullName: userData.fullName,
+        isAdmin: userData.isAdmin,
+        loginTime: new Date(),
+      })
+    } catch {
+      setError('Cannot connect to server')
       setPin('')
     } finally {
       setLoading(false)

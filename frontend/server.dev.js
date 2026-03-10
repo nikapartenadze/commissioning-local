@@ -5,7 +5,7 @@
  *
  * Starts both Next.js dev server and the PLC WebSocket server.
  * - Next.js runs on port 3020 (development)
- * - WebSocket server runs on port 3001
+ * - WebSocket server runs on port 3002
  *
  * This is the entry point for development mode.
  */
@@ -15,7 +15,7 @@ const path = require('path');
 
 // Configuration
 const NEXTJS_PORT = parseInt(process.env.PORT || '3020', 10);
-const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3001', 10);
+const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
 
 console.log('='.repeat(60));
 console.log('Development Server with WebSocket Integration');

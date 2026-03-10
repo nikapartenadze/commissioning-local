@@ -1,43 +1,16 @@
 services:
-  # C# Backend
-  backend:
+  app:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.backend
-    ports:
-      - "5000:5000"
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ASPNETCORE_URLS=http://+:5000
-    volumes:
-      - backend-data:/app/data
-    networks:
-      - io-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/api/status"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # Next.js Frontend
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile.frontend
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=production
       - HOSTNAME=0.0.0.0
-      - BACKEND_URL=http://backend:5000
-    depends_on:
-      - backend
-    networks:
-      - io-network
+    volumes:
+      - app-data:/app/data
+    restart: unless-stopped
 
 volumes:
-  backend-data:
-
-networks:
-  io-network:
-    driver: bridge
+  app-data:

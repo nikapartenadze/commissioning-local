@@ -2,7 +2,6 @@ import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import { ProjectDashboard } from "@/components/project-dashboard"
 import { DataGridSkeleton } from "@/components/data-grid-skeleton"
-import { getBackendUrl } from "@/lib/api-config"
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 60 // Cache for 60 seconds
@@ -33,45 +32,7 @@ async function getProjectWithIos(projectId: number) {
       return null
     }
     
-    // For Test project (ID 6), fetch real data from C# backend
-    if (projectId === 6) {
-      const response = await fetch(`${getBackendUrl()}/api/ios`, {
-        cache: 'no-store'
-      })
-      
-      if (response.ok) {
-        const ios = await response.json()
-        
-        // Transform IOs to match expected format
-        const iosWithSubsystem = ios.map((io: any) => ({
-          id: io.id,
-          name: io.name,
-          description: io.description,
-          result: io.result,
-          timestamp: io.timestamp,
-          comments: io.comments,
-          order: io.order,
-          subsystemName: `Subsystem Test`,
-          subsystemId: 16
-        }))
-
-        console.timeEnd(`Fetch project ${projectId} data`)
-
-        return {
-          project: {
-            id: projectId,
-            name: project.name
-          },
-          ios: iosWithSubsystem,
-          subsystems: [{
-            id: 16,
-            name: "Test"
-          }]
-        }
-      }
-    }
-    
-    // For other projects, generate mock IO data based on project characteristics
+    // Generate mock IO data based on project characteristics
     const mockIos = generateMockIosForProject(projectId, project)
     
     console.timeEnd(`Fetch project ${projectId} data`)
@@ -88,7 +49,7 @@ async function getProjectWithIos(projectId: number) {
       }))
     }
   } catch (error) {
-    console.error('Failed to fetch data from C# backend:', error)
+    console.error('Failed to fetch project data:', error)
   }
   
   console.timeEnd(`Fetch project ${projectId} data`)

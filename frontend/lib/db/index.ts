@@ -16,10 +16,9 @@ if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 // Re-export types for convenience
 export type { Io, TestHistory, User, PendingSync, TagTypeDiagnostic };
 
-// Test result constants (matching C# TestConstants)
 export const TestConstants = {
-  RESULT_PASSED: 'PASS',
-  RESULT_FAILED: 'FAIL',
+  RESULT_PASSED: 'Passed',
+  RESULT_FAILED: 'Failed',
 } as const;
 
 // Helper type for IO with computed properties

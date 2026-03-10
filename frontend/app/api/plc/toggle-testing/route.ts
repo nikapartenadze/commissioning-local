@@ -34,7 +34,8 @@ export async function POST(request: NextRequest) {
 
     // Broadcast to WebSocket clients
     try {
-      await fetch('http://localhost:3101/broadcast', {
+      const { getWsBroadcastUrl } = await import('@/lib/plc-client-manager')
+      await fetch(getWsBroadcastUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

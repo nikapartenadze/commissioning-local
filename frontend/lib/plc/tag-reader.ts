@@ -179,14 +179,8 @@ export class TagReaderService extends EventEmitter {
         return false;
       }
 
-      // Get initial value
-      const initialValue = plc_tag_get_int8(handle, 0);
-
-      // For digital I/O, accept any value (not just 0/1) - PLC might have fault states
-      // Just log a warning instead of failing
-      if (elemSize === 1 && initialValue !== 0 && initialValue !== 1) {
-        console.log(`[TagReader] Tag ${name} has non-boolean value: ${initialValue} (continuing anyway)`);
-      }
+      // Get initial value using bit-level read (works correctly for all tag types)
+      const initialValue = plc_tag_get_bit(handle, 0);
 
       // Store tag state
       const tagState: TagState = {
@@ -323,7 +317,7 @@ export class TagReaderService extends EventEmitter {
       return null;
     }
 
-    const value = plc_tag_get_int8(tagState.handle, 0);
+    const value = plc_tag_get_bit(tagState.handle, 0);
     tagState.value = value;
     tagState.lastReadTime = Date.now();
     tagState.lastReadStatus = status;
@@ -517,7 +511,8 @@ export class TagReaderService extends EventEmitter {
         return false;
       }
 
-      const newValue = plc_tag_get_int8(tagState.handle, 0);
+      // Use plc_tag_get_bit for boolean reads - int8 returns garbage for DINT/structured tags
+      const newValue = plc_tag_get_bit(tagState.handle, 0);
       const oldValue = tagState.value;
 
       tagState.previousValue = oldValue;

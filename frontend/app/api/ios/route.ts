@@ -21,7 +21,8 @@ export async function GET(request: Request) {
     })
 
     // Get current PLC states
-    const { tags } = getPlcTags()
+    const { tags, count } = getPlcTags()
+    console.log(`[IOs API] Got ${count} tags from PLC client`)
     const stateMap = new Map(tags.map(t => [t.id, t.state]))
 
     // Merge PLC states with IO data
