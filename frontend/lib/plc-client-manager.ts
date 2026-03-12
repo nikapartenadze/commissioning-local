@@ -190,6 +190,7 @@ export function hasPlcClient(): boolean {
  */
 export async function connectPlc(config: PlcConnectionConfig): Promise<{
   success: boolean;
+  plcReachable?: boolean;
   status: ConnectionStatus;
   error?: string;
   tagsSuccessful?: number;
@@ -206,6 +207,7 @@ export async function connectPlc(config: PlcConnectionConfig): Promise<{
 
     return {
       success: result.success,
+      plcReachable: result.plcReachable,
       status: client.getConnectionStatus(),
       error: result.error,
       tagsSuccessful: result.tagsSuccessful,
@@ -215,6 +217,7 @@ export async function connectPlc(config: PlcConnectionConfig): Promise<{
   } catch (error) {
     return {
       success: false,
+      plcReachable: false,
       status: 'error',
       error: error instanceof Error ? error.message : String(error),
     };

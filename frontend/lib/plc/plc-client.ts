@@ -121,13 +121,14 @@ export class PlcClient extends EventEmitter {
    */
   async connect(config: PlcConnectionConfig): Promise<{
     success: boolean;
+    plcReachable: boolean;
     tagsSuccessful: number;
     tagsFailed: number;
     failedTags: Array<{ name: string; error: string }>;
     error?: string;
   }> {
     if (this.connectionStatus === 'connecting') {
-      return { success: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: 'Already connecting' };
+      return { success: false, plcReachable: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: 'Already connecting' };
     }
 
     this.connectionConfig = config;
@@ -144,10 +145,13 @@ export class PlcClient extends EventEmitter {
 
         if (result.successful.length === 0) {
           this.setConnectionStatus('error');
-          const errorMsg = `No tags could be initialized (${result.failed.length} failed). Tag names may not match the PLC program.`;
+          const errorMsg = result.plcReachable
+            ? `PLC connected but none of the ${result.failed.length} tags exist on the PLC. Tag names may not match the PLC program.`
+            : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
           this.emit('error', new Error(errorMsg));
           return {
             success: false,
+            plcReachable: result.plcReachable,
             tagsSuccessful: 0,
             tagsFailed: result.failed.length,
             failedTags: result.failed,
@@ -180,6 +184,7 @@ export class PlcClient extends EventEmitter {
 
         return {
           success: true,
+          plcReachable: true,
           tagsSuccessful: result.successful.length,
           tagsFailed: result.failed.length,
           failedTags: result.failed,
@@ -187,13 +192,13 @@ export class PlcClient extends EventEmitter {
       }
 
       this.setConnectionStatus('connected');
-      return { success: true, tagsSuccessful: 0, tagsFailed: 0, failedTags: [] };
+      return { success: true, plcReachable: true, tagsSuccessful: 0, tagsFailed: 0, failedTags: [] };
     } catch (error) {
       this.setConnectionStatus('error');
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.emit('error', error instanceof Error ? error : new Error(errorMsg));
       this.scheduleReconnect();
-      return { success: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: errorMsg };
+      return { success: false, plcReachable: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: errorMsg };
     }
   }
 
