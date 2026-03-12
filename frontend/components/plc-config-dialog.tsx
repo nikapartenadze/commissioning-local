@@ -310,25 +310,39 @@ export function PlcConfigDialog({
         })
       }
 
-      // Connection returned but tags didn't match
+      // Connection returned but failed
       if (connectData?.success === false) {
-        addPlcLog(`PLC reached at ${localConfig.ip} — but tags do not match.`)
-        addPlcLog(`${connectData.tagsSuccessful || 0} of ${connectData.totalTags || 0} tags OK, ${connectData.tagsFailed || 0} failed.`)
+        const plcReachable = connectData.plcReachable === true
 
-        if (failedTags.length > 0) {
-          addPlcLog('---')
-          addPlcLog(`MISMATCH REPORT — ${failedTags.length} tags not found on PLC:`)
-          for (const tag of failedTags.slice(0, 40)) {
-            addPlcLog(`  ✗ ${tag.name}  →  ${tag.error}`)
+        if (!plcReachable) {
+          // PLC is not reachable at all
+          addPlcLog(`ERROR: Cannot reach PLC at ${localConfig.ip}`)
+          addPlcLog('Check:')
+          addPlcLog('  1. Is the PLC IP address correct?')
+          addPlcLog('  2. Is the PLC powered on and on the network?')
+          addPlcLog('  3. Can this machine reach the PLC network?')
+          addPlcLog('  4. Is the PLC path (slot) correct?')
+          setPlcStatus({ type: 'error', message: `PLC not reachable at ${localConfig.ip}` })
+        } else {
+          // PLC is reachable but tags don't match
+          addPlcLog(`PLC connected at ${localConfig.ip} — but tags do not match.`)
+          addPlcLog(`${connectData.tagsSuccessful || 0} of ${connectData.totalTags || 0} tags OK, ${connectData.tagsFailed || 0} failed.`)
+
+          if (failedTags.length > 0) {
+            addPlcLog('---')
+            addPlcLog(`MISMATCH REPORT — ${failedTags.length} tags not found on PLC:`)
+            for (const tag of failedTags.slice(0, 40)) {
+              addPlcLog(`  ✗ ${tag.name}  →  ${tag.error}`)
+            }
+            if (failedTags.length > 40) {
+              addPlcLog(`  ... and ${failedTags.length - 40} more`)
+            }
+            addPlcLog('---')
+            addPlcLog('Tag names pulled from cloud do not match the PLC program.')
+            addPlcLog('Use "Copy Report" to share with the PLC programmer.')
           }
-          if (failedTags.length > 40) {
-            addPlcLog(`  ... and ${failedTags.length - 40} more`)
-          }
-          addPlcLog('---')
-          addPlcLog('Tag names pulled from cloud do not match the PLC program.')
-          addPlcLog('Use "Copy Report" to share with the PLC programmer.')
+          setPlcStatus({ type: 'error', message: `${connectData.tagsFailed} of ${connectData.totalTags} tags failed` })
         }
-        setPlcStatus({ type: 'error', message: `${connectData.tagsFailed} of ${connectData.totalTags} tags failed` })
         setIsConnecting(false)
         return
       }
