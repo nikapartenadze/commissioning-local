@@ -29,12 +29,20 @@ import {
 // Tag state interface
 export interface TagState {
   name: string;
-  handle: TagHandle;
+  handle: TagHandle;  // -1 if read via a grouped parent word
   value: number;
   previousValue: number;
   hasValue: boolean;
   lastReadStatus: PlcTagStatusCode;
   lastReadTime: number;
+}
+
+// Grouped word: one PLC read returns all bits for several IO tags
+interface GroupedWord {
+  parentName: string;    // e.g. "Local:5:I.Data"
+  handle: TagHandle;
+  elemSize: number;      // bytes: 2=INT(16-bit), 4=DINT(32-bit)
+  bits: Map<number, string>; // bitIndex → individual tag name
 }
 
 // Tag value change event payload
@@ -84,6 +92,7 @@ export declare interface TagReaderService {
  */
 export class TagReaderService extends EventEmitter {
   private tags: Map<string, TagState> = new Map();
+  private groupedWords: Map<string, GroupedWord> = new Map(); // parentName → GroupedWord
   private isReading: boolean = false;
   private abortController: AbortController | null = null;
   private config: TagReaderConfig;
@@ -209,8 +218,97 @@ export class TagReaderService extends EventEmitter {
   }
 
   /**
-   * Create multiple tags in parallel batches
-   * Includes early exit if PLC appears unreachable
+   * Create a grouped parent word handle and register child TagState entries.
+   * Each child tag gets a TagState with handle=-1 (reads via parent).
+   */
+  private async createGroupedWord(
+    parentName: string,
+    elemSize: number,
+    children: { bitIndex: number; tagName: string }[]
+  ): Promise<{ success: boolean; error?: string }> {
+    const timeout = 5000;
+    let handle: number = -1;
+
+    try {
+      handle = createTag({
+        gateway: this.gateway,
+        path: this.path,
+        name: parentName,
+        elemSize,
+        elemCount: 1,
+        timeout,
+      });
+
+      if (handle < 0) {
+        const errorMsg = getStatusMessage(handle);
+        return { success: false, error: `Parent word create failed: ${errorMsg}` };
+      }
+
+      const status = await this.waitForStatus(handle, timeout);
+      if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        plc_tag_destroy(handle);
+        return { success: false, error: `Parent word status failed: ${getStatusMessage(status)}` };
+      }
+
+      const readStatus = await readTagAsync(handle, this.config.readTimeoutMs);
+      if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        plc_tag_destroy(handle);
+        return { success: false, error: `Parent word read failed: ${getStatusMessage(readStatus)}` };
+      }
+
+      // Register the grouped word
+      const bits = new Map<number, string>();
+      for (const child of children) {
+        bits.set(child.bitIndex, child.tagName);
+      }
+      this.groupedWords.set(parentName, { parentName, handle, elemSize, bits });
+
+      // Create a TagState entry for each child (handle=-1 means "read via parent")
+      for (const child of children) {
+        const initialValue = plc_tag_get_bit(handle, child.bitIndex);
+        this.tags.set(child.tagName, {
+          name: child.tagName,
+          handle: -1,
+          value: initialValue,
+          previousValue: initialValue,
+          hasValue: true,
+          lastReadStatus: PlcTagStatus.PLCTAG_STATUS_OK,
+          lastReadTime: Date.now(),
+        });
+      }
+
+      console.log(`[TagReader] Grouped word "${parentName}" (${elemSize}B): ${children.length} bits`);
+      return { success: true };
+    } catch (error) {
+      if (handle >= 0) {
+        try { plc_tag_destroy(handle); } catch { /* ignore */ }
+      }
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Parse a tag name into { parentName, bitIndex } if it follows the "Parent.N" bit-notation.
+   * Returns null if it's not a bit-notation tag.
+   * Examples:
+   *   "Local:5:I.Data.0"   → { parentName: "Local:5:I.Data", bitIndex: 0 }
+   *   "NCP1_VFD:I.In_0"    → null  (doesn't end in bare integer after dot)
+   */
+  private parseBitNotation(tagName: string): { parentName: string; bitIndex: number } | null {
+    const match = tagName.match(/^(.+)\.(\d+)$/);
+    if (!match) return null;
+    const bitIndex = parseInt(match[2], 10);
+    // Sanity check: bit index must be 0-31
+    if (bitIndex < 0 || bitIndex > 31) return null;
+    return { parentName: match[1], bitIndex };
+  }
+
+  /**
+   * Create multiple tags in parallel batches.
+   * Bit-notation tags (e.g. "Local:5:I.Data.0") sharing the same parent word are
+   * grouped — one tag handle is created per parent word and all bits are extracted
+   * from a single PLC read, reducing network requests.
+   * Includes early exit if PLC appears unreachable.
    */
   async createTags(tagNames: string[]): Promise<{
     successful: string[];
@@ -223,12 +321,65 @@ export class TagReaderService extends EventEmitter {
       return { successful, failed };
     }
 
-    console.log(`[TagReader] Creating ${tagNames.length} tags in batches of ${this.config.batchSize}`);
+    // --- Step 1: Separate bit-notation tags from individual tags ---
+    const individualTags: string[] = [];
+    const bitGroups = new Map<string, { bitIndex: number; tagName: string }[]>();
+
+    for (const name of tagNames) {
+      const parsed = this.parseBitNotation(name);
+      if (parsed) {
+        const group = bitGroups.get(parsed.parentName) ?? [];
+        group.push({ bitIndex: parsed.bitIndex, tagName: name });
+        bitGroups.set(parsed.parentName, group);
+      } else {
+        individualTags.push(name);
+      }
+    }
+
+    // Groups with only one child are not worth grouping — treat them as individual
+    for (const [parentName, children] of Array.from(bitGroups.entries())) {
+      if (children.length < 2) {
+        bitGroups.delete(parentName);
+        individualTags.push(children[0].tagName);
+      }
+    }
+
+    if (bitGroups.size > 0) {
+      const totalGrouped = Array.from(bitGroups.values()).reduce((s, g) => s + g.length, 0);
+      console.log(`[TagReader] Grouped ${totalGrouped} bit-notation tags into ${bitGroups.size} parent word reads`);
+    }
+
+    // --- Step 2: Create grouped parent handles ---
+    for (const [parentName, children] of Array.from(bitGroups.entries())) {
+      const maxBit = Math.max(...children.map((c: { bitIndex: number; tagName: string }) => c.bitIndex));
+      // Determine smallest element size that fits all bits
+      const elemSize = maxBit <= 7 ? 1 : maxBit <= 15 ? 2 : 4;
+
+      const result = await this.createGroupedWord(parentName, elemSize, children);
+      if (result.success) {
+        for (const child of children) successful.push(child.tagName);
+      } else {
+        for (const child of children) {
+          failed.push({ name: child.tagName, error: result.error || 'Parent word creation failed' });
+        }
+      }
+    }
+
+    // Early-exit check: if everything failed so far and we have no individual tags, PLC is unreachable
+    if (successful.length === 0 && failed.length > 0 && individualTags.length > 0) {
+      console.log('[TagReader] All grouped reads failed — PLC may be unreachable, skipping individual tags');
+      for (const name of individualTags) {
+        failed.push({ name, error: 'Skipped (PLC unreachable)' });
+      }
+      return { successful, failed };
+    }
+
+    console.log(`[TagReader] Creating ${individualTags.length} individual tags in batches of ${this.config.batchSize}`);
 
     // Process in batches
     const batches: string[][] = [];
-    for (let i = 0; i < tagNames.length; i += this.config.batchSize) {
-      batches.push(tagNames.slice(i, i + this.config.batchSize));
+    for (let i = 0; i < individualTags.length; i += this.config.batchSize) {
+      batches.push(individualTags.slice(i, i + this.config.batchSize));
     }
 
     let batchIndex = 0;
@@ -406,17 +557,7 @@ export class TagReaderService extends EventEmitter {
    */
   dispose(): void {
     this.stopReading();
-
-    const tagValues = Array.from(this.tags.values());
-    for (const tagState of tagValues) {
-      try {
-        plc_tag_destroy(tagState.handle);
-      } catch {
-        // Ignore disposal errors
-      }
-    }
-
-    this.tags.clear();
+    this.destroyAllHandles();
     this.removeAllListeners();
   }
 
@@ -425,24 +566,30 @@ export class TagReaderService extends EventEmitter {
    */
   async resetForReconnection(): Promise<void> {
     this.stopReading();
-
-    // Wait for reading to fully stop
     await this.delay(300);
-
-    // Dispose all existing tags
-    const tagValues = Array.from(this.tags.values());
-    for (const tagState of tagValues) {
-      try {
-        plc_tag_destroy(tagState.handle);
-      } catch {
-        // Ignore disposal errors
-      }
-    }
-
-    this.tags.clear();
+    this.destroyAllHandles();
     this.consecutiveErrorCycles = 0;
     this.totalReadCycles = 0;
     this.totalReadTimeMs = 0;
+  }
+
+  /**
+   * Destroy all tag handles (individual + grouped) and clear state maps.
+   */
+  private destroyAllHandles(): void {
+    // Destroy individual tag handles (skip handle=-1 which are grouped children)
+    for (const tagState of Array.from(this.tags.values())) {
+      if (tagState.handle >= 0) {
+        try { plc_tag_destroy(tagState.handle); } catch { /* ignore */ }
+      }
+    }
+    this.tags.clear();
+
+    // Destroy grouped parent word handles
+    for (const word of Array.from(this.groupedWords.values())) {
+      try { plc_tag_destroy(word.handle); } catch { /* ignore */ }
+    }
+    this.groupedWords.clear();
   }
 
   // === Private Methods ===
@@ -459,8 +606,19 @@ export class TagReaderService extends EventEmitter {
       let failCount = 0;
 
       try {
-        // Read all tags in parallel batches
-        const tagArray = Array.from(this.tags.values());
+        // --- Read grouped parent words first (one read → many bits) ---
+        for (const word of Array.from(this.groupedWords.values())) {
+          if (signal?.aborted) break;
+          const ok = await this.readAndProcessGroupedWord(word);
+          if (ok) {
+            successCount += word.bits.size;
+          } else {
+            failCount += word.bits.size;
+          }
+        }
+
+        // --- Read individual tags (those without a grouped parent) ---
+        const tagArray = Array.from(this.tags.values()).filter(t => t.handle !== -1);
         const batches: TagState[][] = [];
 
         for (let i = 0; i < tagArray.length; i += this.config.batchSize) {
@@ -541,6 +699,43 @@ export class TagReaderService extends EventEmitter {
         this.emit('tagValueChanged', event);
       }
 
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Read a grouped parent word and update all child TagState entries.
+   * One PLC read → extract N bits locally, no extra network requests.
+   */
+  private async readAndProcessGroupedWord(word: GroupedWord): Promise<boolean> {
+    try {
+      const status = await readTagAsync(word.handle, this.config.readTimeoutMs);
+      if (status !== PlcTagStatus.PLCTAG_STATUS_OK) return false;
+
+      const now = Date.now();
+      for (const [bitIndex, tagName] of Array.from(word.bits.entries())) {
+        const tagState = this.tags.get(tagName);
+        if (!tagState) continue;
+
+        const newValue = plc_tag_get_bit(word.handle, bitIndex);
+        const oldValue = tagState.value;
+
+        tagState.previousValue = oldValue;
+        tagState.value = newValue;
+        tagState.lastReadTime = now;
+        tagState.lastReadStatus = PlcTagStatus.PLCTAG_STATUS_OK;
+
+        if (oldValue !== newValue) {
+          this.emit('tagValueChanged', {
+            name: tagName,
+            oldValue: Boolean(oldValue),
+            newValue: Boolean(newValue),
+            timestamp: now,
+          });
+        }
+      }
       return true;
     } catch {
       return false;
