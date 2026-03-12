@@ -126,9 +126,11 @@ export async function POST(request: Request) {
 
     // Build tag report
     const failedTags = connectResult.failedTags || [];
+    const plcReachable = connectResult.plcReachable ?? false;
     const tagReport = {
       plcIp: body.ip,
       plcPath: body.path,
+      plcReachable,
       timestamp: new Date().toISOString(),
       totalTags: ios.length,
       tagsSuccessful: connectResult.tagsSuccessful || 0,
@@ -137,7 +139,7 @@ export async function POST(request: Request) {
     };
 
     if (!connectResult.success) {
-      console.warn('[Connect API] PLC connection issue:', connectResult.error);
+      console.warn('[Connect API] PLC connection issue:', connectResult.error, '| PLC reachable:', plcReachable);
       return NextResponse.json({
         success: false,
         error: connectResult.error || 'Failed to connect to PLC',
