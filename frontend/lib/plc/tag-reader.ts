@@ -313,13 +313,18 @@ export class TagReaderService extends EventEmitter {
   async createTags(tagNames: string[]): Promise<{
     successful: string[];
     failed: Array<{ name: string; error: string }>;
+    plcReachable: boolean;
   }> {
     const successful: string[] = [];
     const failed: Array<{ name: string; error: string }> = [];
 
     if (tagNames.length === 0) {
-      return { successful, failed };
+      return { successful, failed, plcReachable: true };
     }
+
+    // Connection-level errors indicate PLC is unreachable
+    const isConnectionError = (error: string) =>
+      /Bad connection|Bad gateway|Timeout|timed out|ECONNREFUSED|EHOSTUNREACH/i.test(error);
 
     // --- Step 1: Separate bit-notation tags from individual tags ---
     const individualTags: string[] = [];
@@ -365,13 +370,19 @@ export class TagReaderService extends EventEmitter {
       }
     }
 
-    // Early-exit check: if everything failed so far and we have no individual tags, PLC is unreachable
+    // Early-exit check: if grouped reads all failed, check WHY
     if (successful.length === 0 && failed.length > 0 && individualTags.length > 0) {
-      console.log('[TagReader] All grouped reads failed — PLC may be unreachable, skipping individual tags');
-      for (const name of individualTags) {
-        failed.push({ name, error: 'Skipped (PLC unreachable)' });
+      const hasConnectionErrors = failed.some(f => isConnectionError(f.error));
+      if (hasConnectionErrors) {
+        // PLC is genuinely unreachable — skip individual tags
+        console.log('[TagReader] PLC unreachable (connection error) — skipping individual tags');
+        for (const name of individualTags) {
+          failed.push({ name, error: 'Skipped (PLC unreachable)' });
+        }
+        return { successful, failed, plcReachable: false };
       }
-      return { successful, failed };
+      // PLC is reachable but grouped tags don't exist — continue with individual tags
+      console.log('[TagReader] PLC reachable but grouped tags not found — continuing with individual tags');
     }
 
     console.log(`[TagReader] Creating ${individualTags.length} individual tags in batches of ${this.config.batchSize}`);
@@ -417,21 +428,29 @@ export class TagReaderService extends EventEmitter {
       const batchTime = Date.now() - batchStartTime;
       console.log(`[TagReader] Batch ${batchIndex}/${batches.length}: ${batchSuccess} success, ${batchFailed} failed (${batchTime}ms)`);
 
-      // Early exit: if first batch completely fails, PLC is likely unreachable
+      // Early exit: if first batch completely fails with connection errors, PLC is unreachable
       if (batchIndex === 1 && batchSuccess === 0 && batchFailed > 0) {
-        console.log('[TagReader] First batch failed completely - PLC may be unreachable, aborting');
-        // Mark remaining tags as failed
-        for (let i = 1; i < batches.length; i++) {
-          for (const name of batches[i]) {
-            failed.push({ name, error: 'Skipped (PLC unreachable)' });
+        const batchErrors = failed.slice(-batchFailed);
+        const allConnectionErrors = batchErrors.every(f => isConnectionError(f.error));
+        if (allConnectionErrors) {
+          console.log('[TagReader] PLC unreachable — aborting remaining batches');
+          for (let i = 1; i < batches.length; i++) {
+            for (const name of batches[i]) {
+              failed.push({ name, error: 'Skipped (PLC unreachable)' });
+            }
           }
+          break;
         }
-        break;
+        // Tags just don't exist — keep trying remaining batches
+        console.log('[TagReader] First batch failed (tags not found) — continuing remaining batches');
       }
     }
 
-    console.log(`[TagReader] Tag creation complete: ${successful.length} success, ${failed.length} failed`);
-    return { successful, failed };
+    // Determine reachability: if ANY tag succeeded, PLC is definitely reachable.
+    // If all failed, check error types.
+    const plcReachable = successful.length > 0 || failed.every(f => !isConnectionError(f.error));
+    console.log(`[TagReader] Tag creation complete: ${successful.length} success, ${failed.length} failed, PLC reachable: ${plcReachable}`);
+    return { successful, failed, plcReachable };
   }
 
   /**
