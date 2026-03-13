@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
+import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import type { CloudPullRequest, CloudPullResponse } from '@/lib/cloud/types'
 
 /**
@@ -181,6 +182,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     })
 
     console.log(`[CloudPull] Successfully saved ${result} IOs to local database`)
+
+    // Broadcast to all clients to reload their IO data
+    try {
+      await fetch(getWsBroadcastUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'IOsUpdated', count: result })
+      })
+    } catch {
+      // WebSocket server might not be running
+    }
 
     return NextResponse.json({
       success: true,
