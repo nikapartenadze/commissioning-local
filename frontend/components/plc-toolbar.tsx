@@ -263,24 +263,37 @@ export function PlcToolbar({
             </Button>
           )}
 
-          {/* PLC Status - Click to configure */}
-          <Button
-            variant={isPlcConnected ? "ghost" : "outline"}
-            size="lg"
-            className={cn(
-              "h-12 px-3 gap-2",
-              isPlcConnected
-                ? "text-green-600"
-                : "text-red-600 border-red-500/50 bg-red-500/10 hover:bg-red-500/20 animate-pulse"
-            )}
-            onClick={onShowConfig}
-            title={isPlcConnected ? "PLC Connected - Click to configure" : "PLC Disconnected - Click to configure"}
-          >
-            <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse")} />
-            <span className="text-xs uppercase">
-              {isPlcConnected ? "PLC OK" : "SETUP PLC"}
-            </span>
-          </Button>
+          {/* PLC Status - Click to configure (admin) or status indicator (non-admin) */}
+          {currentUser?.isAdmin ? (
+            <Button
+              variant={isPlcConnected ? "ghost" : "outline"}
+              size="lg"
+              className={cn(
+                "h-12 px-3 gap-2",
+                isPlcConnected
+                  ? "text-green-600"
+                  : "text-red-600 border-red-500/50 bg-red-500/10 hover:bg-red-500/20 animate-pulse"
+              )}
+              onClick={onShowConfig}
+              title={isPlcConnected ? "PLC Connected - Click to configure" : "PLC Disconnected - Click to configure"}
+            >
+              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse")} />
+              <span className="text-xs uppercase">
+                {isPlcConnected ? "PLC OK" : "SETUP PLC"}
+              </span>
+            </Button>
+          ) : (
+            <div
+              className={cn(
+                "h-12 px-3 gap-2 flex items-center rounded-md",
+                isPlcConnected ? "text-green-600" : "text-red-600"
+              )}
+              title={isPlcConnected ? "PLC Connected" : "PLC Disconnected"}
+            >
+              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse")} />
+              <span className="text-xs uppercase">PLC</span>
+            </div>
+          )}
 
           {/* Tag Status Indicator */}
           {tagStatus && tagStatus.totalTags > 0 && (
@@ -306,26 +319,28 @@ export function PlcToolbar({
             </Button>
           )}
 
-          {/* Cloud Status */}
-          <Button
-            variant="ghost"
-            size="lg"
-            className={cn(
-              "h-12 px-3 gap-2",
-              isCloudConnected ? "text-green-600" : "text-amber-600"
-            )}
-            onClick={onCloudSync}
-            title={isCloudConnected ? "Cloud Connected" : "Offline Mode"}
-          >
-            {isCloudConnected ? (
-              <Cloud className="w-5 h-5" />
-            ) : (
-              <CloudOff className="w-5 h-5" />
-            )}
-            <span className="text-xs uppercase hidden lg:inline">
-              {isCloudConnected ? "CLOUD" : "OFFLINE"}
-            </span>
-          </Button>
+          {/* Cloud Status - Admin only */}
+          {currentUser?.isAdmin && (
+            <Button
+              variant="ghost"
+              size="lg"
+              className={cn(
+                "h-12 px-3 gap-2",
+                isCloudConnected ? "text-green-600" : "text-amber-600"
+              )}
+              onClick={onCloudSync}
+              title={isCloudConnected ? "Cloud Connected" : "Offline Mode"}
+            >
+              {isCloudConnected ? (
+                <Cloud className="w-5 h-5" />
+              ) : (
+                <CloudOff className="w-5 h-5" />
+              )}
+              <span className="text-xs uppercase hidden lg:inline">
+                {isCloudConnected ? "CLOUD" : "OFFLINE"}
+              </span>
+            </Button>
+          )}
 
         </div>
       </div>
