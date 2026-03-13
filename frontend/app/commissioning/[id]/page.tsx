@@ -396,6 +396,28 @@ export default function CommissioningPage() {
     }
   }, [signalR.onTestingStateChange, signalR.offTestingStateChange])
 
+  // Handle PLC connection changes (connect/disconnect broadcast)
+  useEffect(() => {
+    const handlePlcConnectionChange = (connected: boolean) => {
+      if (DEBUG_OTHER) {
+        console.log('📡 WebSocket PlcConnectionChanged:', connected)
+      }
+      setPlcStatus(prev => ({
+        ...prev,
+        isConnected: connected
+      }))
+      // Reload IOs and config when PLC connects
+      if (connected) {
+        loadPlcConfig(false)
+      }
+    }
+
+    signalR.onPlcConnectionChange(handlePlcConnectionChange)
+    return () => {
+      signalR.offPlcConnectionChange(handlePlcConnectionChange)
+    }
+  }, [signalR.onPlcConnectionChange, signalR.offPlcConnectionChange])
+
   // Handle SignalR comment updates
   useEffect(() => {
     const handleCommentUpdate = (update: CommentUpdate) => {
