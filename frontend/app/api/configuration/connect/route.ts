@@ -124,8 +124,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // Build tag report
-    const failedTags = connectResult.failedTags || [];
+    // Build tag report — enrich failed tags with descriptions from the database
+    const rawFailedTags = connectResult.failedTags || [];
+    const ioLookup = new Map(ios.map(io => [io.name || '', io.description || '']));
+    const failedTags = rawFailedTags.map(t => ({
+      name: t.name,
+      description: ioLookup.get(t.name) || '',
+      error: t.error,
+    }));
     const plcReachable = connectResult.plcReachable ?? false;
     const tagReport = {
       plcIp: body.ip,
@@ -135,7 +141,7 @@ export async function POST(request: Request) {
       totalTags: ios.length,
       tagsSuccessful: connectResult.tagsSuccessful || 0,
       tagsFailed: connectResult.tagsFailed || 0,
-      failedTags: failedTags.slice(0, 100), // { name, error } pairs
+      failedTags: failedTags.slice(0, 100), // { name, description, error }
     };
 
     if (!connectResult.success) {

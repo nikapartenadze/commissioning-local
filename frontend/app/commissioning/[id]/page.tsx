@@ -308,7 +308,11 @@ export default function CommissioningPage() {
         setPlcStatus(prev => ({
           ...prev,
           isConnected: status.plcConnected || false,
-          isTesting: updateTestingState ? (status.isTesting || false) : prev.isTesting
+          isTesting: updateTestingState
+            ? (status.isTestingUsers
+              ? (status.isTestingUsers as string[]).includes(currentUser?.fullName || '')
+              : (status.isTesting || false))
+            : prev.isTesting
         }))
         
         if (DEBUG_OTHER) {
@@ -372,13 +376,16 @@ export default function CommissioningPage() {
 
   // Handle SignalR testing state changes
   useEffect(() => {
-    const handleTestingStateChange = (newIsTesting: boolean) => {
+    const handleTestingStateChange = (newIsTesting: boolean, isTestingUsers?: string[]) => {
       if (DEBUG_OTHER) {
-        console.log('📡 WebSocket TestingStateChanged:', newIsTesting)
+        console.log('📡 WebSocket TestingStateChanged:', newIsTesting, 'users:', isTestingUsers)
       }
+      const userIsTesting = isTestingUsers
+        ? isTestingUsers.includes(currentUser?.fullName || '')
+        : newIsTesting
       setPlcStatus(prev => ({
         ...prev,
-        isTesting: newIsTesting
+        isTesting: userIsTesting
       }))
     }
 
@@ -1009,7 +1016,8 @@ export default function CommissioningPage() {
     try {
       const response = await authFetch(API_ENDPOINTS.testingToggle, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userName: currentUser?.fullName })
       })
 
       if (response.ok) {

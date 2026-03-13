@@ -67,8 +67,8 @@ export interface WebSocketConnection {
   offIOUpdate: (callback: (update: IOUpdate) => void) => void
   onConfigurationChange: (callback: (event: ConfigurationEvent) => void) => void
   offConfigurationChange: (callback: (event: ConfigurationEvent) => void) => void
-  onTestingStateChange: (callback: (isTesting: boolean) => void) => void
-  offTestingStateChange: (callback: (isTesting: boolean) => void) => void
+  onTestingStateChange: (callback: (isTesting: boolean, isTestingUsers?: string[]) => void) => void
+  offTestingStateChange: (callback: (isTesting: boolean, isTestingUsers?: string[]) => void) => void
   onCommentUpdate: (callback: (update: CommentUpdate) => void) => void
   offCommentUpdate: (callback: (update: CommentUpdate) => void) => void
   onNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
@@ -121,7 +121,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   // Callback refs
   const ioCallbacksRef = useRef<Set<(update: IOUpdate) => void>>(new Set())
   const configCallbacksRef = useRef<Set<(event: ConfigurationEvent) => void>>(new Set())
-  const testingCallbacksRef = useRef<Set<(isTesting: boolean) => void>>(new Set())
+  const testingCallbacksRef = useRef<Set<(isTesting: boolean, isTestingUsers?: string[]) => void>>(new Set())
   const commentCallbacksRef = useRef<Set<(update: CommentUpdate) => void>>(new Set())
   const networkStatusCallbacksRef = useRef<Set<(update: NetworkStatusUpdate) => void>>(new Set())
   const errorCallbacksRef = useRef<Set<(event: ErrorEvent) => void>>(new Set())
@@ -205,7 +205,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           setIsTesting(testingMsg.isTesting)
           testingCallbacksRef.current.forEach((cb) => {
             try {
-              cb(testingMsg.isTesting)
+              cb(testingMsg.isTesting, testingMsg.isTestingUsers)
             } catch (error) {
               console.error('[PlcWebSocket] Error in testing callback:', error)
             }
@@ -422,11 +422,11 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     configCallbacksRef.current.delete(callback)
   }, [])
 
-  const onTestingStateChange = useCallback((callback: (isTesting: boolean) => void) => {
+  const onTestingStateChange = useCallback((callback: (isTesting: boolean, isTestingUsers?: string[]) => void) => {
     testingCallbacksRef.current.add(callback)
   }, [])
 
-  const offTestingStateChange = useCallback((callback: (isTesting: boolean) => void) => {
+  const offTestingStateChange = useCallback((callback: (isTesting: boolean, isTestingUsers?: string[]) => void) => {
     testingCallbacksRef.current.delete(callback)
   }, [])
 
