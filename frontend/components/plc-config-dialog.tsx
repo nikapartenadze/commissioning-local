@@ -508,7 +508,7 @@ export function PlcConfigDialog({
         onOpenChange(v)
       }
     }}>
-      <DialogContent className="max-w-2xl h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0" aria-describedby={undefined}>
+      <DialogContent className="max-w-2xl h-[90vh] sm:h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0 w-[95vw] sm:w-auto" aria-describedby={undefined}>
         <VisuallyHidden.Root>
           <DialogTitle>PLC Configuration</DialogTitle>
         </VisuallyHidden.Root>
@@ -551,7 +551,7 @@ export function PlcConfigDialog({
           {activeTab === 'cloud' && (
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="space-y-1">
                     <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
                     <Input
@@ -563,7 +563,7 @@ export function PlcConfigDialog({
                       className="h-8 text-sm"
                     />
                   </div>
-                  <div className="col-span-2 space-y-1">
+                  <div className="sm:col-span-2 space-y-1">
                     <Label htmlFor="remoteUrl" className="text-xs">Remote URL</Label>
                     <Input
                       id="remoteUrl"
@@ -667,7 +667,7 @@ export function PlcConfigDialog({
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label htmlFor="ip" className="text-xs">PLC IP Address</Label>
                     <Input
