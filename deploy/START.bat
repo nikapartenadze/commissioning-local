@@ -26,7 +26,7 @@ if not exist "%APP_DIR%\database.db" (
 echo Starting IO Checkout Tool...
 echo.
 echo   App URL:       http://localhost:3000
-echo   WebSocket:     ws://localhost:3001
+echo   WebSocket:     ws://localhost:3002
 echo   Default PIN:   852963
 echo.
 echo   Technicians connect from tablets at:
