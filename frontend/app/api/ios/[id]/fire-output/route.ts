@@ -78,53 +78,14 @@ export async function POST(
       )
     }
 
-    // Initialize output tag if needed
-    // Convert null to undefined for optional fields to match IoTag interface
-    const initResult = client.initializeOutputTag({
-      id: io.id,
-      name: io.name,
-      tagType: io.tagType ?? undefined
-    })
-    if (!initResult.success) {
-      return NextResponse.json(
-        { success: false, error: 'Failed to initialize output tag' },
-        { status: 500 }
-      )
-    }
+    // Determine target value
+    const bitValue: number | 'toggle' = action === 'toggle' ? 'toggle' : (action === 'start' ? 1 : 0)
 
-    // Broadcast the actual current state to sync UI before any write
-    // This fixes the "click twice" issue where UI shows stale state
-    console.log(`[FireOutput] IO ${ioId} current PLC state: ${initResult.currentState}`)
-    if (initResult.currentState !== undefined) {
-      try {
-        await fetch(getWsBroadcastUrl(), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'UpdateState',
-            id: ioId,
-            state: initResult.currentState
-          })
-        })
-      } catch {
-        // WebSocket server might not be running
-      }
-    }
-
-    // Determine the target value based on action
-    let value: number
-    let newState: boolean
-    if (action === 'toggle') {
-      // Toggle: opposite of current state
-      value = initResult.currentState ? 0 : 1
-      newState = !initResult.currentState
-    } else {
-      // Start/Stop: explicit value
-      value = action === 'start' ? 1 : 0
-      newState = action === 'start'
-    }
-
-    const result = await client.setBit(value)
+    // Atomic write — each tag gets its own handle, safe for concurrent multi-user use
+    const result = client.writeOutputBit(
+      { id: io.id, name: io.name, tagType: io.tagType ?? undefined },
+      bitValue
+    )
 
     if (!result.success) {
       console.error(`[FireOutput] Failed to ${action} output:`, result.error)
@@ -132,6 +93,14 @@ export async function POST(
         { success: false, error: result.error || `Failed to ${action} output` },
         { status: 500 }
       )
+    }
+
+    // Compute the new state after write
+    let newState: boolean
+    if (action === 'toggle') {
+      newState = !result.currentState
+    } else {
+      newState = action === 'start'
     }
 
     // Broadcast state change to WebSocket clients
