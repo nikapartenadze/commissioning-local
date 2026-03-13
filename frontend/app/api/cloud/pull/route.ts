@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
-import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
-import type { CloudPullRequest, CloudPullResponse } from '@/lib/cloud/types'
+import { createBackup } from '@/lib/db/backup'
+import type { CloudPullResponse } from '@/lib/cloud/types'
 
 /** Classify IO description into a tagType for diagnostic steps */
 function classifyDescription(desc: string | null): string | null {
@@ -34,28 +34,13 @@ function classifyDescription(desc: string | null): string | null {
  * POST /api/cloud/pull
  *
  * Pull IOs from cloud PostgreSQL server and store in local SQLite.
- * This is the "Pull IOs" functionality from the config dialog.
- *
- * Request body:
- * {
- *   remoteUrl: string,      // Cloud server URL (e.g., "https://commissioning.lci.ge")
- *   subsystemId: number,    // Subsystem ID to fetch
- *   apiPassword: string     // API authentication password
- * }
- *
- * Response:
- * {
- *   success: boolean,
- *   message?: string,
- *   iosCount?: number,
- *   error?: string
- * }
+ * Uses upsert to preserve existing test data (results, timestamps, comments).
+ * Auto-backs up the database before making changes.
  */
 export async function POST(request: NextRequest): Promise<NextResponse<CloudPullResponse>> {
   try {
     const body = await request.json()
     const { remoteUrl, apiPassword } = body
-    // Ensure subsystemId is a number (frontend may send as string)
     const subsystemId = typeof body.subsystemId === 'string'
       ? parseInt(body.subsystemId, 10)
       : body.subsystemId
@@ -78,8 +63,26 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     console.log(`[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
-    // Direct fetch to cloud API instead of using singleton service
-    // This ensures the password is always used correctly
+    // Check for un-synced data
+    const pendingCount = await prisma.pendingSync.count()
+    const forceFlag = body.force === true
+    if (pendingCount > 0 && !forceFlag) {
+      return NextResponse.json(
+        { success: false, error: `${pendingCount} test results have not been synced to cloud yet. Sync first, or use force=true to proceed anyway.` },
+        { status: 409 }
+      )
+    }
+
+    // Auto-backup before destructive operation
+    try {
+      const backup = await createBackup('pre-pull')
+      console.log(`[CloudPull] Auto-backup created: ${backup.filename}`)
+    } catch (backupErr) {
+      console.error('[CloudPull] Backup failed:', backupErr)
+      // Continue anyway — backup failure shouldn't block the pull
+    }
+
+    // Direct fetch to cloud API
     const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`
     console.log(`[CloudPull] Fetching from: ${cloudUrl}`)
 
@@ -111,24 +114,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
     const cloudData = await cloudResponse.json()
     console.log(`[CloudPull] Cloud response keys: ${Object.keys(cloudData)}`)
-    console.log(`[CloudPull] cloudData.ios exists: ${!!cloudData.ios}, type: ${typeof cloudData.ios}`)
-    console.log(`[CloudPull] cloudData.Ios exists: ${!!cloudData.Ios}, type: ${typeof cloudData.Ios}`)
-    if (cloudData.ios) console.log(`[CloudPull] cloudData.ios.length: ${cloudData.ios.length}`)
-    if (cloudData.Ios) console.log(`[CloudPull] cloudData.Ios.length: ${cloudData.Ios.length}`)
 
     // Extract IOs from response (handle both ios and Ios)
     const cloudIos = cloudData.ios || cloudData.Ios || []
     console.log(`[CloudPull] IOs extracted: ${cloudIos.length}`)
-    if (cloudIos.length > 0) {
-      console.log(`[CloudPull] First IO: ${JSON.stringify(cloudIos[0])}`)
-    }
 
     if (!cloudIos || cloudIos.length === 0) {
       return NextResponse.json({
         success: true,
         message: `No IOs found for subsystem ${subsystemId}`,
         iosCount: 0,
-        ioCount: 0, // Alias for frontend compatibility
+        ioCount: 0,
         debug: {
           apiPasswordProvided: !!apiPassword,
           apiPasswordLength: apiPassword?.length || 0,
@@ -138,78 +134,111 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       })
     }
 
-    console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, saving to local database...`)
+    console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
 
-    // Clear existing local data for fresh sync
-    // Use transaction for atomicity
+    // Upsert IOs instead of delete+create to preserve test data
     const result = await prisma.$transaction(async (tx) => {
-      // Clear pending syncs (they're now stale)
-      const deletedPending = await tx.pendingSync.deleteMany({})
-      console.log(`[CloudPull] Cleared ${deletedPending.count} pending syncs`)
-
-      // Clear existing IOs (this will cascade delete test histories)
-      const deletedIos = await tx.io.deleteMany({})
-      console.log(`[CloudPull] Cleared ${deletedIos.count} existing IOs`)
-
-      // Ensure default project exists (required for subsystem foreign key)
+      // Ensure default project exists
       await tx.project.upsert({
         where: { id: 1 },
-        create: {
-          id: 1,
-          name: 'Default Project',
-        },
+        create: { id: 1, name: 'Default Project' },
         update: {},
       })
 
-      // Ensure subsystem exists (required for IO foreign key)
+      // Ensure subsystem exists
       await tx.subsystem.upsert({
         where: { id: subsystemId },
         create: {
           id: subsystemId,
           name: `Subsystem ${subsystemId}`,
-          projectId: 1, // Default project
+          projectId: 1,
         },
-        update: {}, // No updates needed
+        update: {},
       })
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
-      // Insert new IOs from cloud
-      let addedCount = 0
+      // Upsert each IO from cloud
+      const cloudIoIds: number[] = []
+      let upsertedCount = 0
+
       for (const cloudIo of cloudIos) {
-        // Skip IOs without valid name or ID
         if (!cloudIo.name || cloudIo.id <= 0) {
           console.warn(`[CloudPull] Skipping invalid IO: id=${cloudIo.id}, name=${cloudIo.name}`)
           continue
         }
 
+        cloudIoIds.push(cloudIo.id)
+
         try {
-          await tx.io.create({
-            data: {
+          // Build update object: only update tagType from cloud if cloud provides one
+          const updateData: Record<string, unknown> = {
+            name: cloudIo.name,
+            description: cloudIo.description ?? null,
+            order: cloudIo.order ?? null,
+            version: BigInt(Number(cloudIo.version) || 0),
+          }
+
+          // Only overwrite tagType if cloud provides a non-null value
+          if (cloudIo.tagType != null) {
+            updateData.tagType = cloudIo.tagType
+          }
+
+          await tx.io.upsert({
+            where: { id: cloudIo.id },
+            create: {
               id: cloudIo.id,
               subsystemId: subsystemId,
               name: cloudIo.name,
               description: cloudIo.description ?? null,
               order: cloudIo.order ?? null,
-              result: cloudIo.result ?? null,
-              timestamp: cloudIo.timestamp ?? null,
-              comments: cloudIo.comments ?? null,
               version: BigInt(Number(cloudIo.version) || 0),
               tagType: cloudIo.tagType ?? null,
             },
+            update: updateData,
+            // Don't overwrite: result, timestamp, comments, cloudSyncedAt
           })
-          addedCount++
+          upsertedCount++
         } catch (error) {
-          // Log but continue - don't fail entire sync for one bad record
-          console.error(`[CloudPull] Failed to insert IO ${cloudIo.id}:`, error)
+          console.error(`[CloudPull] Failed to upsert IO ${cloudIo.id}:`, error)
         }
       }
 
-      return addedCount
+      // Remove IOs no longer in cloud (for this subsystem only)
+      if (cloudIoIds.length > 0) {
+        // Check for IOs with test results that will be removed
+        const iosToRemove = await tx.io.findMany({
+          where: {
+            subsystemId: subsystemId,
+            id: { notIn: cloudIoIds },
+          },
+          select: { id: true, name: true, result: true },
+        })
+
+        const iosWithResults = iosToRemove.filter(io => io.result != null)
+        if (iosWithResults.length > 0) {
+          console.warn(`[CloudPull] Warning: Removing ${iosWithResults.length} IOs that have test results but are no longer in cloud:`,
+            iosWithResults.map(io => `${io.id}:${io.name}`).join(', '))
+        }
+
+        const removed = await tx.io.deleteMany({
+          where: {
+            subsystemId: subsystemId,
+            id: { notIn: cloudIoIds },
+          },
+        })
+        if (removed.count > 0) {
+          console.log(`[CloudPull] Removed ${removed.count} IOs no longer in cloud`)
+        }
+      }
+
+      // Don't delete PendingSyncs — they should persist until actually synced
+
+      return upsertedCount
     })
 
-    console.log(`[CloudPull] Successfully saved ${result} IOs to local database`)
+    console.log(`[CloudPull] Successfully upserted ${result} IOs to local database`)
 
-    // Auto-assign tagType from descriptions for IOs that don't have one from cloud
+    // Auto-assign tagType from descriptions for IOs that don't have one
     try {
       const untyped = await prisma.io.findMany({
         where: { tagType: null },
@@ -245,7 +274,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       success: true,
       message: `Successfully pulled ${result} IOs from cloud`,
       iosCount: result,
-      ioCount: result, // Alias for frontend compatibility
+      ioCount: result,
       debug: {
         cloudIosLength: cloudIos.length,
         cloudResponseKeys: Object.keys(cloudData),
@@ -258,13 +287,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
 
-    // Check for specific error types
-    // NOTE: Don't use 401 for cloud auth failures - that's reserved for JWT auth
-    // Using 401 would trigger authFetch to log out the user
     if (errorMessage.includes('Authentication failed') || errorMessage.includes('401')) {
       return NextResponse.json(
         { success: false, error: 'Cloud authentication failed - check API password' },
-        { status: 403 }  // Use 403 Forbidden, not 401 Unauthorized
+        { status: 403 }
       )
     }
 

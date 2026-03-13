@@ -5,11 +5,19 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-export const prisma =
+const prismaInstance =
   globalForPrisma.prisma ??
   new PrismaClient({
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   });
+
+// Enable WAL mode for better concurrent access and crash resilience
+if (!globalForPrisma.prisma) {
+  prismaInstance.$executeRawUnsafe('PRAGMA journal_mode=WAL').catch(e => console.warn('[DB] WAL mode failed:', e));
+  prismaInstance.$executeRawUnsafe('PRAGMA busy_timeout=5000').catch(e => console.warn('[DB] busy_timeout failed:', e));
+}
+
+export const prisma = prismaInstance;
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 

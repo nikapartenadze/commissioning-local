@@ -7,10 +7,25 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Loader2, UserPlus, Key, UserX, Trash2, User, Shield } from "lucide-react"
+import { Loader2, UserPlus, Key, UserX, Trash2, User, Shield, Database, Download, CloudUpload, Plus } from "lucide-react"
 import { useUser } from "@/lib/user-context"
 import { useToast } from "@/hooks/use-toast"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
+
+interface BackupData {
+  filename: string
+  path: string
+  size: number
+  createdAt: string
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+}
 
 interface UserData {
   id: number
@@ -37,9 +52,20 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
   const [resetPinUserId, setResetPinUserId] = useState<number | null>(null)
   const [newPin, setNewPin] = useState("")
 
+  // Backup state
+  const [backups, setBackups] = useState<BackupData[]>([])
+  const [backupsLoading, setBackupsLoading] = useState(false)
+  const [creatingBackup, setCreatingBackup] = useState(false)
+  const [syncingBackup, setSyncingBackup] = useState<string | null>(null)
+  const [syncRemoteUrl, setSyncRemoteUrl] = useState("")
+  const [syncApiPassword, setSyncApiPassword] = useState("")
+  const [syncSubsystemId, setSyncSubsystemId] = useState("")
+  const [showSyncForm, setShowSyncForm] = useState<string | null>(null)
+
   useEffect(() => {
     if (open) {
       loadUsers()
+      loadBackups()
     }
   }, [open])
 
@@ -55,6 +81,98 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
       console.error('Error loading users:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadBackups = async () => {
+    try {
+      setBackupsLoading(true)
+      const response = await authFetch(API_ENDPOINTS.backups)
+      if (response.ok) {
+        const data = await response.json()
+        setBackups(data.backups || [])
+      }
+    } catch (error) {
+      console.error('Error loading backups:', error)
+    } finally {
+      setBackupsLoading(false)
+    }
+  }
+
+  const handleCreateBackup = async () => {
+    try {
+      setCreatingBackup(true)
+      const response = await authFetch(API_ENDPOINTS.backups, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'manual' }),
+      })
+      if (response.ok) {
+        await loadBackups()
+        toast({ title: "Backup Created", description: "Database backup created successfully" })
+      } else {
+        const error = await response.json()
+        toast({ title: "Error", description: error.error || 'Failed to create backup', variant: "destructive" })
+      }
+    } catch (error) {
+      toast({ title: "Error", description: "Error creating backup", variant: "destructive" })
+    } finally {
+      setCreatingBackup(false)
+    }
+  }
+
+  const handleDownloadBackup = (filename: string) => {
+    window.open(API_ENDPOINTS.backupByFilename(filename), '_blank')
+  }
+
+  const handleDeleteBackup = async (filename: string) => {
+    if (!confirm(`Delete backup "${filename}"?`)) return
+    try {
+      const response = await authFetch(API_ENDPOINTS.backupByFilename(filename), { method: 'DELETE' })
+      if (response.ok) {
+        await loadBackups()
+        toast({ title: "Backup Deleted", description: "Backup deleted successfully" })
+      } else {
+        const error = await response.json()
+        toast({ title: "Error", description: error.error || 'Failed to delete backup', variant: "destructive" })
+      }
+    } catch (error) {
+      toast({ title: "Error", description: "Error deleting backup", variant: "destructive" })
+    }
+  }
+
+  const handleSyncBackup = async (filename: string) => {
+    if (!syncRemoteUrl) {
+      toast({ title: "Error", description: "Remote URL is required", variant: "destructive" })
+      return
+    }
+    try {
+      setSyncingBackup(filename)
+      const response = await authFetch(API_ENDPOINTS.backupSync(filename), {
+        method: 'POST',
+        body: JSON.stringify({
+          remoteUrl: syncRemoteUrl,
+          apiPassword: syncApiPassword,
+          subsystemId: syncSubsystemId ? parseInt(syncSubsystemId, 10) : undefined,
+        }),
+      })
+      const data = await response.json()
+      if (data.success) {
+        toast({
+          title: "Sync Complete",
+          description: `Synced ${data.syncedPending} pending updates and ${data.syncedHistories} test histories`,
+        })
+        setShowSyncForm(null)
+      } else {
+        toast({
+          title: "Sync Issues",
+          description: data.errors?.join('; ') || data.error || 'Sync completed with errors',
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({ title: "Error", description: "Error syncing backup", variant: "destructive" })
+    } finally {
+      setSyncingBackup(null)
     }
   }
 
@@ -380,6 +498,128 @@ export function AdminPanel({ open, onOpenChange }: AdminPanelProps) {
                             )}
                           </div>
                         </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+          {/* Database Backups */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Database Backups
+              </CardTitle>
+              <CardDescription>
+                Manage database backups. Backups are created automatically before cloud pulls.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button onClick={handleCreateBackup} disabled={creatingBackup} className="w-full">
+                {creatingBackup ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create Backup
+                  </>
+                )}
+              </Button>
+
+              {backupsLoading ? (
+                <div className="flex justify-center py-4">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                </div>
+              ) : backups.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">No backups found</p>
+              ) : (
+                <div className="space-y-2">
+                  {backups.map(backup => (
+                    <Card key={backup.filename}>
+                      <CardContent className="p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium truncate">{backup.filename}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {formatBytes(backup.size)} &middot; {new Date(backup.createdAt).toLocaleString()}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button size="sm" variant="outline" onClick={() => handleDownloadBackup(backup.filename)}>
+                              <Download className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setShowSyncForm(showSyncForm === backup.filename ? null : backup.filename)
+                              }}
+                            >
+                              <CloudUpload className="h-4 w-4" />
+                            </Button>
+                            <Button size="sm" variant="destructive" onClick={() => handleDeleteBackup(backup.filename)}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        {showSyncForm === backup.filename && (
+                          <div className="mt-3 space-y-2 border-t pt-3">
+                            <div className="space-y-1">
+                              <Label className="text-xs">Remote URL</Label>
+                              <Input
+                                value={syncRemoteUrl}
+                                onChange={(e) => setSyncRemoteUrl(e.target.value)}
+                                placeholder="https://commissioning.example.com"
+                                className="h-8 text-sm"
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-xs">API Password</Label>
+                                <Input
+                                  type="password"
+                                  value={syncApiPassword}
+                                  onChange={(e) => setSyncApiPassword(e.target.value)}
+                                  placeholder="Password"
+                                  className="h-8 text-sm"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-xs">Subsystem ID</Label>
+                                <Input
+                                  value={syncSubsystemId}
+                                  onChange={(e) => setSyncSubsystemId(e.target.value.replace(/\D/g, ''))}
+                                  placeholder="ID"
+                                  className="h-8 text-sm"
+                                />
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              className="w-full"
+                              onClick={() => handleSyncBackup(backup.filename)}
+                              disabled={syncingBackup === backup.filename || !syncRemoteUrl}
+                            >
+                              {syncingBackup === backup.filename ? (
+                                <>
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                  Syncing...
+                                </>
+                              ) : (
+                                <>
+                                  <CloudUpload className="mr-2 h-4 w-4" />
+                                  Sync to Cloud
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   ))}
