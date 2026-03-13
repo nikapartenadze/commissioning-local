@@ -65,7 +65,7 @@ export function PlcConfigDialog({
     totalTags: number
     tagsSuccessful: number
     tagsFailed: number
-    failedTags: Array<{ name: string; error: string }>
+    failedTags: Array<{ name: string; description?: string; error: string }>
   } | null>(null)
 
   const [pullElapsed, setPullElapsed] = useState(0)
@@ -297,7 +297,7 @@ export function PlcConfigDialog({
       }
 
       // Store the connection report for the "Copy Report" feature
-      const failedTags: Array<{ name: string; error: string }> = connectData?.failedTags || []
+      const failedTags: Array<{ name: string; description?: string; error: string }> = connectData?.failedTags || []
       if (connectData?.tagsFailed > 0) {
         setConnectionReport({
           plcIp: localConfig.ip,
@@ -332,7 +332,7 @@ export function PlcConfigDialog({
             addPlcLog('---')
             addPlcLog(`MISMATCH REPORT — ${failedTags.length} tags not found on PLC:`)
             for (const tag of failedTags.slice(0, 40)) {
-              addPlcLog(`  ✗ ${tag.name}  →  ${tag.error}`)
+              addPlcLog(`  ✗ ${tag.name}${tag.description ? ` (${tag.description})` : ''}  →  ${tag.error}`)
             }
             if (failedTags.length > 40) {
               addPlcLog(`  ... and ${failedTags.length - 40} more`)
@@ -354,7 +354,7 @@ export function PlcConfigDialog({
         addPlcLog(`⚠ ${connectData.warning}`)
         if (failedTags.length > 0) {
           for (const tag of failedTags.slice(0, 20)) {
-            addPlcLog(`  ✗ ${tag.name}  →  ${tag.error}`)
+            addPlcLog(`  ✗ ${tag.name}${tag.description ? ` (${tag.description})` : ''}  →  ${tag.error}`)
           }
           if (failedTags.length > 20) {
             addPlcLog(`  ... and ${failedTags.length - 20} more`)
@@ -770,7 +770,7 @@ export function PlcConfigDialog({
                           `Failed: ${connectionReport.tagsFailed}`,
                           ``,
                           `Failed Tags:`,
-                          ...connectionReport.failedTags.map(t => `  ✗ ${t.name}  →  ${t.error}`),
+                          ...connectionReport.failedTags.map(t => `  ✗ ${t.name}${t.description ? ` (${t.description})` : ''}  →  ${t.error}`),
                         ].join('\n')
                         navigator.clipboard.writeText(report)
                         setCopied(true)
