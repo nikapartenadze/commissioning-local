@@ -171,30 +171,32 @@ ${availableFailureModes.length > 0
             Troubleshooting Guide
           </DialogTitle>
 
-          {/* Tag info + failure mode selector */}
-          <div className="flex flex-wrap items-center gap-3 pt-2">
+          {/* Tag info + failure mode selector — scales with font size */}
+          <div className="flex flex-wrap items-center gap-3 pt-2" style={{ fontSize: `${currentFontSize.size}px` }}>
             {tagName && (
-              <Badge variant="outline" className="font-mono text-sm px-3 py-1">{tagName}</Badge>
+              <Badge variant="outline" className="font-mono px-3 py-1" style={{ fontSize: `${currentFontSize.size}px` }}>{tagName}</Badge>
             )}
-            <Badge variant="secondary" className="text-sm px-3 py-1">{tagType}</Badge>
+            <Badge variant="secondary" className="px-3 py-1" style={{ fontSize: `${currentFontSize.size}px` }}>{tagType}</Badge>
 
             {/* Failure mode dropdown */}
             <div className="relative ml-auto">
               <button
                 onClick={() => setShowModeSelector(!showModeSelector)}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium hover:bg-muted transition-colors"
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-md border font-medium hover:bg-muted transition-colors"
+                style={{ fontSize: `${currentFontSize.size}px` }}
               >
                 {selectedFailureMode ? (
                   <span className="text-red-600 dark:text-red-400 font-semibold">{selectedFailureMode}</span>
                 ) : (
                   <span className="text-muted-foreground">Select failure mode...</span>
                 )}
-                <ChevronDown className="w-4 h-4" />
+                <ChevronDown className="w-5 h-5" />
               </button>
               {showModeSelector && (
-                <div className="absolute top-full right-0 mt-1 z-50 min-w-[220px] max-w-[320px] bg-popover border rounded-md shadow-lg py-1">
+                <div className="absolute top-full right-0 mt-1 z-50 min-w-[260px] max-w-[400px] bg-popover border rounded-md shadow-lg py-1">
                   <button
-                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-muted transition-colors"
+                    className="w-full text-left px-4 py-3 hover:bg-muted transition-colors"
+                    style={{ fontSize: `${currentFontSize.size}px` }}
                     onClick={() => {
                       setSelectedFailureMode(undefined)
                       setShowModeSelector(false)
@@ -206,9 +208,10 @@ ${availableFailureModes.length > 0
                   {availableFailureModes.map((mode) => (
                     <button
                       key={mode}
-                      className={`w-full text-left px-4 py-2.5 text-sm hover:bg-muted transition-colors ${
+                      className={`w-full text-left px-4 py-3 hover:bg-muted transition-colors ${
                         mode === selectedFailureMode ? 'bg-muted font-semibold' : ''
                       }`}
+                      style={{ fontSize: `${currentFontSize.size}px` }}
                       onClick={() => {
                         setSelectedFailureMode(mode)
                         setShowModeSelector(false)
@@ -216,12 +219,12 @@ ${availableFailureModes.length > 0
                     >
                       {mode}
                       {mode === failureMode && (
-                        <span className="ml-2 text-xs text-muted-foreground">(current)</span>
+                        <span className="ml-2 text-muted-foreground" style={{ fontSize: `${currentFontSize.size - 2}px` }}>(current)</span>
                       )}
                     </button>
                   ))}
                   {availableFailureModes.length === 0 && (
-                    <div className="px-4 py-2.5 text-sm text-muted-foreground italic">
+                    <div className="px-4 py-3 text-muted-foreground italic" style={{ fontSize: `${currentFontSize.size}px` }}>
                       No failure modes documented
                     </div>
                   )}
