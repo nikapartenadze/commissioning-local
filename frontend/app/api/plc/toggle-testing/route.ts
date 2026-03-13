@@ -2,35 +2,57 @@ import { NextRequest, NextResponse } from 'next/server'
 
 // Use globalThis to persist testing state across requests
 const globalForTesting = globalThis as unknown as {
-  isTestingEnabled: boolean | undefined;
+  isTestingUsers: Set<string> | undefined;
 };
 
-if (globalForTesting.isTestingEnabled === undefined) {
-  globalForTesting.isTestingEnabled = false;
+if (globalForTesting.isTestingUsers === undefined) {
+  globalForTesting.isTestingUsers = new Set<string>();
 }
 
 export async function POST(request: NextRequest) {
   try {
-    // Toggle the current state (no body needed, just toggle)
-    let newState: boolean;
+    let userName: string | undefined;
+    let explicitEnabled: boolean | undefined;
 
     try {
       const body = await request.json();
-      // If body has explicit enabled value, use it
+      userName = body.userName;
       if (typeof body.enabled === 'boolean') {
-        newState = body.enabled;
-      } else {
-        // Otherwise toggle
-        newState = !globalForTesting.isTestingEnabled;
+        explicitEnabled = body.enabled;
       }
     } catch {
-      // No body or invalid JSON - just toggle
-      newState = !globalForTesting.isTestingEnabled;
+      // No body or invalid JSON
     }
 
-    globalForTesting.isTestingEnabled = newState;
+    if (!userName) {
+      return NextResponse.json(
+        { success: false, error: 'userName is required' },
+        { status: 400 }
+      );
+    }
 
-    console.log(`🔄 Testing mode: ${newState ? 'ON' : 'OFF'}`)
+    const users = globalForTesting.isTestingUsers!;
+    let userIsTesting: boolean;
+
+    if (explicitEnabled !== undefined) {
+      if (explicitEnabled) {
+        users.add(userName);
+      } else {
+        users.delete(userName);
+      }
+      userIsTesting = explicitEnabled;
+    } else {
+      // Toggle
+      if (users.has(userName)) {
+        users.delete(userName);
+        userIsTesting = false;
+      } else {
+        users.add(userName);
+        userIsTesting = true;
+      }
+    }
+
+    console.log(`🔄 Testing mode for ${userName}: ${userIsTesting ? 'ON' : 'OFF'} (active users: ${Array.from(users).join(', ') || 'none'})`)
 
     // Broadcast to WebSocket clients
     try {
@@ -40,7 +62,9 @@ export async function POST(request: NextRequest) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'TestingStateChanged',
-          isTesting: newState
+          isTesting: users.size > 0,
+          isTestingUsers: Array.from(users),
+          changedUser: userName,
         })
       });
     } catch {
@@ -49,8 +73,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      isTesting: newState,
-      message: `Testing mode ${newState ? 'started' : 'stopped'}`
+      isTesting: userIsTesting,
+      isTestingUsers: Array.from(users),
+      message: `Testing mode ${userIsTesting ? 'started' : 'stopped'} for ${userName}`
     })
   } catch (error) {
     console.error('Failed to toggle testing mode:', error)
@@ -62,8 +87,10 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
+  const users = globalForTesting.isTestingUsers || new Set<string>();
   return NextResponse.json({
     success: true,
-    isTesting: globalForTesting.isTestingEnabled || false
+    isTesting: users.size > 0,
+    isTestingUsers: Array.from(users),
   });
 }

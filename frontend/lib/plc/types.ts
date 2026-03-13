@@ -326,6 +326,8 @@ export interface ErrorEventMessage {
 export interface TestingStateChangedMessage {
   type: 'TestingStateChanged'
   isTesting: boolean
+  isTestingUsers?: string[]
+  changedUser?: string
 }
 
 export interface ConfigReloadMessage {
