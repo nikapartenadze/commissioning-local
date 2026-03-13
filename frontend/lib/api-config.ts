@@ -212,6 +212,11 @@ export const API_ENDPOINTS = {
 
   // Health
   health: '/api/health',
+
+  // Backups
+  backups: '/api/backups',
+  backupByFilename: (filename: string) => `/api/backups/${encodeURIComponent(filename)}`,
+  backupSync: (filename: string) => `/api/backups/${encodeURIComponent(filename)}/sync`,
 } as const
 
 /**
