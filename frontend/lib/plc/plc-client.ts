@@ -285,6 +285,20 @@ export class PlcClient extends EventEmitter {
       return { success: false };
     }
 
+    // Reuse existing handle if same tag (avoids race condition on quick press/release)
+    if (this.writeTagHandle !== null && this.writeTagName === io.name) {
+      try {
+        const readStatus = plc_tag_read(this.writeTagHandle, 5000);
+        if (readStatus === PlcTagStatus.PLCTAG_STATUS_OK) {
+          const currentValue = plc_tag_get_bit(this.writeTagHandle, 0);
+          return { success: true, currentState: currentValue === 1 };
+        }
+        // Read failed — fall through to recreate
+      } catch {
+        // Fall through to recreate
+      }
+    }
+
     // Clean up previous write tag
     if (this.writeTagHandle !== null) {
       try {
