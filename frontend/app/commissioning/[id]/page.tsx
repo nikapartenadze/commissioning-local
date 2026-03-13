@@ -558,11 +558,10 @@ export default function CommissioningPage() {
             // Check if we should show the value change dialog
             const stateActuallyChanged = currentPreviousStates[io.id] !== update.State
             const shouldShowDialog = currentPlcStatus.isTesting && !io.result && stateActuallyChanged && (
-              // For inputs: show when state changes to TRUE (physical activation)
-              (!isOutput(io.name) && update.State === 'TRUE') ||
-              // For outputs: show when state changed AND user explicitly fired from UI
-              // This proves the PLC actually responded to our write command
-              (isOutput(io.name) && currentOutputFiring[io.id] && update.State === 'TRUE')
+              // Show dialog on any FALSE→TRUE transition for both inputs and outputs
+              // Inputs: physical sensor activation
+              // Outputs: PLC program changed value, or user fired from UI
+              update.State === 'TRUE'
             )
 
             if (shouldShowDialog) {
