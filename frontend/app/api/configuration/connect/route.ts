@@ -8,7 +8,7 @@
 import { NextResponse } from 'next/server';
 import { configService } from '@/lib/config/config-service';
 import { PlcConnectRequest } from '@/lib/config/types';
-import { connectPlc, loadPlcTags, getPlcClient } from '@/lib/plc-client-manager';
+import { connectPlc, loadPlcTags, getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { isLibraryLoaded, getLibraryPath } from '@/lib/plc';
 import { prisma } from '@/lib/db';
 
@@ -160,6 +160,20 @@ export async function POST(request: Request) {
       tagsSuccessful: tagReport.tagsSuccessful,
       tagsFailed: tagReport.tagsFailed,
     });
+
+    // Broadcast PLC connection to all WebSocket clients
+    try {
+      await fetch(getWsBroadcastUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'PlcConnectionChanged',
+          connected: true,
+        })
+      });
+    } catch {
+      // WebSocket server might not be running
+    }
 
     return NextResponse.json({
       success: true,

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { disconnectPlc } from '@/lib/plc-client-manager';
+import { disconnectPlc, getWsBroadcastUrl } from '@/lib/plc-client-manager';
 
 export async function POST() {
   try {
@@ -8,6 +8,20 @@ export async function POST() {
     const result = await disconnectPlc();
 
     if (result.success) {
+      // Broadcast PLC disconnection to all WebSocket clients
+      try {
+        await fetch(getWsBroadcastUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'PlcConnectionChanged',
+            connected: false,
+          })
+        });
+      } catch {
+        // WebSocket server might not be running
+      }
+
       return NextResponse.json({
         success: true,
         message: 'Disconnected from PLC',
