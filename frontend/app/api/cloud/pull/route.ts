@@ -4,6 +4,32 @@ import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import type { CloudPullRequest, CloudPullResponse } from '@/lib/cloud/types'
 
+/** Classify IO description into a tagType for diagnostic steps */
+function classifyDescription(desc: string | null): string | null {
+  if (!desc) return null
+  const dl = desc.toLowerCase()
+  if (dl.includes('beacon')) return 'BCN 24V Segment 1'
+  if (dl.includes('pushbutton light') || dl.includes('pb_lt') || dl.includes('pblt') || (dl.includes('button') && dl.includes('light')))
+    return 'Button Light'
+  if (dl.includes('pushbutton') || dl.includes('push button'))
+    return 'Button Press'
+  if (dl.includes('photoeye') || dl.includes('tpe'))
+    return 'TPE Dark Operated'
+  if (dl.includes('vfd') || dl.includes('motor'))
+    return 'Motor/VFD'
+  if (dl.includes('disconnect'))
+    return 'Disconnect Switch'
+  if (dl.includes('light') || dl.includes('lamp') || dl.includes('indicator'))
+    return 'Indicator Light'
+  if (dl.includes('sensor') || dl.includes('prox'))
+    return 'Sensor'
+  if (dl.includes('valve') || dl.includes('solenoid'))
+    return 'Valve/Solenoid'
+  if (dl.includes('safety') || dl.includes('e-stop') || dl.includes('estop'))
+    return 'Safety Device'
+  return null
+}
+
 /**
  * POST /api/cloud/pull
  *
@@ -182,6 +208,27 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     })
 
     console.log(`[CloudPull] Successfully saved ${result} IOs to local database`)
+
+    // Auto-assign tagType from descriptions for IOs that don't have one from cloud
+    try {
+      const untyped = await prisma.io.findMany({
+        where: { tagType: null },
+        select: { id: true, description: true }
+      })
+      let assigned = 0
+      for (const io of untyped) {
+        const tagType = classifyDescription(io.description)
+        if (tagType) {
+          await prisma.io.update({ where: { id: io.id }, data: { tagType } })
+          assigned++
+        }
+      }
+      if (assigned > 0) {
+        console.log(`[CloudPull] Auto-assigned tagType to ${assigned} IOs based on descriptions`)
+      }
+    } catch (error) {
+      console.error('[CloudPull] Error assigning tag types:', error)
+    }
 
     // Broadcast to all clients to reload their IO data
     try {
