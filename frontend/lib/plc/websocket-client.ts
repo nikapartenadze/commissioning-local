@@ -77,6 +77,8 @@ export interface WebSocketConnection {
   offError: (callback: (event: ErrorEvent) => void) => void
   onPlcConnectionChange: (callback: (connected: boolean) => void) => void
   offPlcConnectionChange: (callback: (connected: boolean) => void) => void
+  onIOsUpdated: (callback: () => void) => void
+  offIOsUpdated: (callback: () => void) => void
   onReconnected: (callback: () => void) => void
   offReconnected: (callback: () => void) => void
 }
@@ -128,6 +130,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const networkStatusCallbacksRef = useRef<Set<(update: NetworkStatusUpdate) => void>>(new Set())
   const errorCallbacksRef = useRef<Set<(event: ErrorEvent) => void>>(new Set())
   const plcConnectionCallbacksRef = useRef<Set<(connected: boolean) => void>>(new Set())
+  const iosUpdatedCallbacksRef = useRef<Set<() => void>>(new Set())
   const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
 
   const handleMessage = useCallback((event: MessageEvent) => {
@@ -223,6 +226,15 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
               cb(connected)
             } catch (error) {
               console.error('[PlcWebSocket] Error in plc connection callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'IOsUpdated': {
+          iosUpdatedCallbacksRef.current.forEach((cb) => {
+            try { cb() } catch (error) {
+              console.error('[PlcWebSocket] Error in IOsUpdated callback:', error)
             }
           })
           break
@@ -477,6 +489,14 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     plcConnectionCallbacksRef.current.delete(callback)
   }, [])
 
+  const onIOsUpdated = useCallback((callback: () => void) => {
+    iosUpdatedCallbacksRef.current.add(callback)
+  }, [])
+
+  const offIOsUpdated = useCallback((callback: () => void) => {
+    iosUpdatedCallbacksRef.current.delete(callback)
+  }, [])
+
   const onReconnected = useCallback((callback: () => void) => {
     reconnectedCallbacksRef.current.add(callback)
   }, [])
@@ -512,6 +532,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     offError,
     onPlcConnectionChange,
     offPlcConnectionChange,
+    onIOsUpdated,
+    offIOsUpdated,
     onReconnected,
     offReconnected
   }

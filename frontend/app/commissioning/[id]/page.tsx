@@ -418,6 +418,21 @@ export default function CommissioningPage() {
     }
   }, [signalR.onPlcConnectionChange, signalR.offPlcConnectionChange])
 
+  // Handle IOs updated (cloud pull from another device)
+  useEffect(() => {
+    const handleIOsUpdated = () => {
+      if (DEBUG_OTHER) {
+        console.log('📡 WebSocket IOsUpdated — reloading IO data')
+      }
+      loadIos()
+    }
+
+    signalR.onIOsUpdated(handleIOsUpdated)
+    return () => {
+      signalR.offIOsUpdated(handleIOsUpdated)
+    }
+  }, [signalR.onIOsUpdated, signalR.offIOsUpdated])
+
   // Handle SignalR comment updates
   useEffect(() => {
     const handleCommentUpdate = (update: CommentUpdate) => {
