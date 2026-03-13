@@ -309,8 +309,8 @@ export default function CommissioningPage() {
           ...prev,
           isConnected: status.plcConnected || false,
           isTesting: updateTestingState
-            ? (status.isTestingUsers
-              ? (status.isTestingUsers as string[]).includes(currentUser?.fullName || '')
+            ? (status.isTestingUsers && currentUserRef.current?.fullName
+              ? (status.isTestingUsers as string[]).includes(currentUserRef.current.fullName)
               : (status.isTesting || false))
             : prev.isTesting
         }))
@@ -360,28 +360,35 @@ export default function CommissioningPage() {
   const plcStatusRef = useRef(plcStatus)
   const outputFiringInProgressRef = useRef(outputFiringInProgress)
   const previousStatesRef = useRef(previousStates)
-  
+  const currentUserRef = useRef(currentUser)
+
   // Keep refs updated
   useEffect(() => {
     plcStatusRef.current = plcStatus
   }, [plcStatus])
-  
+
   useEffect(() => {
     outputFiringInProgressRef.current = outputFiringInProgress
   }, [outputFiringInProgress])
-  
+
   useEffect(() => {
     previousStatesRef.current = previousStates
   }, [previousStates])
 
+  useEffect(() => {
+    currentUserRef.current = currentUser
+  }, [currentUser])
+
   // Handle SignalR testing state changes
   useEffect(() => {
     const handleTestingStateChange = (newIsTesting: boolean, isTestingUsers?: string[]) => {
+      const user = currentUserRef.current
       if (DEBUG_OTHER) {
-        console.log('📡 WebSocket TestingStateChanged:', newIsTesting, 'users:', isTestingUsers)
+        console.log('📡 WebSocket TestingStateChanged:', newIsTesting, 'users:', isTestingUsers, 'currentUser:', user?.fullName)
       }
-      const userIsTesting = isTestingUsers
-        ? isTestingUsers.includes(currentUser?.fullName || '')
+      // Use ref to get current user (avoids stale closure)
+      const userIsTesting = isTestingUsers && user?.fullName
+        ? isTestingUsers.includes(user.fullName)
         : newIsTesting
       setPlcStatus(prev => ({
         ...prev,
