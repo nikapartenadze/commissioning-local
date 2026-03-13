@@ -75,6 +75,8 @@ export interface WebSocketConnection {
   offNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
   onError: (callback: (event: ErrorEvent) => void) => void
   offError: (callback: (event: ErrorEvent) => void) => void
+  onPlcConnectionChange: (callback: (connected: boolean) => void) => void
+  offPlcConnectionChange: (callback: (connected: boolean) => void) => void
   onReconnected: (callback: () => void) => void
   offReconnected: (callback: () => void) => void
 }
@@ -125,6 +127,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const commentCallbacksRef = useRef<Set<(update: CommentUpdate) => void>>(new Set())
   const networkStatusCallbacksRef = useRef<Set<(update: NetworkStatusUpdate) => void>>(new Set())
   const errorCallbacksRef = useRef<Set<(event: ErrorEvent) => void>>(new Set())
+  const plcConnectionCallbacksRef = useRef<Set<(connected: boolean) => void>>(new Set())
   const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
 
   const handleMessage = useCallback((event: MessageEvent) => {
@@ -208,6 +211,18 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
               cb(testingMsg.isTesting, testingMsg.isTestingUsers)
             } catch (error) {
               console.error('[PlcWebSocket] Error in testing callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'PlcConnectionChanged': {
+          const connected = (message as any).connected as boolean
+          plcConnectionCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(connected)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in plc connection callback:', error)
             }
           })
           break
@@ -454,6 +469,14 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     errorCallbacksRef.current.delete(callback)
   }, [])
 
+  const onPlcConnectionChange = useCallback((callback: (connected: boolean) => void) => {
+    plcConnectionCallbacksRef.current.add(callback)
+  }, [])
+
+  const offPlcConnectionChange = useCallback((callback: (connected: boolean) => void) => {
+    plcConnectionCallbacksRef.current.delete(callback)
+  }, [])
+
   const onReconnected = useCallback((callback: () => void) => {
     reconnectedCallbacksRef.current.add(callback)
   }, [])
@@ -487,6 +510,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     offNetworkStatusChange,
     onError,
     offError,
+    onPlcConnectionChange,
+    offPlcConnectionChange,
     onReconnected,
     offReconnected
   }
