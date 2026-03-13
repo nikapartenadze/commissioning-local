@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db';
 
 // Get testing state from shared global
 const globalForTesting = globalThis as unknown as {
-  isTestingEnabled: boolean | undefined;
+  isTestingUsers: Set<string> | undefined;
 };
 
 // Try to get library status safely
@@ -54,7 +54,8 @@ export async function GET() {
       remoteUrl: config.remoteUrl || 'https://commissioning.lci.ge',
       performanceStats,
       library: libraryStatus,
-      isTesting: globalForTesting.isTestingEnabled || false,
+      isTesting: (globalForTesting.isTestingUsers?.size ?? 0) > 0,
+      isTestingUsers: Array.from(globalForTesting.isTestingUsers || []),
     });
   } catch (error) {
     console.error('PLC status error:', error);
@@ -73,6 +74,7 @@ export async function GET() {
         apiPassword: '',
         remoteUrl: '',
         isTesting: false,
+        isTestingUsers: [],
       },
       { status: 500 }
     );
