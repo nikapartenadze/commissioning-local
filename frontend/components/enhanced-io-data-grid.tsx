@@ -50,19 +50,41 @@ interface EnhancedIoDataGridProps {
   activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null
 }
 
-// Define column widths - LARGER for factory floor visibility
-const COLUMN_WIDTHS = {
-  description: 320,
-  ioPoint: 260,
-  state: 100,
-  result: 120,
-  timestamp: 180,
-  comments: 220,
-  history: 70,
-  help: 70,
-  failed: 70,
-  clear: 70,
-  output: 100
+// Column widths — responsive via hook
+function useColumnWidths() {
+  const [isMobile, setIsMobile] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 768px)')
+    setIsMobile(mq.matches)
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return isMobile ? {
+    description: 180,
+    ioPoint: 160,
+    state: 60,
+    result: 80,
+    timestamp: 0, // hidden on mobile
+    comments: 0,  // hidden on mobile
+    history: 50,
+    help: 50,
+    failed: 50,
+    clear: 50,
+    output: 80,
+  } : {
+    description: 320,
+    ioPoint: 260,
+    state: 100,
+    result: 120,
+    timestamp: 180,
+    comments: 220,
+    history: 70,
+    help: 70,
+    failed: 70,
+    clear: 70,
+    output: 100,
+  }
 }
 
 // Row height for better touch targets
@@ -98,6 +120,7 @@ export function EnhancedIoDataGrid({
   const [showDiagnosticDialog, setShowDiagnosticDialog] = useState(false)
   const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
   const [moduleHealth, setModuleHealth] = useState<Record<string, 'ok' | 'warning' | 'error'>>({})
+  const COLUMN_WIDTHS = useColumnWidths()
 
   // Fetch module health status periodically
   useEffect(() => {
@@ -332,13 +355,15 @@ export function EnhancedIoDataGrid({
   }
 
   // Calculate total width based on visible columns
+  const showTimestamp = showTimestampColumn && COLUMN_WIDTHS.timestamp > 0
+  const showComments = COLUMN_WIDTHS.comments > 0
   const totalWidth =
     COLUMN_WIDTHS.description +
     COLUMN_WIDTHS.ioPoint +
     (showStateColumn ? COLUMN_WIDTHS.state : 0) +
     (showResultColumn ? COLUMN_WIDTHS.result : 0) +
-    (showTimestampColumn ? COLUMN_WIDTHS.timestamp : 0) +
-    COLUMN_WIDTHS.comments +
+    (showTimestamp ? COLUMN_WIDTHS.timestamp : 0) +
+    (showComments ? COLUMN_WIDTHS.comments : 0) +
     COLUMN_WIDTHS.history +
     COLUMN_WIDTHS.help +
     COLUMN_WIDTHS.failed +
@@ -374,7 +399,7 @@ export function EnhancedIoDataGrid({
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               onKeyDown={handleKeyDown}
-              className="flex-1 outline-none bg-transparent min-w-[150px] text-base"
+              className="flex-1 outline-none bg-transparent min-w-[60px] sm:min-w-[150px] text-sm sm:text-base"
             />
           </div>
           {(filterTags.length > 0 || searchTerm) && (
@@ -449,7 +474,7 @@ export function EnhancedIoDataGrid({
                 Result
               </div>
             )}
-            {showTimestampColumn && (
+            {showTimestamp && (
               <div
                 className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
                 style={{ width: `${COLUMN_WIDTHS.timestamp}px` }}
@@ -457,12 +482,14 @@ export function EnhancedIoDataGrid({
                 Tested
               </div>
             )}
+            {showComments && (
             <div
               className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.comments}px` }}
             >
               Notes
             </div>
+            )}
             <div
               className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.history}px` }}
@@ -575,7 +602,7 @@ export function EnhancedIoDataGrid({
                        )}
                      </div>
                    )}
-                  {showTimestampColumn && (
+                  {showTimestamp && (
                     <div
                       className="px-4 py-2 text-sm text-muted-foreground flex-shrink-0 flex items-center font-mono"
                       style={{ width: `${COLUMN_WIDTHS.timestamp}px` }}
@@ -583,6 +610,7 @@ export function EnhancedIoDataGrid({
                       {formatTimestamp(io.timestamp) || <span className="opacity-50">—</span>}
                     </div>
                   )}
+                   {showComments && (
                    <div
                      className="px-4 py-2 text-sm flex-shrink-0 overflow-hidden flex items-center"
                      style={{ width: `${COLUMN_WIDTHS.comments}px` }}
@@ -625,6 +653,7 @@ export function EnhancedIoDataGrid({
                        </div>
                      )}
                    </div>
+                   )}
                   {/* History Column */}
                   <div
                     className="px-1 py-2 flex items-center justify-center flex-shrink-0"
