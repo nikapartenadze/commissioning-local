@@ -52,7 +52,7 @@ export function TestResultsChart({ data, onClose }: TestResultsChartProps) {
           </Button>
         </CardHeader>
         <CardContent>
-          <div className="h-96">
+          <div className="h-64 sm:h-96">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
@@ -75,7 +75,7 @@ export function TestResultsChart({ data, onClose }: TestResultsChartProps) {
             </ResponsiveContainer>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 mt-6">
+          <div className="grid grid-cols-3 gap-2 sm:gap-4 mt-4 sm:mt-6">
             <Card className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-900">
               <CardContent className="pt-6">
                 <div className="text-2xl font-bold text-green-600 dark:text-green-400">
