@@ -1131,11 +1131,11 @@ export default function CommissioningPage() {
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}
       <header className="bg-card border-b flex-shrink-0 z-50">
-        <div className="flex items-center justify-between px-4 h-12">
-          <div className="flex items-center gap-4">
-            <h1 className="text-lg font-bold tracking-tight">IO CHECKOUT</h1>
-            <div className="h-6 w-px bg-border" />
-            <span className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
+        <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12">
+          <div className="flex items-center gap-2 sm:gap-4">
+            <h1 className="text-sm sm:text-lg font-bold tracking-tight">IO CHECKOUT</h1>
+            <div className="h-6 w-px bg-border hidden sm:block" />
+            <span className="text-xs sm:text-sm font-mono bg-muted px-1.5 sm:px-2 py-0.5 rounded">
               SUB {plcConfig.subsystemId}
             </span>
           </div>
@@ -1148,15 +1148,15 @@ export default function CommissioningPage() {
 
       {/* SignalR Connection Warning - Shows when real-time updates are disconnected */}
       {signalRWasConnected && !signalR.isConnected && (
-        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between flex-shrink-0">
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-2 sm:px-4 py-1.5 sm:py-2 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-            <span className="text-sm text-amber-600 dark:text-amber-400 font-medium">
-              Live updates paused — Reconnecting to server...
+            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            <span className="text-xs sm:text-sm text-amber-600 dark:text-amber-400 font-medium">
+              Reconnecting...
             </span>
           </div>
-          <span className="text-xs text-amber-500/70">
-            PLC data may be stale until reconnected
+          <span className="text-xs text-amber-500/70 hidden sm:inline">
+            PLC data may be stale
           </span>
         </div>
       )}
