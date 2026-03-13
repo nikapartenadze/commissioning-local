@@ -89,7 +89,7 @@ REM Create default .env
 (
 echo DATABASE_URL=file:./database.db
 echo JWT_SECRET_KEY=change-this-in-production
-echo PLC_WS_PORT=3001
+echo PLC_WS_PORT=3002
 echo PORT=3000
 echo HOSTNAME=0.0.0.0
 echo NODE_ENV=production

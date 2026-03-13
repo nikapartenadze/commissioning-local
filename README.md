@@ -145,20 +145,53 @@ cd docker && docker compose up -d --build
 
 Runs the app on port 3000 inside a container.
 
-## First-Time Use (Technician Workflow)
+## First-Time Use
+
+### Admin Setup (one-time, from one device)
 
 1. Open `http://SERVER_IP:3000` → log in with PIN `852963`
-2. Click the **gear icon** → enter Cloud URL, Subsystem ID, API Password
+2. Click the **PLC** button → enter Cloud URL, Subsystem ID, API Password
 3. Click **Pull IOs** to fetch I/O definitions from the cloud database
 4. Switch to the **PLC Connection** tab → enter PLC IP and path → click **Connect**
    - If tags don't match the PLC program, a mismatch report is shown in the log
    - Use **Copy Report** to share the mismatch details with the PLC programmer
-5. Close the config dialog → click **START** to begin testing mode
-6. **Inputs**: wait for a state change → Pass/Fail dialog appears automatically
-7. **Outputs**: click **FIRE** → observe the physical device → Pass/Fail
+5. Create user accounts for each technician (Settings → Users → add name + 6-digit PIN)
+6. Share the server URL and PINs with the team
+
+### Technician Workflow (multiple users, simultaneously)
+
+1. Open `http://SERVER_IP:3000` on tablet/laptop → log in with your PIN
+2. PLC connection is already established (green PLC icon) — no setup needed
+3. Click **START** to begin your testing session (each user has independent start/stop)
+4. **Inputs**: wait for a state change → Pass/Fail dialog appears automatically
+5. **Outputs**: click **FIRE** → observe the physical device → Pass/Fail
    - Click = quick pulse (ON then OFF)
    - Hold = stays ON while held, OFF on release
-8. When done, click **Sync** to push results to the cloud
+6. Your name is recorded with every Pass/Fail in the test history
+
+### Multi-User Notes
+
+- **5+ technicians can work simultaneously** from different tablets/laptops
+- The PLC connection runs on the server — users cannot disconnect or change it
+- Each user has their own START/STOP testing state (one person stopping doesn't affect others)
+- All users see the same real-time PLC tag states via WebSocket
+- Firing outputs is safe for concurrent use (per-tag handles, no shared state)
+- Test results record who tested each I/O point (`testedBy` field in history)
+
+### Role Permissions
+
+| Action | Admin | User |
+|--------|-------|------|
+| View PLC tag states | Yes | Yes |
+| Start/Stop testing | Yes | Yes |
+| Mark Pass/Fail | Yes | Yes |
+| Fire outputs | Yes | Yes |
+| Export CSV / View history | Yes | Yes |
+| Connect/Disconnect PLC | Yes | No |
+| Pull IOs from cloud | Yes | No |
+| Sync results to cloud | Yes | No |
+| Manage users | Yes | No |
+| Change configuration | Yes | No |
 
 ## User Management
 
