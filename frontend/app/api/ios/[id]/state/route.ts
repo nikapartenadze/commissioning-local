@@ -44,21 +44,21 @@ export async function GET(
       )
     }
 
-    // Initialize the tag to read its current value
-    const initResult = client.initializeOutputTag({
+    // Read current tag value (per-tag handle, multi-user safe)
+    const readResult = client.readOutputBit({
       id: io.id,
       name: io.name,
       tagType: io.tagType ?? undefined
     })
 
-    if (!initResult.success) {
+    if (!readResult.success) {
       return NextResponse.json(
-        { success: false, error: 'Failed to read tag' },
+        { success: false, error: readResult.error || 'Failed to read tag' },
         { status: 500 }
       )
     }
 
-    const state = initResult.currentState
+    const state = readResult.currentState
 
     // Broadcast the state to all WebSocket clients to sync UIs
     try {
