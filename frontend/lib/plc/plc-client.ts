@@ -101,9 +101,8 @@ export class PlcClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isDisposed: boolean = false;
 
-  // Write tag handle (for output operations)
-  private writeTagHandle: TagHandle | null = null;
-  private writeTagName: string | null = null;
+  // Active write handles keyed by tag name (for concurrent multi-user output operations)
+  private writeHandles: Map<string, TagHandle> = new Map();
 
   constructor(config: PlcClientConfig = {}) {
     super();
@@ -210,17 +209,7 @@ export class PlcClient extends EventEmitter {
     this.tagReader.stopReading();
     await this.tagReader.resetForReconnection();
 
-    // Clean up write tag if any
-    if (this.writeTagHandle !== null) {
-      try {
-        plc_tag_destroy(this.writeTagHandle);
-      } catch {
-        // Ignore
-      }
-      this.writeTagHandle = null;
-      this.writeTagName = null;
-    }
-
+    this.destroyAllWriteHandles();
     this.setConnectionStatus('disconnected');
   }
 
@@ -277,142 +266,145 @@ export class PlcClient extends EventEmitter {
   }
 
   /**
-   * Initialize an output tag for writing (toggle/fire operations)
-   * Returns the current state (true/false) or null on failure
+   * Read the current state of an output tag (per-tag handle, multi-user safe).
    */
-  initializeOutputTag(io: IoTag): { success: boolean; currentState?: boolean } {
+  readOutputBit(io: IoTag): { success: boolean; currentState?: boolean; error?: string } {
     if (!this.connectionConfig || !io.name) {
-      return { success: false };
+      return { success: false, error: 'No connection config or tag name' };
     }
+    // Use writeOutputBit infrastructure to get/reuse a handle, but just read
+    const tagName = io.name;
+    let handle = this.writeHandles.get(tagName);
 
-    // Reuse existing handle if same tag (avoids race condition on quick press/release)
-    if (this.writeTagHandle !== null && this.writeTagName === io.name) {
+    if (handle === undefined) {
       try {
-        const readStatus = plc_tag_read(this.writeTagHandle, 5000);
-        if (readStatus === PlcTagStatus.PLCTAG_STATUS_OK) {
-          const currentValue = plc_tag_get_bit(this.writeTagHandle, 0);
-          return { success: true, currentState: currentValue === 1 };
+        handle = createTag({
+          gateway: this.connectionConfig.ip,
+          path: this.connectionConfig.path,
+          name: tagName,
+          elemSize: 1,
+          elemCount: 1,
+          timeout: this.config.timeout || 5000,
+        });
+        if (handle < 0) {
+          return { success: false, error: `Failed to create tag ${tagName}: ${getStatusMessage(handle)}` };
         }
-        // Read failed — fall through to recreate
-      } catch {
-        // Fall through to recreate
-      }
-    }
-
-    // Clean up previous write tag
-    if (this.writeTagHandle !== null) {
-      try {
-        plc_tag_destroy(this.writeTagHandle);
-      } catch {
-        // Ignore
+        this.writeHandles.set(tagName, handle);
+      } catch (error) {
+        return { success: false, error: String(error) };
       }
     }
 
     try {
-      // Create tag synchronously for write operations
-      const handle = createTag({
-        gateway: this.connectionConfig.ip,
-        path: this.connectionConfig.path,
-        name: io.name,
-        elemSize: 1,
-        elemCount: 1,
-        timeout: this.config.timeout || 5000,
-      });
-
-      if (handle < 0) {
-        this.emit('error', new Error(`Failed to create output tag ${io.name}: ${getStatusMessage(handle)}`));
-        return { success: false };
-      }
-
-      // Do initial read to verify tag exists and populate buffer (critical for writes)
       const readStatus = plc_tag_read(handle, 5000);
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        console.error(`[initializeOutputTag] Initial read failed for ${io.name}: ${getStatusMessage(readStatus)}`);
-        plc_tag_destroy(handle);
-        return { success: false };
+        this.destroyWriteHandle(tagName);
+        return { success: false, error: `Read failed: ${getStatusMessage(readStatus)}` };
+      }
+      const currentValue = plc_tag_get_bit(handle, 0);
+      return { success: true, currentState: currentValue === 1 };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  }
+
+  /**
+   * Write an output bit value atomically.
+   * Each call gets/reuses its own per-tag handle, so concurrent requests
+   * for different tags are fully isolated (multi-user safe).
+   *
+   * Returns current state (before write) and success/error.
+   */
+  writeOutputBit(
+    io: IoTag,
+    value: number | 'toggle'
+  ): { success: boolean; currentState?: boolean; error?: string } {
+    if (!this.connectionConfig || !io.name) {
+      return { success: false, error: 'No connection config or tag name' };
+    }
+
+    const tagName = io.name;
+
+    // Reuse existing handle for this tag, or create a new one
+    let handle = this.writeHandles.get(tagName);
+
+    if (handle === undefined) {
+      try {
+        handle = createTag({
+          gateway: this.connectionConfig.ip,
+          path: this.connectionConfig.path,
+          name: tagName,
+          elemSize: 1,
+          elemCount: 1,
+          timeout: this.config.timeout || 5000,
+        });
+
+        if (handle < 0) {
+          const msg = `Failed to create output tag ${tagName}: ${getStatusMessage(handle)}`;
+          this.emit('error', new Error(msg));
+          return { success: false, error: msg };
+        }
+
+        this.writeHandles.set(tagName, handle);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.emit('error', error instanceof Error ? error : new Error(msg));
+        return { success: false, error: msg };
+      }
+    }
+
+    try {
+      // Read current value (syncs tag buffer — required before writing)
+      const readStatus = plc_tag_read(handle, 5000);
+      if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        // Handle may be stale — destroy and remove so next call recreates
+        this.destroyWriteHandle(tagName);
+        return { success: false, error: `Read failed: ${getStatusMessage(readStatus)}` };
       }
 
-      // Use plc_tag_get_bit for correct boolean read (int8 returns garbage for DINT tags)
       const currentValue = plc_tag_get_bit(handle, 0);
       const currentState = currentValue === 1;
-      console.log(`[initializeOutputTag] ${io.name} bit value: ${currentValue}, state: ${currentState}`);
 
-      this.writeTagHandle = handle;
-      this.writeTagName = io.name;
-      return { success: true, currentState };
-    } catch (error) {
-      this.emit('error', error instanceof Error ? error : new Error(String(error)));
-      return { success: false };
-    }
-  }
-
-  /**
-   * Toggle the current output bit (0 -> 1 or 1 -> 0)
-   */
-  async toggleBit(): Promise<{ success: boolean; error?: string }> {
-    if (this.writeTagHandle === null) {
-      return { success: false, error: 'No output tag initialized' };
-    }
-
-    try {
-      // Read current value
-      const readStatus = await readTagAsync(this.writeTagHandle, 1000);
-      if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        return { success: false, error: `Read failed: ${getStatusMessage(readStatus)}` };
-      }
-
-      const currentValue = plc_tag_get_int8(this.writeTagHandle, 0);
-      const newValue = currentValue === 0 ? 1 : 0;
+      // Determine target value
+      const targetValue = value === 'toggle' ? (currentState ? 0 : 1) : (value === 0 ? 0 : 1);
 
       // Set new value
-      const setStatus = plc_tag_set_int8(this.writeTagHandle, 0, newValue);
+      const setStatus = plc_tag_set_int8(handle, 0, targetValue);
       if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        return { success: false, error: `Set value failed: ${getStatusMessage(setStatus)}` };
+        return { success: false, currentState, error: `Set value failed: ${getStatusMessage(setStatus)}` };
       }
 
-      // Write to PLC
-      const writeStatus = await writeTagAsync(this.writeTagHandle, 1000);
+      // Write to PLC (blocking)
+      const writeStatus = plc_tag_write(handle, 5000);
       if (writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        return { success: false, error: `Write failed: ${getStatusMessage(writeStatus)}` };
+        return { success: false, currentState, error: `Write failed: ${getStatusMessage(writeStatus)}` };
       }
 
-      return { success: true };
+      return { success: true, currentState };
     } catch (error) {
       return { success: false, error: String(error) };
     }
   }
 
   /**
-   * Set the output bit to a specific value (0 or 1)
+   * Destroy a single write handle by tag name
    */
-  async setBit(value: number): Promise<{ success: boolean; error?: string }> {
-    if (this.writeTagHandle === null) {
-      return { success: false, error: 'No output tag initialized' };
+  private destroyWriteHandle(tagName: string): void {
+    const handle = this.writeHandles.get(tagName);
+    if (handle !== undefined) {
+      try { plc_tag_destroy(handle); } catch { /* ignore */ }
+      this.writeHandles.delete(tagName);
     }
+  }
 
-    try {
-      // Read current value first (required to sync tag buffer before writing)
-      const readStatus = await readTagAsync(this.writeTagHandle, 1000);
-      if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        return { success: false, error: `Read failed: ${getStatusMessage(readStatus)}` };
-      }
-
-      // Set value
-      const setStatus = plc_tag_set_int8(this.writeTagHandle, 0, value === 0 ? 0 : 1);
-      if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        return { success: false, error: `Set value failed: ${getStatusMessage(setStatus)}` };
-      }
-
-      // Write to PLC using blocking mode
-      const writeStatus = plc_tag_write(this.writeTagHandle, 5000);
-      if (writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        return { success: false, error: `Write failed: ${getStatusMessage(writeStatus)}` };
-      }
-
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: String(error) };
+  /**
+   * Destroy all write handles (used during disconnect/dispose)
+   */
+  private destroyAllWriteHandles(): void {
+    for (const [name, handle] of Array.from(this.writeHandles.entries())) {
+      try { plc_tag_destroy(handle); } catch { /* ignore */ }
     }
+    this.writeHandles.clear();
   }
 
   /**
@@ -474,14 +466,7 @@ export class PlcClient extends EventEmitter {
     this.cancelReconnect();
     this.tagReader.dispose();
 
-    if (this.writeTagHandle !== null) {
-      try {
-        plc_tag_destroy(this.writeTagHandle);
-      } catch {
-        // Ignore
-      }
-    }
-
+    this.destroyAllWriteHandles();
     this.ioTags.clear();
     this.stateCache.clear();
     this.removeAllListeners();
