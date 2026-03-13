@@ -14,11 +14,11 @@ if %errorlevel% equ 0 (
     echo   App (port 3000):       NOT RUNNING
 )
 
-netstat -an | findstr ":3001 " | findstr "LISTENING" >nul 2>nul
+netstat -an | findstr ":3002 " | findstr "LISTENING" >nul 2>nul
 if %errorlevel% equ 0 (
-    echo   WebSocket (port 3001): RUNNING
+    echo   WebSocket (port 3002): RUNNING
 ) else (
-    echo   WebSocket (port 3001): NOT RUNNING
+    echo   WebSocket (port 3002): NOT RUNNING
 )
 
 echo.
