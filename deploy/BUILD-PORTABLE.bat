@@ -200,7 +200,7 @@ echo echo ============================================================
 echo echo.
 echo echo   App:        http://localhost:3000
 echo echo   WebSocket:  ws://localhost:3002
-echo echo   Admin PIN:  852963
+echo echo   Admin PIN:  111111
 echo echo.
 echo REM Show IP addresses
 echo echo   Tablet access:
@@ -283,7 +283,7 @@ echo.
 echo ACCESS:
 echo   On this PC:  http://localhost:3000
 echo   On tablets:  http://THIS_PC_IP:3000  ^(run STATUS.bat to see the IP^)
-echo   Admin PIN:   852963
+echo   Admin PIN:   111111
 echo.
 echo PORTS:
 echo   3000  — Web app ^(HTTP^)
