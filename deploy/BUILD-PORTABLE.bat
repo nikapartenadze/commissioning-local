@@ -119,13 +119,18 @@ mkdir "%OUTPUT_DIR%\node" 2>nul
 copy "%TEMP_DIR%\%NODE_DIR_NAME%\node.exe" "%OUTPUT_DIR%\node\" >nul
 copy "%TEMP_DIR%\%NODE_DIR_NAME%\npm.cmd" "%OUTPUT_DIR%\node\" >nul
 copy "%TEMP_DIR%\%NODE_DIR_NAME%\npx.cmd" "%OUTPUT_DIR%\node\" >nul
-xcopy /E /I /Q "%TEMP_DIR%\%NODE_DIR_NAME%\node_modules" "%OUTPUT_DIR%\node\node_modules"
+xcopy /E /I /Q /Y "%TEMP_DIR%\%NODE_DIR_NAME%\node_modules" "%OUTPUT_DIR%\node\node_modules"
 
 REM ── Copy app ──
 echo   Copying application files...
-xcopy /E /I /Q "%FRONTEND_DIR%\.next\standalone" "%OUTPUT_DIR%\app"
-xcopy /E /I /Q "%FRONTEND_DIR%\.next\static" "%OUTPUT_DIR%\app\.next\static"
-if exist "%FRONTEND_DIR%\public" xcopy /E /I /Q "%FRONTEND_DIR%\public" "%OUTPUT_DIR%\app\public"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\.next\standalone" "%OUTPUT_DIR%\app"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\.next\static" "%OUTPUT_DIR%\app\.next\static"
+if exist "%FRONTEND_DIR%\public" xcopy /E /I /Q /Y "%FRONTEND_DIR%\public" "%OUTPUT_DIR%\app\public"
+
+REM Preserve standalone server before overwriting with custom server
+if exist "%OUTPUT_DIR%\app\server.js" (
+    copy "%OUTPUT_DIR%\app\server.js" "%OUTPUT_DIR%\app\next-server.js" >nul
+)
 
 REM WebSocket server + production server
 mkdir "%OUTPUT_DIR%\app\scripts" 2>nul
@@ -136,19 +141,19 @@ REM PLC native library
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\" >nul
 
 REM Prisma
-xcopy /E /I /Q "%FRONTEND_DIR%\prisma" "%OUTPUT_DIR%\app\prisma"
-xcopy /E /I /Q "%FRONTEND_DIR%\node_modules\.prisma" "%OUTPUT_DIR%\app\node_modules\.prisma"
-xcopy /E /I /Q "%FRONTEND_DIR%\node_modules\@prisma" "%OUTPUT_DIR%\app\node_modules\@prisma"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\prisma" "%OUTPUT_DIR%\app\prisma"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\.prisma" "%OUTPUT_DIR%\app\node_modules\.prisma"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\@prisma" "%OUTPUT_DIR%\app\node_modules\@prisma"
 
 REM ws module
-xcopy /E /I /Q "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
 
 REM Seed script
 copy "%FRONTEND_DIR%\prisma\seed-diagnostics.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
 
 REM ── Create .env ──
 (
-echo DATABASE_URL=file:./database.db
+echo DATABASE_URL=file:../database.db
 echo JWT_SECRET_KEY=io-checkout-%RANDOM%%RANDOM%%RANDOM%
 echo PLC_WS_PORT=3002
 echo PORT=3000
@@ -215,6 +220,9 @@ echo echo ============================================================
 echo.
 echo cd /d "%%APP%%"
 echo "%%NODE%%" server.js
+echo echo.
+echo echo Server stopped unexpectedly.
+echo pause
 ) > "%OUTPUT_DIR%\START.bat"
 
 REM ── STOP.bat ──

@@ -14,8 +14,23 @@
 const { createServer } = require('http');
 const { parse } = require('url');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
+
+// Load .env file manually (standalone mode doesn't have Next.js env loader)
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+    line = line.trim();
+    if (!line || line.startsWith('#')) return;
+    const idx = line.indexOf('=');
+    if (idx === -1) return;
+    const key = line.substring(0, idx).trim();
+    const value = line.substring(idx + 1).trim();
+    if (!process.env[key]) process.env[key] = value;
+  });
+}
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
@@ -34,6 +49,15 @@ console.log('='.repeat(60));
 
 const plcWss = new WebSocket.Server({ port: WS_PORT, host: HOSTNAME });
 const plcClients = new Set();
+
+plcWss.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[WS] ERROR: Port ${WS_PORT} is already in use.`);
+    console.error(`[WS] Another instance may be running. Stop it first (STOP.bat) or check with STATUS.bat.`);
+    process.exit(1);
+  }
+  console.error('[WS] WebSocket server error:', err);
+});
 
 // HTTP server for broadcast API (internal, port WS_PORT + 100)
 const HTTP_PORT = WS_PORT + 100;
@@ -110,44 +134,45 @@ console.log(`[WS] PLC WebSocket server on ws://${HOSTNAME}:${WS_PORT}`);
 // Next.js Standalone Server
 // ============================================================================
 
-// Next.js standalone output generates its own server.js at .next/standalone/server.js
-// We need to load it properly
-const nextHandler = (() => {
+// Next.js standalone output includes its own minimal server.
+// In portable/standalone mode, the .next directory is at ./.next (same level as this server.js).
+// We set env vars so the standalone server uses our desired port/hostname.
+process.env.PORT = String(PORT);
+process.env.HOSTNAME = HOSTNAME;
+
+// In portable builds, the standalone server.js is saved as next-server.js
+const standalonePath = path.join(__dirname, 'next-server.js');
+
+if (fs.existsSync(standalonePath)) {
+  // Standalone server handles its own HTTP listener
+  console.log(`[App] Starting Next.js standalone server...`);
+  require(standalonePath);
+} else {
+  // Dev/full install: use the next package directly
   try {
     const next = require('next');
     const app = next({ dev: false, hostname: HOSTNAME, port: PORT });
     const handle = app.getRequestHandler();
-    app.prepare();
-    return handle;
-  } catch {
-    // Fallback: serve from .next/standalone
-    const standalonePath = path.join(__dirname, '.next', 'standalone', 'server.js');
-    try {
-      require(standalonePath);
-      return null; // standalone server handles its own listening
-    } catch (e) {
-      console.error('Failed to start Next.js:', e.message);
-      console.error('Make sure to run "npm run build" first');
-      process.exit(1);
-    }
+    app.prepare().then(() => {
+      const httpServer = createServer(async (req, res) => {
+        try {
+          const parsedUrl = parse(req.url, true);
+          await handle(req, res, parsedUrl);
+        } catch (err) {
+          console.error('Request error:', err);
+          res.writeHead(500);
+          res.end('Internal Server Error');
+        }
+      });
+      httpServer.listen(PORT, HOSTNAME, () => {
+        console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
+      });
+    });
+  } catch (e) {
+    console.error('Failed to start Next.js:', e.message);
+    console.error('Make sure to run "npm run build" first');
+    process.exit(1);
   }
-})();
-
-if (nextHandler) {
-  const httpServer = createServer(async (req, res) => {
-    try {
-      const parsedUrl = parse(req.url, true);
-      await nextHandler(req, res, parsedUrl);
-    } catch (err) {
-      console.error('Request error:', err);
-      res.writeHead(500);
-      res.end('Internal Server Error');
-    }
-  });
-
-  httpServer.listen(PORT, HOSTNAME, () => {
-    console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
-  });
 }
 
 // ============================================================================

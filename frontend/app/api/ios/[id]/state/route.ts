@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server'
 import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { prisma } from '@/lib/db'

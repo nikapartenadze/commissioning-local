@@ -512,7 +512,7 @@ async function main() {
 
   console.log(`\nDone! Seeded ${count} diagnostic entries.`)
   console.log('\nTag types seeded:')
-  const types = [...new Set(diagnostics.map(d => d.tagType))]
+  const types = Array.from(new Set(diagnostics.map(d => d.tagType)))
   for (const t of types) {
     const modes = diagnostics.filter(d => d.tagType === t).map(d => d.failureMode)
     console.log(`  ${t}: ${modes.join(', ')}`)
