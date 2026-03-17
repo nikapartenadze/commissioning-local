@@ -23,7 +23,7 @@ Industrial I/O Checkout Tool for commissioning PLC systems. Technicians use this
 - **Database**: Prisma ORM + SQLite (local)
 - **PLC**: ffi-rs → libplctag native library (Ethernet/IP)
 - **Real-time**: WebSocket (ws library, port 3001)
-- **Auth**: JWT + bcrypt, PIN-based login (default admin PIN: `852963`)
+- **Auth**: JWT + bcrypt, PIN-based login (default admin PIN: `111111`)
 - **Deployment**: Portable folder on Windows, Docker on Linux
 
 ## Common Commands
