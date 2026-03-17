@@ -28,7 +28,8 @@
   .note { background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
   .warn { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
   .success { background: #ecfdf5; border-left: 4px solid #10b981; padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
-  .fill { color: #9ca3af; font-style: italic; }
+  td[contenteditable]:empty::before { content: attr(data-placeholder); color: #9ca3af; font-style: italic; pointer-events: none; }
+  [contenteditable]:empty::before { content: attr(data-placeholder); color: #9ca3af; font-style: italic; pointer-events: none; }
   .toolbar { position: sticky; top: 0; z-index: 100; background: #1e40af; color: #fff; padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; font-size: 0.85em; margin: -20px -24px 20px; }
   .toolbar button { background: #fff; color: #1e40af; border: none; padding: 6px 16px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95em; }
   .toolbar button:hover { background: #e0e7ff; }
@@ -67,7 +68,7 @@
 <tr><td>2</td><td>Double-click <code>START.bat</code></td><td></td><td></td></tr>
 <tr><td>3</td><td>First run: Windows will ask for admin permission (firewall) — click <strong>Yes</strong></td><td></td><td></td></tr>
 <tr><td>4</td><td>Wait for the console to show "IO Checkout Tool" with the URL and IP addresses</td><td></td><td></td></tr>
-<tr><td>5</td><td>Note the server IP shown in the console</td><td>IP: <span class="fill">_______</span></td><td></td></tr>
+<tr><td>5</td><td>Note the server IP shown in the console</td><td></td><td></td></tr>
 </table>
 
 <p>The app is now running. Leave the console window open.</p>
@@ -86,7 +87,7 @@
 <tr><td>1</td><td>Click user icon (top-right) → <strong>Manage Users</strong></td><td></td><td></td></tr>
 <tr><td>2</td><td>Find "Admin" → click <strong>Reset PIN</strong></td><td></td><td></td></tr>
 <tr><td>3</td><td>Enter your new 6-digit PIN → <strong>Save</strong></td><td></td><td></td></tr>
-<tr><td>4</td><td>New admin PIN: <span class="fill">_______</span> (write it down!)</td><td></td><td></td></tr>
+<tr><td>4</td><td>Write down your new admin PIN</td><td></td><td></td></tr>
 </table>
 
 <h3>1.4 — Create Technician Accounts</h3>
@@ -95,7 +96,7 @@
 <tr><td>1</td><td>Still in Manage Users, enter a technician's full name + 6-digit PIN</td><td></td><td></td></tr>
 <tr><td>2</td><td>Click <strong>Create User</strong></td><td></td><td></td></tr>
 <tr><td>3</td><td>Repeat for each technician who will be testing</td><td></td><td></td></tr>
-<tr><td>4</td><td>Users created: <span class="fill">_______</span></td><td></td><td></td></tr>
+<tr><td>4</td><td>List users created</td><td></td><td></td></tr>
 </table>
 
 <h3>1.5 — Pull IOs from Cloud</h3>
@@ -103,11 +104,11 @@
 <tr><th>#</th><th>Step</th><th>Done?</th><th>Notes</th></tr>
 <tr><td>1</td><td>Click the <strong>PLC</strong> button (chip icon in toolbar)</td><td></td><td></td></tr>
 <tr><td>2</td><td>You're on the <strong>Cloud Data</strong> tab</td><td></td><td></td></tr>
-<tr><td>3</td><td>Enter Subsystem ID: <span class="fill">_______</span></td><td></td><td></td></tr>
-<tr><td>4</td><td>Enter Remote URL: <span class="fill">_______</span></td><td></td><td></td></tr>
+<tr><td>3</td><td>Enter Subsystem ID</td><td></td><td></td></tr>
+<tr><td>4</td><td>Enter Remote URL</td><td></td><td></td></tr>
 <tr><td>5</td><td>Enter API Password (if required)</td><td></td><td></td></tr>
 <tr><td>6</td><td>Click <strong>Pull IOs from Cloud</strong></td><td></td><td></td></tr>
-<tr><td>7</td><td>Wait for "Pulled X IOs" success message</td><td></td><td>IOs pulled: <span class="fill">_______</span></td></tr>
+<tr><td>7</td><td>Wait for "Pulled X IOs" success message</td><td></td><td></td></tr>
 <tr><td>8</td><td>Close the dialog — IO list should now appear in the table</td><td></td><td></td></tr>
 </table>
 
@@ -115,10 +116,10 @@
 <table>
 <tr><th>#</th><th>Step</th><th>Done?</th><th>Notes</th></tr>
 <tr><td>1</td><td>Open PLC config again → switch to <strong>PLC Connection</strong> tab</td><td></td><td></td></tr>
-<tr><td>2</td><td>Enter PLC IP: <span class="fill">_______</span></td><td></td><td></td></tr>
-<tr><td>3</td><td>Enter Communication Path (e.g., <code>1,0</code>): <span class="fill">_______</span></td><td></td><td></td></tr>
+<tr><td>2</td><td>Enter PLC IP address</td><td></td><td></td></tr>
+<tr><td>3</td><td>Enter Communication Path (e.g., <code>1,0</code>)</td><td></td><td></td></tr>
 <tr><td>4</td><td>Click <strong>Connect to PLC</strong></td><td></td><td></td></tr>
-<tr><td>5</td><td>Wait for connection — log shows tag count</td><td></td><td>Tags OK: <span class="fill">_____</span> / Failed: <span class="fill">_____</span></td></tr>
+<tr><td>5</td><td>Wait for connection — log shows tag count</td><td></td><td></td></tr>
 <tr><td>6</td><td>If tags failed, click <strong>Copy Report</strong> and save it</td><td></td><td></td></tr>
 <tr><td>7</td><td>Close dialog — PLC icon in toolbar should be green</td><td></td><td></td></tr>
 </table>
@@ -166,8 +167,8 @@
 
 <p><strong>Responsiveness:</strong></p>
 <ul>
-<li>Input activation → dialog appears: <span class="fill">_______</span> (&lt;1s / 1-3s / &gt;3s)</li>
-<li>Overall feel: <span class="fill">_______</span> (snappy / acceptable / sluggish)</li>
+<li>Input activation → dialog appears: <strong contenteditable="true" data-placeholder="&lt;1s / 1-3s / &gt;3s" style="min-width:100px;display:inline-block"></strong></li>
+<li>Overall feel: <strong contenteditable="true" data-placeholder="snappy / acceptable / sluggish" style="min-width:100px;display:inline-block"></strong></li>
 </ul>
 
 <h3>Test B: Multiple Users (3-5 devices)</h3>
@@ -189,9 +190,9 @@
 
 <p><strong>Observations:</strong></p>
 <ul>
-<li>Devices stay in sync? <span class="fill">(yes / sometimes / no)</span></li>
-<li>Any "Server returned 500" errors? <span class="fill">(yes — describe / no)</span></li>
-<li>Any WebSocket disconnects? <span class="fill">(yes — describe / no)</span></li>
+<li>Devices stay in sync? <strong contenteditable="true" data-placeholder="yes / sometimes / no" style="min-width:100px;display:inline-block"></strong></li>
+<li>Any "Server returned 500" errors? <strong contenteditable="true" data-placeholder="yes — describe / no" style="min-width:100px;display:inline-block"></strong></li>
+<li>Any WebSocket disconnects? <strong contenteditable="true" data-placeholder="yes — describe / no" style="min-width:100px;display:inline-block"></strong></li>
 </ul>
 
 <hr>
@@ -205,22 +206,22 @@
 <table>
 <tr><th>#</th><th>Step</th><th>Expected</th><th>Pass/Fail</th><th>Notes</th></tr>
 <tr><td>C1</td><td>Confirm Tailscale connected: <code>tailscale status</code></td><td>Server shows as online</td><td></td><td></td></tr>
-<tr><td>C2</td><td>Note server's Tailscale IP</td><td>IP: <span class="fill">_______</span></td><td></td><td></td></tr>
-<tr><td>C3</td><td>Open <code>http://&lt;TAILSCALE_IP&gt;:3000</code></td><td>Login page loads</td><td></td><td>Load time: <span class="fill">___</span> sec</td></tr>
+<tr><td>C2</td><td>Note server's Tailscale IP</td><td></td><td></td><td></td></tr>
+<tr><td>C3</td><td>Open <code>http://&lt;TAILSCALE_IP&gt;:3000</code></td><td>Login page loads</td><td></td><td></td></tr>
 <tr><td>C4</td><td>Log in, start testing</td><td>IO list appears, START → STOP</td><td></td><td></td></tr>
-<tr><td>C5</td><td>Trigger a physical input</td><td>Pass/Fail dialog appears</td><td></td><td>Delay: <span class="fill">___</span> sec</td></tr>
-<tr><td>C6</td><td>Fire an output</td><td>Output activates</td><td></td><td>Delay: <span class="fill">___</span> sec</td></tr>
+<tr><td>C5</td><td>Trigger a physical input</td><td>Pass/Fail dialog appears</td><td></td><td></td></tr>
+<tr><td>C6</td><td>Fire an output</td><td>Output activates</td><td></td><td></td></tr>
 <tr><td>C7</td><td>Scroll the IO list rapidly</td><td>Smooth / jerky / freezing?</td><td></td><td></td></tr>
 <tr><td>C8</td><td>Leave idle 5 minutes, then interact</td><td>Still responsive?</td><td></td><td></td></tr>
 </table>
 
-<p><strong>Is VPN lag tolerable for real work?</strong> <span class="fill">(yes / no / borderline)</span></p>
+<p><strong>Is VPN lag tolerable for real work?</strong> <strong contenteditable="true" data-placeholder="yes / no / borderline" style="min-width:100px;display:inline-block"></strong></p>
 
 <h3>Test D: VPN + Local Mixed</h3>
 <table>
 <tr><th>#</th><th>Step</th><th>Expected</th><th>Pass/Fail</th><th>Notes</th></tr>
 <tr><td>D1</td><td>1 device local + 1 device VPN, both logged in</td><td>Both see IO list</td><td></td><td></td></tr>
-<tr><td>D2</td><td>Trigger input, compare timing</td><td>Both see it; VPN may be slightly delayed</td><td></td><td>Delay difference: <span class="fill">___</span> sec</td></tr>
+<tr><td>D2</td><td>Trigger input, compare timing</td><td>Both see it; VPN may be slightly delayed</td><td></td><td></td></tr>
 <tr><td>D3</td><td>VPN user marks Pass</td><td>Local user sees the update</td><td></td><td></td></tr>
 </table>
 
@@ -244,7 +245,7 @@
 <tr><th>#</th><th>Step</th><th>Expected</th><th>Pass/Fail</th><th>Notes</th></tr>
 <tr><td>P1</td><td>Scroll through full IO list (1000+)</td><td>Smooth scrolling</td><td></td><td></td></tr>
 <tr><td>P2</td><td>Search/filter with 1000+ IOs</td><td>Instant results</td><td></td><td></td></tr>
-<tr><td>P3</td><td>Check server Task Manager while 5 users connected</td><td></td><td></td><td>Memory: <span class="fill">___</span> MB, CPU: <span class="fill">___</span> %</td></tr>
+<tr><td>P3</td><td>Check server Task Manager while 5 users connected</td><td></td><td></td><td></td></tr>
 </table>
 
 <hr>
@@ -254,9 +255,9 @@
 
 <table>
 <tr><th>Check</th><th>Command</th><th>Result</th></tr>
-<tr><td>Ping latency</td><td><code>ping &lt;TAILSCALE_IP&gt;</code></td><td><span class="fill">_______</span> ms avg</td></tr>
-<tr><td>Direct or relay?</td><td><code>tailscale status</code> — look for "relay"</td><td><span class="fill">direct / relay (DERP)</span></td></tr>
-<tr><td>Exit node enabled?</td><td>Tailscale settings</td><td><span class="fill">yes / no</span></td></tr>
+<tr><td>Ping latency</td><td><code>ping &lt;TAILSCALE_IP&gt;</code></td><td></td></tr>
+<tr><td>Direct or relay?</td><td><code>tailscale status</code> — look for "relay"</td><td></td></tr>
+<tr><td>Exit node enabled?</td><td>Tailscale settings</td><td></td></tr>
 </table>
 
 <div class="note">
@@ -293,10 +294,9 @@
 </table>
 
 <p style="margin-top: 24px;">
-<strong>Tester:</strong> <span class="fill">_______</span><br>
-<strong>Date:</strong> <span class="fill">_______</span><br>
-<strong>Time spent:</strong> <span class="fill">_______</span>
-</p>
+<strong>Tester:</strong> <span contenteditable="true" data-placeholder="Name" style="min-width:150px;display:inline-block;border-bottom:1px solid #d1d5db"></span><br>
+<strong>Date:</strong> <span contenteditable="true" data-placeholder="Date" style="min-width:150px;display:inline-block;border-bottom:1px solid #d1d5db"></span><br>
+<strong>Time spent:</strong> <span contenteditable="true" data-placeholder="e.g. 2 hours" style="min-width:150px;display:inline-block;border-bottom:1px solid #d1d5db"></span></p>
 
 <script>
 // Make all "Done?", "Pass/Fail", "Notes", "Result", "Comments", "Rating" cells editable
