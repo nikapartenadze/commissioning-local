@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server';
 import { disconnectPlc, getWsBroadcastUrl } from '@/lib/plc-client-manager';
 
