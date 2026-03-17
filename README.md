@@ -146,9 +146,9 @@ Technicians open `http://SERVER_IP:3000` on their tablets (run `STATUS.bat` to s
 
 ### Changing the Admin PIN
 
-The default admin account is created on first launch with PIN `852963`. To change it:
+The default admin account is created on first launch with PIN `111111`. To change it:
 
-1. Log in with PIN `852963`
+1. Log in with PIN `111111`
 2. Open the **user menu** (top-right) → **Manage Users**
 3. Find the "Admin" user → click **Reset PIN** → enter a new 6-digit PIN
 
@@ -176,7 +176,7 @@ Runs the app on port 3000 inside a container.
 
 ### Admin Setup (one-time, from one device)
 
-1. Open `http://SERVER_IP:3000` (production) or `http://SERVER_IP:3020` (dev) → log in with PIN `852963`
+1. Open `http://SERVER_IP:3000` (production) or `http://SERVER_IP:3020` (dev) → log in with PIN `111111`
 2. **Change the admin PIN** — open user menu (top-right) → Manage Users → Reset PIN on the Admin account
 3. Click the **PLC** button (top-right) → enter Cloud URL, Subsystem ID, API Password
 4. Click **Pull IOs** to fetch I/O definitions from the cloud database
@@ -238,7 +238,7 @@ The app uses PIN-based authentication. An admin can manage users via the setting
 | `/api/users/[id]/reset-pin` | PUT | Reset PIN `{ newPin }` (admin only) |
 | `/api/users/[id]/toggle-active` | PUT | Enable/disable user (admin only) |
 
-Default admin PIN: `852963` (change it on first login via Manage Users → Reset PIN). Roles: `admin`, `user`.
+Default admin PIN: `111111` (change it on first login via Manage Users → Reset PIN). Roles: `admin`, `user`.
 
 ## Architecture
 

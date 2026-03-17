@@ -27,7 +27,7 @@ echo Starting IO Checkout Tool...
 echo.
 echo   App URL:       http://localhost:3000
 echo   WebSocket:     ws://localhost:3002
-echo   Default PIN:   852963
+echo   Default PIN:   111111
 echo.
 echo   Technicians connect from tablets at:
 echo   http://THIS_PC_IP:3000
