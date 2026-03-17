@@ -43,5 +43,13 @@ Desktop.ini
 # Temp files
 **/tmpclaude-*
 
+# Build output
+portable/
+temp_build/
+
+# Native libraries
+frontend/plctag.dll
+frontend/libplctag.so
+
 # Vercel
 .vercel

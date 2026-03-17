@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getPlcSimulator } from '@/lib/services/plc-simulator-service';
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager';

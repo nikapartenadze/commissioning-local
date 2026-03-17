@@ -135,13 +135,13 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
-      const message: PlcWebSocketMessage = JSON.parse(event.data)
+      const message = JSON.parse(event.data) as PlcWebSocketMessage & { type: string }
 
       if (process.env.NODE_ENV === 'development') {
         WS_DEBUG && console.log('[PlcWebSocket] Received:', message.type)
       }
 
-      switch (message.type) {
+      switch (message.type as string) {
         case 'UpdateState': {
           const stateMsg = message as UpdateStateMessage
           const update: IOUpdate = {
@@ -165,7 +165,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           const ioMsg = message as UpdateIOMessage
           const update: IOUpdate = {
             Id: ioMsg.id,
-            Result: ioMsg.result,
+            Result: ioMsg.result as IOUpdate['Result'],
             State: ioMsg.state ? 'TRUE' : 'FALSE',
             Timestamp: ioMsg.timestamp,
             Comments: ioMsg.comments
@@ -180,22 +180,10 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           break
         }
 
-        case 'ConfigurationReloading': {
-          setIsConfigReloading(true)
-          const event: ConfigurationEvent = { type: 'reloading' }
-          configCallbacksRef.current.forEach((cb) => {
-            try {
-              cb(event)
-            } catch (error) {
-              console.error('[PlcWebSocket] Error in config callback:', error)
-            }
-          })
-          break
-        }
-
-        case 'ConfigurationReloaded': {
-          setIsConfigReloading(false)
-          const event: ConfigurationEvent = { type: 'reloaded' }
+        case 'ConfigReload': {
+          const configMsg = message as import('./types').ConfigReloadMessage
+          setIsConfigReloading(configMsg.status === 'reloading')
+          const event: ConfigurationEvent = { type: configMsg.status }
           configCallbacksRef.current.forEach((cb) => {
             try {
               cb(event)
@@ -207,7 +195,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
         }
 
         case 'TestingStateChanged': {
-          const testingMsg = message
+          const testingMsg = message as import('./types').TestingStateChangedMessage
           setIsTesting(testingMsg.isTesting)
           testingCallbacksRef.current.forEach((cb) => {
             try {
@@ -260,8 +248,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           const netMsg = message as NetworkStatusChangedMessage
           const update: NetworkStatusUpdate = {
             moduleName: netMsg.moduleName,
-            status: netMsg.status,
-            errorCount: netMsg.errorCount
+            status: netMsg.isOnline ? 'online' : 'offline',
+            errorCount: netMsg.affectedTags?.length ?? 0
           }
           networkStatusCallbacksRef.current.forEach((cb) => {
             try {
@@ -274,12 +262,12 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
         }
 
         case 'ErrorEvent': {
-          const errMsg = message as ErrorEventMessage
+          const errMsg = message as ErrorEventMessage & { source?: string; timestamp?: string }
           const event: ErrorEvent = {
-            source: errMsg.source,
+            source: (errMsg.source as ErrorEvent['source']) ?? 'system',
             message: errMsg.message,
-            severity: errMsg.severity,
-            timestamp: new Date(errMsg.timestamp)
+            severity: errMsg.severity as ErrorEvent['severity'],
+            timestamp: errMsg.timestamp ? new Date(errMsg.timestamp) : new Date()
           }
           errorCallbacksRef.current.forEach((cb) => {
             try {
@@ -670,7 +658,7 @@ export class PlcWebSocketClient {
 
   private handleMessage(event: MessageEvent): void {
     try {
-      const message: PlcWebSocketMessage = JSON.parse(event.data)
+      const message = JSON.parse(event.data) as PlcWebSocketMessage & { type: string }
 
       if (message.type === 'UpdateState') {
         const stateMsg = message as UpdateStateMessage
@@ -688,7 +676,7 @@ export class PlcWebSocketClient {
         const ioMsg = message as UpdateIOMessage
         const update: IOUpdate = {
           Id: ioMsg.id,
-          Result: ioMsg.result,
+          Result: ioMsg.result as IOUpdate['Result'],
           State: ioMsg.state ? 'TRUE' : 'FALSE',
           Timestamp: ioMsg.timestamp,
           Comments: ioMsg.comments
