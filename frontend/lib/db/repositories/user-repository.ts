@@ -261,7 +261,7 @@ export const userRepository = {
     if (count === 0) {
       await this.create({
         fullName: 'Admin',
-        pin: '852963',
+        pin: '111111',
         isAdmin: true,
       });
     }
