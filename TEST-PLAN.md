@@ -27,7 +27,7 @@ The app is now running. Leave the console window open.
 | # | Step | Done? | Notes |
 |---|------|-------|-------|
 | 1 | On any device, open `http://<SERVER_IP>:3000` | | |
-| 2 | Enter PIN `852963` → log in | | |
+| 2 | Enter PIN `111111` → log in | | |
 | 3 | You should see the commissioning page (empty, no IOs yet) | | |
 
 ### 1.3 — Change Admin PIN
