@@ -8,7 +8,7 @@ const nextConfig = {
       bodySizeLimit: '10mb',
     },
     // Native modules - don't bundle, use Node.js require
-    serverComponentsExternalPackages: ['ffi-rs', 'ws', 'bcrypt'],
+    serverComponentsExternalPackages: ['ffi-rs', 'ws'],
   },
 
   reactStrictMode: process.env.NODE_ENV === 'development', // Disable in production to prevent double renders

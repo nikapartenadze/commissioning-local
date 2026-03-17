@@ -1,7 +1,10 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { generateToken } from '@/lib/auth/jwt';
 import { verifyPin } from '@/lib/auth/password';
 import { prisma } from '@/lib/prisma';
+import userRepository from '@/lib/db/repositories/user-repository';
 
 // In-memory rate limiting store
 // In production, use Redis or similar for distributed rate limiting
@@ -103,6 +106,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Ensure default admin exists on first login attempt
+    await userRepository.ensureDefaultAdmin();
 
     let user;
 

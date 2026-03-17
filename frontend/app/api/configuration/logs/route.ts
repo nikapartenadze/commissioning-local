@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server'
 import { getConfigLogs, clearConfigLogs } from '@/lib/config/config-log'
 

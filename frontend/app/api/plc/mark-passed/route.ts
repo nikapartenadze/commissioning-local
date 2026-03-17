@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server'
 import { markTestPassedAsync } from '@/lib/services/io-test-service'
 import { getAuthUser } from '@/lib/auth/middleware'
