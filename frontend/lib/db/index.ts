@@ -13,8 +13,8 @@ const prismaInstance =
 
 // Enable WAL mode for better concurrent access and crash resilience
 if (!globalForPrisma.prisma) {
-  prismaInstance.$executeRawUnsafe('PRAGMA journal_mode=WAL').catch(e => console.warn('[DB] WAL mode failed:', e));
-  prismaInstance.$executeRawUnsafe('PRAGMA busy_timeout=5000').catch(e => console.warn('[DB] busy_timeout failed:', e));
+  prismaInstance.$queryRawUnsafe('PRAGMA journal_mode=WAL').catch(e => console.warn('[DB] WAL mode failed:', e));
+  prismaInstance.$queryRawUnsafe('PRAGMA busy_timeout=5000').catch(e => console.warn('[DB] busy_timeout failed:', e));
 }
 
 export const prisma = prismaInstance;
