@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server';
 import { getPlcTags, getPlcStatus } from '@/lib/plc-client-manager';
 import { configService } from '@/lib/config';

@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 /**
  * PLC Connect API Route
  *
