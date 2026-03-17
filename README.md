@@ -13,8 +13,9 @@ Industrial I/O commissioning application for testing and validating PLC Input/Ou
 
 ## Prerequisites
 
-- **Node.js 20+** — [download](https://nodejs.org)
-- **libplctag native library** — `plctag.dll` on Windows, `libplctag.so` on Linux ([releases](https://github.com/libplctag/libplctag/releases))
+**For factory deployment:** None — the portable build bundles everything (Node.js, plctag.dll).
+
+**For development:** Node.js 20+ ([download](https://nodejs.org)) and `libplctag.so` on Linux ([releases](https://github.com/libplctag/libplctag/releases)).
 
 ## Development
 
@@ -107,41 +108,51 @@ Requires `PLC_IP` and `PLC_PATH` environment variables or a running PLC on the n
 
 ## Production Deployment (Windows Factory PCs)
 
-The app is deployed as a **portable folder** — copy to the server, double-click to start. One server PC runs the app, all technicians connect from tablets/laptops via browser.
+The app is deployed as a **portable folder** — copy to the server, double-click `START.bat`. No installs required on the target machine. Node.js, plctag.dll, and all dependencies are bundled.
 
 ### Building the Portable Distribution
 
-On your dev machine:
+On any Windows PC with internet access (or Node.js installed):
 
 ```
 deploy\BUILD-PORTABLE.bat
 ```
 
-This creates a `portable/` folder containing:
-- Pre-built Next.js standalone app
-- WebSocket server (embedded in `server.js`)
-- Prisma client and schema
-- Startup/shutdown scripts
-- Default `.env` configuration
+The script automatically downloads and bundles:
+- **Node.js runtime** (portable, no installer)
+- **plctag.dll** (PLC native library)
+- All npm dependencies, Prisma client, Next.js standalone build
 
 ### Deploying to the Factory Server
 
 1. Copy the `portable/` folder to the server PC (e.g., `C:\IOCheckout`)
-2. Install [Node.js 20+](https://nodejs.org) on the server if not already installed
-3. Place `plctag.dll` in `portable\app\` (download from [libplctag releases](https://github.com/libplctag/libplctag/releases))
-4. Run `SETUP-FIREWALL.bat` **as Administrator** (one-time — opens ports 3000 and 3002)
-5. Edit `portable\app\.env` — **change `JWT_SECRET_KEY`** to a random string
-6. Double-click `START.bat`
+2. Double-click `START.bat`
+
+That's it. On first run, START.bat automatically:
+- Opens firewall ports 3000 + 3002 (prompts for admin permission once)
+- Creates the SQLite database
+- Starts the app
 
 ### Running in Production
 
 | Script | What it does |
 |--------|-------------|
-| `START.bat` | Starts the app (Next.js on port 3000, WebSocket on port 3002) |
+| `START.bat` | Starts the app (auto-setup on first run) |
 | `STOP.bat` | Stops the app |
-| `STATUS.bat` | Shows if the app is running and prints the server's IP addresses |
+| `STATUS.bat` | Shows if running, prints tablet access URLs |
+| `SEED-DIAGNOSTICS.bat` | Load troubleshooting help data (optional, one-time) |
 
-Technicians open `http://SERVER_IP:3000` on their tablets. Default admin PIN: `852963`.
+Technicians open `http://SERVER_IP:3000` on their tablets (run `STATUS.bat` to see the IP).
+
+### Changing the Admin PIN
+
+The default admin account is created on first launch with PIN `852963`. To change it:
+
+1. Log in with PIN `852963`
+2. Open the **user menu** (top-right) → **Manage Users**
+3. Find the "Admin" user → click **Reset PIN** → enter a new 6-digit PIN
+
+Admins can also create additional admin or technician accounts from the same panel.
 
 ### Production Ports
 
@@ -166,15 +177,16 @@ Runs the app on port 3000 inside a container.
 ### Admin Setup (one-time, from one device)
 
 1. Open `http://SERVER_IP:3000` (production) or `http://SERVER_IP:3020` (dev) → log in with PIN `852963`
-2. Click the **PLC** button (top-right) → enter Cloud URL, Subsystem ID, API Password
-3. Click **Pull IOs** to fetch I/O definitions from the cloud database
+2. **Change the admin PIN** — open user menu (top-right) → Manage Users → Reset PIN on the Admin account
+3. Click the **PLC** button (top-right) → enter Cloud URL, Subsystem ID, API Password
+4. Click **Pull IOs** to fetch I/O definitions from the cloud database
    - Tag types are automatically assigned from IO descriptions (enables Help buttons)
-4. Switch to the **PLC Connection** tab → enter PLC IP and path → click **Connect**
+5. Switch to the **PLC Connection** tab → enter PLC IP and path → click **Connect**
    - If tags don't match the PLC program, a mismatch report is shown in the log
    - Use **Copy Report** to share the mismatch details with the PLC programmer
-5. Create user accounts for each technician (Settings → Users → add name + 6-digit PIN)
-6. Share the server URL and PINs with the team
-7. All connected browsers will automatically see the PLC connection and IO data — no refresh needed
+6. Create user accounts for each technician (Settings → Users → add name + 6-digit PIN)
+7. Share the server URL and PINs with the team
+8. All connected browsers will automatically see the PLC connection and IO data — no refresh needed
 
 ### Technician Workflow (multiple users, simultaneously)
 
@@ -226,7 +238,7 @@ The app uses PIN-based authentication. An admin can manage users via the setting
 | `/api/users/[id]/reset-pin` | PUT | Reset PIN `{ newPin }` (admin only) |
 | `/api/users/[id]/toggle-active` | PUT | Enable/disable user (admin only) |
 
-Default admin PIN: `852963`. Roles: `admin`, `user`.
+Default admin PIN: `852963` (change it on first login via Manage Users → Reset PIN). Roles: `admin`, `user`.
 
 ## Architecture
 
