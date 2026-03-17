@@ -170,7 +170,22 @@ echo set "NPX=%%ROOT%%node\npx.cmd"
 echo set "PATH=%%ROOT%%node;%%PATH%%"
 echo set "APP=%%ROOT%%app"
 echo.
-echo REM Initialize database if first run
+echo REM ── Auto-setup firewall rules if not present ──
+echo netsh advfirewall firewall show rule name="IO Checkout - App" ^>nul 2^>^&1
+echo if %%errorlevel%% neq 0 ^(
+echo     echo Setting up firewall rules...
+echo     net session ^>nul 2^>^&1
+echo     if %%errorlevel%% neq 0 ^(
+echo         echo Requesting administrator access for firewall setup...
+echo         powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%%~dp0SETUP-FIREWALL.bat'" 2^>nul
+echo     ^) else ^(
+echo         netsh advfirewall firewall add rule name="IO Checkout - App" dir=in action=allow protocol=tcp localport=3000 ^>nul
+echo         netsh advfirewall firewall add rule name="IO Checkout - WebSocket" dir=in action=allow protocol=tcp localport=3002 ^>nul
+echo         echo Firewall rules added.
+echo     ^)
+echo ^)
+echo.
+echo REM ── Initialize database if first run ──
 echo if not exist "%%APP%%\database.db" ^(
 echo     echo First run — initializing database...
 echo     cd /d "%%APP%%"
@@ -256,10 +271,9 @@ echo.
 echo ZERO INSTALL REQUIRED. Everything is included.
 echo.
 echo FIRST TIME SETUP:
-echo   1. Run SETUP-FIREWALL.bat as Administrator ^(right-click ^> Run as admin^)
-echo      This opens ports 3000 and 3002 so tablets can connect.
+echo   1. Double-click START.bat
+echo      ^(Firewall rules and database are set up automatically on first run^)
 echo   2. Run SEED-DIAGNOSTICS.bat ^(optional — adds troubleshooting help data^)
-echo   3. Run START.bat
 echo.
 echo DAILY USE:
 echo   START.bat    — Launch the app ^(database auto-creates on first run^)
