@@ -18,7 +18,8 @@
   td:nth-child(1) { width: 36px; text-align: center; font-weight: 600; }
   /* Editable cells */
   td:last-child, td:nth-last-child(2) { background: #fefce8; }
-  td input[type="text"] { width: 100%; border: none; background: transparent; font: inherit; padding: 0; }
+  td[contenteditable]:focus { outline: 2px solid #2563eb; outline-offset: -2px; background: #fff; }
+  td[contenteditable] { cursor: text; min-height: 1.4em; }
   code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
   strong { font-weight: 600; }
   hr { border: none; border-top: 1px solid #e5e7eb; margin: 32px 0; }
@@ -28,6 +29,10 @@
   .warn { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
   .success { background: #ecfdf5; border-left: 4px solid #10b981; padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
   .fill { color: #9ca3af; font-style: italic; }
+  .toolbar { position: sticky; top: 0; z-index: 100; background: #1e40af; color: #fff; padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; font-size: 0.85em; margin: -20px -24px 20px; }
+  .toolbar button { background: #fff; color: #1e40af; border: none; padding: 6px 16px; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95em; }
+  .toolbar button:hover { background: #e0e7ff; }
+  .saved-msg { color: #86efac; font-weight: 600; display: none; }
   @media print {
     body { max-width: none; padding: 0; font-size: 11pt; }
     h2 { page-break-before: auto; }
@@ -37,6 +42,14 @@
 </style>
 </head>
 <body>
+
+<div class="toolbar">
+  <span>Click any yellow cell to type. Your entries are saved in this browser automatically.</span>
+  <span>
+    <span class="saved-msg" id="savedMsg">Saved!</span>
+    <button onclick="window.print()">Print / Save PDF</button>
+  </span>
+</div>
 
 <h1>IO Checkout Tool — Field Test Plan</h1>
 <p class="meta"><strong>Version:</strong> 1.1 &nbsp;|&nbsp; <strong>Date:</strong> 2026-03-17 &nbsp;|&nbsp; <strong>Purpose:</strong> Set up and validate the IO Checkout Tool at the factory. Complete each section and send results back.</p>
@@ -284,6 +297,65 @@
 <strong>Date:</strong> <span class="fill">_______</span><br>
 <strong>Time spent:</strong> <span class="fill">_______</span>
 </p>
+
+<script>
+// Make all "Done?", "Pass/Fail", "Notes", "Result", "Comments", "Rating" cells editable
+document.querySelectorAll('table').forEach((table, tableIdx) => {
+  const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent.trim().toLowerCase());
+  const editableCols = [];
+  headers.forEach((h, i) => {
+    if (['done?','pass/fail','notes','result','rating (1-5)','comments','severity'].includes(h)
+        || h.includes('pass') || h.includes('notes') || h.includes('result') || h.includes('done')
+        || h.includes('comment') || h.includes('rating') || h.includes('severity')) {
+      editableCols.push(i);
+    }
+  });
+  // If no recognized headers, make last 2 columns editable
+  if (editableCols.length === 0 && headers.length >= 3) {
+    editableCols.push(headers.length - 1, headers.length - 2);
+  }
+  table.querySelectorAll('tbody tr, tr:not(:first-child)').forEach((row, rowIdx) => {
+    const cells = row.querySelectorAll('td');
+    cells.forEach((cell, colIdx) => {
+      if (editableCols.includes(colIdx) || (cell.querySelector('.fill') && !cell.querySelector('code'))) {
+        cell.setAttribute('contenteditable', 'true');
+        cell.dataset.key = `tp-${tableIdx}-${rowIdx}-${colIdx}`;
+        // Load saved value
+        const saved = localStorage.getItem(cell.dataset.key);
+        if (saved !== null) {
+          cell.innerHTML = saved;
+        }
+      }
+    });
+  });
+});
+
+// Also make the summary fill-in spans editable
+document.querySelectorAll('.fill').forEach((span, i) => {
+  const parent = span.closest('td') || span.closest('li') || span.closest('p');
+  if (parent && !parent.hasAttribute('contenteditable')) {
+    parent.setAttribute('contenteditable', 'true');
+    parent.dataset.key = `tp-fill-${i}`;
+    const saved = localStorage.getItem(parent.dataset.key);
+    if (saved !== null) parent.innerHTML = saved;
+  }
+});
+
+// Auto-save on input
+let saveTimer;
+document.addEventListener('input', (e) => {
+  const el = e.target.closest('[contenteditable]');
+  if (el && el.dataset.key) {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      localStorage.setItem(el.dataset.key, el.innerHTML);
+      const msg = document.getElementById('savedMsg');
+      msg.style.display = 'inline';
+      setTimeout(() => msg.style.display = 'none', 1500);
+    }, 500);
+  }
+});
+</script>
 
 </body>
 </html>
