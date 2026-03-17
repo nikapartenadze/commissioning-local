@@ -1,159 +1,214 @@
 # IO Checkout Tool — Field Test Plan
 
-**Version:** 1.0
-**Date:** 2026-03-16
-**Purpose:** Validate the IO Checkout Tool works reliably in factory network conditions, including Tailscale VPN access. Please complete each section and send results back.
+**Version:** 1.1
+**Date:** 2026-03-17
+**Purpose:** Set up and validate the IO Checkout Tool at the factory. Complete each section and send results back.
 
 ---
 
-## Test Environment Info (fill in)
+## Part 1: Setup
 
-| Item | Value |
-|------|-------|
-| Server PC (running the app) | OS: _______ / IP: _______ |
-| Server Node.js version | `node --version`: _______ |
-| Number of test devices (tablets/phones/laptops) | _______ |
-| Device types & browsers | e.g. iPad Safari, Android Chrome, Windows Chrome |
-| Network type | Factory LAN / Wi-Fi / Tailscale VPN / Mixed |
-| Tailscale version (if used) | _______ |
-| PLC model & IP | _______ |
-| Subsystem ID being tested | _______ |
-| Number of IOs in subsystem | _______ |
+### 1.1 — Server Setup
+
+The server PC is the Windows machine that will run the app. All tablets/laptops connect to it.
+
+| # | Step | Done? | Notes |
+|---|------|-------|-------|
+| 1 | Copy the `portable/` folder to the server PC (e.g., `C:\IOCheckout`) | | |
+| 2 | Double-click `START.bat` | | |
+| 3 | First run: Windows will ask for admin permission (firewall) — click **Yes** | | |
+| 4 | Wait for the console to show "IO Checkout Tool" with the URL and IP addresses | | |
+| 5 | Note the server IP shown in the console | IP: _______ | |
+
+The app is now running. Leave the console window open.
+
+### 1.2 — Admin First Login
+
+| # | Step | Done? | Notes |
+|---|------|-------|-------|
+| 1 | On any device, open `http://<SERVER_IP>:3000` | | |
+| 2 | Enter PIN `852963` → log in | | |
+| 3 | You should see the commissioning page (empty, no IOs yet) | | |
+
+### 1.3 — Change Admin PIN
+
+| # | Step | Done? | Notes |
+|---|------|-------|-------|
+| 1 | Click user icon (top-right) → **Manage Users** | | |
+| 2 | Find "Admin" → click **Reset PIN** | | |
+| 3 | Enter your new 6-digit PIN → **Save** | | |
+| 4 | New admin PIN: _______ (write it down!) | | |
+
+### 1.4 — Create Technician Accounts
+
+| # | Step | Done? | Notes |
+|---|------|-------|-------|
+| 1 | Still in Manage Users, enter a technician's full name + 6-digit PIN | | |
+| 2 | Click **Create User** | | |
+| 3 | Repeat for each technician who will be testing | | |
+| 4 | Users created: _______ (list names) | | |
+
+### 1.5 — Pull IOs from Cloud
+
+| # | Step | Done? | Notes |
+|---|------|-------|-------|
+| 1 | Click the **PLC** button (chip icon in toolbar) | | |
+| 2 | You're on the **Cloud Data** tab | | |
+| 3 | Enter Subsystem ID: _______ | | |
+| 4 | Enter Remote URL: _______ | | |
+| 5 | Enter API Password (if required) | | |
+| 6 | Click **Pull IOs from Cloud** | | |
+| 7 | Wait for "Pulled X IOs" success message | | IOs pulled: _______ |
+| 8 | Close the dialog — IO list should now appear in the table | | |
+
+### 1.6 — Connect to PLC
+
+| # | Step | Done? | Notes |
+|---|------|-------|-------|
+| 1 | Open PLC config again → switch to **PLC Connection** tab | | |
+| 2 | Enter PLC IP: _______ | | |
+| 3 | Enter Communication Path (e.g., `1,0`): _______ | | |
+| 4 | Click **Connect to PLC** | | |
+| 5 | Wait for connection — log shows tag count | | Tags OK: _____ / Failed: _____ |
+| 6 | If tags failed, click **Copy Report** and save it | | |
+| 7 | Close dialog — PLC icon in toolbar should be green | | |
+
+### 1.7 — Verify on a Tablet
+
+| # | Step | Done? | Notes |
+|---|------|-------|-------|
+| 1 | On a tablet/phone, open `http://<SERVER_IP>:3000` | | |
+| 2 | Log in with a technician PIN | | |
+| 3 | IO list appears, PLC icon is green | | |
+| 4 | State dots should show current PLC states (green/red circles) | | |
+
+**If this works, setup is complete. Move to Part 2.**
+
+**If the tablet can't connect:**
+- Check the tablet is on the same network/Wi-Fi as the server
+- Try `STATUS.bat` on the server to confirm the IP
+- Check if Windows firewall prompt was accepted in step 1.3
 
 ---
 
-## Test 1: Local Network — Single User
+## Part 2: Testing — Local Network
 
-**Setup:** One tablet/laptop on the same LAN/Wi-Fi as the server PC. No VPN.
+### Test A: Single User Basic Flow
+
+**Setup:** One device on the same network as the server.
 
 | # | Step | Expected | Pass/Fail | Notes |
 |---|------|----------|-----------|-------|
-| 1.1 | Open `http://<SERVER_IP>:3000` in browser | Login page loads within 2-3 seconds | | |
-| 1.2 | Log in with PIN | Commissioning page loads, IO list appears | | |
-| 1.3 | Admin: Open PLC config, connect to PLC | PLC connects, green status shows | | |
-| 1.4 | Start testing mode | START button changes to red STOP | | |
-| 1.5 | Trigger a physical input (sensor/switch) | State dot turns green within ~1 second, Pass/Fail dialog appears | | |
-| 1.6 | Mark as Passed | Row turns green, result shows "Passed" | | |
-| 1.7 | Fire an output (press FIRE button) | Output activates on PLC, state changes | | |
-| 1.8 | Scroll through IO list | Smooth scrolling, no lag or stutter | | |
-| 1.9 | Stop testing mode | STOP → START, no errors | | |
+| A1 | Press **START** to begin testing | Button turns red "STOP" | | |
+| A2 | Physically trigger an input (sensor/switch) | State dot turns green, Pass/Fail dialog appears | | |
+| A3 | Click **Pass** | Row turns green, result shows "Passed" | | |
+| A4 | Trigger another input, click **Fail** | Asked for failure mode, row turns red | | |
+| A5 | On a failed IO, click the **?** Help button | Diagnostic troubleshooting steps appear | | |
+| A6 | Click **FIRE** on an output IO | Output activates on PLC | | |
+| A7 | Hold FIRE button, then release | Output stays ON while held, OFF on release | | |
+| A8 | Use search bar to find a specific IO | Results filter as you type | | |
+| A9 | Click filter buttons (Pass/Fail/Left/In/Out) | List filters correctly | | |
+| A10 | Press **STOP** | Returns to START, no errors | | |
 
-**Latency observations:**
-- Time from physical input activation to dialog appearing: _______ (estimate: <1s / 1-3s / >3s)
-- General responsiveness (snappy / acceptable / sluggish): _______
+**Responsiveness:**
+- Input activation → dialog appears: _______ (<1s / 1-3s / >3s)
+- Overall feel: _______ (snappy / acceptable / sluggish)
 
----
+### Test B: Multiple Users (3-5 devices)
 
-## Test 2: Local Network — Multiple Users (3-5 simultaneous)
-
-**Setup:** 3-5 devices on the same LAN/Wi-Fi. All logged in as different users.
+**Setup:** 3-5 devices, each logged in as a different user.
 
 | # | Step | Expected | Pass/Fail | Notes |
 |---|------|----------|-----------|-------|
-| 2.1 | All devices log in with different PINs | Each sees the commissioning page | | |
-| 2.2 | User A starts testing | Only User A sees STOP button; others still see START | | |
-| 2.3 | User B starts testing | User B sees STOP; User A still sees STOP (independent) | | |
-| 2.4 | Trigger an input while multiple users are testing | All testing users see the state change in real-time | | |
-| 2.5 | User A marks Pass, User B marks a different IO as Fail | Each user's action applies to the correct IO | | |
-| 2.6 | User A fires an output | All devices see the state change | | |
-| 2.7 | Two users fire different outputs at the same time | Both outputs activate correctly, no errors | | |
-| 2.8 | User A stops testing | Only User A returns to START; User B still testing | | |
-| 2.9 | Admin pulls new IOs (cloud pull) | All devices refresh IO list automatically (no manual reload) | | |
-| 2.10 | Admin disconnects PLC | All devices show PLC disconnected (red icon) automatically | | |
+| B1 | All devices log in | Each sees IO list with PLC states | | |
+| B2 | User A presses START | Only User A sees STOP; others still see START | | |
+| B3 | User B presses START | Both A and B see STOP independently | | |
+| B4 | Trigger an input | All testing users see the state change | | |
+| B5 | User A marks Pass on IO #1, User B marks Fail on IO #2 | Each action goes to the correct IO | | |
+| B6 | User A fires an output | All devices see the output state change | | |
+| B7 | Two users fire different outputs simultaneously | Both work, no errors | | |
+| B8 | User A stops testing | Only A goes back to START; B still testing | | |
+| B9 | Admin pulls new IOs | All devices refresh automatically | | |
+| B10 | Admin disconnects PLC | All devices show red PLC icon | | |
 
 **Observations:**
-- Do all devices stay in sync? (yes / sometimes / no): _______
+- Devices stay in sync? (yes / sometimes / no): _______
 - Any "Server returned 500" errors? (yes — describe / no): _______
-- Any devices lose WebSocket connection? (yes — describe / no): _______
+- Any WebSocket disconnects? (yes — describe / no): _______
 
 ---
 
-## Test 3: Tailscale VPN — Single User
+## Part 3: Testing — Tailscale VPN
 
-**Setup:** One device connected via Tailscale VPN (not on local network). Server is on factory LAN.
+*Skip this section if not using Tailscale.*
+
+### Test C: VPN Single User
+
+**Setup:** One device connected via Tailscale, not on the local network.
 
 | # | Step | Expected | Pass/Fail | Notes |
 |---|------|----------|-----------|-------|
-| 3.1 | Confirm Tailscale is connected | `tailscale status` shows server device online | | |
-| 3.2 | Note the Tailscale IP of the server | IP: _______ | | |
-| 3.3 | Open `http://<TAILSCALE_IP>:3000` | Login page loads | | |
-| 3.4 | Note page load time | _______ seconds | | |
-| 3.5 | Log in with PIN | Commissioning page loads with IO data | | |
-| 3.6 | Note IO list load time | _______ seconds | | |
-| 3.7 | Start testing, trigger a physical input | Pass/Fail dialog appears | | |
-| 3.8 | Note delay from input activation to dialog | _______ seconds (estimate) | | |
-| 3.9 | Fire an output | Output activates on PLC | | |
-| 3.10 | Note delay from button press to state change | _______ seconds | | |
-| 3.11 | Scroll through IO list rapidly | Smooth / jerky / freezing? | | |
-| 3.12 | Leave the page open for 5 minutes idle, then interact | Still responsive? WebSocket still connected? | | |
+| C1 | Confirm Tailscale connected: `tailscale status` | Server shows as online | | |
+| C2 | Note server's Tailscale IP | IP: _______ | | |
+| C3 | Open `http://<TAILSCALE_IP>:3000` | Login page loads | | Load time: ___ sec |
+| C4 | Log in, start testing | IO list appears, START → STOP | | |
+| C5 | Trigger a physical input | Pass/Fail dialog appears | | Delay: ___ sec |
+| C6 | Fire an output | Output activates | | Delay: ___ sec |
+| C7 | Scroll the IO list rapidly | Smooth / jerky / freezing? | | |
+| C8 | Leave idle 5 minutes, then interact | Still responsive? | | |
 
-**Key question:** Is the lag on Tailscale tolerable for commissioning work? (yes / no / borderline): _______
+**Is VPN lag tolerable for real work?** (yes / no / borderline): _______
 
----
-
-## Test 4: Tailscale VPN — Multiple Users
-
-**Setup:** 2+ devices on Tailscale VPN simultaneously. Optionally mix with local network devices.
+### Test D: VPN + Local Mixed
 
 | # | Step | Expected | Pass/Fail | Notes |
 |---|------|----------|-----------|-------|
-| 4.1 | Both VPN devices log in | Both see commissioning page | | |
-| 4.2 | Both start testing | Each has independent testing state | | |
-| 4.3 | Trigger input, check both devices see it | Real-time state update on both | | |
-| 4.4 | Note sync delay between devices | _______ seconds | | |
-| 4.5 | One device marks Pass, check other device sees update | Result appears on both devices | | |
-| 4.6 | Mix: 1 device local + 1 device VPN, trigger input | Both see state change, compare timing | | |
-
-**Observations:**
-- VPN user lag compared to local user: (similar / noticeably slower / unusable): _______
-- Any WebSocket disconnections on VPN? (yes — how often / no): _______
+| D1 | 1 device local + 1 device VPN, both logged in | Both see IO list | | |
+| D2 | Trigger input, compare timing | Both see it; VPN may be slightly delayed | | Delay difference: ___ sec |
+| D3 | VPN user marks Pass | Local user sees the update | | |
 
 ---
 
-## Test 5: Network Resilience
+## Part 4: Resilience
 
 | # | Step | Expected | Pass/Fail | Notes |
 |---|------|----------|-----------|-------|
-| 5.1 | Disconnect Wi-Fi on a device for 10 seconds, reconnect | App recovers, shows "Reconnecting..." banner, then resumes | | |
-| 5.2 | Switch a device from Wi-Fi to cellular (or vice versa) | App reconnects automatically | | |
-| 5.3 | Disconnect Tailscale VPN, reconnect | App resumes after VPN reconnects | | |
-| 5.4 | Close browser tab, reopen the URL | Login page appears, can log back in and resume | | |
-| 5.5 | Lock tablet screen for 2 minutes, unlock | App still works or auto-reconnects | | |
+| R1 | Disconnect Wi-Fi for 10 sec, reconnect | App shows "Reconnecting...", then resumes | | |
+| R2 | Lock tablet screen for 2 min, unlock | App works or auto-reconnects | | |
+| R3 | Close browser tab, reopen URL | Login page, can resume after login | | |
+| R4 | (VPN) Disconnect Tailscale, reconnect | App resumes | | |
 
 ---
 
-## Test 6: Ports & Firewall
-
-Both ports **3000** (HTTP) and **3001** (WebSocket) must be accessible from client devices.
+## Part 5: Performance
 
 | # | Step | Expected | Pass/Fail | Notes |
 |---|------|----------|-----------|-------|
-| 6.1 | From a client device, test HTTP: open `http://<SERVER_IP>:3000` | Page loads | | |
-| 6.2 | Check WebSocket: open browser console, look for WS connection | Console shows WebSocket connected (no red errors) | | |
-| 6.3 | If using Tailscale: confirm ports are not blocked by Tailscale ACLs | Both 3000 and 3002 accessible via Tailscale IP | | |
-| 6.4 | If Windows firewall: confirm rules exist | Run `netsh advfirewall firewall show rule name="IO Checkout"` | | |
-
-**Note:** If WebSocket (port 3002) is blocked, the app will load but real-time updates won't work — state changes won't appear until manual page refresh.
+| P1 | Scroll through full IO list (1000+) | Smooth scrolling | | |
+| P2 | Search/filter with 1000+ IOs | Instant results | | |
+| P3 | Check server Task Manager while 5 users connected | Node.js memory: _______ MB, CPU: _______ % | | |
 
 ---
 
-## Test 7: Performance Under Load
+## Tailscale Troubleshooting
 
-| # | Step | Expected | Pass/Fail | Notes |
-|---|------|----------|-----------|-------|
-| 7.1 | With 1000+ IOs loaded, scroll the list | Smooth virtual scrolling | | |
-| 7.2 | Use search/filter with 1000+ IOs | Results appear instantly | | |
-| 7.3 | 5 users connected, rapid input changes on PLC | All devices update, server CPU stays reasonable | | |
-| 7.4 | Check server memory: Task Manager on server PC | Node.js memory usage: _______ MB | | |
+*Only if VPN is slow or not working.*
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Ping latency | `ping <TAILSCALE_IP>` | _______ ms avg |
+| Direct or relay? | `tailscale status` — look for "relay" | direct / relay (DERP) |
+| Exit node enabled? | Tailscale settings | yes / no |
+
+- **Relay (DERP)** = traffic goes through Tailscale servers, adds 50-200ms. Fix: open UDP port 41641 on both sides for direct WireGuard connection.
+- **Exit node** = all traffic routed through VPN. Disable for local factory access.
 
 ---
 
-## Issues & Observations
+## Issues Found
 
-Use this space to document anything unexpected:
-
-| Issue # | Description | Severity (blocking/annoying/minor) | Steps to reproduce |
-|---------|-------------|------------------------------------|--------------------|
+| # | Description | Severity (blocking / annoying / minor) | How to reproduce |
+|---|-------------|---------------------------------------|------------------|
 | 1 | | | |
 | 2 | | | |
 | 3 | | | |
@@ -162,30 +217,18 @@ Use this space to document anything unexpected:
 
 ---
 
-## Tailscale-Specific Troubleshooting
+## Summary
 
-If Tailscale is lagging, please also record:
-
-1. **Ping from VPN device to server:** `ping <TAILSCALE_IP>` — average latency: _______ ms
-2. **Tailscale relay or direct?** Run `tailscale status` — does it show "relay" or "direct"?
-   - If **relay (DERP)**: Traffic is going through Tailscale's relay servers. This adds 50-200ms latency. To fix: ensure both devices can establish direct WireGuard connections (may need UDP port 41641 open on NAT/firewall).
-   - If **direct**: Latency should be similar to normal network. If still slow, the issue is elsewhere.
-3. **Tailscale exit node?** Is an exit node enabled? Disable it for local factory access.
-4. **MTU issues?** Try `ping -f -l 1400 <TAILSCALE_IP>` (Windows) — if it fails, there may be MTU/fragmentation issues.
-
----
-
-## Summary (fill in after testing)
-
-| Category | Rating (1-5, 5=excellent) | Comments |
-|----------|--------------------------|----------|
-| Local network single user | | |
-| Local network multi-user | | |
-| Tailscale VPN single user | | |
-| Tailscale VPN multi-user | | |
+| Category | Rating (1-5) | Comments |
+|----------|:---:|----------|
+| Setup process | | |
+| Local network — single user | | |
+| Local network — multi user | | |
+| Tailscale VPN (if tested) | | |
+| Mobile/tablet usability | | |
 | Overall reliability | | |
-| Ready for production use? | Yes / No / With caveats | |
+| **Ready for production?** | **Yes / No / With caveats** | |
 
-**Tester name:** _______
-**Test date:** _______
-**Total time spent testing:** _______
+**Tester:** _______
+**Date:** _______
+**Time spent:** _______
