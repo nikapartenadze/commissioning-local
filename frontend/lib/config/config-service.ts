@@ -115,9 +115,16 @@ class ConfigurationService {
       return this.config;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        console.log('[ConfigService] Config file not found, creating default config');
-        await this.saveConfig(DEFAULT_CONFIG);
+        if (!this.config) {
+          console.log('[ConfigService] Config file not found, using defaults');
+        }
         this.config = { ...DEFAULT_CONFIG };
+        // Try to create the file but don't fail if we can't
+        try {
+          await this.saveConfig(DEFAULT_CONFIG);
+        } catch {
+          // Ignore write errors — we'll use in-memory defaults
+        }
         return this.config;
       }
       console.error('[ConfigService] Error loading config:', error);
