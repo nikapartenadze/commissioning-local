@@ -103,10 +103,12 @@ The app is now running. Leave the console window open.
 | A2 | Physically trigger an input (sensor/switch) | State dot turns green, Pass/Fail dialog appears | | |
 | A3 | Click **Pass** | Row turns green, result shows "Passed" | | |
 | A4 | Trigger another input, click **Fail** | Asked for failure mode, row turns red | | |
-| A5 | On a failed IO, click the **?** Help button | Diagnostic troubleshooting steps appear | | |
+| A5 | On a failed IO, click the **?** Help button | Diagnostic troubleshooting steps appear | | ⚠️ See note below |
 | A6 | Click **FIRE** on an output IO | Output activates on PLC | | |
 | A7 | Hold FIRE button, then release | Output stays ON while held, OFF on release | | |
 | A8 | Use search bar to find a specific IO | Results filter as you type | | |
+
+> **About the Help (?) button:** This is a work-in-progress feature. It shows troubleshooting steps for specific IO types (beacons, photoeyes, buttons, etc.). It only appears for IOs that have a tag type assigned. Diagnostic data must be seeded first by running `SEED-DIAGNOSTICS.bat` on the server. If the button shows a dash (`—`) instead of `?`, that IO doesn't have a tag type yet — this is expected and will be improved.
 | A9 | Click filter buttons (Pass/Fail/Left/In/Out) | List filters correctly | | |
 | A10 | Press **STOP** | Returns to START, no errors | | |
 
