@@ -161,6 +161,14 @@ echo HOSTNAME=0.0.0.0
 echo NODE_ENV=production
 ) > "%OUTPUT_DIR%\app\.env"
 
+REM ── Initialize database with schema ──
+echo   Initializing database...
+cd /d "%FRONTEND_DIR%"
+set "DATABASE_URL=file:%OUTPUT_DIR%\app\database.db"
+call !NPX_CMD! prisma db push --skip-generate
+if %errorlevel% neq 0 ( echo WARNING: Database init failed — will retry on first START & set "DATABASE_URL=" )
+set "DATABASE_URL="
+
 REM ══════════════════════════════════════════════════════════════
 REM  Generate runtime scripts that use bundled Node.js
 REM ══════════════════════════════════════════════════════════════
@@ -190,13 +198,11 @@ echo         echo Firewall rules added.
 echo     ^)
 echo ^)
 echo.
-echo REM ── Initialize database if first run ──
+echo REM ── Check database ──
 echo if not exist "%%APP%%\database.db" ^(
-echo     echo First run — initializing database...
-echo     cd /d "%%APP%%"
-echo     call "%%NPX%%" prisma db push --skip-generate 2^>nul
-echo     echo Database created.
-echo     echo.
+echo     echo ERROR: database.db is missing. Please re-run BUILD-PORTABLE.bat.
+echo     pause
+echo     exit /b 1
 echo ^)
 echo.
 echo echo ============================================================
