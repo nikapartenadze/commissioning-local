@@ -157,13 +157,17 @@
 <tr><td>A2</td><td>Physically trigger an input (sensor/switch)</td><td>State dot turns green, Pass/Fail dialog appears</td><td></td><td></td></tr>
 <tr><td>A3</td><td>Click <strong>Pass</strong></td><td>Row turns green, result shows "Passed"</td><td></td><td></td></tr>
 <tr><td>A4</td><td>Trigger another input, click <strong>Fail</strong></td><td>Asked for failure mode, row turns red</td><td></td><td></td></tr>
-<tr><td>A5</td><td>On a failed IO, click the <strong>?</strong> Help button</td><td>Diagnostic troubleshooting steps appear</td><td></td><td></td></tr>
+<tr><td>A5</td><td>On a failed IO, click the <strong>?</strong> Help button</td><td>Diagnostic troubleshooting steps appear</td><td></td><td>&#9888;&#65039; See note below</td></tr>
 <tr><td>A6</td><td>Click <strong>FIRE</strong> on an output IO</td><td>Output activates on PLC</td><td></td><td></td></tr>
 <tr><td>A7</td><td>Hold FIRE button, then release</td><td>Output stays ON while held, OFF on release</td><td></td><td></td></tr>
 <tr><td>A8</td><td>Use search bar to find a specific IO</td><td>Results filter as you type</td><td></td><td></td></tr>
 <tr><td>A9</td><td>Click filter buttons (Pass/Fail/Left/In/Out)</td><td>List filters correctly</td><td></td><td></td></tr>
 <tr><td>A10</td><td>Press <strong>STOP</strong></td><td>Returns to START, no errors</td><td></td><td></td></tr>
 </table>
+
+<div class="note">
+<strong>About the Help (?) button:</strong> This is a work-in-progress feature. It shows troubleshooting steps for specific IO types (beacons, photoeyes, buttons, etc.). It only appears for IOs that have a tag type assigned. Diagnostic data must be seeded first by running <code>SEED-DIAGNOSTICS.bat</code> on the server. If the button shows a dash (<code>—</code>) instead of <code>?</code>, that IO doesn't have a tag type yet — this is expected and will be improved.
+</div>
 
 <p><strong>Responsiveness:</strong></p>
 <ul>
