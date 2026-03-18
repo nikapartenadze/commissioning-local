@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label'
 import { useUser } from '@/lib/user-context'
 import { Loader2, Delete, Check, Eye, EyeOff } from 'lucide-react'
 import { API_ENDPOINTS } from '@/lib/api-config'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 export function PinLogin() {
   const [pin, setPin] = useState('')
@@ -81,7 +82,10 @@ export function PinLogin() {
   }, [])
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
+    <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-background via-background to-muted/20 relative">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       <Card className="w-full max-w-md mx-4 shadow-2xl border-2 bg-card/95 backdrop-blur">
         <CardHeader className="text-center pb-4">
           <CardTitle className="text-3xl font-bold">IO Checkout Tool</CardTitle>
