@@ -138,34 +138,33 @@ The app is now running. Leave the console window open.
 
 ---
 
-## Part 3: Testing — Tailscale VPN
+## Part 3: Testing — Remote Access via Tailscale
 
-*Skip this section if not using Tailscale.*
+*Tailscale is used as a VPN to access the app when you've left the local Wi-Fi range. Install Tailscale on both the server machine and your tablet/laptop, join them to the same Tailscale network.*
 
-### Test C: VPN Single User
+### Test C: Connect via Tailscale
 
-**Setup:** One device connected via Tailscale, not on the local network.
-
-| # | Step | Expected | Pass/Fail | Notes |
-|---|------|----------|-----------|-------|
-| C1 | Confirm Tailscale connected: `tailscale status` | Server shows as online | | |
-| C2 | Note server's Tailscale IP | IP: _______ | | |
-| C3 | Open `http://<TAILSCALE_IP>:3000` | Login page loads | | Load time: ___ sec |
-| C4 | Log in, start testing | IO list appears, START → STOP | | |
-| C5 | Trigger a physical input | Pass/Fail dialog appears | | Delay: ___ sec |
-| C6 | Fire an output | Output activates | | Delay: ___ sec |
-| C7 | Scroll the IO list rapidly | Smooth / jerky / freezing? | | |
-| C8 | Leave idle 5 minutes, then interact | Still responsive? | | |
-
-**Is VPN lag tolerable for real work?** (yes / no / borderline): _______
-
-### Test D: VPN + Local Mixed
+**Setup:** Walk away from the factory Wi-Fi or disconnect from the local network. Connect to the server machine using its Tailscale IP instead.
 
 | # | Step | Expected | Pass/Fail | Notes |
 |---|------|----------|-----------|-------|
-| D1 | 1 device local + 1 device VPN, both logged in | Both see IO list | | |
-| D2 | Trigger input, compare timing | Both see it; VPN may be slightly delayed | | Delay difference: ___ sec |
-| D3 | VPN user marks Pass | Local user sees the update | | |
+| C1 | Ensure Tailscale is running on the server machine and your device | Both devices show as connected in Tailscale | | |
+| C2 | Find the server's Tailscale IP (check Tailscale app on server) | IP: _______ | | |
+| C3 | Open `http://<TAILSCALE_IP>:3000` in your browser | Login page loads | | Load time: ___ sec |
+| C4 | Log in with PIN and navigate to IO list | Everything loads normally | | |
+| C5 | Scroll through IO list, open dialogs, interact normally | UI is responsive, no major lag | | |
+| C6 | Trigger a physical input (if possible) | State update appears | | Delay: ___ sec |
+| C7 | Leave the app idle for a few minutes, then interact | App still works or reconnects automatically | | |
+
+**Is the remote experience usable for real work?** (yes / no / borderline): _______
+
+### Test D: Mixed — Local + Remote Users
+
+| # | Step | Expected | Pass/Fail | Notes |
+|---|------|----------|-----------|-------|
+| D1 | One user on local Wi-Fi + one user via Tailscale, both logged in | Both see the IO list | | |
+| D2 | Local user marks an IO as Pass | Remote user sees the update | | Delay: ___ sec |
+| D3 | Remote user marks an IO as Pass | Local user sees the update | | Delay: ___ sec |
 
 ---
 
@@ -190,18 +189,15 @@ The app is now running. Leave the console window open.
 
 ---
 
-## Tailscale Troubleshooting
+## Tailscale Notes
 
-*Only if VPN is slow or not working.*
+*Only relevant if using Tailscale for remote access.*
 
-| Check | Command | Result |
-|-------|---------|--------|
-| Ping latency | `ping <TAILSCALE_IP>` | _______ ms avg |
-| Direct or relay? | `tailscale status` — look for "relay" | direct / relay (DERP) |
-| Exit node enabled? | Tailscale settings | yes / no |
-
-- **Relay (DERP)** = traffic goes through Tailscale servers, adds 50-200ms. Fix: open UDP port 41641 on both sides for direct WireGuard connection.
-- **Exit node** = all traffic routed through VPN. Disable for local factory access.
+- Tailscale acts as a simple VPN — it lets you reach the server machine as if you were on the same network
+- Install Tailscale on the server and on your tablet/laptop, log in with the same account or team
+- Use the server's Tailscale IP (shown in the Tailscale app) instead of the local network IP
+- If the connection feels slow, check that both devices have a stable internet connection
+- If you can't connect at all, make sure Tailscale is running on both sides and both show as "Connected"
 
 ---
 
