@@ -5,6 +5,7 @@ import { generateToken } from '@/lib/auth/jwt';
 import { verifyPin } from '@/lib/auth/password';
 import { prisma } from '@/lib/prisma';
 import userRepository from '@/lib/db/repositories/user-repository';
+import { ensureDiagnosticData } from '@/lib/db/seed-diagnostics';
 
 // In-memory rate limiting store
 // In production, use Redis or similar for distributed rate limiting
@@ -107,8 +108,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Ensure default admin exists on first login attempt
+    // Ensure default data exists on first login attempt
     await userRepository.ensureDefaultAdmin();
+    await ensureDiagnosticData();
 
     let user;
 
