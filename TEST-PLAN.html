@@ -197,32 +197,31 @@
 
 <hr>
 
-<h2>Part 3: Testing — Tailscale VPN</h2>
-<p><em>Skip this section if not using Tailscale.</em></p>
+<h2>Part 3: Testing — Remote Access via Tailscale</h2>
+<p><em>Tailscale is used as a VPN to access the app when you've left the local Wi-Fi range. Install Tailscale on both the server machine and your tablet/laptop, join them to the same Tailscale network.</em></p>
 
-<h3>Test C: VPN Single User</h3>
-<p><strong>Setup:</strong> One device connected via Tailscale, not on the local network.</p>
+<h3>Test C: Connect via Tailscale</h3>
+<p><strong>Setup:</strong> Walk away from the factory Wi-Fi or disconnect from the local network. Connect to the server machine using its Tailscale IP instead.</p>
 
 <table>
 <tr><th>#</th><th>Step</th><th>Expected</th><th>Pass/Fail</th><th>Notes</th></tr>
-<tr><td>C1</td><td>Confirm Tailscale connected: <code>tailscale status</code></td><td>Server shows as online</td><td></td><td></td></tr>
-<tr><td>C2</td><td>Note server's Tailscale IP</td><td></td><td></td><td></td></tr>
-<tr><td>C3</td><td>Open <code>http://&lt;TAILSCALE_IP&gt;:3000</code></td><td>Login page loads</td><td></td><td></td></tr>
-<tr><td>C4</td><td>Log in, start testing</td><td>IO list appears, START → STOP</td><td></td><td></td></tr>
-<tr><td>C5</td><td>Trigger a physical input</td><td>Pass/Fail dialog appears</td><td></td><td></td></tr>
-<tr><td>C6</td><td>Fire an output</td><td>Output activates</td><td></td><td></td></tr>
-<tr><td>C7</td><td>Scroll the IO list rapidly</td><td>Smooth / jerky / freezing?</td><td></td><td></td></tr>
-<tr><td>C8</td><td>Leave idle 5 minutes, then interact</td><td>Still responsive?</td><td></td><td></td></tr>
+<tr><td>C1</td><td>Ensure Tailscale is running on the server machine and your device</td><td>Both devices show as connected in Tailscale</td><td></td><td></td></tr>
+<tr><td>C2</td><td>Find the server's Tailscale IP (check Tailscale app on server)</td><td></td><td></td><td></td></tr>
+<tr><td>C3</td><td>Open <code>http://&lt;TAILSCALE_IP&gt;:3000</code> in your browser</td><td>Login page loads</td><td></td><td></td></tr>
+<tr><td>C4</td><td>Log in with PIN and navigate to IO list</td><td>Everything loads normally</td><td></td><td></td></tr>
+<tr><td>C5</td><td>Scroll through IO list, open dialogs, interact normally</td><td>UI is responsive, no major lag</td><td></td><td></td></tr>
+<tr><td>C6</td><td>Trigger a physical input (if possible)</td><td>State update appears</td><td></td><td></td></tr>
+<tr><td>C7</td><td>Leave the app idle for a few minutes, then interact</td><td>App still works or reconnects automatically</td><td></td><td></td></tr>
 </table>
 
-<p><strong>Is VPN lag tolerable for real work?</strong> <strong contenteditable="true" data-placeholder="yes / no / borderline" style="min-width:100px;display:inline-block"></strong></p>
+<p><strong>Is the remote experience usable for real work?</strong> <strong contenteditable="true" data-placeholder="yes / no / borderline" style="min-width:100px;display:inline-block"></strong></p>
 
-<h3>Test D: VPN + Local Mixed</h3>
+<h3>Test D: Mixed — Local + Remote Users</h3>
 <table>
 <tr><th>#</th><th>Step</th><th>Expected</th><th>Pass/Fail</th><th>Notes</th></tr>
-<tr><td>D1</td><td>1 device local + 1 device VPN, both logged in</td><td>Both see IO list</td><td></td><td></td></tr>
-<tr><td>D2</td><td>Trigger input, compare timing</td><td>Both see it; VPN may be slightly delayed</td><td></td><td></td></tr>
-<tr><td>D3</td><td>VPN user marks Pass</td><td>Local user sees the update</td><td></td><td></td></tr>
+<tr><td>D1</td><td>One user on local Wi-Fi + one user via Tailscale, both logged in</td><td>Both see the IO list</td><td></td><td></td></tr>
+<tr><td>D2</td><td>Local user marks an IO as Pass</td><td>Remote user sees the update</td><td></td><td></td></tr>
+<tr><td>D3</td><td>Remote user marks an IO as Pass</td><td>Local user sees the update</td><td></td><td></td></tr>
 </table>
 
 <hr>
@@ -250,19 +249,17 @@
 
 <hr>
 
-<h2>Tailscale Troubleshooting</h2>
-<p><em>Only if VPN is slow or not working.</em></p>
-
-<table>
-<tr><th>Check</th><th>Command</th><th>Result</th></tr>
-<tr><td>Ping latency</td><td><code>ping &lt;TAILSCALE_IP&gt;</code></td><td></td></tr>
-<tr><td>Direct or relay?</td><td><code>tailscale status</code> — look for "relay"</td><td></td></tr>
-<tr><td>Exit node enabled?</td><td>Tailscale settings</td><td></td></tr>
-</table>
+<h2>Tailscale Notes</h2>
+<p><em>Only relevant if using Tailscale for remote access.</em></p>
 
 <div class="note">
-<strong>Relay (DERP)</strong> = traffic goes through Tailscale servers, adds 50-200ms. Fix: open UDP port 41641 on both sides for direct WireGuard connection.<br>
-<strong>Exit node</strong> = all traffic routed through VPN. Disable it for local factory access.
+<ul style="margin:0;padding-left:20px">
+<li>Tailscale acts as a simple VPN — it lets you reach the server machine as if you were on the same network</li>
+<li>Install Tailscale on the server and on your tablet/laptop, log in with the same account or team</li>
+<li>Use the server's Tailscale IP (shown in the Tailscale app) instead of the local network IP</li>
+<li>If the connection feels slow, check that both devices have a stable internet connection</li>
+<li>If you can't connect at all, make sure Tailscale is running on both sides and both show as "Connected"</li>
+</ul>
 </div>
 
 <hr>
