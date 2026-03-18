@@ -231,15 +231,6 @@ echo echo Server stopped unexpectedly.
 echo pause
 ) > "%OUTPUT_DIR%\START.bat"
 
-REM ── STOP.bat ──
-(
-echo @echo off
-echo echo Stopping IO Checkout Tool...
-echo taskkill /f /im "node.exe" /fi "MEMUSAGE gt 50000" 2^>nul
-echo echo Stopped.
-echo timeout /t 2 ^>nul
-) > "%OUTPUT_DIR%\STOP.bat"
-
 REM ── STATUS.bat ──
 (
 echo @echo off
@@ -290,8 +281,7 @@ echo      ^(Firewall rules and database are set up automatically on first run^)
 echo   2. Run SEED-DIAGNOSTICS.bat ^(optional — adds troubleshooting help data^)
 echo.
 echo DAILY USE:
-echo   START.bat    — Launch the app ^(database auto-creates on first run^)
-echo   STOP.bat     — Stop the app
+echo   START.bat    — Launch the app ^(close the window to stop^)
 echo   STATUS.bat   — Check if running, show tablet access URLs
 echo.
 echo ACCESS:
