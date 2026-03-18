@@ -159,7 +159,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       })
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
-      // Upsert each IO from cloud
+      // Clear ALL existing IOs before pulling fresh data
+      const deletedCount = await tx.io.deleteMany({})
+      if (deletedCount.count > 0) {
+        console.log(`[CloudPull] Cleared ${deletedCount.count} existing IOs`)
+      }
+
+      // Insert IOs from cloud
       const cloudIoIds: number[] = []
       let upsertedCount = 0
 
@@ -202,34 +208,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
           upsertedCount++
         } catch (error) {
           console.error(`[CloudPull] Failed to upsert IO ${cloudIo.id}:`, error)
-        }
-      }
-
-      // Remove IOs no longer in cloud (for this subsystem only)
-      if (cloudIoIds.length > 0) {
-        // Check for IOs with test results that will be removed
-        const iosToRemove = await tx.io.findMany({
-          where: {
-            subsystemId: subsystemId,
-            id: { notIn: cloudIoIds },
-          },
-          select: { id: true, name: true, result: true },
-        })
-
-        const iosWithResults = iosToRemove.filter(io => io.result != null)
-        if (iosWithResults.length > 0) {
-          console.warn(`[CloudPull] Warning: Removing ${iosWithResults.length} IOs that have test results but are no longer in cloud:`,
-            iosWithResults.map(io => `${io.id}:${io.name}`).join(', '))
-        }
-
-        const removed = await tx.io.deleteMany({
-          where: {
-            subsystemId: subsystemId,
-            id: { notIn: cloudIoIds },
-          },
-        })
-        if (removed.count > 0) {
-          console.log(`[CloudPull] Removed ${removed.count} IOs no longer in cloud`)
         }
       }
 
