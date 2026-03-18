@@ -256,17 +256,6 @@ echo pause
 REM ── SETUP-FIREWALL.bat ──
 copy "%~dp0SETUP-FIREWALL.bat" "%OUTPUT_DIR%\" >nul
 
-REM ── SEED-DIAGNOSTICS.bat ──
-(
-echo @echo off
-echo set "ROOT=%%~dp0"
-echo set "PATH=%%ROOT%%node;%%PATH%%"
-echo echo Seeding diagnostic troubleshooting data...
-echo cd /d "%%ROOT%%app"
-echo call "%%ROOT%%node\npx.cmd" tsx prisma/seed-diagnostics.ts
-echo echo Done.
-echo pause
-) > "%OUTPUT_DIR%\SEED-DIAGNOSTICS.bat"
 
 REM ── README.txt ──
 (
@@ -277,8 +266,7 @@ echo ZERO INSTALL REQUIRED. Everything is included.
 echo.
 echo FIRST TIME SETUP:
 echo   1. Double-click START.bat
-echo      ^(Firewall rules and database are set up automatically on first run^)
-echo   2. Run SEED-DIAGNOSTICS.bat ^(optional — adds troubleshooting help data^)
+echo      ^(Firewall, database, and diagnostic help data are set up automatically^)
 echo.
 echo DAILY USE:
 echo   START.bat    — Launch the app ^(close the window to stop^)
