@@ -9,13 +9,18 @@ export function getBackupDbPath(): string {
 }
 
 /**
- * Resolve the actual database.db path from DATABASE_URL env var
+ * Resolve the actual database.db path from DATABASE_URL env var.
+ * Prisma resolves relative paths from the schema file location (prisma/),
+ * so we do the same here.
  */
 export function getDatabasePath(): string {
   const dbUrl = process.env.DATABASE_URL || 'file:./database.db'
   // Strip "file:" prefix
   const relative = dbUrl.replace(/^file:/, '')
-  return path.resolve(process.cwd(), relative)
+  // If absolute path, use as-is
+  if (path.isAbsolute(relative)) return relative
+  // Resolve relative to prisma/ directory (same as Prisma does)
+  return path.resolve(process.cwd(), 'prisma', relative)
 }
 
 /**
