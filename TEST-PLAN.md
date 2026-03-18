@@ -201,3 +201,7 @@ The app is now running. Leave the console window open.
 **Tester:** _______
 **Date:** _______
 **Time spent:** _______
+
+---
+
+> **When done:** If using the HTML version, print/save as PDF from your browser (Ctrl+P → Save as PDF). If using this Markdown file, open it with a Markdown viewer or paste into [markdownlivepreview.com](https://markdownlivepreview.com) and print from there.
