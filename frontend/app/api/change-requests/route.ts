@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { ioId, requestType, currentValue, requestedValue, reason, requestedBy } = body
+    const { ioId, requestType, currentValue, requestedValue, structuredChanges, reason, requestedBy } = body
 
     if (!requestType || !reason || !requestedBy) {
       return NextResponse.json(
@@ -52,6 +52,7 @@ export async function POST(request: NextRequest) {
         requestType,
         currentValue: currentValue || null,
         requestedValue: requestedValue || null,
+        structuredChanges: structuredChanges ? JSON.stringify(structuredChanges) : null,
         reason,
         requestedBy,
         status: 'pending',
