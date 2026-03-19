@@ -97,7 +97,7 @@ export class CloudSyncService {
     return () => this.connectionStateListeners.delete(listener)
   }
 
-  private setConnectionState(state: ConnectionState, error?: string): void {
+  setConnectionState(state: ConnectionState, error?: string): void {
     const previousState = this.connectionStatus.state
     this.connectionStatus = {
       ...this.connectionStatus,

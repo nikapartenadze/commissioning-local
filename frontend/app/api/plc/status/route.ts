@@ -31,7 +31,7 @@ export async function GET() {
   try {
     const status = getPlcStatus();
     const performanceStats = getPlcPerformanceStats();
-    const config = await configService.loadConfig();
+    const config = await configService.getConfig();
     const ioCount = await prisma.io.count();
     const libraryStatus = await getLibraryStatus();
 

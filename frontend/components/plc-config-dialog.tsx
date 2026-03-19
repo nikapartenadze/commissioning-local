@@ -177,6 +177,21 @@ export function PlcConfigDialog({
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 120000)
 
+      // Save cloud settings to config.json before pulling
+      try {
+        await authFetch(API_ENDPOINTS.configurationUpdate, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            remoteUrl: localConfig.remoteUrl || "",
+            apiPassword: localConfig.apiPassword || "",
+            subsystemId: localConfig.subsystemId,
+          })
+        })
+      } catch (e) {
+        console.warn('Failed to save config before pull:', e)
+      }
+
       addPullLog('Sending request...')
       addPullLog(`API Password: ${localConfig.apiPassword ? `set (${localConfig.apiPassword.length} chars)` : 'NOT SET'}`)
       setPullStatus({ type: 'loading', message: `Fetching IOs for subsystem ${localConfig.subsystemId}...` })
