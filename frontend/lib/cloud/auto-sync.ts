@@ -1,0 +1,332 @@
+/**
+ * Automatic Bidirectional Sync Service
+ *
+ * Runs in the background on the server:
+ * - Push: Drains PendingSync queue to cloud every 30s
+ * - Pull: Checks for IO definition changes from cloud every 60s
+ *
+ * Preserves data ownership:
+ * - Cloud owns IO definitions (name, description, order)
+ * - Site owns test results (result, timestamp, comments, testedBy)
+ */
+
+import { prisma } from '@/lib/db'
+import { configService } from '@/lib/config'
+
+export interface AutoSyncConfig {
+  pushIntervalMs: number    // default 30000 (30s)
+  pullIntervalMs: number    // default 60000 (60s)
+  enabled: boolean          // default true
+  maxRetries: number        // default 3
+}
+
+const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
+  pushIntervalMs: 30000,
+  pullIntervalMs: 60000,
+  enabled: true,
+  maxRetries: 3,
+}
+
+export interface AutoSyncStatus {
+  running: boolean
+  config: AutoSyncConfig
+  lastPushAt: string | null
+  lastPullAt: string | null
+  lastPushResult: string | null
+  lastPullResult: string | null
+  pendingCount: number | null
+}
+
+class AutoSyncService {
+  private pushTimer: NodeJS.Timeout | null = null
+  private pullTimer: NodeJS.Timeout | null = null
+  private config: AutoSyncConfig
+  private isPushing = false
+  private isPulling = false
+  private lastPullVersion: string | null = null
+  private _lastPushAt: Date | null = null
+  private _lastPullAt: Date | null = null
+  private _lastPushResult: string | null = null
+  private _lastPullResult: string | null = null
+  private _running = false
+
+  constructor(config: Partial<AutoSyncConfig> = {}) {
+    this.config = { ...DEFAULT_AUTO_SYNC_CONFIG, ...config }
+  }
+
+  get running(): boolean {
+    return this._running
+  }
+
+  start(): void {
+    if (!this.config.enabled) return
+    if (this._running) return
+
+    console.log('[AutoSync] Starting background sync...')
+    console.log(`[AutoSync] Push interval: ${this.config.pushIntervalMs}ms, Pull interval: ${this.config.pullIntervalMs}ms`)
+
+    this._running = true
+
+    // Start push loop (drain pending syncs)
+    this.pushTimer = setInterval(() => this.pushToCloud(), this.config.pushIntervalMs)
+
+    // Start pull loop (check for IO definition changes)
+    this.pullTimer = setInterval(() => this.pullFromCloud(), this.config.pullIntervalMs)
+
+    // Do an initial push attempt after 5 seconds (let server fully start)
+    setTimeout(() => this.pushToCloud(), 5000)
+  }
+
+  stop(): void {
+    if (this.pushTimer) clearInterval(this.pushTimer)
+    if (this.pullTimer) clearInterval(this.pullTimer)
+    this.pushTimer = null
+    this.pullTimer = null
+    this._running = false
+    console.log('[AutoSync] Stopped')
+  }
+
+  async getStatus(): Promise<AutoSyncStatus> {
+    let pendingCount: number | null = null
+    try {
+      pendingCount = await prisma.pendingSync.count()
+    } catch { /* db might not be ready */ }
+
+    return {
+      running: this._running,
+      config: this.config,
+      lastPushAt: this._lastPushAt?.toISOString() ?? null,
+      lastPullAt: this._lastPullAt?.toISOString() ?? null,
+      lastPushResult: this._lastPushResult,
+      lastPullResult: this._lastPullResult,
+      pendingCount,
+    }
+  }
+
+  private async pushToCloud(): Promise<void> {
+    if (this.isPushing) return
+    this.isPushing = true
+
+    try {
+      const pendingSyncs = await prisma.pendingSync.findMany({
+        orderBy: { createdAt: 'asc' },
+        take: 50,
+      })
+
+      if (pendingSyncs.length === 0) {
+        this._lastPushAt = new Date()
+        this._lastPushResult = 'nothing to push'
+        return
+      }
+
+      const config = await configService.getConfig()
+      const remoteUrl = config.remoteUrl
+      const apiPassword = config.apiPassword
+
+      if (!remoteUrl) {
+        this._lastPushResult = 'no remote URL configured'
+        return
+      }
+
+      console.log(`[AutoSync] Pushing ${pendingSyncs.length} pending results to cloud...`)
+
+      const updates = pendingSyncs.map(ps => ({
+        id: ps.ioId,
+        testedBy: ps.inspectorName,
+        result: ps.testResult,
+        comments: ps.comments,
+        state: ps.state,
+        version: Number(ps.version),
+        timestamp: ps.timestamp?.toISOString(),
+      }))
+
+      const response = await fetch(`${remoteUrl}/api/sync/update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword || '',
+        },
+        body: JSON.stringify({ updates }),
+        signal: AbortSignal.timeout(15000),
+      })
+
+      if (response.ok) {
+        const syncedIds = pendingSyncs.map(ps => ps.id)
+        await prisma.pendingSync.deleteMany({
+          where: { id: { in: syncedIds } },
+        })
+        this._lastPushAt = new Date()
+        this._lastPushResult = `pushed ${syncedIds.length} results`
+        console.log(`[AutoSync] Pushed ${syncedIds.length} results to cloud`)
+
+        try {
+          const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
+          getCloudSyncService().setConnectionState('connected')
+        } catch { /* ignore */ }
+      } else {
+        this._lastPushResult = `HTTP ${response.status}`
+        console.warn(`[AutoSync] Push failed: ${response.status}`)
+        for (const ps of pendingSyncs) {
+          await prisma.pendingSync.update({
+            where: { id: ps.id },
+            data: {
+              retryCount: { increment: 1 },
+              lastError: `HTTP ${response.status}`,
+            },
+          }).catch(() => {})
+        }
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      this._lastPushResult = `error: ${msg}`
+      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED')) {
+        console.warn(`[AutoSync] Push error: ${msg}`)
+      }
+    } finally {
+      this.isPushing = false
+    }
+  }
+
+  private async pullFromCloud(): Promise<void> {
+    if (this.isPulling) return
+    this.isPulling = true
+
+    try {
+      const config = await configService.getConfig()
+      const remoteUrl = config.remoteUrl
+      const apiPassword = config.apiPassword
+      const subsystemId = config.subsystemId
+
+      if (!remoteUrl || !subsystemId) {
+        this._lastPullResult = !remoteUrl ? 'no remote URL configured' : 'no subsystem configured'
+        return
+      }
+
+      const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`
+      const response = await fetch(cloudUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword || '',
+        },
+        signal: AbortSignal.timeout(15000),
+      })
+
+      if (!response.ok) {
+        this._lastPullResult = `HTTP ${response.status}`
+        return
+      }
+
+      const cloudData = await response.json()
+      const cloudIos = Array.isArray(cloudData) ? cloudData : (cloudData.ios || cloudData.Ios || [])
+
+      if (cloudIos.length === 0) {
+        this._lastPullAt = new Date()
+        this._lastPullResult = 'no IOs from cloud'
+        return
+      }
+
+      // Quick change detection
+      const changeSignature = `${cloudIos.length}-${cloudIos[0]?.id}-${cloudIos[cloudIos.length - 1]?.id}-${cloudIos[0]?.name}`
+      if (changeSignature === this.lastPullVersion) {
+        this._lastPullAt = new Date()
+        this._lastPullResult = 'no changes detected'
+        return
+      }
+
+      console.log(`[AutoSync] Pulling ${cloudIos.length} IO definitions from cloud...`)
+
+      let updatedCount = 0
+      const subsystemIdNum = parseInt(subsystemId, 10)
+
+      for (const cloudIo of cloudIos) {
+        if (!cloudIo.name || cloudIo.id <= 0) continue
+
+        try {
+          const updateData: Record<string, unknown> = {
+            name: cloudIo.name,
+            description: cloudIo.description ?? null,
+            order: cloudIo.order ?? null,
+            version: BigInt(Number(cloudIo.version) || 0),
+          }
+          if (cloudIo.tagType != null) {
+            updateData.tagType = cloudIo.tagType
+          }
+
+          await prisma.io.upsert({
+            where: { id: cloudIo.id },
+            create: {
+              id: cloudIo.id,
+              subsystemId: subsystemIdNum,
+              name: cloudIo.name,
+              description: cloudIo.description ?? null,
+              order: cloudIo.order ?? null,
+              version: BigInt(Number(cloudIo.version) || 0),
+              tagType: cloudIo.tagType ?? null,
+            },
+            update: updateData,
+            // NEVER overwrite: result, timestamp, comments, cloudSyncedAt
+          })
+          updatedCount++
+        } catch {
+          // Skip individual IO errors
+        }
+      }
+
+      this.lastPullVersion = changeSignature
+      this._lastPullAt = new Date()
+      this._lastPullResult = `updated ${updatedCount} IO definitions`
+
+      if (updatedCount > 0) {
+        console.log(`[AutoSync] Updated ${updatedCount} IO definitions from cloud`)
+
+        // Broadcast to all connected browsers
+        try {
+          const broadcastUrl = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
+          await fetch(broadcastUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'IOsUpdated', count: updatedCount, source: 'auto-sync' }),
+          })
+        } catch { /* WS server might not be running */ }
+      }
+
+      try {
+        const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
+        getCloudSyncService().setConnectionState('connected')
+      } catch { /* ignore */ }
+
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      this._lastPullResult = `error: ${msg}`
+      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED')) {
+        console.warn(`[AutoSync] Pull error: ${msg}`)
+      }
+    } finally {
+      this.isPulling = false
+    }
+  }
+}
+
+// Singleton
+let autoSyncInstance: AutoSyncService | null = null
+
+export function getAutoSyncService(): AutoSyncService | null {
+  return autoSyncInstance
+}
+
+export function startAutoSync(config?: Partial<AutoSyncConfig>): AutoSyncService {
+  if (autoSyncInstance) {
+    autoSyncInstance.stop()
+  }
+  autoSyncInstance = new AutoSyncService(config)
+  autoSyncInstance.start()
+  return autoSyncInstance
+}
+
+export function stopAutoSync(): void {
+  if (autoSyncInstance) {
+    autoSyncInstance.stop()
+    autoSyncInstance = null
+  }
+}

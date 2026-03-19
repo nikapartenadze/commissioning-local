@@ -176,11 +176,31 @@ if (fs.existsSync(standalonePath)) {
 }
 
 // ============================================================================
+// Automatic Background Sync
+// ============================================================================
+
+// Start auto-sync after a delay to let Next.js fully initialize
+setTimeout(async () => {
+  try {
+    const resp = await fetch(`http://localhost:${PORT}/api/cloud/auto-sync`, { method: 'POST' });
+    if (resp.ok) {
+      console.log('[Server] Background auto-sync started');
+    } else {
+      console.warn(`[Server] Auto-sync startup returned ${resp.status}`);
+    }
+  } catch (e) {
+    console.warn('[Server] Auto-sync startup failed:', e.message);
+  }
+}, 8000);
+
+// ============================================================================
 // Graceful Shutdown
 // ============================================================================
 
 function shutdown() {
   console.log('\nShutting down...');
+  // Stop auto-sync
+  fetch(`http://localhost:${PORT}/api/cloud/auto-sync`, { method: 'DELETE' }).catch(() => {});
   plcWss.close();
   broadcastHttpServer.close();
   process.exit(0);
