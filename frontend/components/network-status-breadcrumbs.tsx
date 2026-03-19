@@ -65,9 +65,6 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
 
   useEffect(() => {
     fetchNetworkStatus()
-    // Poll every 5s as fallback (SignalR will provide faster updates when available)
-    const interval = setInterval(fetchNetworkStatus, 5000)
-    return () => clearInterval(interval)
   }, [fetchNetworkStatus])
 
   const getStatusColor = (status: NetworkNodeStatus) => {

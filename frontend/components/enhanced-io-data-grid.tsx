@@ -143,8 +143,6 @@ export function EnhancedIoDataGrid({
     }
 
     fetchModuleHealth()
-    const interval = setInterval(fetchModuleHealth, 5000)
-    return () => clearInterval(interval)
   }, [])
 
   // Extract module name from IO name (prefix before ':')
