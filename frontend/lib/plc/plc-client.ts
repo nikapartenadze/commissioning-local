@@ -75,6 +75,7 @@ export interface PlcClientEvents {
   'connectionStatusChanged': (status: ConnectionStatus) => void;
   'tagValueChanged': (event: TagValueChangeEvent) => void;
   'ioStateChanged': (io: IoTag, oldState: string, newState: string) => void;
+  'readCycleComplete': (cycleTimeMs: number, successCount: number, failCount: number) => void;
   'error': (error: Error) => void;
   'initialized': () => void;
 }
@@ -113,6 +114,8 @@ export class PlcClient extends EventEmitter {
     this.tagReader.on('tagValueChanged', this.handleTagValueChange.bind(this));
     this.tagReader.on('connectionStatusChanged', this.handleConnectionStatusChange.bind(this));
     this.tagReader.on('error', (error) => this.emit('error', error));
+    this.tagReader.on('readCycleComplete', (cycleTimeMs, successCount, failCount) =>
+      this.emit('readCycleComplete', cycleTimeMs, successCount, failCount));
   }
 
   /**
