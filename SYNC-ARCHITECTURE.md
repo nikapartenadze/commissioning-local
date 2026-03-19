@@ -106,6 +106,47 @@ This should be rare (means two people are at the same panel), but it's handled:
 
 ---
 
+## Database Backups
+
+The app automatically creates a full backup of your local database before any destructive operation.
+
+### When backups are created
+- **Before every manual "Pull IOs from Cloud"** — the database is copied to the `backups/` folder before any data is replaced
+- **Manual backups** — available through the app's backup API if needed
+
+### What's in a backup
+Each backup includes three files:
+- `database-{timestamp}-{reason}.db` — the main database
+- `database-{timestamp}-{reason}.db-wal` — the write-ahead log (if active)
+- `database-{timestamp}-{reason}.db-shm` — shared memory file (if active)
+
+### Where backups are stored
+Backups are saved in the `app/backups/` folder inside your portable directory. They are named with a timestamp and reason, e.g.:
+```
+database-2026-03-19T10-28-02-pre-pull.db
+```
+
+### Recovery
+If something goes wrong, you can restore by copying a backup file back as `database.db` in the `app/` folder (with the app stopped).
+
+---
+
+## Audit Trail (TestHistory)
+
+Every test attempt is permanently recorded in the `TestHistory` table — even if the IO is later retested, reset, or the result is overwritten by another user's sync. This table is **never deleted or modified**.
+
+Each entry records:
+- Which IO was tested
+- Pass or Fail result
+- Who tested it (testedBy)
+- When it was tested (timestamp)
+- The PLC state at the time of testing
+- Any comments or failure mode selected
+
+This means even in the rare case where two people test the same IO and one result overwrites the other, **both test attempts exist in the audit history**.
+
+---
+
 ## Data Safety Guarantees
 
 | What | How it's protected |
@@ -115,8 +156,10 @@ This should be rare (means two people are at the same panel), but it's handled:
 | Cloud sync | Retries automatically every 30 seconds until successful |
 | Other users' results | Merged into your local view every 60 seconds |
 | Database corruption | WAL (Write-Ahead Logging) mode enabled for crash safety |
-| Before manual pull | Automatic database backup created |
-| Audit trail | Every test attempt recorded in TestHistory (never deleted) |
+| Before manual pull | Automatic database backup created in `app/backups/` |
+| Audit trail | Every test attempt recorded in TestHistory (never deleted, never modified) |
+| Unsynced data protection | Manual pull is blocked if you have unsynced results (must sync first) |
+| Backup includes WAL | Backup copies all 3 database files for complete consistency |
 
 ---
 
