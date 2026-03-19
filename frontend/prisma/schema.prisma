@@ -142,3 +142,55 @@ model ChangeRequest {
   @@index([status], name: "idx_changerequests_status")
   @@map("ChangeRequests")
 }
+
+// Network ring (DLR loop) — e.g., MCM09 loop through DPMs
+model NetworkRing {
+  id          Int       @id @default(autoincrement())
+  subsystemId Int       @map("SubsystemId")
+  name        String    @map("Name")           // e.g., "MCM09 DLR Ring"
+  mcmName     String    @map("McmName")        // e.g., "MCM09"
+  mcmTag      String?   @map("McmTag")         // PLC tag for MCM status
+  createdAt   DateTime  @default(now()) @map("CreatedAt")
+
+  nodes       NetworkNode[]
+
+  @@index([subsystemId])
+  @@map("NetworkRings")
+}
+
+// A node in a ring (DPM) — ordered by position in the ring
+model NetworkNode {
+  id            Int       @id @default(autoincrement())
+  ringId        Int       @map("RingId")
+  name          String    @map("Name")           // e.g., "NCP1_1_DPM1"
+  position      Int       @map("Position")       // order in ring (1, 2, 3...)
+  ipAddress     String?   @map("IpAddress")
+  cableIn       String?   @map("CableIn")        // cable FROM previous node, e.g., "CBL01"
+  cableOut      String?   @map("CableOut")       // cable TO next node, e.g., "CBL02"
+  statusTag     String?   @map("StatusTag")      // PLC tag for ConnectionFaulted
+  totalPorts    Int       @default(28) @map("TotalPorts")
+  createdAt     DateTime  @default(now()) @map("CreatedAt")
+
+  ring          NetworkRing @relation(fields: [ringId], references: [id], onDelete: Cascade)
+  ports         NetworkPort[]
+
+  @@index([ringId])
+  @@map("NetworkNodes")
+}
+
+// A port on a DPM node — star topology connection to a device
+model NetworkPort {
+  id            Int       @id @default(autoincrement())
+  nodeId        Int       @map("NodeId")
+  portNumber    Int       @map("PortNumber")     // 1-28
+  cableLabel    String?   @map("CableLabel")     // e.g., "CBL05"
+  deviceName    String?   @map("DeviceName")     // e.g., "NCP1_3S_VFD1"
+  deviceType    String?   @map("DeviceType")     // e.g., "VFD", "SIO", "FIO", "POINT_IO"
+  statusTag     String?   @map("StatusTag")      // PLC tag for device connection status
+  createdAt     DateTime  @default(now()) @map("CreatedAt")
+
+  node          NetworkNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@index([nodeId])
+  @@map("NetworkPorts")
+}
