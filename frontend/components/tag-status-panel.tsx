@@ -48,9 +48,6 @@ export function TagStatusPanel({ className }: { className?: string }) {
 
   useEffect(() => {
     fetchStatus()
-    // Refresh every 10 seconds
-    const interval = setInterval(fetchStatus, 10000)
-    return () => clearInterval(interval)
   }, [])
 
   if (!status) return null

@@ -335,6 +335,15 @@ export interface ConfigReloadMessage {
   status: 'reloading' | 'reloaded'
 }
 
+export interface TagStatusUpdateMessage {
+  type: 'TagStatusUpdate'
+  totalTags: number
+  successfulTags: number
+  failedTags: number
+  hasErrors: boolean
+  connected: boolean
+}
+
 export type PlcWebSocketMessage =
   | UpdateStateMessage
   | UpdateIOMessage
@@ -343,3 +352,4 @@ export type PlcWebSocketMessage =
   | ErrorEventMessage
   | TestingStateChangedMessage
   | ConfigReloadMessage
+  | TagStatusUpdateMessage
