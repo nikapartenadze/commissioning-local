@@ -120,3 +120,24 @@ model TagTypeDiagnostic {
   @@id([tagType, failureMode])
   @@map("TagTypeDiagnostics")
 }
+
+// Change requests from site to cloud (IO definition changes)
+model ChangeRequest {
+  id             Int       @id @default(autoincrement())
+  ioId           Int?      @map("IoId")
+  requestType    String    @map("RequestType")
+  currentValue   String?   @map("CurrentValue")
+  requestedValue String?   @map("RequestedValue")
+  reason         String    @map("Reason")
+  requestedBy    String    @map("RequestedBy")
+  status         String    @default("pending") @map("Status")
+  createdAt      DateTime  @default(now()) @map("CreatedAt")
+  updatedAt      DateTime? @map("UpdatedAt")
+  reviewedBy     String?   @map("ReviewedBy")
+  reviewNote     String?   @map("ReviewNote")
+  cloudId        Int?      @map("CloudId")
+
+  @@index([ioId], name: "idx_changerequests_ioid")
+  @@index([status], name: "idx_changerequests_status")
+  @@map("ChangeRequests")
+}
