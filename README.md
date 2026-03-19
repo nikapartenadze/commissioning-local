@@ -30,9 +30,10 @@ npm install                  # Install deps + generate Prisma client
 npx prisma db push           # Create SQLite database from schema
 ```
 
-Optional — seed diagnostic troubleshooting data (for Help buttons):
+Optional — seed data for testing specific features:
 ```bash
-npx tsx prisma/seed-diagnostics.ts     # Seed diagnostic steps for tag types
+npm run seed:diagnostics     # Seed diagnostic troubleshooting steps (for Help buttons)
+npm run seed:network         # Seed network topology test data (for Network page)
 ```
 
 ### Starting the Dev Server
@@ -141,6 +142,7 @@ That's it. On first run, START.bat automatically:
 | `STOP.bat` | Stops the app |
 | `STATUS.bat` | Shows if running, prints tablet access URLs |
 | `SEED-DIAGNOSTICS.bat` | Load troubleshooting help data (optional, one-time) |
+| `SEED-NETWORK.bat` | Load network topology test data (optional, one-time) |
 
 Technicians open `http://SERVER_IP:3000` on their tablets (run `STATUS.bat` to see the IP).
 

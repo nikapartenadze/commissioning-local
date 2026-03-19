@@ -146,8 +146,9 @@ xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\@prisma" "%OUTPUT_DIR%\app\node_m
 REM ws module
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
 
-REM Seed script
+REM Seed scripts
 copy "%FRONTEND_DIR%\prisma\seed-diagnostics.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
+copy "%FRONTEND_DIR%\prisma\seed-network.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
 
 REM ── Create .env ──
 (
@@ -254,6 +255,23 @@ echo pause
 REM ── SETUP-FIREWALL.bat ──
 copy "%~dp0SETUP-FIREWALL.bat" "%OUTPUT_DIR%\" >nul
 
+REM ── SEED-NETWORK.bat ──
+(
+echo @echo off
+echo setlocal
+echo set "ROOT=%%~dp0"
+echo set "NODE=%%ROOT%%node\node.exe"
+echo set "NPX=%%ROOT%%node\npx.cmd"
+echo set "PATH=%%ROOT%%node;%%PATH%%"
+echo set "APP=%%ROOT%%app"
+echo echo.
+echo echo Seeding network topology data...
+echo cd /d "%%APP%%"
+echo "%%NPX%%" tsx prisma/seed-network.ts
+echo if %%errorlevel%% equ 0 ^(echo Network data seeded successfully.^) else ^(echo ERROR: Seeding failed.^)
+echo echo.
+echo pause
+) > "%OUTPUT_DIR%\SEED-NETWORK.bat"
 
 REM ── README.txt ──
 (

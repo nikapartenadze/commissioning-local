@@ -14,7 +14,9 @@
     "postinstall": "prisma generate",
     "plc-server": "node scripts/plc-websocket-server.js",
     "test:plc": "tsx test-plc.ts",
-    "test:plc:simple": "tsx test-plc-simple.ts"
+    "test:plc:simple": "tsx test-plc-simple.ts",
+    "seed:diagnostics": "tsx prisma/seed-diagnostics.ts",
+    "seed:network": "tsx prisma/seed-network.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.19.0",
