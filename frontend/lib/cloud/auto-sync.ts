@@ -265,8 +265,9 @@ class AutoSyncService {
         return
       }
 
-      // Quick change detection
-      const changeSignature = `${cloudIos.length}-${cloudIos[0]?.id}-${cloudIos[cloudIos.length - 1]?.id}-${cloudIos[0]?.name}`
+      // Quick change detection — include a sample of results to detect other users' test data
+      const resultSample = cloudIos.slice(0, 10).map((io: { result?: string | null }) => io.result || '-').join('')
+      const changeSignature = `${cloudIos.length}-${cloudIos[0]?.id}-${cloudIos[cloudIos.length - 1]?.id}-${resultSample}`
       if (changeSignature === this.lastPullVersion) {
         this._lastPullAt = new Date()
         this._lastPullResult = 'no changes detected'
@@ -276,12 +277,19 @@ class AutoSyncService {
       console.log(`[AutoSync] Pulling ${cloudIos.length} IO definitions from cloud...`)
 
       let updatedCount = 0
+      let mergedResults = 0
       const subsystemIdNum = parseInt(subsystemId, 10)
 
       for (const cloudIo of cloudIos) {
         if (!cloudIo.name || cloudIo.id <= 0) continue
 
         try {
+          // Check if local IO exists and has test data
+          const localIo = await prisma.io.findUnique({
+            where: { id: cloudIo.id },
+            select: { result: true },
+          })
+
           const updateData: Record<string, unknown> = {
             name: cloudIo.name,
             description: cloudIo.description ?? null,
@@ -290,6 +298,15 @@ class AutoSyncService {
           }
           if (cloudIo.tagType != null) {
             updateData.tagType = cloudIo.tagType
+          }
+
+          // Merge test results from cloud when local has none
+          // This lets multiple users see each other's results
+          if (!localIo?.result && cloudIo.result) {
+            updateData.result = cloudIo.result
+            updateData.timestamp = cloudIo.timestamp ?? null
+            updateData.comments = cloudIo.comments ?? null
+            mergedResults++
           }
 
           await prisma.io.upsert({
@@ -302,9 +319,12 @@ class AutoSyncService {
               order: cloudIo.order ?? null,
               version: BigInt(Number(cloudIo.version) || 0),
               tagType: cloudIo.tagType ?? null,
+              // Include cloud test results for new IOs (from other users)
+              result: cloudIo.result ?? null,
+              timestamp: cloudIo.timestamp ?? null,
+              comments: cloudIo.comments ?? null,
             },
             update: updateData,
-            // NEVER overwrite: result, timestamp, comments, cloudSyncedAt
           })
           updatedCount++
         } catch {
@@ -314,10 +334,10 @@ class AutoSyncService {
 
       this.lastPullVersion = changeSignature
       this._lastPullAt = new Date()
-      this._lastPullResult = `updated ${updatedCount} IO definitions`
+      this._lastPullResult = `updated ${updatedCount} IOs${mergedResults > 0 ? `, merged ${mergedResults} results from other users` : ''}`
 
       if (updatedCount > 0) {
-        console.log(`[AutoSync] Updated ${updatedCount} IO definitions from cloud`)
+        console.log(`[AutoSync] Updated ${updatedCount} IOs from cloud${mergedResults > 0 ? ` (merged ${mergedResults} test results from other users)` : ''}`)
 
         // Broadcast to all connected browsers
         try {
