@@ -15,6 +15,7 @@ interface ChangeRequest {
   requestType: string
   currentValue: string | null
   requestedValue: string | null
+  structuredChanges: string | null
   reason: string
   requestedBy: string
   status: string
@@ -135,7 +136,25 @@ export function ChangeRequestsPanel({ open, onOpenChange }: ChangeRequestsPanelP
                         {req.currentValue && (
                           <p className="text-sm font-mono text-muted-foreground truncate">{req.currentValue}</p>
                         )}
-                        {req.requestedValue && (
+                        {req.structuredChanges && (() => {
+                          try {
+                            const sc = JSON.parse(req.structuredChanges)
+                            if (sc.changes) {
+                              return (
+                                <div className="text-sm mt-1 space-y-0.5">
+                                  {Object.entries(sc.changes as Record<string, string>).map(([field, val]) => (
+                                    <p key={field}><strong>{field}:</strong> <span className="font-mono">{val}</span></p>
+                                  ))}
+                                </div>
+                              )
+                            }
+                            if (sc.name) {
+                              return <p className="text-sm mt-1 font-mono">{sc.name}{sc.description ? ` — ${sc.description}` : ''}</p>
+                            }
+                          } catch { /* ignore parse errors */ }
+                          return null
+                        })()}
+                        {!req.structuredChanges && req.requestedValue && (
                           <p className="text-sm mt-1"><strong>Requested:</strong> {req.requestedValue}</p>
                         )}
                         <p className="text-sm mt-1"><strong>Reason:</strong> {req.reason}</p>
