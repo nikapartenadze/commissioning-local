@@ -149,6 +149,7 @@ model NetworkRing {
   subsystemId Int       @map("SubsystemId")
   name        String    @map("Name")           // e.g., "MCM09 DLR Ring"
   mcmName     String    @map("McmName")        // e.g., "MCM09"
+  mcmIp       String?   @map("McmIp")          // e.g., "11.200.1.1"
   mcmTag      String?   @map("McmTag")         // PLC tag for MCM status
   createdAt   DateTime  @default(now()) @map("CreatedAt")
 
@@ -186,6 +187,7 @@ model NetworkPort {
   cableLabel    String?   @map("CableLabel")     // e.g., "CBL05"
   deviceName    String?   @map("DeviceName")     // e.g., "NCP1_3S_VFD1"
   deviceType    String?   @map("DeviceType")     // e.g., "VFD", "SIO", "FIO", "POINT_IO"
+  deviceIp      String?   @map("DeviceIp")       // e.g., "11.200.1.20"
   statusTag     String?   @map("StatusTag")      // PLC tag for device connection status
   createdAt     DateTime  @default(now()) @map("CreatedAt")
 
