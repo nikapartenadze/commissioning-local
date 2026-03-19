@@ -163,7 +163,7 @@ export default function CommissioningPage() {
     }
   }, [dialogQueue, currentDialogIo])
 
-  // Fetch tag status periodically
+  // Fetch tag status on mount, then receive updates via WebSocket
   useEffect(() => {
     const fetchTagStatus = async () => {
       try {
@@ -178,8 +178,6 @@ export default function CommissioningPage() {
     }
 
     fetchTagStatus()
-    const interval = setInterval(fetchTagStatus, 10000)
-    return () => clearInterval(interval)
   }, [])
 
   // Helper function to check if an IO is an output
@@ -483,6 +481,24 @@ export default function CommissioningPage() {
       signalR.offError(handleError)
     }
   }, [signalR.onError, signalR.offError])
+
+  // Subscribe to tag status updates via WebSocket
+  useEffect(() => {
+    const handleTagStatusUpdate = (update: { totalTags: number; successfulTags: number; failedTags: number; hasErrors: boolean; connected: boolean }) => {
+      setTagStatus(prev => ({
+        ...prev,
+        totalTags: update.totalTags,
+        successfulTags: update.successfulTags,
+        failedTags: update.failedTags,
+        hasErrors: update.hasErrors,
+      } as typeof prev))
+    }
+
+    signalR.onTagStatusUpdate(handleTagStatusUpdate)
+    return () => {
+      signalR.offTagStatusUpdate(handleTagStatusUpdate)
+    }
+  }, [signalR.onTagStatusUpdate, signalR.offTagStatusUpdate])
 
   // Re-fetch IOs when SignalR reconnects after a disconnect
   useEffect(() => {
