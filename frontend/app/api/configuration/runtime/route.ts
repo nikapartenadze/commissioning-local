@@ -5,7 +5,7 @@ import { configService } from '@/lib/config'
 
 export async function GET() {
   try {
-    const config = await configService.loadConfig()
+    const config = await configService.getConfig()
 
     return NextResponse.json({
       subsystemId: config.subsystemId || '',

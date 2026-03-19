@@ -7,7 +7,7 @@ import { configService } from '@/lib/config'
 export async function GET() {
   try {
     const plcStatus = getPlcStatus()
-    const config = await configService.loadConfig()
+    const config = await configService.getConfig()
 
     // Return NetworkChainStatus format expected by component
     return NextResponse.json({
