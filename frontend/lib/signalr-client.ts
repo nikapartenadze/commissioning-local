@@ -13,6 +13,7 @@ export type {
   ConfigurationEvent,
   CommentUpdate,
   NetworkStatusUpdate,
+  TagStatusUpdate,
   ErrorEvent,
   WebSocketConnectionOptions,
   WebSocketConnection

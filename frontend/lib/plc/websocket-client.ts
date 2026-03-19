@@ -42,6 +42,14 @@ export interface NetworkStatusUpdate {
   errorCount: number
 }
 
+export interface TagStatusUpdate {
+  totalTags: number
+  successfulTags: number
+  failedTags: number
+  hasErrors: boolean
+  connected: boolean
+}
+
 export interface ErrorEvent {
   source: 'plc' | 'cloud' | 'tags' | 'system' | 'websocket'
   message: string
@@ -73,6 +81,8 @@ export interface WebSocketConnection {
   offCommentUpdate: (callback: (update: CommentUpdate) => void) => void
   onNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
   offNetworkStatusChange: (callback: (update: NetworkStatusUpdate) => void) => void
+  onTagStatusUpdate: (callback: (update: TagStatusUpdate) => void) => void
+  offTagStatusUpdate: (callback: (update: TagStatusUpdate) => void) => void
   onError: (callback: (event: ErrorEvent) => void) => void
   offError: (callback: (event: ErrorEvent) => void) => void
   onPlcConnectionChange: (callback: (connected: boolean) => void) => void
@@ -131,6 +141,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const errorCallbacksRef = useRef<Set<(event: ErrorEvent) => void>>(new Set())
   const plcConnectionCallbacksRef = useRef<Set<(connected: boolean) => void>>(new Set())
   const iosUpdatedCallbacksRef = useRef<Set<() => void>>(new Set())
+  const tagStatusCallbacksRef = useRef<Set<(update: TagStatusUpdate) => void>>(new Set())
   const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
 
   const handleMessage = useCallback((event: MessageEvent) => {
@@ -274,6 +285,25 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
               cb(event)
             } catch (error) {
               console.error('[PlcWebSocket] Error in error callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'TagStatusUpdate': {
+          const tsMsg = message as import('./types').TagStatusUpdateMessage
+          const update: TagStatusUpdate = {
+            totalTags: tsMsg.totalTags,
+            successfulTags: tsMsg.successfulTags,
+            failedTags: tsMsg.failedTags,
+            hasErrors: tsMsg.hasErrors,
+            connected: tsMsg.connected,
+          }
+          tagStatusCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(update)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in tag status callback:', error)
             }
           })
           break
@@ -461,6 +491,14 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     networkStatusCallbacksRef.current.delete(callback)
   }, [])
 
+  const onTagStatusUpdate = useCallback((callback: (update: TagStatusUpdate) => void) => {
+    tagStatusCallbacksRef.current.add(callback)
+  }, [])
+
+  const offTagStatusUpdate = useCallback((callback: (update: TagStatusUpdate) => void) => {
+    tagStatusCallbacksRef.current.delete(callback)
+  }, [])
+
   const onError = useCallback((callback: (event: ErrorEvent) => void) => {
     errorCallbacksRef.current.add(callback)
   }, [])
@@ -516,6 +554,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     offCommentUpdate,
     onNetworkStatusChange,
     offNetworkStatusChange,
+    onTagStatusUpdate,
+    offTagStatusUpdate,
     onError,
     offError,
     onPlcConnectionChange,
