@@ -182,7 +182,7 @@ class AutoSyncService {
           where: { status: 'pending', cloudId: null },
         })
         if (pendingRequests.length > 0 && remoteUrl) {
-          const resp = await fetch(`${remoteUrl}/api/change-requests`, {
+          const resp = await fetch(`${remoteUrl}/api/sync/change-requests`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
             body: JSON.stringify({ requests: pendingRequests.map(r => ({
@@ -190,6 +190,7 @@ class AutoSyncService {
               requestType: r.requestType,
               currentValue: r.currentValue,
               requestedValue: r.requestedValue,
+              structuredChanges: r.structuredChanges ? JSON.parse(r.structuredChanges) : null,
               reason: r.reason,
               requestedBy: r.requestedBy,
               createdAt: r.createdAt.toISOString(),
@@ -336,7 +337,7 @@ class AutoSyncService {
         })
         if (syncedRequests.length > 0 && remoteUrl) {
           const cloudIds = syncedRequests.map(r => r.cloudId).filter(Boolean)
-          const crResp = await fetch(`${remoteUrl}/api/change-requests/status?ids=${cloudIds.join(',')}`, {
+          const crResp = await fetch(`${remoteUrl}/api/sync/change-requests/status?ids=${cloudIds.join(',')}`, {
             method: 'GET',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
             signal: AbortSignal.timeout(10000),
