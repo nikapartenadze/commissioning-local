@@ -3,85 +3,126 @@
 /**
  * Development Server with WebSocket Integration
  *
- * Starts both Next.js dev server and the PLC WebSocket server.
+ * Starts both Next.js dev server and the PLC WebSocket server in-process.
  * - Next.js runs on port 3020 (development)
  * - WebSocket server runs on port 3002
+ * - Broadcast HTTP API runs on port 3102 (localhost only)
  *
  * This is the entry point for development mode.
  */
 
 const { spawn } = require('child_process');
-const path = require('path');
+const http = require('http');
+const WebSocket = require('ws');
 
 // Configuration
 const NEXTJS_PORT = parseInt(process.env.PORT || '3020', 10);
 const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
+const HTTP_PORT = WS_PORT + 100; // 3102
 
 console.log('='.repeat(60));
 console.log('Development Server with WebSocket Integration');
 console.log('='.repeat(60));
 console.log(`Next.js port: ${NEXTJS_PORT}`);
 console.log(`WebSocket port: ${WS_PORT}`);
+console.log(`Broadcast API port: ${HTTP_PORT}`);
 console.log('='.repeat(60));
 
-// Track child processes for cleanup
-const childProcesses = [];
+// ============================================================================
+// PLC WebSocket Server (in-process)
+// ============================================================================
 
-/**
- * Start the WebSocket server
- */
-function startWebSocketServer() {
-  return new Promise((resolve, reject) => {
-    console.log('[WebSocket] Starting PLC WebSocket server...');
+const plcWss = new WebSocket.Server({ port: WS_PORT, host: '0.0.0.0' });
+const plcClients = new Set();
 
-    const wsServer = spawn('node', [
-      path.join(__dirname, 'scripts', 'plc-websocket-server.js')
-    ], {
-      env: {
-        ...process.env,
-        PLC_WS_PORT: WS_PORT.toString(),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+plcWss.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[WS] ERROR: Port ${WS_PORT} is already in use.`);
+    process.exit(1);
+  }
+  console.error('[WS] WebSocket server error:', err);
+});
 
-    childProcesses.push(wsServer);
+plcWss.on('connection', (ws) => {
+  plcClients.add(ws);
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('close', () => { plcClients.delete(ws); });
+  ws.on('error', () => { plcClients.delete(ws); });
+});
 
-    wsServer.stdout.on('data', (data) => {
-      const output = data.toString().trim();
-      console.log(`[WebSocket] ${output}`);
-      if (output.includes('listening')) {
-        resolve(wsServer);
-      }
-    });
-
-    wsServer.stderr.on('data', (data) => {
-      console.error(`[WebSocket Error] ${data.toString().trim()}`);
-    });
-
-    wsServer.on('error', (error) => {
-      console.error('[WebSocket] Failed to start:', error);
-      reject(error);
-    });
-
-    wsServer.on('close', (code) => {
-      if (code !== 0 && code !== null) {
-        console.error(`[WebSocket] Process exited with code ${code}`);
-      }
-    });
-
-    // Resolve after a short delay if no listening message is received
-    setTimeout(() => resolve(wsServer), 2000);
+// Heartbeat
+const heartbeatInterval = setInterval(() => {
+  plcWss.clients.forEach(ws => {
+    if (ws.isAlive === false) { plcClients.delete(ws); return ws.terminate(); }
+    ws.isAlive = false;
+    ws.ping();
   });
-}
+}, 30000);
 
-/**
- * Start Next.js development server
- */
+console.log(`[WS] PLC WebSocket server on ws://0.0.0.0:${WS_PORT}`);
+
+// HTTP broadcast API (localhost only)
+const broadcastHttpServer = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/broadcast') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const message = JSON.parse(body);
+        const data = JSON.stringify(message);
+        let sent = 0;
+        plcClients.forEach(ws => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(data);
+            sent++;
+          }
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, clientsNotified: sent }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ clients: plcClients.size, wsPort: WS_PORT }));
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
+});
+
+broadcastHttpServer.listen(HTTP_PORT, '127.0.0.1', () => {
+  console.log(`[WS] Broadcast API on http://127.0.0.1:${HTTP_PORT}/broadcast`);
+});
+
+// ============================================================================
+// Next.js Development Server (child process)
+// ============================================================================
+
+let nextServer = null;
+
 function startNextJs() {
   return new Promise((resolve, reject) => {
     console.log('[Next.js] Starting development server...');
 
-    const nextServer = spawn('npx', ['next', 'dev', '-H', '0.0.0.0', '-p', NEXTJS_PORT.toString()], {
+    nextServer = spawn('npx', ['next', 'dev', '-H', '0.0.0.0', '-p', NEXTJS_PORT.toString()], {
       env: {
         ...process.env,
         PORT: NEXTJS_PORT.toString(),
@@ -89,8 +130,6 @@ function startNextJs() {
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: true,
     });
-
-    childProcesses.push(nextServer);
 
     nextServer.stdout.on('data', (data) => {
       const output = data.toString().trim();
@@ -104,7 +143,6 @@ function startNextJs() {
 
     nextServer.stderr.on('data', (data) => {
       const output = data.toString().trim();
-      // Next.js outputs some info to stderr
       if (output && !output.includes('ExperimentalWarning')) {
         console.error(`[Next.js] ${output}`);
       }
@@ -118,54 +156,47 @@ function startNextJs() {
     nextServer.on('close', (code) => {
       if (code !== 0 && code !== null) {
         console.error(`[Next.js] Process exited with code ${code}`);
-        // If Next.js exits, shut down everything
         shutdown();
       }
     });
   });
 }
 
-/**
- * Graceful shutdown of all processes
- */
+// ============================================================================
+// Graceful Shutdown
+// ============================================================================
+
 function shutdown() {
-  console.log('\nShutting down servers...');
+  console.log('\nShutting down...');
 
-  childProcesses.forEach((proc) => {
-    if (proc && !proc.killed) {
-      try {
-        proc.kill('SIGTERM');
-      } catch (e) {
-        // Ignore errors during shutdown
-      }
-    }
-  });
+  clearInterval(heartbeatInterval);
 
-  // Force exit after 5 seconds
+  if (nextServer && !nextServer.killed) {
+    try { nextServer.kill('SIGTERM'); } catch (e) { /* ignore */ }
+  }
+
+  plcWss.close();
+  broadcastHttpServer.close();
+
   setTimeout(() => {
     console.log('Force exiting...');
     process.exit(0);
   }, 5000);
 }
 
-// Handle termination signals
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-// Start both servers
+// Start
 async function main() {
   try {
-    // Start WebSocket server first
-    await startWebSocketServer();
-    console.log(`[WebSocket] Server ready on ws://localhost:${WS_PORT}`);
-
-    // Start Next.js
     await startNextJs();
 
     console.log('='.repeat(60));
     console.log('All servers started successfully');
     console.log(`> Next.js:   http://localhost:${NEXTJS_PORT}`);
     console.log(`> WebSocket: ws://localhost:${WS_PORT}`);
+    console.log(`> Broadcast: http://127.0.0.1:${HTTP_PORT}/broadcast`);
     console.log('='.repeat(60));
     console.log('Press Ctrl+C to stop all servers');
   } catch (error) {
