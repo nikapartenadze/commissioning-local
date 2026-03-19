@@ -41,6 +41,27 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
 
     if (pendingSyncs.length === 0) {
       console.log('[CloudSync] No pending syncs to process')
+
+      // Still validate cloud connection
+      const syncService = getCloudSyncService()
+      const config = syncService.getConfig()
+      const serverUrl = remoteUrl || config.remoteUrl
+
+      if (serverUrl) {
+        try {
+          const healthCheck = await fetch(`${serverUrl}/api/sync/health`, {
+            method: 'GET',
+            headers: { 'X-API-Key': apiPassword || config.apiPassword || '' },
+            signal: AbortSignal.timeout(10000),
+          })
+          if (healthCheck.ok) {
+            syncService.setConnectionState('connected')
+          }
+        } catch {
+          // Server unreachable, but that's ok — no pending syncs anyway
+        }
+      }
+
       return NextResponse.json({
         success: true,
         syncedCount: 0,

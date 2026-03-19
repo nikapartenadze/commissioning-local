@@ -8,7 +8,7 @@ export async function GET() {
   try {
     const status = getPlcStatus();
     const tagsResult = getPlcTags();
-    const config = await configService.loadConfig();
+    const config = await configService.getConfig();
 
     const totalTags = tagsResult.count || 0;
     const successfulTags = totalTags; // All loaded tags are considered successful for now
