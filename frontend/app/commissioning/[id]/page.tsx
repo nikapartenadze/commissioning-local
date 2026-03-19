@@ -17,6 +17,7 @@ import { FailCommentDialog } from "@/components/fail-comment-dialog"
 import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
 import { ChangeRequestDialog } from "@/components/change-request-dialog"
 import { ChangeRequestsPanel } from "@/components/change-requests-panel"
+import NetworkTopologyView from "@/components/network-topology-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -128,6 +129,7 @@ export default function CommissioningPage() {
   const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
+  const [activeTab, setActiveTab] = useState<'io' | 'network'>('io')
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
   const [showFireOutputDialog, setShowFireOutputDialog] = useState(false)
   const [showValueChangeDialog, setShowValueChangeDialog] = useState(false)
@@ -1165,6 +1167,29 @@ export default function CommissioningPage() {
             <span className="text-xs sm:text-sm font-mono bg-muted px-1.5 sm:px-2 py-0.5 rounded">
               SUB {plcConfig.subsystemId}
             </span>
+            <div className="h-6 w-px bg-border" />
+            <div className="flex bg-muted rounded p-0.5 gap-0.5">
+              <button
+                onClick={() => setActiveTab('io')}
+                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                  activeTab === 'io'
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                I/O Testing
+              </button>
+              <button
+                onClick={() => setActiveTab('network')}
+                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                  activeTab === 'network'
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                Network
+              </button>
+            </div>
           </div>
           <div className="flex items-center gap-1">
             <UserMenu />
@@ -1203,6 +1228,13 @@ export default function CommissioningPage() {
         />
       )}
 
+      {/* Tab Content */}
+      {activeTab === 'network' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <NetworkTopologyView subsystemId={parseInt(plcConfig.subsystemId) || 16} />
+        </div>
+      ) : (
+      <>
       {/* Main Toolbar - Full width */}
       <div className="flex-shrink-0">
         <PlcToolbar
@@ -1260,6 +1292,8 @@ export default function CommissioningPage() {
             }}
           />
       </div>
+      </>
+      )}
 
       {/* Test Results Chart - Overlay */}
       {showGraph && (
