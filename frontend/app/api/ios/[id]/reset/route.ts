@@ -112,6 +112,23 @@ export async function POST(
       })
     ])
 
+    // Create PendingSync entry for cloud sync (outside transaction so failure doesn't roll back reset)
+    try {
+      await prisma.pendingSync.create({
+        data: {
+          ioId,
+          inspectorName: currentUser || null,
+          testResult: TEST_CONSTANTS.RESULT_CLEARED,
+          comments: historyComment || null,
+          state: plcState || null,
+          timestamp: new Date(),
+          version: updatedIo.version,
+        },
+      })
+    } catch (syncError) {
+      console.error('[Reset] Failed to create PendingSync:', syncError)
+    }
+
     console.log(`Test result cleared for IO ${ioId} by ${currentUser}`)
 
     return NextResponse.json({
