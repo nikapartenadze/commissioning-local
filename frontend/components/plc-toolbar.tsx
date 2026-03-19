@@ -318,8 +318,8 @@ export function PlcToolbar({
             </Button>
           )}
 
-          {/* Cloud Status - Admin only */}
-          {currentUser?.isAdmin && (
+          {/* Cloud Status */}
+          {currentUser && (
             <Button
               variant="ghost"
               size="lg"
