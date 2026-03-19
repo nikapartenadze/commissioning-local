@@ -8,7 +8,7 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
@@ -48,6 +48,7 @@ interface EnhancedIoDataGridProps {
   onShowFireOutputDialog?: (io: IoItem) => void
   onCommentChange?: (io: IoItem, comment: string) => void
   activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null
+  onRequestChange?: (io: IoItem) => void
 }
 
 // Column widths — responsive via hook
@@ -103,7 +104,8 @@ export function EnhancedIoDataGrid({
   onRowClick,
   onShowFireOutputDialog,
   onCommentChange,
-  activeQuickFilter = null
+  activeQuickFilter = null,
+  onRequestChange
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -535,7 +537,7 @@ export function EnhancedIoDataGrid({
                   data-index={virtualRow.index}
                   ref={virtualizer.measureElement}
                   className={cn(
-                    "transition-colors border-b border-border absolute left-0 w-full flex",
+                    "transition-colors border-b border-border absolute left-0 w-full flex group",
                     isTesting ? "cursor-pointer" : "cursor-default",
                     getRowClassName(io),
                     currentTestIo?.id === io.id && "border-l-4 border-l-primary"
@@ -550,9 +552,18 @@ export function EnhancedIoDataGrid({
                      style={{ width: `${COLUMN_WIDTHS.description}px` }}
                      data-selectable
                    >
-                     <div className="line-clamp-2 leading-tight">
+                     <div className="line-clamp-2 leading-tight flex-1">
                        {io.description || <span className="text-muted-foreground">—</span>}
                      </div>
+                     {!isTesting && onRequestChange && (
+                       <button
+                         className="ml-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground shrink-0"
+                         onClick={(e) => { e.stopPropagation(); onRequestChange(io) }}
+                         title="Request change"
+                       >
+                         <FileEdit className="h-3.5 w-3.5" />
+                       </button>
+                     )}
                    </div>
                    <div
                      className="px-4 py-2 text-sm font-mono font-medium flex-shrink-0 overflow-hidden flex items-center gap-2 select-text"
