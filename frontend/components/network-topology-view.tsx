@@ -1,9 +1,9 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -15,6 +15,7 @@ interface NetworkPort {
   portNumber: number
   cableLabel: string | null
   deviceName: string | null
+  deviceIp: string | null
   deviceType: string | null
   statusTag: string | null
 }
@@ -37,6 +38,7 @@ interface NetworkRing {
   subsystemId: number
   name: string
   mcmName: string
+  mcmIp: string | null
   mcmTag: string | null
   nodes: NetworkNode[]
 }
@@ -51,346 +53,477 @@ interface TopologyResponse {
 
 type StatusColor = 'green' | 'red' | 'gray'
 
-function getStatusColor(_statusTag: string | null): StatusColor {
-  // Static for now — always green. Ready for real-time PLC status later.
-  if (!_statusTag) return 'gray'
+function getStatusColor(statusTag: string | null): StatusColor {
+  if (!statusTag) return 'gray'
   return 'green'
 }
 
-function StatusDot({ status }: { status: StatusColor }) {
+function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' | 'md' }) {
   const colors = {
     green: 'bg-emerald-400 shadow-emerald-400/50',
     red: 'bg-red-500 shadow-red-500/50',
     gray: 'bg-gray-500 shadow-gray-500/30',
   }
+  const sizeClass = size === 'md' ? 'w-3 h-3' : 'w-2.5 h-2.5'
   return (
-    <span
-      className={cn(
-        'inline-block w-2.5 h-2.5 rounded-full shadow-sm',
-        colors[status]
-      )}
-    />
+    <span className={cn('inline-block rounded-full shadow-sm', sizeClass, colors[status])} />
   )
 }
 
 // ── Device type badge colors ───────────────────────────────────────
 
-function deviceTypeBadgeClass(deviceType: string | null): string {
-  switch (deviceType) {
-    case 'VFD':      return 'bg-purple-600/80 text-purple-100 border-purple-500/40'
-    case 'POINT_IO': return 'bg-blue-600/80 text-blue-100 border-blue-500/40'
-    case 'SIO':      return 'bg-emerald-600/80 text-emerald-100 border-emerald-500/40'
-    case 'FIO':      return 'bg-orange-600/80 text-orange-100 border-orange-500/40'
-    default:         return 'bg-gray-600/80 text-gray-100 border-gray-500/40'
-  }
+const DEVICE_TYPE_COLORS: Record<string, string> = {
+  VFD: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
+  FIOM: 'bg-teal-500/10 text-teal-400 border-teal-500/30',
+  PMM: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+  POINT_IO: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+  SIO: 'bg-green-500/10 text-green-400 border-green-500/30',
 }
 
-// ── Ring SVG ───────────────────────────────────────────────────────
+function getDeviceType(name: string): string {
+  if (name.includes('VFD')) return 'VFD'
+  if (name.includes('FIOM')) return 'FIOM'
+  if (name.includes('PMM')) return 'PMM'
+  if (name.includes('SIO')) return 'SIO'
+  if (name.includes('POINT')) return 'POINT_IO'
+  return 'Unknown'
+}
 
-const SVG_W = 860
-const SVG_H = 300
-const NODE_W = 140
-const NODE_H = 56
-const MCM_W = 100
-const MCM_H = 56
+// ── Ring Layout (CSS flex, no SVG) ─────────────────────────────────
 
-interface RingSvgProps {
+function RingLayout({
+  ring,
+  expandedNodeId,
+  onToggleNode,
+}: {
   ring: NetworkRing
-  selectedNodeId: number | null
-  onSelectNode: (id: number) => void
-}
-
-function RingSvg({ ring, selectedNodeId, onSelectNode }: RingSvgProps) {
+  expandedNodeId: number | null
+  onToggleNode: (id: number) => void
+}) {
   const nodes = ring.nodes
-  const topCount = Math.ceil(nodes.length / 2)
-  const bottomCount = nodes.length - topCount
-  const topNodes = nodes.slice(0, topCount)
-  const bottomNodes = nodes.slice(topCount).reverse()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const mcmRef = useRef<HTMLDivElement>(null)
+  const lastNodeRef = useRef<HTMLButtonElement>(null)
+  const [returnPath, setReturnPath] = useState<{ left: number; right: number } | null>(null)
 
-  // MCM position: left center
-  const mcmX = 20
-  const mcmY = (SVG_H - MCM_H) / 2
-
-  // Layout: top row evenly spaced
-  const startX = mcmX + MCM_W + 40
-  const availableW = SVG_W - startX - 30
-  const topSpacing = topCount > 1 ? availableW / (topCount - 1) : 0
-  const topY = 20
-
-  // Bottom row
-  const bottomY = SVG_H - NODE_H - 20
-  const bottomSpacing = bottomCount > 1 ? availableW / (bottomCount - 1) : 0
-
-  function nodePos(row: 'top' | 'bottom', index: number) {
-    if (row === 'top') {
-      return { x: startX + index * topSpacing, y: topY }
+  useEffect(() => {
+    const measure = () => {
+      if (!containerRef.current || !mcmRef.current || !lastNodeRef.current) return
+      const containerRect = containerRef.current.getBoundingClientRect()
+      const mcmRect = mcmRef.current.getBoundingClientRect()
+      const lastRect = lastNodeRef.current.getBoundingClientRect()
+      setReturnPath({
+        left: mcmRect.left + mcmRect.width / 2 - containerRect.left,
+        right: containerRect.right - (lastRect.left + lastRect.width / 2),
+      })
     }
-    return { x: startX + index * bottomSpacing, y: bottomY }
-  }
-
-  // Build path segments for cables
-  const segments: Array<{
-    x1: number; y1: number; x2: number; y2: number; label: string
-  }> = []
-
-  // MCM -> first top node
-  if (topNodes.length > 0) {
-    const tp = nodePos('top', 0)
-    segments.push({
-      x1: mcmX + MCM_W, y1: mcmY + MCM_H / 2,
-      x2: tp.x, y2: tp.y + NODE_H / 2,
-      label: topNodes[0].cableIn || '',
-    })
-  }
-
-  // Top row: left to right
-  for (let i = 0; i < topNodes.length - 1; i++) {
-    const a = nodePos('top', i)
-    const b = nodePos('top', i + 1)
-    segments.push({
-      x1: a.x + NODE_W, y1: a.y + NODE_H / 2,
-      x2: b.x, y2: b.y + NODE_H / 2,
-      label: topNodes[i].cableOut || '',
-    })
-  }
-
-  // Top-right corner down to bottom-right
-  if (topNodes.length > 0 && bottomNodes.length > 0) {
-    const lastTop = nodePos('top', topCount - 1)
-    const firstBottom = nodePos('bottom', 0)
-    segments.push({
-      x1: lastTop.x + NODE_W / 2, y1: lastTop.y + NODE_H,
-      x2: firstBottom.x + NODE_W / 2, y2: firstBottom.y,
-      label: topNodes[topCount - 1].cableOut || '',
-    })
-  }
-
-  // Bottom row: right to left (bottomNodes is already reversed)
-  for (let i = 0; i < bottomNodes.length - 1; i++) {
-    const a = nodePos('bottom', i)
-    const b = nodePos('bottom', i + 1)
-    segments.push({
-      x1: a.x, y1: a.y + NODE_H / 2,
-      x2: b.x + NODE_W, y2: b.y + NODE_H / 2,
-      label: bottomNodes[i].cableIn || '',
-    })
-  }
-
-  // Bottom-left back to MCM
-  if (bottomNodes.length > 0) {
-    const lastBottom = nodePos('bottom', bottomNodes.length - 1)
-    segments.push({
-      x1: lastBottom.x, y1: lastBottom.y + NODE_H / 2,
-      x2: mcmX + MCM_W, y2: mcmY + MCM_H / 2,
-      label: bottomNodes[bottomNodes.length - 1].cableIn || '',
-    })
-  }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [nodes.length])
 
   return (
-    <svg
-      viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-      className="w-full max-w-[860px] h-auto"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      {/* Cable lines */}
-      {segments.map((seg, i) => {
-        const mx = (seg.x1 + seg.x2) / 2
-        const my = (seg.y1 + seg.y2) / 2
-        return (
-          <g key={`cable-${i}`}>
-            <line
-              x1={seg.x1} y1={seg.y1} x2={seg.x2} y2={seg.y2}
-              stroke="#475569" strokeWidth={2}
-            />
-            {seg.label && (
-              <text
-                x={mx} y={my - 6}
-                textAnchor="middle"
-                className="fill-gray-500 text-[9px]"
-                fontFamily="monospace"
-              >
-                {seg.label}
-              </text>
-            )}
-          </g>
-        )
-      })}
+    <div className="relative" ref={containerRef}>
+      {/* Ring: top row of nodes with connecting lines */}
+      <div className="relative px-4 pt-4 pb-4">
+        {/* Forward path: horizontal flex row */}
+        <div className="flex items-center gap-0">
+          {/* MCM Controller */}
+          <div className="shrink-0" ref={mcmRef}>
+            <div className="relative rounded-lg border-2 border-blue-500/50 bg-blue-950/60 px-5 py-4 min-w-[170px] text-center">
+              <div className="absolute top-2 right-2">
+                <StatusDot status={ring.mcmTag ? 'green' : 'gray'} size="md" />
+              </div>
+              <p className="text-sm font-bold text-blue-300">{ring.mcmName}</p>
+              <p className="text-xs font-mono text-blue-400/70 mt-0.5">{ring.mcmIp || ''}</p>
+              <Badge variant="outline" className="mt-1.5 text-[10px] border-blue-500/30 text-blue-400">
+                Controller
+              </Badge>
+            </div>
+          </div>
 
-      {/* MCM node */}
-      <g>
-        <rect
-          x={mcmX} y={mcmY} width={MCM_W} height={MCM_H}
-          rx={8} ry={8}
-          className="fill-slate-700 stroke-slate-500" strokeWidth={1.5}
-        />
-        <text
-          x={mcmX + MCM_W / 2} y={mcmY + MCM_H / 2 - 4}
-          textAnchor="middle" className="fill-white font-bold text-[12px]"
-        >
-          {ring.mcmName}
-        </text>
-        <text
-          x={mcmX + MCM_W / 2} y={mcmY + MCM_H / 2 + 12}
-          textAnchor="middle" className="fill-gray-400 text-[9px]"
-        >
-          Controller
-        </text>
-        <circle
-          cx={mcmX + MCM_W - 10} cy={mcmY + 10} r={4}
-          className="fill-emerald-400"
-        />
-      </g>
+          {/* Connecting lines + DPM nodes */}
+          {nodes.map((node, idx) => {
+            const isExpanded = expandedNodeId === node.id
+            const status = getStatusColor(node.statusTag)
+            const deviceCount = node.ports.filter((p) => p.deviceName).length
+            const isLast = idx === nodes.length - 1
 
-      {/* Top row nodes */}
-      {topNodes.map((node, i) => {
-        const pos = nodePos('top', i)
-        const selected = selectedNodeId === node.id
-        const status = getStatusColor(node.statusTag)
-        return (
-          <g
-            key={node.id}
-            className="cursor-pointer"
-            onClick={() => onSelectNode(node.id)}
-          >
-            <rect
-              x={pos.x} y={pos.y} width={NODE_W} height={NODE_H}
-              rx={6} ry={6}
-              className={cn(
-                'stroke-[1.5px]',
-                selected
-                  ? 'fill-slate-600 stroke-blue-400'
-                  : 'fill-slate-800 stroke-slate-600 hover:fill-slate-700'
-              )}
-            />
-            <text
-              x={pos.x + NODE_W / 2} y={pos.y + 22}
-              textAnchor="middle" className="fill-white font-semibold text-[11px]"
-            >
-              {node.name}
-            </text>
-            <text
-              x={pos.x + NODE_W / 2} y={pos.y + 38}
-              textAnchor="middle" className="fill-gray-400 text-[9px]"
-              fontFamily="monospace"
-            >
-              {node.ipAddress || 'No IP'}
-            </text>
-            <circle
-              cx={pos.x + NODE_W - 10} cy={pos.y + 10} r={4}
-              className={cn(
-                status === 'green' && 'fill-emerald-400',
-                status === 'red' && 'fill-red-500',
-                status === 'gray' && 'fill-gray-500',
-              )}
-            />
-          </g>
-        )
-      })}
+            return (
+              <div key={node.id} className="flex items-center">
+                {/* Dashed connecting line */}
+                <div className="w-12 sm:w-16 md:w-24 border-t-2 border-dashed border-emerald-500/50" />
 
-      {/* Bottom row nodes */}
-      {bottomNodes.map((node, i) => {
-        const pos = nodePos('bottom', i)
-        const selected = selectedNodeId === node.id
-        const status = getStatusColor(node.statusTag)
-        return (
-          <g
-            key={node.id}
-            className="cursor-pointer"
-            onClick={() => onSelectNode(node.id)}
-          >
-            <rect
-              x={pos.x} y={pos.y} width={NODE_W} height={NODE_H}
-              rx={6} ry={6}
-              className={cn(
-                'stroke-[1.5px]',
-                selected
-                  ? 'fill-slate-600 stroke-blue-400'
-                  : 'fill-slate-800 stroke-slate-600 hover:fill-slate-700'
-              )}
-            />
-            <text
-              x={pos.x + NODE_W / 2} y={pos.y + 22}
-              textAnchor="middle" className="fill-white font-semibold text-[11px]"
-            >
-              {node.name}
-            </text>
-            <text
-              x={pos.x + NODE_W / 2} y={pos.y + 38}
-              textAnchor="middle" className="fill-gray-400 text-[9px]"
-              fontFamily="monospace"
-            >
-              {node.ipAddress || 'No IP'}
-            </text>
-            <circle
-              cx={pos.x + NODE_W - 10} cy={pos.y + 10} r={4}
-              className={cn(
-                status === 'green' && 'fill-emerald-400',
-                status === 'red' && 'fill-red-500',
-                status === 'gray' && 'fill-gray-500',
-              )}
-            />
-          </g>
-        )
-      })}
-    </svg>
+                {/* DPM Node */}
+                <button
+                  ref={isLast ? lastNodeRef : undefined}
+                  onClick={() => onToggleNode(node.id)}
+                  className={cn(
+                    'shrink-0 relative rounded-lg border-2 px-5 py-4 min-w-[170px] text-center transition-all',
+                    isExpanded
+                      ? 'border-blue-400 bg-slate-700/80 ring-1 ring-blue-400/20'
+                      : 'border-slate-600 bg-slate-800/80 hover:border-slate-500 hover:bg-slate-750'
+                  )}
+                >
+                  <div className="absolute top-2 right-2">
+                    <StatusDot status={status} size="md" />
+                  </div>
+                  <p className="text-sm font-bold text-white">{node.name}</p>
+                  <p className="text-xs font-mono text-gray-400 mt-0.5">{node.ipAddress || ''}</p>
+                  <Badge
+                    variant="outline"
+                    className="mt-1.5 text-[10px] border-slate-500/50 text-gray-400"
+                  >
+                    {deviceCount} devices
+                  </Badge>
+                  <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
+                    {isExpanded ? (
+                      <ChevronDown className="w-4 h-4 text-blue-400" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-gray-500 rotate-90" />
+                    )}
+                  </div>
+                </button>
+              </div>
+            )
+          })}
+        </div>
+
+      </div>
+      {/* Return path: bottom loop connecting MCM back to last DPM */}
+      {returnPath && (
+        <div className="relative h-6">
+          {/* Left vertical drop from MCM center */}
+          <div
+            className="absolute top-0 w-0 h-3 border-l-2 border-dashed border-emerald-500/40"
+            style={{ left: `${returnPath.left}px` }}
+          />
+          {/* Right vertical drop from last DPM center */}
+          <div
+            className="absolute top-0 w-0 h-3 border-l-2 border-dashed border-emerald-500/40"
+            style={{ right: `${returnPath.right}px` }}
+          />
+          {/* Horizontal bar across bottom */}
+          <div
+            className="absolute top-3 border-t-2 border-dashed border-emerald-500/40"
+            style={{ left: `${returnPath.left}px`, right: `${returnPath.right}px` }}
+          />
+        </div>
+      )}
+    </div>
   )
 }
 
-// ── Star topology (port list) ──────────────────────────────────────
+// ── Pannable/Zoomable viewport ────────────────────────────────────
 
-function PortGrid({ node }: { node: NetworkNode }) {
-  const connectedPorts = node.ports.filter(p => p.deviceName)
-  const emptyCount = node.totalPorts - connectedPorts.length
+function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const dragging = useRef(false)
+  const lastMouse = useRef({ x: 0, y: 0 })
+
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? -0.1 : 0.1
+    setZoom((z) => Math.min(3, Math.max(0.2, z + delta)))
+  }, [])
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    dragging.current = true
+    lastMouse.current = { x: e.clientX, y: e.clientY }
+  }, [])
+
+  const onMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragging.current) return
+    const dx = e.clientX - lastMouse.current.x
+    const dy = e.clientY - lastMouse.current.y
+    lastMouse.current = { x: e.clientX, y: e.clientY }
+    setPan((p) => ({ x: p.x + dx, y: p.y + dy }))
+  }, [])
+
+  const onMouseUp = useCallback(() => {
+    dragging.current = false
+  }, [])
+
+  const zoomIn = useCallback(() => setZoom((z) => Math.min(3, z + 0.2)), [])
+  const zoomOut = useCallback(() => setZoom((z) => Math.max(0.2, z - 0.2)), [])
+  const resetView = useCallback(() => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+  }, [])
+
+  return { zoom, pan, onWheel, onMouseDown, onMouseMove, onMouseUp, zoomIn, zoomOut, resetView }
+}
+
+// ── Star Diagram: thin vertical device cards, distance-sorted lanes ─
+
+const PORT_FILL: Record<string, string> = {
+  VFD: '#a855f7',
+  FIOM: '#14b8a6',
+  PMM: '#f59e0b',
+  SIO: '#22c55e',
+  POINT_IO: '#3b82f6',
+}
+
+function StarDiagram({ node }: { node: NetworkNode }) {
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const vp = useViewport(viewportRef)
+
+  const connectedPorts = node.ports.filter((p) => p.deviceName)
+  const totalPorts = node.totalPorts
+
+  // ── Thin vertical device cards, positioned above their port column ──
+  const DEVICE_W = 32
+  const DEVICE_H = 120
+
+  // Port strip — spaced wide so devices sit directly above their port
+  const PORT_RECT_W = 28
+  const PORT_RECT_H = 24
+  const PORT_SPACING = 48 // generous spacing between port slots
+  const portStripW = (totalPorts - 1) * PORT_SPACING + PORT_RECT_W
+
+  // DPM block (wide, short) — always 4 rows, columns sized to fit
+  const DPM_PORT_R = 11
+  const DPM_PORT_ROWS = 4
+  const DPM_PORT_COLS = Math.ceil(totalPorts / DPM_PORT_ROWS)
+  const DPM_PORT_SPACE_X = 38
+  const DPM_PORT_SPACE_Y = 38
+  const DPM_PAD_X = 24
+  const DPM_PAD_TOP = 16
+  const DPM_PAD_BOT = 16
+  const dpmW = DPM_PAD_X * 2 + (DPM_PORT_COLS - 1) * DPM_PORT_SPACE_X + DPM_PORT_R * 2
+  const dpmH = DPM_PAD_TOP + (DPM_PORT_ROWS - 1) * DPM_PORT_SPACE_Y + DPM_PORT_R * 2 + DPM_PAD_BOT
+
+  const totalW = Math.max(portStripW, dpmW) + 100
+
+  // Port strip is the widest element — center everything off it
+  const portStripStartX = totalW / 2 - portStripW / 2 + PORT_RECT_W / 2
+  const dpmX = totalW / 2 - dpmW / 2
+
+  // Each port gets an X position; devices sit directly above their port
+  function portStripCx(portNum: number) { return portStripStartX + (portNum - 1) * PORT_SPACING }
+  // Device X = its port's X (no separate device row — they're above their ports)
+  function devCx(devIdx: number) { return portStripCx(connectedPorts[devIdx].portNumber) }
+
+  // ── Layout Y positions ──
+  const DEVICE_Y = 10
+  const PORT_STRIP_Y = DEVICE_Y + DEVICE_H + 20
+  const DPM_LABEL_H = 28 // space for name above the card
+  const DPM_Y = PORT_STRIP_Y + PORT_RECT_H + 20 + DPM_LABEL_H
+  const totalH = DPM_Y + dpmH + 20
+
+  // DPM port position — numbered column-by-column (top→bottom, then next column)
+  // portNum 1-based → grid position
+  function dpmPortPos(portNum: number) {
+    const idx = portNum - 1
+    const col = Math.floor(idx / DPM_PORT_ROWS)
+    const row = idx % DPM_PORT_ROWS
+    return {
+      x: dpmX + DPM_PAD_X + DPM_PORT_R + col * DPM_PORT_SPACE_X,
+      y: DPM_Y + DPM_PAD_TOP + DPM_PORT_R + row * DPM_PORT_SPACE_Y,
+    }
+  }
+
+  const allPorts = Array.from({ length: totalPorts }, (_, i) =>
+    node.ports.find((p) => p.portNumber === i + 1) || null
+  )
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2 text-sm text-gray-400">
-        <span className="font-semibold text-white">{node.name}</span>
-        <span>-</span>
-        <span>{connectedPorts.length} connected</span>
-        <span className="text-gray-600">/ {node.totalPorts} total ports</span>
+    <div className="mt-3 space-y-2">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-1">
+        <span className="text-sm font-semibold text-white">{node.name}</span>
+        <span className="text-xs text-gray-500">
+          {connectedPorts.length} connected / {totalPorts} total ports
+        </span>
         {node.ipAddress && (
-          <span className="ml-auto font-mono text-xs text-gray-500">{node.ipAddress}</span>
+          <span className="ml-auto text-xs font-mono text-gray-500">{node.ipAddress}</span>
         )}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-        {connectedPorts.map((port) => {
-          const status = getStatusColor(port.statusTag)
-          return (
-            <div
-              key={port.id}
-              className="flex items-center gap-2 px-3 py-2 rounded-md bg-slate-800/60 border border-slate-700/50"
-            >
-              <span className="text-xs font-mono text-gray-500 w-8 shrink-0">
-                P{String(port.portNumber).padStart(2, '0')}
-              </span>
-              <span className="text-xs font-mono text-gray-500 w-12 shrink-0">
-                {port.cableLabel || '---'}
-              </span>
-              <span className="text-sm text-white truncate flex-1" title={port.deviceName || ''}>
-                {port.deviceName}
-              </span>
-              <Badge
-                variant="outline"
-                className={cn(
-                  'text-[10px] px-1.5 py-0 h-5 shrink-0',
-                  deviceTypeBadgeClass(port.deviceType)
-                )}
-              >
-                {port.deviceType || '?'}
-              </Badge>
-              <StatusDot status={status} />
+      {/* Legend + zoom controls */}
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-3 flex-wrap">
+          {Object.entries(PORT_FILL).map(([type, color]) => (
+            <div key={type} className="flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: color }} />
+              <span className="text-[10px] text-gray-400">{type}</span>
             </div>
-          )
-        })}
+          ))}
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={vp.zoomOut} className="p-1.5 rounded hover:bg-slate-700 text-gray-400 hover:text-white transition-colors">
+            <ZoomOut className="w-4 h-4" />
+          </button>
+          <span className="text-[10px] text-gray-500 w-10 text-center">{Math.round(vp.zoom * 100)}%</span>
+          <button onClick={vp.zoomIn} className="p-1.5 rounded hover:bg-slate-700 text-gray-400 hover:text-white transition-colors">
+            <ZoomIn className="w-4 h-4" />
+          </button>
+          <button onClick={vp.resetView} className="p-1.5 rounded hover:bg-slate-700 text-gray-400 hover:text-white transition-colors">
+            <Maximize2 className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
-      {emptyCount > 0 && (
-        <p className="text-xs text-gray-600">
-          + {emptyCount} empty/spare ports
-        </p>
-      )}
+      {/* Viewport */}
+      <div
+        ref={viewportRef}
+        className="relative overflow-hidden rounded-lg border border-slate-700/50 bg-slate-950/50 cursor-grab active:cursor-grabbing select-none"
+        style={{ height: 700 }}
+        onWheel={vp.onWheel}
+        onMouseDown={vp.onMouseDown}
+        onMouseMove={vp.onMouseMove}
+        onMouseUp={vp.onMouseUp}
+        onMouseLeave={vp.onMouseUp}
+      >
+        <svg
+          width={totalW}
+          height={totalH}
+          viewBox={`0 0 ${totalW} ${totalH}`}
+          style={{
+            transform: `translate(${vp.pan.x}px, ${vp.pan.y}px) scale(${vp.zoom})`,
+            transformOrigin: '0 0',
+          }}
+        >
+          {/* ── Cable lines: device → port number box (vertical) ── */}
+          {connectedPorts.map((port) => {
+            const psx = portStripCx(port.portNumber)
+            const deviceType = getDeviceType(port.deviceName || '')
+            const color = PORT_FILL[deviceType] || '#64748b'
+
+            return (
+              <line key={`cable-${port.id}`}
+                x1={psx} y1={DEVICE_Y + DEVICE_H}
+                x2={psx} y2={PORT_STRIP_Y}
+                stroke={color} strokeWidth={1.5} strokeOpacity={0.5}
+              />
+            )
+          })}
+
+          {/* ── Thin device cards with rotated text ── */}
+          {connectedPorts.map((port, devIdx) => {
+            const cx = devCx(devIdx)
+            const deviceType = getDeviceType(port.deviceName || '')
+            const color = PORT_FILL[deviceType] || '#64748b'
+
+            return (
+              <g key={`dev-${port.id}`}>
+                {/* Card body */}
+                <rect
+                  x={cx - DEVICE_W / 2} y={DEVICE_Y}
+                  width={DEVICE_W} height={DEVICE_H}
+                  rx={4}
+                  fill="#0f172a"
+                  stroke={color} strokeWidth={1.5} strokeOpacity={0.7}
+                />
+                {/* Colored top strip for device type */}
+                <rect
+                  x={cx - DEVICE_W / 2} y={DEVICE_Y}
+                  width={DEVICE_W} height={16}
+                  rx={4} fill={color} fillOpacity={0.2}
+                />
+                <rect
+                  x={cx - DEVICE_W / 2} y={DEVICE_Y + 12}
+                  width={DEVICE_W} height={4}
+                  fill={color} fillOpacity={0.2}
+                />
+                {/* Type label (horizontal, fits in header) */}
+                <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill={color}>
+                  {deviceType}
+                </text>
+                {/* Device name — rotated 90° */}
+                <text
+                  x={cx} y={DEVICE_Y + 24}
+                  textAnchor="start"
+                  fontSize={8} fontWeight="bold" className="fill-white"
+                  transform={`rotate(90, ${cx}, ${DEVICE_Y + 24})`}
+                >
+                  {port.deviceName}
+                </text>
+                {/* Connector nub at bottom */}
+                <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={color} fillOpacity={0.6} />
+              </g>
+            )
+          })}
+
+          {/* ── Port reference strip ── */}
+          {allPorts.map((port, i) => {
+            const portNum = i + 1
+            const cx = portStripCx(portNum)
+            const isConnected = !!port?.deviceName
+            const deviceType = isConnected ? getDeviceType(port!.deviceName!) : null
+            const color = deviceType ? PORT_FILL[deviceType] || '#64748b' : '#334155'
+
+            return (
+              <g key={`strip-${i}`}>
+                <rect
+                  x={cx - PORT_RECT_W / 2} y={PORT_STRIP_Y}
+                  width={PORT_RECT_W} height={PORT_RECT_H}
+                  rx={3}
+                  fill={isConnected ? color : '#1e293b'}
+                  fillOpacity={isConnected ? 0.2 : 0.5}
+                  stroke={isConnected ? color : '#334155'}
+                  strokeWidth={isConnected ? 1.5 : 1}
+                  strokeOpacity={isConnected ? 0.7 : 0.4}
+                />
+                <text
+                  x={cx} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
+                  textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace"
+                  fill={isConnected ? '#e2e8f0' : '#64748b'}
+                >
+                  {portNum}
+                </text>
+              </g>
+            )
+          })}
+          <text
+            x={portStripCx(1) - PORT_RECT_W / 2 - 8}
+            y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
+            textAnchor="end" fontSize={9} className="fill-gray-500" fontFamily="monospace"
+          >
+            PORTS
+          </text>
+
+          {/* ── DPM label (outside, above card) ── */}
+          <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 12} textAnchor="middle" fontSize={11} fontWeight="bold" className="fill-blue-300">
+            {node.name}
+          </text>
+          <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 24} textAnchor="middle" fontSize={8} fontFamily="monospace" className="fill-gray-500">
+            DATA POWER MODULE
+          </text>
+
+          {/* ── DPM block (visual reference only) ── */}
+          <rect x={dpmX} y={DPM_Y} width={dpmW} height={dpmH} rx={8} fill="#1e293b" stroke="#475569" strokeWidth={2} />
+
+          {/* Port circles inside DPM — column-by-column, 4 rows, no empties */}
+          {allPorts.map((_, i) => {
+            const portNum = i + 1
+            const { x, y } = dpmPortPos(portNum)
+            const port = allPorts[i]
+            const isConnected = !!port?.deviceName
+            const deviceType = isConnected ? getDeviceType(port!.deviceName!) : null
+            const color = deviceType ? PORT_FILL[deviceType] || '#64748b' : '#334155'
+
+            return (
+              <g key={`dpm-port-${i}`}>
+                <circle cx={x} cy={y} r={DPM_PORT_R}
+                  fill={isConnected ? color : '#334155'} fillOpacity={isConnected ? 0.85 : 0.4}
+                  stroke={isConnected ? '#e2e8f0' : '#475569'} strokeWidth={isConnected ? 2 : 1}
+                />
+                {isConnected && (
+                  <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="#0f172a" strokeWidth={1.5} />
+                )}
+                <text x={x} y={y + 3.5} textAnchor="middle" fontSize={8} fontWeight="bold" fontFamily="monospace"
+                  fill={isConnected ? '#fff' : '#64748b'}
+                >
+                  {portNum}
+                </text>
+              </g>
+            )
+          })}
+        </svg>
+      </div>
     </div>
   )
 }
@@ -405,7 +538,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [rings, setRings] = useState<NetworkRing[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null)
+  const [expandedNodeId, setExpandedNodeId] = useState<number | null>(null)
 
   useEffect(() => {
     async function fetchTopology() {
@@ -429,14 +562,9 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
     fetchTopology()
   }, [subsystemId])
 
-  function handleSelectNode(nodeId: number) {
-    setSelectedNodeId(prev => prev === nodeId ? null : nodeId)
+  function handleToggleNode(nodeId: number) {
+    setExpandedNodeId((prev) => (prev === nodeId ? null : nodeId))
   }
-
-  // Find the selected node across all rings
-  const selectedNode = rings
-    .flatMap(r => r.nodes)
-    .find(n => n.id === selectedNodeId) || null
 
   if (loading) {
     return (
@@ -467,67 +595,47 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
   return (
     <div className="space-y-6">
-      {rings.map((ring) => (
-        <Card key={ring.id} className="bg-slate-900 border-slate-700">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-lg text-white">
-              <Network className="w-5 h-5 text-blue-400" />
-              {ring.name}
-              <Badge variant="outline" className="ml-2 text-xs text-gray-400 border-gray-600">
-                {ring.nodes.length} nodes
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Ring diagram */}
-            <div className="flex justify-center overflow-x-auto pb-2">
-              <RingSvg
-                ring={ring}
-                selectedNodeId={selectedNodeId}
-                onSelectNode={handleSelectNode}
-              />
-            </div>
+      {rings.map((ring) => {
+        const expandedNode = ring.nodes.find((n) => n.id === expandedNodeId) || null
 
-            <p className="text-xs text-center text-gray-500">
-              Click a node to view its port connections
-            </p>
+        return (
+          <Card key={ring.id} className="bg-slate-900 border-slate-700">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-lg text-white">
+                <Network className="w-5 h-5 text-blue-400" />
+                {ring.name}
+                <Badge variant="outline" className="ml-2 text-xs text-gray-400 border-gray-600">
+                  {ring.nodes.length} DPMs
+                </Badge>
+                <Badge variant="outline" className="text-xs text-gray-400 border-gray-600">
+                  {ring.nodes.reduce((sum, n) => sum + n.ports.filter((p) => p.deviceName).length, 0)} devices
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {/* Ring diagram */}
+              <div className="overflow-x-auto">
+                <RingLayout
+                  ring={ring}
+                  expandedNodeId={expandedNodeId}
+                  onToggleNode={handleToggleNode}
+                />
+              </div>
 
-            {/* Star topology expansion */}
-            {ring.nodes.map((node) => {
-              const isExpanded = selectedNodeId === node.id
-              return (
-                <div key={node.id}>
-                  <button
-                    onClick={() => handleSelectNode(node.id)}
-                    className={cn(
-                      'w-full flex items-center gap-2 px-3 py-2 rounded-md text-left transition-colors',
-                      isExpanded
-                        ? 'bg-slate-700/60 border border-blue-500/30'
-                        : 'bg-slate-800/40 border border-slate-700/30 hover:bg-slate-800/60'
-                    )}
-                  >
-                    {isExpanded ? (
-                      <ChevronDown className="w-4 h-4 text-blue-400 shrink-0" />
-                    ) : (
-                      <ChevronRight className="w-4 h-4 text-gray-500 shrink-0" />
-                    )}
-                    <span className="text-sm font-medium text-white">{node.name}</span>
-                    <StatusDot status={getStatusColor(node.statusTag)} />
-                    <span className="text-xs text-gray-500 ml-auto">
-                      {node.ports.filter(p => p.deviceName).length} devices
-                    </span>
-                  </button>
-                  {isExpanded && (
-                    <div className="mt-2 ml-6 pb-2">
-                      <PortGrid node={node} />
-                    </div>
-                  )}
+              <p className="text-xs text-center text-gray-500 pt-1">
+                Click a DPM node to view connected devices
+              </p>
+
+              {/* Expanded device grid */}
+              {expandedNode && (
+                <div className="border-t border-slate-700/50 pt-3">
+                  <StarDiagram node={expandedNode} />
                 </div>
-              )
-            })}
-          </CardContent>
-        </Card>
-      ))}
+              )}
+            </CardContent>
+          </Card>
+        )
+      })}
     </div>
   )
 }
