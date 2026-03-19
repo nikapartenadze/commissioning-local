@@ -217,6 +217,10 @@ export const API_ENDPOINTS = {
   backups: '/api/backups',
   backupByFilename: (filename: string) => `/api/backups/${encodeURIComponent(filename)}`,
   backupSync: (filename: string) => `/api/backups/${encodeURIComponent(filename)}/sync`,
+
+  // Change Requests
+  changeRequests: '/api/change-requests',
+  changeRequestById: (id: number) => `/api/change-requests/${id}`,
 } as const
 
 /**
