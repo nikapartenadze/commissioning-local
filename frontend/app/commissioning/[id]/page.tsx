@@ -15,6 +15,8 @@ import { TagStatusDialog, TagStatus } from "@/components/tag-status-dialog"
 import { ValueChangeDialog } from "@/components/value-change-dialog"
 import { FailCommentDialog } from "@/components/fail-comment-dialog"
 import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
+import { ChangeRequestDialog } from "@/components/change-request-dialog"
+import { ChangeRequestsPanel } from "@/components/change-requests-panel"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -142,6 +144,9 @@ export default function CommissioningPage() {
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
   const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false)
   const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null>(null)
+  const [showChangeRequestDialog, setShowChangeRequestDialog] = useState(false)
+  const [showChangeRequestsPanel, setShowChangeRequestsPanel] = useState(false)
+  const [changeRequestIo, setChangeRequestIo] = useState<IoItem | null>(null)
   const [confirmClearIo, setConfirmClearIo] = useState<IoItem | null>(null)
   const [errorLog, setErrorLog] = useState<ErrorEvent[]>([])
   const [tagStatus, setTagStatus] = useState<TagStatus | null>(null)
@@ -1226,6 +1231,7 @@ export default function CommissioningPage() {
             hasErrors: tagStatus.hasErrors
           } : null}
           onShowTagStatus={() => setShowTagStatusDialog(true)}
+          onShowChangeRequests={() => setShowChangeRequestsPanel(true)}
         />
       </div>
 
@@ -1248,6 +1254,10 @@ export default function CommissioningPage() {
             onShowFireOutputDialog={handleShowFireOutputDialog}
             onCommentChange={handleCommentChange}
             activeQuickFilter={quickFilter}
+            onRequestChange={(io: IoItem) => {
+              setChangeRequestIo(io)
+              setShowChangeRequestDialog(true)
+            }}
           />
       </div>
 
@@ -1328,6 +1338,20 @@ export default function CommissioningPage() {
           open={showTagStatusDialog}
           onOpenChange={setShowTagStatusDialog}
           tagStatus={tagStatus}
+        />
+
+        {/* Change Request Dialog */}
+        <ChangeRequestDialog
+          open={showChangeRequestDialog}
+          onOpenChange={setShowChangeRequestDialog}
+          io={changeRequestIo}
+          currentUser={currentUser?.fullName}
+        />
+
+        {/* Change Requests Panel */}
+        <ChangeRequestsPanel
+          open={showChangeRequestsPanel}
+          onOpenChange={setShowChangeRequestsPanel}
         />
 
         {/* Clear Result Confirmation Dialog */}
