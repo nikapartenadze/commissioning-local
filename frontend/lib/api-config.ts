@@ -221,6 +221,9 @@ export const API_ENDPOINTS = {
   // Change Requests
   changeRequests: '/api/change-requests',
   changeRequestById: (id: number) => `/api/change-requests/${id}`,
+
+  // Network Topology
+  networkTopology: '/api/network/topology',
 } as const
 
 /**
