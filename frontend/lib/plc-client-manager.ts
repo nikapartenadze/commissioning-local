@@ -153,6 +153,24 @@ function setupClientEventListeners(client: PlcClient): void {
     });
   });
 
+  // Broadcast tag status metadata every ~2 seconds (every 30 cycles at 75ms)
+  let cycleCount = 0;
+  client.on('readCycleComplete', (_cycleTimeMs, successCount, failCount) => {
+    cycleCount++;
+    if (cycleCount % 30 === 0) {
+      const tags = client.getIoTags();
+      const totalTags = tags.length;
+      broadcastToWebSocket({
+        type: 'TagStatusUpdate',
+        totalTags,
+        successfulTags: successCount,
+        failedTags: failCount,
+        hasErrors: failCount > 0,
+        connected: client.isConnected,
+      });
+    }
+  });
+
   // Broadcast errors
   client.on('error', (error) => {
     console.error(`[PlcClientManager] Error: ${error.message}`);
