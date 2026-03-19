@@ -132,9 +132,7 @@ if exist "%OUTPUT_DIR%\app\server.js" (
     copy "%OUTPUT_DIR%\app\server.js" "%OUTPUT_DIR%\app\next-server.js" >nul
 )
 
-REM WebSocket server + production server
-mkdir "%OUTPUT_DIR%\app\scripts" 2>nul
-copy "%FRONTEND_DIR%\scripts\plc-websocket-server.js" "%OUTPUT_DIR%\app\scripts\" >nul
+REM Production server (WebSocket server is merged in)
 copy "%FRONTEND_DIR%\server.js" "%OUTPUT_DIR%\app\" >nul
 
 REM PLC native library
