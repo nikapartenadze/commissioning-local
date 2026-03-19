@@ -176,6 +176,44 @@ class AutoSyncService {
           }).catch(() => {})
         }
       }
+      // Also push pending change requests to cloud
+      try {
+        const pendingRequests = await prisma.changeRequest.findMany({
+          where: { status: 'pending', cloudId: null },
+        })
+        if (pendingRequests.length > 0 && remoteUrl) {
+          const resp = await fetch(`${remoteUrl}/api/change-requests`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+            body: JSON.stringify({ requests: pendingRequests.map(r => ({
+              ioId: r.ioId,
+              requestType: r.requestType,
+              currentValue: r.currentValue,
+              requestedValue: r.requestedValue,
+              reason: r.reason,
+              requestedBy: r.requestedBy,
+              createdAt: r.createdAt.toISOString(),
+            })) }),
+            signal: AbortSignal.timeout(10000),
+          })
+          if (resp.ok) {
+            const data = await resp.json()
+            // Update local records with cloud IDs
+            if (data.requests) {
+              for (const cr of data.requests) {
+                if (cr.localId && cr.cloudId) {
+                  await prisma.changeRequest.update({
+                    where: { id: cr.localId },
+                    data: { cloudId: cr.cloudId, status: 'synced' },
+                  }).catch(() => {})
+                }
+              }
+            }
+            console.log(`[AutoSync] Pushed ${pendingRequests.length} change requests to cloud`)
+          }
+        }
+      } catch { /* ignore change request sync errors */ }
+
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       this._lastPushResult = `error: ${msg}`
@@ -290,6 +328,40 @@ class AutoSyncService {
           })
         } catch { /* WS server might not be running */ }
       }
+
+      // Pull back change request status updates from cloud
+      try {
+        const syncedRequests = await prisma.changeRequest.findMany({
+          where: { cloudId: { not: null }, status: 'synced' },
+        })
+        if (syncedRequests.length > 0 && remoteUrl) {
+          const cloudIds = syncedRequests.map(r => r.cloudId).filter(Boolean)
+          const crResp = await fetch(`${remoteUrl}/api/change-requests/status?ids=${cloudIds.join(',')}`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+            signal: AbortSignal.timeout(10000),
+          })
+          if (crResp.ok) {
+            const crData = await crResp.json()
+            if (Array.isArray(crData.requests)) {
+              for (const cr of crData.requests) {
+                if (cr.cloudId && cr.status && cr.status !== 'synced') {
+                  await prisma.changeRequest.updateMany({
+                    where: { cloudId: cr.cloudId },
+                    data: {
+                      status: cr.status,
+                      reviewedBy: cr.reviewedBy || undefined,
+                      reviewNote: cr.reviewNote || undefined,
+                      updatedAt: new Date(),
+                    },
+                  }).catch(() => {})
+                }
+              }
+              console.log(`[AutoSync] Pulled ${crData.requests.length} change request status updates`)
+            }
+          }
+        }
+      } catch { /* ignore change request pull errors */ }
 
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')

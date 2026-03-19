@@ -14,6 +14,7 @@ import {
   Zap,
   ZapOff,
   AlertTriangle,
+  FileEdit,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -45,6 +46,7 @@ interface PlcToolbarProps {
   onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null) => void
   tagStatus?: TagStatus | null
   onShowTagStatus?: () => void
+  onShowChangeRequests?: () => void
 }
 
 export function PlcToolbar({
@@ -67,7 +69,8 @@ export function PlcToolbar({
   activeFilter = null,
   onFilterChange,
   tagStatus = null,
-  onShowTagStatus
+  onShowTagStatus,
+  onShowChangeRequests
 }: PlcToolbarProps) {
   const progressPercent = totalIos > 0 ? ((passedIos + failedIos) / totalIos) * 100 : 0
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
@@ -232,6 +235,16 @@ export function PlcToolbar({
             title="Test History"
           >
             <History className="w-5 h-5 sm:w-6 sm:h-6" />
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="lg"
+            className="h-10 w-10 sm:h-12 sm:w-12 p-0"
+            onClick={onShowChangeRequests}
+            title="Change Requests"
+          >
+            <FileEdit className="w-5 h-5 sm:w-6 sm:h-6" />
           </Button>
         </div>
 
