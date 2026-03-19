@@ -9,11 +9,25 @@ export async function GET() {
     const plcStatus = getPlcStatus()
     const config = await configService.getConfig()
 
+    // Check cloud connection state
+    let cloudConnected = false
+    let cloudMessage = 'Cloud not configured'
+    if (config.remoteUrl) {
+      try {
+        const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
+        const syncService = getCloudSyncService()
+        cloudConnected = syncService.isConnected
+        cloudMessage = cloudConnected ? `Connected to ${config.remoteUrl}` : 'Cloud disconnected'
+      } catch {
+        cloudMessage = 'Cloud sync service unavailable'
+      }
+    }
+
     // Return NetworkChainStatus format expected by component
     return NextResponse.json({
       cloud: {
-        connected: false, // Cloud sync status - not connected by default
-        message: 'Cloud sync not configured',
+        connected: cloudConnected,
+        message: cloudMessage,
       },
       backend: {
         connected: true, // Node.js backend is always connected (we're responding!)
