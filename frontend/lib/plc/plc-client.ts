@@ -256,11 +256,26 @@ export class PlcClient extends EventEmitter {
   }
 
   /**
-   * Read a tag value
+   * Read a tag value (fresh PLC read)
    */
   async readTag(name: string): Promise<boolean | null> {
     const value = await this.tagReader.readTagValue(name);
     return value !== null ? Boolean(value) : null;
+  }
+
+  /**
+   * Get cached tag value from the polling loop (no fresh PLC read)
+   */
+  readTagCached(name: string): boolean | null {
+    const value = this.tagReader.getCachedValue(name);
+    return value !== null ? Boolean(value) : null;
+  }
+
+  /**
+   * Check if a tag handle exists in the reader
+   */
+  hasTag(name: string): boolean {
+    return this.tagReader.hasTag(name);
   }
 
   /**
