@@ -151,6 +151,8 @@ export class PlcClient extends EventEmitter {
             ? `PLC connected but none of the ${result.failed.length} tags exist on the PLC. Tag names may not match the PLC program.`
             : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
           this.emit('error', new Error(errorMsg));
+          // Schedule reconnect — PLC may come back or program may be reloaded
+          this.scheduleReconnect();
           return {
             success: false,
             plcReachable: result.plcReachable,
