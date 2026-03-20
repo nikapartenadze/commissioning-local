@@ -153,24 +153,37 @@ export async function POST(request: Request) {
       );
     }
 
-    // Build tag report — enrich failed tags with descriptions from the database
+    // Build tag report — separate IO tags from network status tags
     const rawFailedTags = connectResult.failedTags || [];
+    const ioNames = new Set(ios.map(io => io.name || ''));
+    const networkTagNames = new Set(networkTags.map(t => t.name));
+
+    // Only show IO tag failures in the report (not network status tags)
+    const ioFailedTags = rawFailedTags.filter(t => !networkTagNames.has(t.name));
+    const networkFailedTags = rawFailedTags.filter(t => networkTagNames.has(t.name));
+
     const ioLookup = new Map(ios.map(io => [io.name || '', io.description || '']));
-    const failedTags = rawFailedTags.map(t => ({
+    const failedTags = ioFailedTags.map(t => ({
       name: t.name,
       description: ioLookup.get(t.name) || '',
       error: t.error,
     }));
+
     const plcReachable = connectResult.plcReachable ?? false;
+    const ioTagsSuccessful = (connectResult.tagsSuccessful || 0) - (networkTags.length - networkFailedTags.length);
     const tagReport = {
       plcIp: body.ip,
       plcPath: body.path,
       plcReachable,
       timestamp: new Date().toISOString(),
       totalTags: ios.length,
-      tagsSuccessful: connectResult.tagsSuccessful || 0,
-      tagsFailed: connectResult.tagsFailed || 0,
-      failedTags: failedTags.slice(0, 100), // { name, description, error }
+      tagsSuccessful: Math.max(0, ioTagsSuccessful),
+      tagsFailed: ioFailedTags.length,
+      failedTags: failedTags.slice(0, 100),
+      // Network stats shown separately
+      networkTotalTags: networkTags.length,
+      networkSuccessful: networkTags.length - networkFailedTags.length,
+      networkFailed: networkFailedTags.length,
     };
 
     if (!connectResult.success) {
@@ -210,7 +223,7 @@ export async function POST(request: Request) {
       status: connectResult.status,
       ...tagReport,
       warning: tagReport.tagsFailed > 0
-        ? `${tagReport.tagsFailed} of ${tagReport.totalTags} tags failed — names may not match PLC program`
+        ? `${tagReport.tagsFailed} of ${tagReport.totalTags} IO tags failed — names may not match PLC program`
         : undefined,
     });
   } catch (error) {
