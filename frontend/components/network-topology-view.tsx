@@ -55,10 +55,11 @@ type StatusColor = 'green' | 'red' | 'gray'
 
 // tagStates: map of tagName → faulted (true = faulted/red, false = healthy/green, null = unknown)
 function getStatusColor(statusTag: string | null, tagStates: Record<string, boolean | null>): StatusColor {
-  if (!statusTag) return 'gray'
+  if (!statusTag) return 'gray'  // No tag configured — not monitored
   const value = tagStates[statusTag]
-  if (value === null || value === undefined) return 'gray'
-  return value ? 'red' : 'green' // ConnectionFaulted: true = faulted, false = healthy
+  if (value === undefined) return 'gray'  // Tag not yet polled (first load)
+  if (value === null) return 'red'        // Tag configured but can't read — treat as faulted
+  return value ? 'red' : 'green'          // ConnectionFaulted: true = faulted, false = healthy
 }
 
 function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' | 'md' }) {
@@ -537,7 +538,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
             const port = allPorts[i]
             const isConnected = !!port?.deviceName
             const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
-            const portColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : isConnected ? '#3b82f6' : '#334155'
+            const portColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#334155'
 
             return (
               <g key={`dpm-port-${i}`}>
