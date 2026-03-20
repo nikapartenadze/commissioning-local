@@ -160,18 +160,29 @@ function setupClientEventListeners(client: PlcClient): void {
   });
 
   // Broadcast tag status metadata every ~2 seconds (every 30 cycles at 75ms)
+  // Only counts IO tags (excludes network status tags with negative IDs)
   let cycleCount = 0;
-  client.on('readCycleComplete', (_cycleTimeMs, successCount, failCount) => {
+  client.on('readCycleComplete', (_cycleTimeMs, _successCount, _failCount) => {
     cycleCount++;
     if (cycleCount % 30 === 0) {
-      const tags = client.getIoTags();
-      const totalTags = tags.length;
+      const ioTags = client.getIoTags(); // already filters out negative IDs
+      const totalTags = ioTags.length;
+      // Count IO-only success/fail from tag states
+      let successfulTags = 0;
+      let failedTags = 0;
+      for (const tag of ioTags) {
+        if (tag.state !== undefined && tag.state !== null) {
+          successfulTags++;
+        } else {
+          failedTags++;
+        }
+      }
       broadcastToWebSocket({
         type: 'TagStatusUpdate',
         totalTags,
-        successfulTags: successCount,
-        failedTags: failCount,
-        hasErrors: failCount > 0,
+        successfulTags,
+        failedTags,
+        hasErrors: failedTags > 0,
         connected: client.isConnected,
       });
     }
