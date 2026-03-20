@@ -347,14 +347,19 @@ export default function CommissioningPage() {
     loadPlcConfig()
     loadIos()
 
-    // Check cloud status
-    fetch('/api/cloud/status')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) setIsCloudConnected(data.connected === true) })
-      .catch(() => setIsCloudConnected(false))
+    // Poll cloud status every 30 seconds
+    const checkCloud = () => {
+      fetch('/api/cloud/status')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setIsCloudConnected(data.connected === true) })
+        .catch(() => setIsCloudConnected(false))
+    }
+    checkCloud()
+    const cloudInterval = setInterval(checkCloud, 30000)
 
     return () => {
       isInitializedRef.current = false
+      clearInterval(cloudInterval)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]) // Only re-run when projectId changes
