@@ -230,6 +230,7 @@ function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
+    e.preventDefault()
     dragging.current = true
     lastMouse.current = { x: e.clientX, y: e.clientY }
   }, [])
@@ -408,7 +409,8 @@ function StarDiagram({ node }: { node: NetworkNode }) {
             const color = PORT_FILL[deviceType] || '#64748b'
 
             return (
-              <g key={`dev-${port.id}`}>
+              <g key={`dev-${port.id}`} className="cursor-default">
+                <title>{`${port.deviceName}\n${deviceType} — ${port.deviceIp || 'No IP'}\nPort ${port.portNumber}`}</title>
                 {/* Card body */}
                 <rect
                   x={cx - DEVICE_W / 2} y={DEVICE_Y}
