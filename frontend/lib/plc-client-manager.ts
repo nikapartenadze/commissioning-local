@@ -117,7 +117,8 @@ export function getPlcClient(): PlcClient {
   if (!state.plcClientInstance) {
     console.log('[PlcClientManager] Creating new PlcClient instance');
     state.plcClientInstance = createPlcClient({
-      autoReconnect: false, // Manual reconnection for API control
+      autoReconnect: true,
+      reconnectIntervalMs: 5000, // Retry every 5s on connection loss
     });
 
     // Set up event listeners to broadcast to WebSocket clients
@@ -144,11 +145,14 @@ function setupClientEventListeners(client: PlcClient): void {
 
   // Broadcast connection status changes
   client.on('connectionStatusChanged', (status) => {
-    console.log(`[PlcClientManager] Connection status: ${status}`);
+    const config = getState().currentConnectionConfig;
+    const willReconnect = status === 'error' && config !== null;
+    console.log(`[PlcClientManager] Connection status: ${status}${willReconnect ? ' (will auto-reconnect)' : ''}`);
     broadcastToWebSocket({
       type: 'NetworkStatusChanged',
       moduleName: 'plc',
       status: status,
+      reconnecting: willReconnect,
       errorCount: status === 'error' ? 1 : 0,
     });
   });
