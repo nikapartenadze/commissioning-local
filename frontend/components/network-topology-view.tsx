@@ -51,21 +51,30 @@ interface TopologyResponse {
 
 // ── Status helpers ─────────────────────────────────────────────────
 
-type StatusColor = 'green' | 'red' | 'gray'
+type StatusColor = 'green' | 'red' | 'gray' | 'yellow'
 
-// tagStates: map of tagName → faulted (true = faulted/red, false = healthy/green, null = unknown)
+// tagStates: map of tagName → faulted (true = faulted/red, false = healthy/green, null = unreachable)
 function getStatusColor(statusTag: string | null, tagStates: Record<string, boolean | null>): StatusColor {
-  if (!statusTag) return 'gray'  // No tag configured — not monitored
+  if (!statusTag) return 'gray'     // No tag configured — not monitored
   const value = tagStates[statusTag]
-  if (value === undefined) return 'gray'  // Tag not yet polled (first load)
-  if (value === null) return 'red'        // Tag configured but can't read — treat as faulted
-  return value ? 'red' : 'green'          // ConnectionFaulted: true = faulted, false = healthy
+  if (value === undefined) return 'gray'   // Tag not yet polled (first load)
+  if (value === null) return 'yellow'      // Tag configured but can't reach — unreachable
+  return value ? 'red' : 'green'           // ConnectionFaulted: true = faulted, false = healthy
+}
+
+function statusToHex(s: StatusColor): string {
+  if (s === 'green') return '#22c55e'
+  if (s === 'red') return '#ef4444'
+  if (s === 'yellow') return '#eab308'
+  return '#334155'
+}
 }
 
 function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' | 'md' }) {
   const colors = {
     green: 'bg-emerald-400 shadow-emerald-400/50',
     red: 'bg-red-500 shadow-red-500/50',
+    yellow: 'bg-yellow-500 shadow-yellow-500/30',
     gray: 'bg-gray-500 shadow-gray-500/30',
   }
   const sizeClass = size === 'md' ? 'w-3 h-3' : 'w-2.5 h-2.5'
@@ -415,7 +424,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           {connectedPorts.map((port) => {
             const psx = portStripCx(port.portNumber)
             const s = getStatusColor(port.statusTag, tagStates)
-            const lineColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#64748b'
+            const lineColor = statusToHex(s)
 
             return (
               <line key={`cable-${port.id}`}
@@ -432,7 +441,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
             const deviceType = getDeviceType(port.deviceName || '')
             const headerColor = '#3b82f6' // blue header strip
             const s = getStatusColor(port.statusTag, tagStates)
-            const bodyColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#64748b'
+            const bodyColor = statusToHex(s)
 
             return (
               <g key={`dev-${port.id}`} className="cursor-pointer" onClick={(e) => {
@@ -481,7 +490,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
             const cx = portStripCx(portNum)
             const isConnected = !!port?.deviceName
             const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
-            const statusColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#334155'
+            const statusColor = statusToHex(s)
 
             return (
               <g key={`strip-${i}`}>
@@ -516,8 +525,8 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           {/* ── DPM label (outside, above card) ── */}
           {(() => {
             const dpmStatus = getStatusColor(node.statusTag, tagStates)
-            const dpmStroke = dpmStatus === 'green' ? '#22c55e' : dpmStatus === 'red' ? '#ef4444' : '#475569'
-            const dpmLabelColor = dpmStatus === 'green' ? '#22c55e' : dpmStatus === 'red' ? '#ef4444' : '#93c5fd'
+            const dpmStroke = statusToHex(dpmStatus)
+            const dpmLabelColor = dpmStatus === 'gray' ? '#93c5fd' : statusToHex(dpmStatus)
             return (
               <>
                 <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 12} textAnchor="middle" fontSize={11} fontWeight="bold" fill={dpmLabelColor}>
@@ -538,7 +547,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
             const port = allPorts[i]
             const isConnected = !!port?.deviceName
             const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
-            const portColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#334155'
+            const portColor = statusToHex(s)
 
             return (
               <g key={`dpm-port-${i}`}>
