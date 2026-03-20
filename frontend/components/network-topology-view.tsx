@@ -230,21 +230,28 @@ function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
 
   const update = useCallback(() => forceRender((n) => n + 1), [])
 
-  const onWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const mouseX = e.clientX - rect.left
-    const mouseY = e.clientY - rect.top
-    const oldZoom = zoomRef.current
-    const delta = e.deltaY > 0 ? -0.1 : 0.1
-    const newZoom = Math.min(3, Math.max(0.2, oldZoom + delta))
-    panRef.current = {
-      x: mouseX - (mouseX - panRef.current.x) * (newZoom / oldZoom),
-      y: mouseY - (mouseY - panRef.current.y) * (newZoom / oldZoom),
+  // Attach wheel listener as non-passive so preventDefault actually stops page scroll
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const rect = el.getBoundingClientRect()
+      const mouseX = e.clientX - rect.left
+      const mouseY = e.clientY - rect.top
+      const oldZoom = zoomRef.current
+      const delta = e.deltaY > 0 ? -0.1 : 0.1
+      const newZoom = Math.min(3, Math.max(0.2, oldZoom + delta))
+      panRef.current = {
+        x: mouseX - (mouseX - panRef.current.x) * (newZoom / oldZoom),
+        y: mouseY - (mouseY - panRef.current.y) * (newZoom / oldZoom),
+      }
+      zoomRef.current = newZoom
+      update()
     }
-    zoomRef.current = newZoom
-    update()
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
   }, [containerRef, update])
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
@@ -270,7 +277,7 @@ function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
   const zoomOut = useCallback(() => { zoomRef.current = Math.max(0.2, zoomRef.current - 0.2); update() }, [update])
   const resetView = useCallback(() => { zoomRef.current = 1; panRef.current = { x: 0, y: 0 }; update() }, [update])
 
-  return { zoom: zoomRef.current, pan: panRef.current, onWheel, onMouseDown, onMouseMove, onMouseUp, zoomIn, zoomOut, resetView }
+  return { zoom: zoomRef.current, pan: panRef.current, onMouseDown, onMouseMove, onMouseUp, zoomIn, zoomOut, resetView }
 }
 
 // ── Star Diagram: thin vertical device cards, distance-sorted lanes ─
@@ -389,7 +396,6 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
         ref={viewportRef}
         className="relative overflow-hidden rounded-lg border border-slate-700/50 bg-slate-950/50 cursor-grab active:cursor-grabbing select-none"
         style={{ height: 700 }}
-        onWheel={vp.onWheel}
         onMouseDown={(e) => { vp.onMouseDown(e); setSelectedDevice(null) }}
         onMouseMove={vp.onMouseMove}
         onMouseUp={vp.onMouseUp}
