@@ -506,6 +506,22 @@ export class TagReaderService extends EventEmitter {
   }
 
   /**
+   * Get the last cached value for a tag (from the polling loop, no fresh PLC read)
+   */
+  getCachedValue(name: string): number | null {
+    const tagState = this.tags.get(name);
+    if (!tagState) return null;
+    return tagState.value;
+  }
+
+  /**
+   * Check if a tag handle exists
+   */
+  hasTag(name: string): boolean {
+    return this.tags.has(name);
+  }
+
+  /**
    * Write a value to a tag
    */
   async writeTagValue(name: string, value: number): Promise<boolean> {
