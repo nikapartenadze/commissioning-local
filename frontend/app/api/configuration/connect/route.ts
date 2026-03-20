@@ -84,6 +84,8 @@ export async function POST(request: Request) {
       }
     });
 
+    let networkTags: Array<{ id: number; name: string; description?: string; tagType?: string }> = [];
+
     if (ios.length > 0) {
       const tags = ios.map(io => ({
         id: io.id,
@@ -93,7 +95,6 @@ export async function POST(request: Request) {
       }));
 
       // Also load network status tags (ConnectionFaulted) so they're polled in the same loop
-      const networkTags: typeof tags = [];
       try {
         const rings = await prisma.networkRing.findMany({
           include: { nodes: { include: { ports: true } } },
