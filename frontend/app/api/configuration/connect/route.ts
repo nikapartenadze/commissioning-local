@@ -91,9 +91,36 @@ export async function POST(request: Request) {
         description: io.description || undefined,
         tagType: io.tagType || undefined,
       }));
-      loadPlcTags(tags);
-      console.log(`[Connect API] Loaded ${tags.length} tags into PLC client`);
-      // Log first few tag names for debugging
+
+      // Also load network status tags (ConnectionFaulted) so they're polled in the same loop
+      const networkTags: typeof tags = [];
+      try {
+        const rings = await prisma.networkRing.findMany({
+          include: { nodes: { include: { ports: true } } },
+        });
+        let netId = -1; // Negative IDs to avoid collision with real IO IDs
+        for (const ring of rings) {
+          if (ring.mcmTag) {
+            networkTags.push({ id: netId--, name: ring.mcmTag, description: `MCM ${ring.mcmName} status`, tagType: 'network_status' });
+          }
+          for (const node of ring.nodes) {
+            if (node.statusTag) {
+              networkTags.push({ id: netId--, name: node.statusTag, description: `DPM ${node.name} status`, tagType: 'network_status' });
+            }
+            for (const port of node.ports) {
+              if (port.statusTag) {
+                networkTags.push({ id: netId--, name: port.statusTag, description: `${port.deviceName || 'Device'} status`, tagType: 'network_status' });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.log('[Connect API] No network topology data to load status tags');
+      }
+
+      const allTags = [...tags, ...networkTags];
+      loadPlcTags(allTags);
+      console.log(`[Connect API] Loaded ${tags.length} IO tags + ${networkTags.length} network status tags into PLC client`);
       console.log('[Connect API] Sample tag names:', tags.slice(0, 5).map(t => t.name));
     } else {
       console.log('[Connect API] No IOs found in database - pull IOs from cloud first');
