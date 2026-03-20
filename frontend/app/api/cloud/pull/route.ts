@@ -239,7 +239,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.error('[CloudPull] Error assigning tag types:', error)
     }
 
-    // After successful pull, update CloudSyncService config
+    // Persist cloud config to disk so it survives restarts
+    try {
+      const { configService } = await import('@/lib/config')
+      await configService.saveConfig({
+        remoteUrl: remoteUrl,
+        apiPassword: apiPassword,
+        subsystemId: String(subsystemId),
+      })
+      console.log('[CloudPull] Cloud config saved to config.json')
+    } catch (e) {
+      console.warn('[CloudPull] Failed to save config:', e)
+    }
+
+    // Update CloudSyncService in-memory config + mark connected
     try {
       const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
       const syncService = getCloudSyncService()
@@ -248,16 +261,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         apiPassword: apiPassword,
         subsystemId: subsystemId,
       })
+      syncService.setConnectionState('connected')
     } catch (e) {
       console.warn('[CloudPull] Failed to update sync service config:', e)
     }
-
-    // Mark cloud as connected since we successfully communicated
-    try {
-      const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
-      const syncService = getCloudSyncService()
-      syncService.setConnectionState('connected')
-    } catch (e) { /* ignore */ }
 
     // Broadcast to all clients to reload their IO data
     try {
