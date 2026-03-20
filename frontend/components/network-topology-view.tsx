@@ -68,7 +68,6 @@ function statusToHex(s: StatusColor): string {
   if (s === 'yellow') return '#eab308'
   return '#334155'
 }
-}
 
 function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' | 'md' }) {
   const colors = {
