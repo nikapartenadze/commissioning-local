@@ -1370,6 +1370,7 @@ export default function CommissioningPage() {
           onNo={handleValueChangeNo}
           onCancel={handleValueChangeCancel}
           onClearAll={handleClearAllDialogs}
+          onStopTesting={plcStatus.isTesting ? handleToggleTesting : undefined}
         />
 
         {/* Fail Comment Dialog - use current IO from array to get live state updates */}
