@@ -283,7 +283,7 @@ const PORT_FILL: Record<string, string> = {
   POINT_IO: '#27ae60', // emerald
 }
 
-function StarDiagram({ node }: { node: NetworkNode }) {
+function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record<string, boolean | null> }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const vp = useViewport(viewportRef)
   const [selectedDevice, setSelectedDevice] = useState<{ name: string; type: string; ip: string; port: number; x: number; y: number } | null>(null)
@@ -470,6 +470,12 @@ function StarDiagram({ node }: { node: NetworkNode }) {
                 >
                   {port.deviceName}
                 </text>
+                {/* Status indicator */}
+                {(() => {
+                  const s = getStatusColor(port.statusTag, tagStates)
+                  const fill = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#6b7280'
+                  return <circle cx={cx + DEVICE_W / 2 - 5} cy={DEVICE_Y + 5} r={3.5} fill={fill} stroke="#0f172a" strokeWidth={1} />
+                })()}
                 {/* Connector nub at bottom */}
                 <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={color} fillOpacity={0.6} />
               </g>
@@ -536,13 +542,21 @@ function StarDiagram({ node }: { node: NetworkNode }) {
 
             return (
               <g key={`dpm-port-${i}`}>
-                <circle cx={x} cy={y} r={DPM_PORT_R}
-                  fill={isConnected ? color : '#334155'} fillOpacity={isConnected ? 0.85 : 0.4}
-                  stroke={isConnected ? '#e2e8f0' : '#475569'} strokeWidth={isConnected ? 2 : 1}
-                />
-                {isConnected && (
-                  <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="#0f172a" strokeWidth={1.5} />
-                )}
+                {(() => {
+                  const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
+                  const strokeColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : isConnected ? '#e2e8f0' : '#475569'
+                  return (
+                    <>
+                      <circle cx={x} cy={y} r={DPM_PORT_R}
+                        fill={isConnected ? color : '#334155'} fillOpacity={isConnected ? 0.85 : 0.4}
+                        stroke={strokeColor} strokeWidth={isConnected ? 2.5 : 1}
+                      />
+                      {isConnected && (
+                        <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="#0f172a" strokeWidth={1.5} />
+                      )}
+                    </>
+                  )
+                })()}
                 <text x={x} y={y + 3.5} textAnchor="middle" fontSize={8} fontWeight="bold" fontFamily="monospace"
                   fill={isConnected ? '#fff' : '#64748b'}
                 >
@@ -725,7 +739,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
               {/* Expanded device grid */}
               {expandedNode && (
                 <div className="border-t border-slate-700/50 pt-3">
-                  <StarDiagram node={expandedNode} />
+                  <StarDiagram node={expandedNode} tagStates={tagStates} />
                 </div>
               )}
             </CardContent>
