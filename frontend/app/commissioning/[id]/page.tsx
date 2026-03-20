@@ -548,10 +548,19 @@ export default function CommissioningPage() {
     }
   }, [signalR.onReconnected, signalR.offReconnected])
 
-  // Track SignalR connected state for UI purposes
+  // Track SignalR connected state for UI purposes (with debounce to avoid flashing on transient disconnects)
+  const [showWsWarning, setShowWsWarning] = useState(false)
+  const wsWarningTimer = useRef<NodeJS.Timeout | null>(null)
   useEffect(() => {
     if (signalR.isConnected) {
       setSignalRWasConnected(true)
+      setShowWsWarning(false)
+      if (wsWarningTimer.current) { clearTimeout(wsWarningTimer.current); wsWarningTimer.current = null }
+    } else if (signalRWasConnected) {
+      // Only show warning after 5 seconds of sustained disconnect
+      wsWarningTimer.current = setTimeout(() => setShowWsWarning(true), 5000)
+    }
+    return () => { if (wsWarningTimer.current) clearTimeout(wsWarningTimer.current) }
       if (DEBUG_OTHER) {
         console.log('🔗 WebSocket connected - listening for real-time IO updates')
       }
@@ -1222,7 +1231,7 @@ export default function CommissioningPage() {
       </header>
 
       {/* SignalR Connection Warning - Shows when real-time updates are disconnected */}
-      {signalRWasConnected && !signalR.isConnected && (
+      {showWsWarning && !signalR.isConnected && (
         <div className="bg-amber-500/10 border-b border-amber-500/30 px-2 sm:px-4 py-1.5 sm:py-2 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
