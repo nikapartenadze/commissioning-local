@@ -10,12 +10,12 @@
 
 ### 1.1 — Server Setup
 
-The server PC is the Windows machine that will run the app. All tablets/laptops connect to it.
+Each technician runs the app on their own laptop. Unzip the release and run.
 
 | # | Step | Done? | Notes |
 |---|------|-------|-------|
-| 1 | Copy the `portable/` folder to the server PC (e.g., `C:\IOCheckout`) | | |
-| 2 | Double-click `START.bat` | | |
+| 1 | Download the release zip and unzip it to any folder (e.g., `C:\IOCheckout`) | | |
+| 2 | Double-click `START.bat` inside the unzipped folder | | |
 | 3 | First run: Windows will ask for admin permission (firewall) — click **Yes** | | |
 | 4 | Wait for the console to show "IO Checkout Tool" with the URL and IP addresses | | |
 | 5 | Note the server IP shown in the console | IP: _______ | |
