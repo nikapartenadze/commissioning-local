@@ -135,7 +135,9 @@ export function getPlcClient(): PlcClient {
 function setupClientEventListeners(client: PlcClient): void {
   // Broadcast IO state changes (deduplicated - only fires on actual state transitions)
   client.on('ioStateChanged', (io, oldState, newState) => {
-    console.log(`[PlcClientManager] IO ${io.id} (${io.name}): ${oldState} -> ${newState}`);
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[PlcClientManager] IO ${io.id} (${io.name}): ${oldState} -> ${newState}`);
+    }
     broadcastToWebSocket({
       type: 'UpdateState',
       id: io.id,

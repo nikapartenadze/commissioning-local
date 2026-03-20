@@ -245,6 +245,75 @@ export function PlcConfigDialog({
           setPullStatus({ type: 'success', message: `Pulled ${result.ioCount} IOs` })
           onCloudPull(localConfig)
         }
+      } else if (response.status === 409) {
+        // Pending syncs blocking the pull — offer force option
+        let errorData: any = {}
+        try { errorData = await response.json() } catch {}
+        const msg = errorData.error || 'Unsynced test results exist'
+        addPullLog(`BLOCKED: ${msg}`)
+        addPullLog('Attempting to sync pending results first...')
+        setPullStatus({ type: 'loading', message: 'Syncing pending results...' })
+
+        // Try to sync first, then retry pull
+        try {
+          const syncRes = await authFetch(API_ENDPOINTS.cloudSync, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              remoteUrl: localConfig.remoteUrl,
+              apiPassword: localConfig.apiPassword,
+            }),
+          })
+          if (syncRes.ok) {
+            const syncResult = await syncRes.json()
+            addPullLog(`Synced ${syncResult.syncedCount} results to cloud`)
+
+            // Retry pull with force flag in case some syncs still failed
+            addPullLog('Retrying pull...')
+            const retryRes = await authFetch(API_ENDPOINTS.cloudPull, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                remoteUrl: localConfig.remoteUrl || "",
+                apiPassword: localConfig.apiPassword || "",
+                subsystemId: localConfig.subsystemId,
+                force: true,
+              }),
+            })
+            if (retryRes.ok) {
+              const retryResult = await retryRes.json()
+              addPullLog(`Pulled ${retryResult.ioCount} IOs`)
+              setPullStatus({ type: 'success', message: `Synced & pulled ${retryResult.ioCount} IOs` })
+              onCloudPull(localConfig)
+            } else {
+              setPullStatus({ type: 'error', message: 'Pull failed after sync' })
+            }
+          } else {
+            addPullLog('Sync failed — pulling with force flag...')
+            // Sync failed (cloud unreachable?) — force pull anyway, backup was created
+            const forceRes = await authFetch(API_ENDPOINTS.cloudPull, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                remoteUrl: localConfig.remoteUrl || "",
+                apiPassword: localConfig.apiPassword || "",
+                subsystemId: localConfig.subsystemId,
+                force: true,
+              }),
+            })
+            if (forceRes.ok) {
+              const forceResult = await forceRes.json()
+              addPullLog(`Force-pulled ${forceResult.ioCount} IOs (backup created)`)
+              setPullStatus({ type: 'success', message: `Pulled ${forceResult.ioCount} IOs` })
+              onCloudPull(localConfig)
+            } else {
+              setPullStatus({ type: 'error', message: 'Force pull also failed' })
+            }
+          }
+        } catch (syncErr: any) {
+          addPullLog(`Sync attempt failed: ${syncErr.message}`)
+          setPullStatus({ type: 'error', message: msg })
+        }
       } else {
         let errorMsg = ''
         try {
