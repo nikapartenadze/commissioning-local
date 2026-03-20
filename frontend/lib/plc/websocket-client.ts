@@ -39,6 +39,7 @@ export interface CommentUpdate {
 export interface NetworkStatusUpdate {
   moduleName: string
   status: string
+  reconnecting?: boolean
   errorCount: number
 }
 
@@ -257,10 +258,12 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
 
         case 'NetworkStatusChanged': {
           const netMsg = message as NetworkStatusChangedMessage
+          const isOnline = netMsg.status === 'connected' || netMsg.isOnline === true
           const update: NetworkStatusUpdate = {
             moduleName: netMsg.moduleName,
-            status: netMsg.isOnline ? 'online' : 'offline',
-            errorCount: netMsg.affectedTags?.length ?? 0
+            status: netMsg.reconnecting ? 'reconnecting' : isOnline ? 'online' : 'offline',
+            reconnecting: netMsg.reconnecting ?? false,
+            errorCount: netMsg.errorCount ?? netMsg.affectedTags?.length ?? 0,
           }
           networkStatusCallbacksRef.current.forEach((cb) => {
             try {

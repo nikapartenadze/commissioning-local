@@ -130,6 +130,41 @@ export async function PUT(
       })
     ])
 
+    // Queue for cloud sync + attempt immediate sync
+    try {
+      const pendingSync = await prisma.pendingSync.create({
+        data: {
+          ioId,
+          inspectorName: currentUser || null,
+          testResult: updatedIo.result || null,
+          comments: (sanitizedComments !== undefined ? sanitizedComments : io.comments) || null,
+          state: plcState || null,
+          timestamp: new Date(),
+          version: updatedIo.version,
+        },
+      })
+
+      try {
+        const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
+        const synced = await getCloudSyncService().syncIoUpdate({
+          id: ioId,
+          result: updatedIo.result || null,
+          comments: (sanitizedComments !== undefined ? sanitizedComments : io.comments) || null,
+          testedBy: currentUser || null,
+          state: plcState || null,
+          version: Number(updatedIo.version),
+          timestamp: new Date().toISOString(),
+        })
+        if (synced) {
+          await prisma.pendingSync.delete({ where: { id: pendingSync.id } }).catch(() => {})
+        }
+      } catch {
+        // Immediate sync failed — PendingSync stays in queue
+      }
+    } catch (syncError) {
+      console.error('[IO Update] Failed to create PendingSync:', syncError)
+    }
+
     return NextResponse.json({
       success: true,
       io: {

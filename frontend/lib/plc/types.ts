@@ -313,8 +313,11 @@ export interface CommentUpdateMessage {
 export interface NetworkStatusChangedMessage {
   type: 'NetworkStatusChanged'
   moduleName: string
-  isOnline: boolean
-  affectedTags: number[]
+  isOnline?: boolean
+  status?: string
+  reconnecting?: boolean
+  affectedTags?: number[]
+  errorCount?: number
 }
 
 export interface ErrorEventMessage {
