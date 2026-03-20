@@ -120,7 +120,17 @@ export async function POST(
       // Attempt immediate sync — if it succeeds, remove from queue
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
-        const synced = await getCloudSyncService().syncIoUpdate({
+        const { configService } = await import('@/lib/config')
+        const config = await configService.getConfig()
+        const syncService = getCloudSyncService()
+        // Ensure cloud URL is set from config (may not be set if app just started)
+        if (config.remoteUrl && !syncService.getConfig().remoteUrl) {
+          syncService.updateConfig({
+            remoteUrl: config.remoteUrl,
+            apiPassword: config.apiPassword,
+          })
+        }
+        const synced = await syncService.syncIoUpdate({
           id: ioId,
           result: normalizedResult,
           comments: sanitizedComments || null,
