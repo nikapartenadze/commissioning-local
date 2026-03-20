@@ -419,11 +419,13 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
             )
           })}
 
-          {/* ── Device cards: all blue, click for info ── */}
+          {/* ── Device cards: blue header, green/red body based on status ── */}
           {connectedPorts.map((port, devIdx) => {
             const cx = devCx(devIdx)
             const deviceType = getDeviceType(port.deviceName || '')
-            const cardColor = '#3b82f6' // blue for all devices
+            const headerColor = '#3b82f6' // blue header strip
+            const s = getStatusColor(port.statusTag, tagStates)
+            const bodyColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#64748b'
 
             return (
               <g key={`dev-${port.id}`} className="cursor-pointer" onClick={(e) => {
@@ -438,18 +440,21 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                   y: e.clientY - rect.top,
                 })
               }}>
+                {/* Card body — green/red based on status */}
                 <rect
                   x={cx - DEVICE_W / 2} y={DEVICE_Y}
                   width={DEVICE_W} height={DEVICE_H}
                   rx={4}
-                  fill="#0f172a"
-                  stroke={cardColor} strokeWidth={1.5} strokeOpacity={0.7}
+                  fill={bodyColor} fillOpacity={0.1}
+                  stroke={bodyColor} strokeWidth={1.5} strokeOpacity={0.7}
                 />
-                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={16} rx={4} fill={cardColor} fillOpacity={0.15} />
-                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y + 12} width={DEVICE_W} height={4} fill={cardColor} fillOpacity={0.15} />
-                <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill={cardColor}>
+                {/* Blue header strip (device type) */}
+                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={16} rx={4} fill={headerColor} fillOpacity={0.3} />
+                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y + 12} width={DEVICE_W} height={4} fill={headerColor} fillOpacity={0.3} />
+                <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill={headerColor}>
                   {deviceType}
                 </text>
+                {/* Device name */}
                 <text
                   x={cx} y={DEVICE_Y + 24}
                   textAnchor="start"
@@ -458,7 +463,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                 >
                   {port.deviceName}
                 </text>
-                <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={cardColor} fillOpacity={0.6} />
+                <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={bodyColor} fillOpacity={0.6} />
               </g>
             )
           })}
