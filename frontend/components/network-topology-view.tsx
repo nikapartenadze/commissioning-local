@@ -507,15 +507,22 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           </text>
 
           {/* ── DPM label (outside, above card) ── */}
-          <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 12} textAnchor="middle" fontSize={11} fontWeight="bold" className="fill-blue-300">
-            {node.name}
-          </text>
-          <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 24} textAnchor="middle" fontSize={8} fontFamily="monospace" className="fill-gray-500">
-            DATA POWER MODULE
-          </text>
-
-          {/* ── DPM block (visual reference only) ── */}
-          <rect x={dpmX} y={DPM_Y} width={dpmW} height={dpmH} rx={8} fill="#1e293b" stroke="#475569" strokeWidth={2} />
+          {(() => {
+            const dpmStatus = getStatusColor(node.statusTag, tagStates)
+            const dpmStroke = dpmStatus === 'green' ? '#22c55e' : dpmStatus === 'red' ? '#ef4444' : '#475569'
+            const dpmLabelColor = dpmStatus === 'green' ? '#22c55e' : dpmStatus === 'red' ? '#ef4444' : '#93c5fd'
+            return (
+              <>
+                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 12} textAnchor="middle" fontSize={11} fontWeight="bold" fill={dpmLabelColor}>
+                  {node.name}
+                </text>
+                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 24} textAnchor="middle" fontSize={8} fontFamily="monospace" className="fill-gray-500">
+                  DATA POWER MODULE
+                </text>
+                <rect x={dpmX} y={DPM_Y} width={dpmW} height={dpmH} rx={8} fill="#1e293b" stroke={dpmStroke} strokeWidth={2} />
+              </>
+            )
+          })()}
 
           {/* Port circles inside DPM — green/red based on status */}
           {allPorts.map((_, i) => {
