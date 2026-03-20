@@ -122,7 +122,7 @@ export async function POST(
           comments: historyComment || null,
           state: plcState || null,
           timestamp: new Date(),
-          version: updatedIo.version,
+          version: updatedIo.version - BigInt(1), // Pre-increment version to match cloud
         },
       })
 
@@ -141,7 +141,7 @@ export async function POST(
           comments: historyComment || null,
           testedBy: currentUser || null,
           state: plcState || null,
-          version: Number(updatedIo.version),
+          version: Number(updatedIo.version) - 1, // Send pre-increment version to match cloud
           timestamp: new Date().toISOString(),
         })
         if (synced) {
