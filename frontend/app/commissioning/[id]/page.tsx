@@ -1075,10 +1075,7 @@ export default function CommissioningPage() {
     logger.log('PLC connect triggered with config:', newConfig)
     setPlcConfig(newConfig)
 
-    // Refetch IOs from backend (non-blocking — don't await to avoid dialog reset)
-    loadIos()
-
-    // Connect SignalR for real-time PLC updates
+    // Connect SignalR for real-time PLC updates (IOs already loaded, no need to refetch)
     if (!signalR.isConnected) {
       signalR.connect()
     }
