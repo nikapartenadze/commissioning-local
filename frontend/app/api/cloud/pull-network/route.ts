@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
     const config = await configService.getConfig()
     const remoteUrl = config.remoteUrl
     const apiPassword = config.apiPassword
-    const subsystemId = config.subsystemId
+    const subsystemId = typeof config.subsystemId === 'string' ? parseInt(config.subsystemId, 10) : config.subsystemId
 
     if (!remoteUrl) {
       return NextResponse.json({ success: false, error: 'Cloud URL not configured' }, { status: 400 })
