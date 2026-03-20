@@ -404,26 +404,26 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
             transformOrigin: '0 0',
           }}
         >
-          {/* ── Cable lines: device → port number box (vertical) ── */}
+          {/* ── Cable lines: green/red based on device status ── */}
           {connectedPorts.map((port) => {
             const psx = portStripCx(port.portNumber)
-            const deviceType = getDeviceType(port.deviceName || '')
-            const color = PORT_FILL[deviceType] || '#64748b'
+            const s = getStatusColor(port.statusTag, tagStates)
+            const lineColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#64748b'
 
             return (
               <line key={`cable-${port.id}`}
                 x1={psx} y1={DEVICE_Y + DEVICE_H}
                 x2={psx} y2={PORT_STRIP_Y}
-                stroke={color} strokeWidth={1.5} strokeOpacity={0.5}
+                stroke={lineColor} strokeWidth={1.5} strokeOpacity={0.7}
               />
             )
           })}
 
-          {/* ── Thin device cards with rotated text ── */}
+          {/* ── Device cards: all blue, click for info ── */}
           {connectedPorts.map((port, devIdx) => {
             const cx = devCx(devIdx)
             const deviceType = getDeviceType(port.deviceName || '')
-            const color = PORT_FILL[deviceType] || '#64748b'
+            const cardColor = '#3b82f6' // blue for all devices
 
             return (
               <g key={`dev-${port.id}`} className="cursor-pointer" onClick={(e) => {
@@ -438,30 +438,18 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                   y: e.clientY - rect.top,
                 })
               }}>
-                {/* Card body */}
                 <rect
                   x={cx - DEVICE_W / 2} y={DEVICE_Y}
                   width={DEVICE_W} height={DEVICE_H}
                   rx={4}
                   fill="#0f172a"
-                  stroke={color} strokeWidth={1.5} strokeOpacity={0.7}
+                  stroke={cardColor} strokeWidth={1.5} strokeOpacity={0.7}
                 />
-                {/* Colored top strip for device type */}
-                <rect
-                  x={cx - DEVICE_W / 2} y={DEVICE_Y}
-                  width={DEVICE_W} height={16}
-                  rx={4} fill={color} fillOpacity={0.2}
-                />
-                <rect
-                  x={cx - DEVICE_W / 2} y={DEVICE_Y + 12}
-                  width={DEVICE_W} height={4}
-                  fill={color} fillOpacity={0.2}
-                />
-                {/* Type label (horizontal, fits in header) */}
-                <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill={color}>
+                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={16} rx={4} fill={cardColor} fillOpacity={0.15} />
+                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y + 12} width={DEVICE_W} height={4} fill={cardColor} fillOpacity={0.15} />
+                <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill={cardColor}>
                   {deviceType}
                 </text>
-                {/* Device name — rotated 90° */}
                 <text
                   x={cx} y={DEVICE_Y + 24}
                   textAnchor="start"
@@ -470,25 +458,18 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                 >
                   {port.deviceName}
                 </text>
-                {/* Status indicator */}
-                {(() => {
-                  const s = getStatusColor(port.statusTag, tagStates)
-                  const fill = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#6b7280'
-                  return <circle cx={cx + DEVICE_W / 2 - 5} cy={DEVICE_Y + 5} r={3.5} fill={fill} stroke="#0f172a" strokeWidth={1} />
-                })()}
-                {/* Connector nub at bottom */}
-                <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={color} fillOpacity={0.6} />
+                <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={cardColor} fillOpacity={0.6} />
               </g>
             )
           })}
 
-          {/* ── Port reference strip ── */}
+          {/* ── Port reference strip: green/red based on status ── */}
           {allPorts.map((port, i) => {
             const portNum = i + 1
             const cx = portStripCx(portNum)
             const isConnected = !!port?.deviceName
-            const deviceType = isConnected ? getDeviceType(port!.deviceName!) : null
-            const color = deviceType ? PORT_FILL[deviceType] || '#64748b' : '#334155'
+            const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
+            const statusColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : '#334155'
 
             return (
               <g key={`strip-${i}`}>
@@ -496,16 +477,16 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                   x={cx - PORT_RECT_W / 2} y={PORT_STRIP_Y}
                   width={PORT_RECT_W} height={PORT_RECT_H}
                   rx={3}
-                  fill={isConnected ? color : '#1e293b'}
-                  fillOpacity={isConnected ? 0.2 : 0.5}
-                  stroke={isConnected ? color : '#334155'}
+                  fill={isConnected ? statusColor : '#1e293b'}
+                  fillOpacity={isConnected ? 0.15 : 0.5}
+                  stroke={isConnected ? statusColor : '#334155'}
                   strokeWidth={isConnected ? 1.5 : 1}
-                  strokeOpacity={isConnected ? 0.7 : 0.4}
+                  strokeOpacity={isConnected ? 0.8 : 0.4}
                 />
                 <text
                   x={cx} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
                   textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace"
-                  fill={isConnected ? '#e2e8f0' : '#64748b'}
+                  fill={isConnected ? (s === 'gray' ? '#e2e8f0' : statusColor) : '#64748b'}
                 >
                   {portNum}
                 </text>
@@ -531,32 +512,24 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           {/* ── DPM block (visual reference only) ── */}
           <rect x={dpmX} y={DPM_Y} width={dpmW} height={dpmH} rx={8} fill="#1e293b" stroke="#475569" strokeWidth={2} />
 
-          {/* Port circles inside DPM — column-by-column, 4 rows, no empties */}
+          {/* Port circles inside DPM — green/red based on status */}
           {allPorts.map((_, i) => {
             const portNum = i + 1
             const { x, y } = dpmPortPos(portNum)
             const port = allPorts[i]
             const isConnected = !!port?.deviceName
-            const deviceType = isConnected ? getDeviceType(port!.deviceName!) : null
-            const color = deviceType ? PORT_FILL[deviceType] || '#64748b' : '#334155'
+            const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
+            const portColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : isConnected ? '#3b82f6' : '#334155'
 
             return (
               <g key={`dpm-port-${i}`}>
-                {(() => {
-                  const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
-                  const strokeColor = s === 'green' ? '#22c55e' : s === 'red' ? '#ef4444' : isConnected ? '#e2e8f0' : '#475569'
-                  return (
-                    <>
-                      <circle cx={x} cy={y} r={DPM_PORT_R}
-                        fill={isConnected ? color : '#334155'} fillOpacity={isConnected ? 0.85 : 0.4}
-                        stroke={strokeColor} strokeWidth={isConnected ? 2.5 : 1}
-                      />
-                      {isConnected && (
-                        <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="#0f172a" strokeWidth={1.5} />
-                      )}
-                    </>
-                  )
-                })()}
+                <circle cx={x} cy={y} r={DPM_PORT_R}
+                  fill={portColor} fillOpacity={isConnected ? 0.85 : 0.4}
+                  stroke={isConnected ? '#e2e8f0' : '#475569'} strokeWidth={isConnected ? 2 : 1}
+                />
+                {isConnected && (
+                  <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="#0f172a" strokeWidth={1.5} />
+                )}
                 <text x={x} y={y + 3.5} textAnchor="middle" fontSize={8} fontWeight="bold" fontFamily="monospace"
                   fill={isConnected ? '#fff' : '#64748b'}
                 >
