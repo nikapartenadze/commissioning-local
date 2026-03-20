@@ -36,21 +36,21 @@ export async function GET(): Promise<NextResponse<CloudSyncStatusResponse>> {
     }
     const config = cloudSyncService.getConfig()
 
-    // Determine connection status
-    let connected = cloudSyncService.isConnected
+    // Determine connection status — always do a health check if URL is configured
+    let connected = false
     let error: string | undefined
 
-    // If we have a remote URL configured, check actual connectivity
-    if (config.remoteUrl && !connected) {
+    if (config.remoteUrl) {
       try {
         connected = await cloudSyncService.isCloudAvailable()
+        if (connected) {
+          cloudSyncService.setConnectionState('connected')
+        }
       } catch (e) {
         error = e instanceof Error ? e.message : 'Connection check failed'
-        connected = false
       }
-    } else if (!config.remoteUrl) {
+    } else {
       error = 'Remote URL not configured'
-      connected = false
     }
 
     // Get stats for additional info
