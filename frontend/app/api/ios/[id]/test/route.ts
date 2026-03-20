@@ -103,9 +103,9 @@ export async function POST(
       })
     ])
 
-    // Create PendingSync entry for cloud sync (outside transaction so failure doesn't roll back test)
+    // Create PendingSync entry as fallback, then attempt immediate cloud sync
     try {
-      await prisma.pendingSync.create({
+      const pendingSync = await prisma.pendingSync.create({
         data: {
           ioId,
           inspectorName: currentUser || null,
@@ -116,6 +116,25 @@ export async function POST(
           version: updatedIo.version,
         },
       })
+
+      // Attempt immediate sync — if it succeeds, remove from queue
+      try {
+        const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
+        const synced = await getCloudSyncService().syncIoUpdate({
+          id: ioId,
+          result: normalizedResult,
+          comments: sanitizedComments || null,
+          testedBy: currentUser || null,
+          state: plcState || null,
+          version: Number(updatedIo.version),
+          timestamp: new Date().toISOString(),
+        })
+        if (synced) {
+          await prisma.pendingSync.delete({ where: { id: pendingSync.id } }).catch(() => {})
+        }
+      } catch {
+        // Immediate sync failed — PendingSync stays in queue for auto-sync retry
+      }
     } catch (syncError) {
       console.error('[Test] Failed to create PendingSync:', syncError)
     }
