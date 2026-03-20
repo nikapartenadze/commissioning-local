@@ -9,7 +9,8 @@ Industrial I/O commissioning application for testing and validating PLC Input/Ou
 3. State changes are broadcast via WebSocket to all connected browsers in real-time
 4. When an input transitions (FALSE → TRUE), a dialog prompts the technician to mark Pass/Fail
 5. Failed tests show diagnostic troubleshooting steps (Help button) based on device type
-6. Results are stored locally; sync to cloud is triggered manually when testing is complete
+6. Results sync to cloud instantly on every action, with 30s background retry as fallback
+7. Other technicians' results merge into your view every 60 seconds
 
 ## Prerequisites
 
@@ -126,23 +127,21 @@ The script automatically downloads and bundles:
 
 ### Deploying to the Factory Server
 
-1. Copy the `portable/` folder to the server PC (e.g., `C:\IOCheckout`)
+1. Download the release zip and unzip it to any folder (e.g., `C:\IOCheckout`)
 2. Double-click `START.bat`
 
-That's it. On first run, START.bat automatically:
+That's it. Each technician can run their own copy — no dedicated server needed. On first run, START.bat automatically:
 - Opens firewall ports 3000 + 3002 (prompts for admin permission once)
-- Creates the SQLite database
-- Starts the app
+- Starts the app (database, admin user, and diagnostic data are created on first login)
 
 ### Running in Production
 
 | Script | What it does |
 |--------|-------------|
-| `START.bat` | Starts the app (auto-setup on first run) |
-| `STOP.bat` | Stops the app |
+| `START.bat` | Starts the app (close the window to stop) |
 | `STATUS.bat` | Shows if running, prints tablet access URLs |
-| `SEED-DIAGNOSTICS.bat` | Load troubleshooting help data (optional, one-time) |
-| `SEED-NETWORK.bat` | Load network topology test data (optional, one-time) |
+| `SETUP-FIREWALL.bat` | Open firewall ports (auto-runs on first start) |
+| `SEED-NETWORK.bat` | Load network topology test data (optional) |
 
 Technicians open `http://SERVER_IP:3000` on their tablets (run `STATUS.bat` to see the IP).
 
@@ -204,13 +203,21 @@ Runs the app on port 3000 inside a container.
 
 ### Multi-User Architecture
 
-- **5+ technicians can work simultaneously** from different tablets/laptops
-- The PLC connection runs on the server — users cannot disconnect or change it
+**Single server mode:** 5+ technicians connect to one server from different tablets/laptops.
+
+**Multi-server mode:** Each technician runs their own portable copy. No dedicated server needed. Results sync via cloud:
+- Push: instant on every action + 30s background fallback
+- Pull: every 60 seconds, other users' results merge into your view
+- Your results are never overwritten by cloud — local always takes priority
+- See `SYNC-ARCHITECTURE.md` for full details
+
+**Common to both modes:**
 - Each user has their own START/STOP testing state (one person stopping doesn't affect others)
-- All users see the same real-time PLC tag states via WebSocket
+- All users see real-time PLC tag states via WebSocket
 - Firing outputs is safe for concurrent use (per-tag write handles, no shared state)
 - Test results record who tested each I/O point (`testedBy` field in history)
-- Admin actions (pull IOs, connect/disconnect PLC) broadcast to all clients instantly
+- PLC auto-reconnects every 5 seconds on connection loss — no admin intervention needed
+- Cloud config (URL, password, subsystem) persists across restarts
 
 ### Role Permissions
 
@@ -336,13 +343,13 @@ local-tool/
 │   └── server.dev.js            # Dev server (spawns Next.js + WebSocket as children)
 ├── deploy/                      # Factory deployment scripts
 │   ├── BUILD-PORTABLE.bat       # Build portable distribution
-│   ├── START.bat / STOP.bat     # Start/stop the app
-│   ├── STATUS.bat               # Check status, show IPs
-│   └── SETUP-FIREWALL.bat       # Open firewall ports (run once as admin)
+│   └── SETUP-FIREWALL.bat       # Open firewall ports (bundled into portable)
 ├── docker/                      # Docker deployment
 │   ├── docker-compose.yml
 │   └── Dockerfile.frontend
 ├── CLAUDE.md                    # Detailed architecture reference (for AI tools)
+├── SYNC-ARCHITECTURE.md         # Sync architecture & data persistence report
+├── TEST-PLAN.md / .html / .xlsx # Field test plan (multiple formats)
 └── README.md                    # This file
 ```
 
