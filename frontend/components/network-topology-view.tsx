@@ -545,14 +545,36 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
       setLoading(true)
       setError(null)
       try {
+        // 1. Try local data first
         const params = subsystemId ? `?subsystemId=${subsystemId}` : ''
         const res = await authFetch(`${API_ENDPOINTS.networkTopology}${params}`)
         const data: TopologyResponse = await res.json()
-        if (data.success) {
+
+        if (data.success && data.rings.length > 0) {
           setRings(data.rings)
-        } else {
-          setError(data.error || 'Failed to load topology')
+          return
         }
+
+        // 2. No local data — try pulling from cloud (uses saved config)
+        try {
+          const pullRes = await authFetch('/api/cloud/pull-network', { method: 'POST' })
+          const pullData = await pullRes.json()
+
+          if (pullData.success && pullData.rings > 0) {
+            // Re-fetch local data after cloud pull
+            const res2 = await authFetch(`${API_ENDPOINTS.networkTopology}${params}`)
+            const data2: TopologyResponse = await res2.json()
+            if (data2.success) {
+              setRings(data2.rings)
+              return
+            }
+          }
+        } catch {
+          // Cloud pull failed — not an error, just no data
+        }
+
+        // 3. No data anywhere
+        setRings([])
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Network error')
       } finally {
