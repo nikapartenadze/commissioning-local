@@ -53,9 +53,12 @@ interface TopologyResponse {
 
 type StatusColor = 'green' | 'red' | 'gray'
 
-function getStatusColor(statusTag: string | null): StatusColor {
+// tagStates: map of tagName → faulted (true = faulted/red, false = healthy/green, null = unknown)
+function getStatusColor(statusTag: string | null, tagStates: Record<string, boolean | null>): StatusColor {
   if (!statusTag) return 'gray'
-  return 'green'
+  const value = tagStates[statusTag]
+  if (value === null || value === undefined) return 'gray'
+  return value ? 'red' : 'green' // ConnectionFaulted: true = faulted, false = healthy
 }
 
 function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' | 'md' }) {
@@ -95,10 +98,12 @@ function RingLayout({
   ring,
   expandedNodeId,
   onToggleNode,
+  tagStates,
 }: {
   ring: NetworkRing
   expandedNodeId: number | null
   onToggleNode: (id: number) => void
+  tagStates: Record<string, boolean | null>
 }) {
   const nodes = ring.nodes
   const containerRef = useRef<HTMLDivElement>(null)
@@ -132,7 +137,7 @@ function RingLayout({
           <div className="shrink-0" ref={mcmRef}>
             <div className="relative rounded-lg border-2 border-blue-500/50 bg-blue-950/60 px-5 py-4 min-w-[170px] text-center">
               <div className="absolute top-2 right-2">
-                <StatusDot status={ring.mcmTag ? 'green' : 'gray'} size="md" />
+                <StatusDot status={getStatusColor(ring.mcmTag, tagStates)} size="md" />
               </div>
               <p className="text-sm font-bold text-blue-300">{ring.mcmName}</p>
               <p className="text-xs font-mono text-blue-400/70 mt-0.5">{ring.mcmIp || ''}</p>
@@ -145,7 +150,7 @@ function RingLayout({
           {/* Connecting lines + DPM nodes */}
           {nodes.map((node, idx) => {
             const isExpanded = expandedNodeId === node.id
-            const status = getStatusColor(node.statusTag)
+            const status = getStatusColor(node.statusTag, tagStates)
             const deviceCount = node.ports.filter((p) => p.deviceName).length
             const isLast = idx === nodes.length - 1
 
@@ -583,6 +588,30 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedNodeId, setExpandedNodeId] = useState<number | null>(null)
+  const [tagStates, setTagStates] = useState<Record<string, boolean | null>>({})
+
+  // Poll PLC for network device status tags every 3 seconds
+  useEffect(() => {
+    if (rings.length === 0) return
+    let cancelled = false
+
+    async function pollStatus() {
+      try {
+        const params = subsystemId ? `?subsystemId=${subsystemId}` : ''
+        const res = await authFetch(`/api/network/status${params}`)
+        const data = await res.json()
+        if (!cancelled && data.success && data.tags) {
+          setTagStates(data.tags)
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    }
+
+    pollStatus()
+    const interval = setInterval(pollStatus, 3000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [rings, subsystemId])
 
   useEffect(() => {
     async function fetchTopology() {
@@ -685,6 +714,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                   ring={ring}
                   expandedNodeId={expandedNodeId}
                   onToggleNode={handleToggleNode}
+                  tagStates={tagStates}
                 />
               </div>
 
