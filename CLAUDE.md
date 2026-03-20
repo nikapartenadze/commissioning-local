@@ -42,8 +42,8 @@ npm run seed:network              # Optional: seed network topology test data
 ```bash
 cd frontend
 
-npm run dev          # Start dev server (Next.js :3020 + WebSocket :3002)
-npm run dev:next     # Next.js only (port 3020, no real-time PLC updates)
+npm run dev          # Start dev server (Next.js :3000 + WebSocket :3002)
+npm run dev:next     # Next.js only (port 3000, no real-time PLC updates)
 npm run dev:ws       # WebSocket server only (port 3002)
 npm run build        # Production build (standalone output)
 npm run lint         # ESLint
@@ -93,7 +93,7 @@ npx tsx prisma/assign-tag-types.ts  # Auto-assign tag types from IO descriptions
 │   │       ├── history/             # Test history (all + per-IO + CSV export)
 │   │       ├── users/               # User CRUD, reset PIN, toggle active
 │   │       ├── diagnostics/         # Failure modes, troubleshooting steps
-│   │       ├── network/             # DLR ring topology, chain status
+│   │       ├── network/             # DLR ring topology, chain status, live PLC status
 │   │       ├── change-requests/     # IO change requests (CRUD)
 │   │       ├── backups/             # Database backup create/download/delete/sync
 │   │       ├── simulator/           # Enable, disable, status
@@ -162,6 +162,14 @@ PLC client, Prisma, and ConfigurationService all use `globalThis` to persist acr
 - Toolbar shows amber "Reconnecting" indicator during retry
 - Intentional disconnect (clicking disconnect) stops auto-reconnect
 
+### Network Topology
+- Ring layout (DLR loop) + star diagram (DPM port detail) with pan/zoom viewport
+- Live PLC status: `ConnectionFaulted` tags preloaded on PLC connect (negative IDs, invisible to IO testing)
+- Cached reads via `readTagCached()` from the 75ms polling loop — no fresh PLC I/O per request
+- Auto-pulls network data from cloud if local SQLite is empty (uses saved cloud config)
+- Colors: green (healthy), red (faulted), yellow (unreachable), gray (not monitored)
+- Supports light and dark mode via CSS variables
+
 ### Test Result Recording
 `POST /api/ios/[id]/test` — transactional update of IO record + TestHistory creation. Every test attempt is permanently recorded in the audit trail (TestHistory), even if later retested or overwritten by sync.
 
@@ -196,8 +204,7 @@ Schema: `frontend/prisma/schema.prisma`. Run `npx prisma generate` after changes
 
 | Port | Context | Purpose |
 |------|---------|---------|
-| 3020 | Development | Next.js dev server |
-| 3000 | Production | Next.js production server |
+| 3000 | Both | Next.js server (dev and production) |
 | 3002 | Both | WebSocket server (PLC state broadcasts) |
 | 3102 | Both | Internal HTTP broadcast API (localhost only, WS_PORT+100) |
 
