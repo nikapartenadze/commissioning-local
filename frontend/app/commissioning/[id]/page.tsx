@@ -649,7 +649,8 @@ export default function CommissioningPage() {
 
   const loadIos = async () => {
     try {
-      setLoading(true)
+      // Only show full-page loading spinner on initial load (no IOs yet)
+      if (ios.length === 0) setLoading(true)
       // Load IOs from backend (real PLC data) - retry on failure
       const response = await fetchWithRetry(API_ENDPOINTS.ios)
       if (response.ok) {
