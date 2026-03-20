@@ -1,6 +1,6 @@
 # IO Checkout Tool — Sync Architecture & Data Persistence
 
-**Version:** 3.0
+**Version:** 3.1
 **Date:** 2026-03-20
 **Purpose:** Explain how data syncing works when multiple technicians run independent copies of the tool on the same subsystem.
 
@@ -136,9 +136,13 @@ This covers the common scenario where power is lost to the panel, router, or ser
 ### You click "Pull IOs from Cloud" manually
 - This is different from the automatic 60-second pull.
 - It **replaces** all local IO data with fresh cloud data.
-- The app **warns you** if you have unsynced test results and blocks the pull until you sync.
+- If you have unsynced test results, the app **automatically syncs them to cloud first**, then pulls. No manual steps needed.
 - A backup of the database is created automatically before the pull.
 - After the pull, your IOs are fresh from cloud (including any test results other people have synced).
+
+### Cloud settings after restart
+- Your cloud URL, API password, and subsystem ID are saved to `config.json` after every successful pull.
+- When you restart the app, these settings are loaded automatically — no need to re-enter them.
 
 ---
 
@@ -196,7 +200,8 @@ This means even in the rare case where two people test the same IO and one resul
 | Database corruption | WAL (Write-Ahead Logging) mode enabled for crash safety |
 | Before manual pull | Automatic database backup created in `app/backups/` |
 | Audit trail | Every test attempt recorded in TestHistory (never deleted, never modified) |
-| Unsynced data protection | Manual pull is blocked if you have unsynced results (must sync first) |
+| Unsynced data protection | Manual pull auto-syncs pending results first, then pulls |
+| Config persistence | Cloud URL, password, subsystem ID saved to config.json — survives restarts |
 | Backup includes WAL | Backup copies all 3 database files for complete consistency |
 | Comment sync | Comments are synced to cloud on every update (previously missing) |
 
@@ -226,7 +231,7 @@ Both ports need to be accessible. Firewall rules are set up automatically on fir
 | Close the app | Data is safe in local database |
 | Reopen the app | Auto-sync resumes, catches up |
 | Cloud goes down | Local testing continues, syncs when cloud returns |
-| Manual "Pull IOs" | Warns if unsynced, creates backup, refreshes from cloud |
+| Manual "Pull IOs" | Auto-syncs pending results, creates backup, refreshes from cloud |
 
 ---
 
