@@ -64,7 +64,7 @@ const DEFAULT_CLIENT_CONFIG: PlcClientConfig = {
   pollIntervalMs: 75,
   readTimeoutMs: 2000,
   autoReconnect: true,
-  reconnectIntervalMs: 10000,
+  reconnectIntervalMs: 5000,
 };
 
 // Connection status
