@@ -1273,8 +1273,6 @@ export default function CommissioningPage() {
           onShowConfig={() => setShowConfigDialog(true)}
           onCloudSync={handleCloudSync}
           currentUser={currentUser}
-          onToggleSimulator={handleToggleSimulator}
-          isSimulatorEnabled={isSimulatorEnabled}
           activeFilter={quickFilter}
           onFilterChange={setQuickFilter}
           tagStatus={tagStatus ? {
