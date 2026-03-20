@@ -66,7 +66,7 @@ function statusToHex(s: StatusColor): string {
   if (s === 'green') return '#22c55e'
   if (s === 'red') return '#ef4444'
   if (s === 'yellow') return '#eab308'
-  return '#334155'
+  return 'hsl(var(--muted))'
 }
 
 function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' | 'md' }) {
@@ -144,11 +144,11 @@ function RingLayout({
         <div className="flex items-center gap-0">
           {/* MCM Controller */}
           <div className="shrink-0" ref={mcmRef}>
-            <div className="relative rounded-lg border-2 border-blue-500/50 bg-blue-950/60 px-5 py-4 min-w-[170px] text-center">
+            <div className="relative rounded-lg border-2 border-blue-500/50 bg-blue-500/10 px-5 py-4 min-w-[170px] text-center">
               <div className="absolute top-2 right-2">
                 <StatusDot status={getStatusColor(ring.mcmTag, tagStates)} size="md" />
               </div>
-              <p className="text-sm font-bold text-blue-300">{ring.mcmName}</p>
+              <p className="text-sm font-bold text-blue-500">{ring.mcmName}</p>
               <p className="text-xs font-mono text-blue-400/70 mt-0.5">{ring.mcmIp || ''}</p>
               <Badge variant="outline" className="mt-1.5 text-[10px] border-blue-500/30 text-blue-400">
                 Controller
@@ -175,18 +175,18 @@ function RingLayout({
                   className={cn(
                     'shrink-0 relative rounded-lg border-2 px-5 py-4 min-w-[170px] text-center transition-all',
                     isExpanded
-                      ? 'border-blue-400 bg-slate-700/80 ring-1 ring-blue-400/20'
-                      : 'border-slate-600 bg-slate-800/80 hover:border-slate-500 hover:bg-slate-750'
+                      ? 'border-blue-400 bg-accent ring-1 ring-blue-400/20'
+                      : 'border-border bg-card hover:border-muted-foreground'
                   )}
                 >
                   <div className="absolute top-2 right-2">
                     <StatusDot status={status} size="md" />
                   </div>
-                  <p className="text-sm font-bold text-white">{node.name}</p>
-                  <p className="text-xs font-mono text-gray-400 mt-0.5">{node.ipAddress || ''}</p>
+                  <p className="text-sm font-bold text-foreground">{node.name}</p>
+                  <p className="text-xs font-mono text-muted-foreground mt-0.5">{node.ipAddress || ''}</p>
                   <Badge
                     variant="outline"
-                    className="mt-1.5 text-[10px] border-slate-500/50 text-gray-400"
+                    className="mt-1.5 text-[10px] border-border text-muted-foreground"
                   >
                     {deviceCount} devices
                   </Badge>
@@ -194,7 +194,7 @@ function RingLayout({
                     {isExpanded ? (
                       <ChevronDown className="w-4 h-4 text-blue-400" />
                     ) : (
-                      <ChevronRight className="w-4 h-4 text-gray-500 rotate-90" />
+                      <ChevronRight className="w-4 h-4 text-muted-foreground rotate-90" />
                     )}
                   </div>
                 </button>
@@ -367,12 +367,12 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
     <div className="mt-3 space-y-2">
       {/* Header */}
       <div className="flex items-center gap-3 px-1">
-        <span className="text-sm font-semibold text-white">{node.name}</span>
-        <span className="text-xs text-gray-500">
+        <span className="text-sm font-semibold text-foreground">{node.name}</span>
+        <span className="text-xs text-muted-foreground">
           {connectedPorts.length} connected / {totalPorts} total ports
         </span>
         {node.ipAddress && (
-          <span className="ml-auto text-xs font-mono text-gray-500">{node.ipAddress}</span>
+          <span className="ml-auto text-xs font-mono text-muted-foreground">{node.ipAddress}</span>
         )}
       </div>
 
@@ -382,19 +382,19 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           {Object.entries(PORT_FILL).map(([type, color]) => (
             <div key={type} className="flex items-center gap-1">
               <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: color }} />
-              <span className="text-[10px] text-gray-400">{type}</span>
+              <span className="text-[10px] text-muted-foreground">{type}</span>
             </div>
           ))}
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={vp.zoomOut} className="p-1.5 rounded hover:bg-slate-700 text-gray-400 hover:text-white transition-colors">
+          <button onClick={vp.zoomOut} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
             <ZoomOut className="w-4 h-4" />
           </button>
-          <span className="text-[10px] text-gray-500 w-10 text-center">{Math.round(vp.zoom * 100)}%</span>
-          <button onClick={vp.zoomIn} className="p-1.5 rounded hover:bg-slate-700 text-gray-400 hover:text-white transition-colors">
+          <span className="text-[10px] text-muted-foreground w-10 text-center">{Math.round(vp.zoom * 100)}%</span>
+          <button onClick={vp.zoomIn} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
             <ZoomIn className="w-4 h-4" />
           </button>
-          <button onClick={vp.resetView} className="p-1.5 rounded hover:bg-slate-700 text-gray-400 hover:text-white transition-colors">
+          <button onClick={vp.resetView} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
             <Maximize2 className="w-4 h-4" />
           </button>
         </div>
@@ -403,7 +403,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
       {/* Viewport */}
       <div
         ref={viewportRef}
-        className="relative overflow-hidden rounded-lg border border-slate-700/50 bg-slate-950/50 cursor-grab active:cursor-grabbing select-none"
+        className="relative overflow-hidden rounded-lg border bg-card/50 cursor-grab active:cursor-grabbing select-none"
         style={{ height: 700 }}
         onMouseDown={(e) => { vp.onMouseDown(e); setSelectedDevice(null) }}
         onMouseMove={vp.onMouseMove}
@@ -473,7 +473,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                 <text
                   x={cx} y={DEVICE_Y + 24}
                   textAnchor="start"
-                  fontSize={8} fontWeight="bold" className="fill-white"
+                  fontSize={8} fontWeight="bold" className="fill-foreground"
                   transform={`rotate(90, ${cx}, ${DEVICE_Y + 24})`}
                 >
                   {port.deviceName}
@@ -497,16 +497,16 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                   x={cx - PORT_RECT_W / 2} y={PORT_STRIP_Y}
                   width={PORT_RECT_W} height={PORT_RECT_H}
                   rx={3}
-                  fill={isConnected ? statusColor : '#1e293b'}
+                  fill={isConnected ? statusColor : 'hsl(var(--card))'}
                   fillOpacity={isConnected ? 0.15 : 0.5}
-                  stroke={isConnected ? statusColor : '#334155'}
+                  stroke={isConnected ? statusColor : 'hsl(var(--border))'}
                   strokeWidth={isConnected ? 1.5 : 1}
                   strokeOpacity={isConnected ? 0.8 : 0.4}
                 />
                 <text
                   x={cx} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
                   textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace"
-                  fill={isConnected ? (s === 'gray' ? '#e2e8f0' : statusColor) : '#64748b'}
+                  fill={isConnected ? (s === 'gray' ? 'hsl(var(--foreground))' : statusColor) : 'hsl(var(--muted-foreground))'}
                 >
                   {portNum}
                 </text>
@@ -516,7 +516,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           <text
             x={portStripCx(1) - PORT_RECT_W / 2 - 8}
             y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
-            textAnchor="end" fontSize={9} className="fill-gray-500" fontFamily="monospace"
+            textAnchor="end" fontSize={9} className="fill-muted-foreground" fontFamily="monospace"
           >
             PORTS
           </text>
@@ -525,16 +525,16 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           {(() => {
             const dpmStatus = getStatusColor(node.statusTag, tagStates)
             const dpmStroke = statusToHex(dpmStatus)
-            const dpmLabelColor = dpmStatus === 'gray' ? '#93c5fd' : statusToHex(dpmStatus)
+            const dpmLabelColor = dpmStatus === 'gray' ? 'hsl(var(--primary))' : statusToHex(dpmStatus)
             return (
               <>
                 <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 12} textAnchor="middle" fontSize={11} fontWeight="bold" fill={dpmLabelColor}>
                   {node.name}
                 </text>
-                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 24} textAnchor="middle" fontSize={8} fontFamily="monospace" className="fill-gray-500">
+                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 24} textAnchor="middle" fontSize={8} fontFamily="monospace" className="fill-muted-foreground">
                   DATA POWER MODULE
                 </text>
-                <rect x={dpmX} y={DPM_Y} width={dpmW} height={dpmH} rx={8} fill="#1e293b" stroke={dpmStroke} strokeWidth={2} />
+                <rect x={dpmX} y={DPM_Y} width={dpmW} height={dpmH} rx={8} fill="hsl(var(--card))" stroke={dpmStroke} strokeWidth={2} />
               </>
             )
           })()}
@@ -552,13 +552,13 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
               <g key={`dpm-port-${i}`}>
                 <circle cx={x} cy={y} r={DPM_PORT_R}
                   fill={portColor} fillOpacity={isConnected ? 0.85 : 0.4}
-                  stroke={isConnected ? '#e2e8f0' : '#475569'} strokeWidth={isConnected ? 2 : 1}
+                  stroke={isConnected ? 'hsl(var(--foreground))' : 'hsl(var(--border))'} strokeWidth={isConnected ? 2 : 1}
                 />
                 {isConnected && (
-                  <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="#0f172a" strokeWidth={1.5} />
+                  <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="hsl(var(--card))" strokeWidth={1.5} />
                 )}
                 <text x={x} y={y + 3.5} textAnchor="middle" fontSize={8} fontWeight="bold" fontFamily="monospace"
-                  fill={isConnected ? '#fff' : '#64748b'}
+                  fill={isConnected ? 'hsl(var(--card))' : 'hsl(var(--muted-foreground))'}
                 >
                   {portNum}
                 </text>
@@ -570,19 +570,19 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
         {/* Click popup for device info */}
         {selectedDevice && (
           <div
-            className="absolute z-10 bg-slate-800 border border-slate-600 rounded-lg shadow-lg p-3 min-w-[200px]"
+            className="absolute z-10 bg-popover border rounded-lg shadow-lg p-3 min-w-[200px]"
             style={{ left: Math.min(selectedDevice.x, 300), top: Math.max(selectedDevice.y - 80, 8) }}
           >
             <div className="flex items-center justify-between mb-1">
-              <span className="font-bold text-sm text-white">{selectedDevice.name}</span>
-              <button onClick={() => setSelectedDevice(null)} className="text-gray-400 hover:text-white p-0.5">
+              <span className="font-bold text-sm text-foreground">{selectedDevice.name}</span>
+              <button onClick={() => setSelectedDevice(null)} className="text-muted-foreground hover:text-foreground p-0.5">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="text-xs text-gray-400 space-y-0.5">
+            <div className="text-xs text-muted-foreground space-y-0.5">
               <p>Type: <span className="font-medium" style={{ color: PORT_FILL[selectedDevice.type] }}>{selectedDevice.type}</span></p>
-              <p>IP: <span className="font-mono text-gray-300">{selectedDevice.ip}</span></p>
-              <p>Port: <span className="font-mono text-gray-300">{selectedDevice.port}</span></p>
+              <p>IP: <span className="font-mono text-foreground">{selectedDevice.ip}</span></p>
+              <p>Port: <span className="font-mono text-foreground">{selectedDevice.port}</span></p>
             </div>
           </div>
         )}
@@ -678,8 +678,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-6 h-6 animate-spin text-gray-400 mr-2" />
-        <span className="text-gray-400">Loading network topology...</span>
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground mr-2" />
+        <span className="text-muted-foreground">Loading network topology...</span>
       </div>
     )
   }
@@ -694,7 +694,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
   if (rings.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-gray-500">
+      <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Network className="w-10 h-10 mb-2" />
         <p>No network topology data found.</p>
         <p className="text-sm mt-1">Run the network seed script to populate data.</p>
@@ -708,15 +708,15 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         const expandedNode = ring.nodes.find((n) => n.id === expandedNodeId) || null
 
         return (
-          <Card key={ring.id} className="bg-slate-900 border-slate-700">
+          <Card key={ring.id} className="bg-card border">
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-lg text-white">
+              <CardTitle className="flex items-center gap-2 text-lg text-foreground">
                 <Network className="w-5 h-5 text-blue-400" />
                 {ring.name}
-                <Badge variant="outline" className="ml-2 text-xs text-gray-400 border-gray-600">
+                <Badge variant="outline" className="ml-2 text-xs text-muted-foreground border-border">
                   {ring.nodes.length} DPMs
                 </Badge>
-                <Badge variant="outline" className="text-xs text-gray-400 border-gray-600">
+                <Badge variant="outline" className="text-xs text-muted-foreground border-border">
                   {ring.nodes.reduce((sum, n) => sum + n.ports.filter((p) => p.deviceName).length, 0)} devices
                 </Badge>
               </CardTitle>
@@ -732,13 +732,13 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                 />
               </div>
 
-              <p className="text-xs text-center text-gray-500 pt-1">
+              <p className="text-xs text-center text-muted-foreground pt-1">
                 Click a DPM node to view connected devices
               </p>
 
               {/* Expanded device grid */}
               {expandedNode && (
-                <div className="border-t border-slate-700/50 pt-3">
+                <div className="border-t pt-3">
                   <StarDiagram node={expandedNode} tagStates={tagStates} />
                 </div>
               )}
