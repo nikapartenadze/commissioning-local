@@ -420,10 +420,10 @@ export class PlcClient extends EventEmitter {
   }
 
   /**
-   * Get all IO tags
+   * Get all IO tags (excludes network status tags which have negative IDs)
    */
   getIoTags(): IoTag[] {
-    return Array.from(this.ioTags.values());
+    return Array.from(this.ioTags.values()).filter(t => t.id >= 0);
   }
 
   /**
@@ -448,10 +448,14 @@ export class PlcClient extends EventEmitter {
   }
 
   /**
-   * Get tag count
+   * Get IO tag count (excludes network status tags)
    */
   get tagCount(): number {
-    return this.ioTags.size;
+    let count = 0;
+    for (const tag of this.ioTags.values()) {
+      if (tag.id >= 0) count++;
+    }
+    return count;
   }
 
   /**
@@ -499,7 +503,10 @@ export class PlcClient extends EventEmitter {
     this.stateCache.set(event.name, newState);
 
     // Emit IO state change event (for triggering test prompts)
-    this.emit('ioStateChanged', io, oldState, newState);
+    // Skip network status tags (negative IDs) — they don't trigger test prompts
+    if (io.id >= 0) {
+      this.emit('ioStateChanged', io, oldState, newState);
+    }
 
     // Forward the tag value change event
     this.emit('tagValueChanged', event);
