@@ -28,6 +28,7 @@ interface TagStatus {
 interface PlcToolbarProps {
   isTesting: boolean
   isPlcConnected: boolean
+  isPlcReconnecting?: boolean
   isCloudConnected: boolean
   totalIos: number
   passedIos: number
@@ -52,6 +53,7 @@ interface PlcToolbarProps {
 export function PlcToolbar({
   isTesting,
   isPlcConnected,
+  isPlcReconnecting = false,
   isCloudConnected,
   totalIos,
   passedIos,
@@ -285,25 +287,27 @@ export function PlcToolbar({
                 "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-2",
                 isPlcConnected
                   ? "text-green-600"
+                  : isPlcReconnecting
+                  ? "text-amber-500 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 animate-pulse"
                   : "text-red-600 border-red-500/50 bg-red-500/10 hover:bg-red-500/20 animate-pulse"
               )}
               onClick={onShowConfig}
-              title={isPlcConnected ? "PLC Connected - Click to configure" : "PLC Disconnected - Click to configure"}
+              title={isPlcConnected ? "PLC Connected" : isPlcReconnecting ? "PLC Lost — Reconnecting..." : "PLC Disconnected — Click to configure"}
             >
-              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse")} />
+              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse", isPlcReconnecting && "animate-spin")} />
               <span className="text-xs uppercase hidden sm:inline">
-                {isPlcConnected ? "PLC" : "PLC"}
+                {isPlcReconnecting ? "Reconnecting" : "PLC"}
               </span>
             </Button>
           ) : (
             <div
               className={cn(
                 "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-2 flex items-center rounded-md",
-                isPlcConnected ? "text-green-600" : "text-red-600"
+                isPlcConnected ? "text-green-600" : isPlcReconnecting ? "text-amber-500 animate-pulse" : "text-red-600"
               )}
-              title={isPlcConnected ? "PLC Connected" : "PLC Disconnected"}
+              title={isPlcConnected ? "PLC Connected" : isPlcReconnecting ? "PLC Lost — Reconnecting..." : "PLC Disconnected"}
             >
-              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse")} />
+              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse", isPlcReconnecting && "animate-spin")} />
             </div>
           )}
 
