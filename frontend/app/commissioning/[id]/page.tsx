@@ -355,7 +355,7 @@ export default function CommissioningPage() {
         .catch(() => setIsCloudConnected(false))
     }
     checkCloud()
-    const cloudInterval = setInterval(checkCloud, 30000)
+    const cloudInterval = setInterval(checkCloud, 10000)
 
     return () => {
       isInitializedRef.current = false
