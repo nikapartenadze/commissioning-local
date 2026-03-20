@@ -24,6 +24,7 @@ interface ValueChangeDialogProps {
   onNo: (io: IoItem) => void
   onCancel: (io: IoItem) => void
   onClearAll?: () => void
+  onStopTesting?: () => void
 }
 
 export function ValueChangeDialog({
@@ -34,7 +35,8 @@ export function ValueChangeDialog({
   onYes,
   onNo,
   onCancel,
-  onClearAll
+  onClearAll,
+  onStopTesting
 }: ValueChangeDialogProps) {
   if (!io) return null
 
@@ -140,16 +142,31 @@ export function ValueChangeDialog({
           </div>
 
           {/* Action Buttons */}
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={handleCancel}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleNo}>
-              Fail
-            </Button>
-            <Button onClick={handleYes}>
-              Pass
-            </Button>
+          <div className="flex justify-between items-center gap-2">
+            {onStopTesting ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-red-600 border-red-300 hover:bg-red-50 dark:text-red-400 dark:border-red-800 dark:hover:bg-red-950"
+                onClick={() => {
+                  onStopTesting()
+                  onOpenChange(false)
+                }}
+              >
+                Stop Testing
+              </Button>
+            ) : <div />}
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleCancel}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={handleNo}>
+                Fail
+              </Button>
+              <Button onClick={handleYes}>
+                Pass
+              </Button>
+            </div>
           </div>
         </div>
       </DialogContent>
