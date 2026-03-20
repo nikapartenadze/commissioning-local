@@ -123,6 +123,7 @@ export default function CommissioningPage() {
   const [signalRWasConnected, setSignalRWasConnected] = useState(false)
   const [plcStatus, setPlcStatus] = useState<PlcConnectionStatus>({
     isConnected: false,
+    isReconnecting: false,
     isTesting: false,
     lastUpdate: new Date()
   })
@@ -416,7 +417,8 @@ export default function CommissioningPage() {
       }
       setPlcStatus(prev => ({
         ...prev,
-        isConnected: connected
+        isConnected: connected,
+        isReconnecting: !connected && prev.isReconnecting,
       }))
       // Reload IOs and config when PLC connects
       if (connected) {
@@ -429,6 +431,24 @@ export default function CommissioningPage() {
       signalR.offPlcConnectionChange(handlePlcConnectionChange)
     }
   }, [signalR.onPlcConnectionChange, signalR.offPlcConnectionChange])
+
+  // Handle PLC network status (reconnecting indicator)
+  useEffect(() => {
+    const handleNetworkStatus = (update: { moduleName: string; status: string; reconnecting?: boolean }) => {
+      if (update.moduleName === 'plc') {
+        setPlcStatus(prev => ({
+          ...prev,
+          isConnected: update.status === 'online',
+          isReconnecting: update.reconnecting ?? false,
+        }))
+      }
+    }
+
+    signalR.onNetworkStatusChange(handleNetworkStatus)
+    return () => {
+      signalR.offNetworkStatusChange(handleNetworkStatus)
+    }
+  }, [signalR.onNetworkStatusChange, signalR.offNetworkStatusChange])
 
   // Handle IOs updated (cloud pull from another device)
   useEffect(() => {
@@ -1240,6 +1260,7 @@ export default function CommissioningPage() {
         <PlcToolbar
           isTesting={plcStatus.isTesting}
           isPlcConnected={plcStatus.isConnected}
+          isPlcReconnecting={plcStatus.isReconnecting}
           isCloudConnected={isCloudConnected}
           totalIos={ios.length}
           passedIos={ios.filter(io => io.result === 'Passed').length}

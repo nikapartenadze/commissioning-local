@@ -24,6 +24,7 @@ export interface IoState {
 
 export interface PlcConnectionStatus {
   isConnected: boolean
+  isReconnecting: boolean
   isTesting: boolean
   lastUpdate: Date
 }
@@ -34,6 +35,7 @@ export class PlcCommunicationService {
   private reconnectInterval: NodeJS.Timeout | null = null
   private status: PlcConnectionStatus = {
     isConnected: false,
+    isReconnecting: false,
     isTesting: false,
     lastUpdate: new Date()
   }
