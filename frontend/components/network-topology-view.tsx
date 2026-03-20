@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -217,16 +217,30 @@ function RingLayout({
 // ── Pannable/Zoomable viewport ────────────────────────────────────
 
 function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
-  const [zoom, setZoom] = useState(1)
-  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const zoomRef = useRef(1)
+  const panRef = useRef({ x: 0, y: 0 })
+  const [, forceRender] = useState(0)
   const dragging = useRef(false)
   const lastMouse = useRef({ x: 0, y: 0 })
 
+  const update = useCallback(() => forceRender((n) => n + 1), [])
+
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+    const oldZoom = zoomRef.current
     const delta = e.deltaY > 0 ? -0.1 : 0.1
-    setZoom((z) => Math.min(3, Math.max(0.2, z + delta)))
-  }, [])
+    const newZoom = Math.min(3, Math.max(0.2, oldZoom + delta))
+    panRef.current = {
+      x: mouseX - (mouseX - panRef.current.x) * (newZoom / oldZoom),
+      y: mouseY - (mouseY - panRef.current.y) * (newZoom / oldZoom),
+    }
+    zoomRef.current = newZoom
+    update()
+  }, [containerRef, update])
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
@@ -237,39 +251,37 @@ function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     if (!dragging.current) return
-    const dx = e.clientX - lastMouse.current.x
-    const dy = e.clientY - lastMouse.current.y
+    panRef.current = {
+      x: panRef.current.x + e.clientX - lastMouse.current.x,
+      y: panRef.current.y + e.clientY - lastMouse.current.y,
+    }
     lastMouse.current = { x: e.clientX, y: e.clientY }
-    setPan((p) => ({ x: p.x + dx, y: p.y + dy }))
-  }, [])
+    update()
+  }, [update])
 
-  const onMouseUp = useCallback(() => {
-    dragging.current = false
-  }, [])
+  const onMouseUp = useCallback(() => { dragging.current = false }, [])
 
-  const zoomIn = useCallback(() => setZoom((z) => Math.min(3, z + 0.2)), [])
-  const zoomOut = useCallback(() => setZoom((z) => Math.max(0.2, z - 0.2)), [])
-  const resetView = useCallback(() => {
-    setZoom(1)
-    setPan({ x: 0, y: 0 })
-  }, [])
+  const zoomIn = useCallback(() => { zoomRef.current = Math.min(3, zoomRef.current + 0.2); update() }, [update])
+  const zoomOut = useCallback(() => { zoomRef.current = Math.max(0.2, zoomRef.current - 0.2); update() }, [update])
+  const resetView = useCallback(() => { zoomRef.current = 1; panRef.current = { x: 0, y: 0 }; update() }, [update])
 
-  return { zoom, pan, onWheel, onMouseDown, onMouseMove, onMouseUp, zoomIn, zoomOut, resetView }
+  return { zoom: zoomRef.current, pan: panRef.current, onWheel, onMouseDown, onMouseMove, onMouseUp, zoomIn, zoomOut, resetView }
 }
 
 // ── Star Diagram: thin vertical device cards, distance-sorted lanes ─
 
 const PORT_FILL: Record<string, string> = {
-  VFD: '#a855f7',
-  FIOM: '#14b8a6',
-  PMM: '#f59e0b',
-  SIO: '#22c55e',
-  POINT_IO: '#3b82f6',
+  VFD: '#e74c3c',      // red
+  FIOM: '#2980b9',     // steel blue
+  PMM: '#e67e22',      // orange
+  SIO: '#8e44ad',      // deep purple
+  POINT_IO: '#27ae60', // emerald
 }
 
 function StarDiagram({ node }: { node: NetworkNode }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const vp = useViewport(viewportRef)
+  const [selectedDevice, setSelectedDevice] = useState<{ name: string; type: string; ip: string; port: number; x: number; y: number } | null>(null)
 
   const connectedPorts = node.ports.filter((p) => p.deviceName)
   const totalPorts = node.totalPorts
@@ -373,7 +385,7 @@ function StarDiagram({ node }: { node: NetworkNode }) {
         className="relative overflow-hidden rounded-lg border border-slate-700/50 bg-slate-950/50 cursor-grab active:cursor-grabbing select-none"
         style={{ height: 700 }}
         onWheel={vp.onWheel}
-        onMouseDown={vp.onMouseDown}
+        onMouseDown={(e) => { vp.onMouseDown(e); setSelectedDevice(null) }}
         onMouseMove={vp.onMouseMove}
         onMouseUp={vp.onMouseUp}
         onMouseLeave={vp.onMouseUp}
@@ -409,8 +421,18 @@ function StarDiagram({ node }: { node: NetworkNode }) {
             const color = PORT_FILL[deviceType] || '#64748b'
 
             return (
-              <g key={`dev-${port.id}`} className="cursor-default">
-                <title>{`${port.deviceName}\n${deviceType} — ${port.deviceIp || 'No IP'}\nPort ${port.portNumber}`}</title>
+              <g key={`dev-${port.id}`} className="cursor-pointer" onClick={(e) => {
+                e.stopPropagation()
+                const rect = viewportRef.current?.getBoundingClientRect()
+                if (rect) setSelectedDevice({
+                  name: port.deviceName || '',
+                  type: deviceType,
+                  ip: port.deviceIp || 'No IP',
+                  port: port.portNumber,
+                  x: e.clientX - rect.left,
+                  y: e.clientY - rect.top,
+                })
+              }}>
                 {/* Card body */}
                 <rect
                   x={cx - DEVICE_W / 2} y={DEVICE_Y}
@@ -525,6 +547,26 @@ function StarDiagram({ node }: { node: NetworkNode }) {
             )
           })}
         </svg>
+
+        {/* Click popup for device info */}
+        {selectedDevice && (
+          <div
+            className="absolute z-10 bg-slate-800 border border-slate-600 rounded-lg shadow-lg p-3 min-w-[200px]"
+            style={{ left: Math.min(selectedDevice.x, 300), top: Math.max(selectedDevice.y - 80, 8) }}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-sm text-white">{selectedDevice.name}</span>
+              <button onClick={() => setSelectedDevice(null)} className="text-gray-400 hover:text-white p-0.5">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="text-xs text-gray-400 space-y-0.5">
+              <p>Type: <span className="font-medium" style={{ color: PORT_FILL[selectedDevice.type] }}>{selectedDevice.type}</span></p>
+              <p>IP: <span className="font-mono text-gray-300">{selectedDevice.ip}</span></p>
+              <p>Port: <span className="font-mono text-gray-300">{selectedDevice.port}</span></p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
