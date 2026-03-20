@@ -146,7 +146,13 @@ export async function PUT(
 
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
-        const synced = await getCloudSyncService().syncIoUpdate({
+        const { configService } = await import('@/lib/config')
+        const config = await configService.getConfig()
+        const syncService = getCloudSyncService()
+        if (config.remoteUrl && !syncService.getConfig().remoteUrl) {
+          syncService.updateConfig({ remoteUrl: config.remoteUrl, apiPassword: config.apiPassword })
+        }
+        const synced = await syncService.syncIoUpdate({
           id: ioId,
           result: updatedIo.result || null,
           comments: (sanitizedComments !== undefined ? sanitizedComments : io.comments) || null,
