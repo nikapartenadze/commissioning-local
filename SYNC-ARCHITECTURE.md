@@ -58,6 +58,18 @@ Fetches IO data from cloud, including other technicians' test results.
 
 ---
 
+## Live Cloud Dashboard
+
+The cloud web dashboard (commissioning.lci.ge) updates **in real-time** when field tools push test results — no manual page refresh needed.
+
+- The dashboard connects to the cloud server via **Server-Sent Events (SSE)** at `/api/sync/events`
+- When any local tool pushes a pass/fail/comment/reset, the cloud broadcasts the update to all open dashboards
+- Off-site engineers see results appear within 1-2 seconds of a technician testing on site
+- The SSE connection auto-reconnects if it drops (e.g., network blip)
+- Zero performance impact — SSE is a single persistent HTTP connection per browser tab
+
+---
+
 ## Multi-User Scenario: How Results Flow
 
 ### Normal workflow (technicians testing different IOs)
