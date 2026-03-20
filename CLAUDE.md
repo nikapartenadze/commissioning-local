@@ -147,11 +147,20 @@ PLC client, Prisma, and ConfigurationService all use `globalThis` to persist acr
 - Roles: `admin` (full access), `user` (test only, no config/PLC/cloud)
 
 ### Cloud Sync (Bidirectional)
-- **Auto-sync**: push every 30s (local results → cloud), pull every 60s (cloud → local)
+- **Instant push**: every pass/fail, comment, and reset is pushed to cloud immediately (~1-2 seconds)
+- **Background fallback**: auto-sync retries pending syncs every 30s if instant push fails; pull every 60s
 - **Pull merge rule**: local results are never overwritten; only IOs you haven't tested get cloud results
-- **Manual "Pull IOs"**: full replace of IO definitions from cloud (warns if unsynced results exist, creates backup first)
+- **Manual "Pull IOs"**: full replace of IO definitions from cloud (auto-syncs pending results first, creates backup)
 - **Offline resilience**: PendingSyncs queue persists in SQLite, retries on reconnect
+- **Live cloud dashboard**: cloud app receives updates via SSE — project dashboard updates in real-time without refresh
+- **Version sync**: local sends pre-increment version to match cloud's current version for atomic updates
 - See `SYNC-ARCHITECTURE.md` for full details
+
+### PLC Auto-Reconnect
+- On connection loss (PLC power cycle, network drop), auto-reconnects every 5 seconds
+- No admin intervention needed — testing mode resumes automatically
+- Toolbar shows amber "Reconnecting" indicator during retry
+- Intentional disconnect (clicking disconnect) stops auto-reconnect
 
 ### Test Result Recording
 `POST /api/ios/[id]/test` — transactional update of IO record + TestHistory creation. Every test attempt is permanently recorded in the audit trail (TestHistory), even if later retested or overwritten by sync.
