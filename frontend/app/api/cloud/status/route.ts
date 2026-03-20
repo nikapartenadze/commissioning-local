@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
+import { configService } from '@/lib/config'
 import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
 /**
@@ -24,8 +25,15 @@ export async function GET(): Promise<NextResponse<CloudSyncStatusResponse>> {
     // Get pending sync count from database
     const pendingSyncCount = await pendingSyncRepository.count()
 
-    // Get cloud sync service status
+    // Ensure cloud sync service has config from persisted config.json
     const cloudSyncService = getCloudSyncService()
+    const savedConfig = await configService.getConfig()
+    if (savedConfig.remoteUrl && !cloudSyncService.getConfig().remoteUrl) {
+      cloudSyncService.updateConfig({
+        remoteUrl: savedConfig.remoteUrl,
+        apiPassword: savedConfig.apiPassword,
+      })
+    }
     const config = cloudSyncService.getConfig()
 
     // Determine connection status
