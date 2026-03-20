@@ -561,11 +561,7 @@ export default function CommissioningPage() {
       wsWarningTimer.current = setTimeout(() => setShowWsWarning(true), 5000)
     }
     return () => { if (wsWarningTimer.current) clearTimeout(wsWarningTimer.current) }
-      if (DEBUG_OTHER) {
-        console.log('🔗 WebSocket connected - listening for real-time IO updates')
-      }
-    }
-  }, [signalR.isConnected])
+  }, [signalR.isConnected, signalRWasConnected])
 
   // Auto-connect WebSocket when IOs are loaded (once)
   // This ensures real-time updates work without requiring explicit "Connect to PLC" button click
