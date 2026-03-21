@@ -191,11 +191,6 @@ export const API_ENDPOINTS = {
   cloudPull: '/api/cloud/pull',
   cloudStatus: '/api/cloud/status',
 
-  // Simulator
-  simulatorStatus: '/api/simulator/status',
-  simulatorEnable: '/api/simulator/enable',
-  simulatorDisable: '/api/simulator/disable',
-
   // Diagnostics
   diagnosticSteps: '/api/diagnostics/steps',
   diagnosticFailureModes: '/api/diagnostics/failure-modes',

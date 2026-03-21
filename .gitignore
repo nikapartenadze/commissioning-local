@@ -56,3 +56,4 @@ frontend/libplctag.so
 
 # Vercel
 .vercel
+io-checkout-*.zip
