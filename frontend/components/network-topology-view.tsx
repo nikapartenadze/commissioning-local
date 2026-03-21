@@ -51,21 +51,20 @@ interface TopologyResponse {
 
 // ── Status helpers ─────────────────────────────────────────────────
 
-type StatusColor = 'green' | 'red' | 'gray' | 'yellow'
+type StatusColor = 'green' | 'red' | 'gray'
 
-// tagStates: map of tagName → faulted (true = faulted/red, false = healthy/green, null = unreachable)
+// tagStates: map of tagName → faulted (true = faulted/red, false = healthy/green, null = can't read)
 function getStatusColor(statusTag: string | null, tagStates: Record<string, boolean | null>): StatusColor {
   if (!statusTag) return 'gray'     // No tag configured — not monitored
   const value = tagStates[statusTag]
   if (value === undefined) return 'gray'   // Tag not yet polled (first load)
-  if (value === null) return 'yellow'      // Tag configured but can't reach — unreachable
+  if (value === null) return 'gray'        // Tag configured but can't read
   return value ? 'red' : 'green'           // ConnectionFaulted: true = faulted, false = healthy
 }
 
 function statusToHex(s: StatusColor): string {
   if (s === 'green') return '#22c55e'
   if (s === 'red') return '#ef4444'
-  if (s === 'yellow') return '#eab308'
   return 'hsl(var(--muted))'
 }
 
@@ -73,7 +72,6 @@ function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' |
   const colors = {
     green: 'bg-emerald-400 shadow-emerald-400/50',
     red: 'bg-red-500 shadow-red-500/50',
-    yellow: 'bg-yellow-500 shadow-yellow-500/30',
     gray: 'bg-gray-500 shadow-gray-500/30',
   }
   const sizeClass = size === 'md' ? 'w-3 h-3' : 'w-2.5 h-2.5'
