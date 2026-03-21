@@ -33,6 +33,7 @@ import {
 } from "@/lib/plc-communication"
 import { useSignalR, IOUpdate, CommentUpdate, ErrorEvent } from "@/lib/signalr-client"
 import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/lib/api-config"
+import { ErrorBoundary } from "@/components/error-boundary"
 import { logger } from "@/lib/logger"
 
 // Debug flags - set to true to enable specific logging
@@ -287,7 +288,7 @@ export default function CommissioningPage() {
   // Load PLC config function (defined before useEffect that uses it)
   const loadPlcConfig = useCallback(async (updateTestingState: boolean = true) => {
     try {
-      const response = await fetchWithRetry(API_ENDPOINTS.status)
+      const response = await fetchWithRetry(API_ENDPOINTS.status, { signal: AbortSignal.timeout(15000) })
       if (response.ok) {
         const status = await response.json()
         const newConfig = {
@@ -657,7 +658,7 @@ export default function CommissioningPage() {
       // Only show full-page loading spinner on initial load (no IOs yet)
       if (ios.length === 0) setLoading(true)
       // Load IOs from backend (real PLC data) - retry on failure
-      const response = await fetchWithRetry(API_ENDPOINTS.ios)
+      const response = await fetchWithRetry(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
       if (response.ok) {
         const data = await response.json()
         setIos(data)
@@ -1185,6 +1186,7 @@ export default function CommissioningPage() {
   }
 
   return (
+    <ErrorBoundary>
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}
       <header className="bg-card border-b flex-shrink-0 z-50">
@@ -1445,5 +1447,6 @@ export default function CommissioningPage() {
           </DialogContent>
         </Dialog>
     </div>
+    </ErrorBoundary>
   )
 }

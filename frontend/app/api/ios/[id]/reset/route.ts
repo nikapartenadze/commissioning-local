@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getPlcTags } from '@/lib/plc-client-manager'
 import { createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
+import { requireAuth } from '@/lib/auth/middleware'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -22,6 +23,9 @@ export async function POST(
   request: NextRequest,
   { params }: RouteParams
 ) {
+  const authError = requireAuth(request)
+  if (authError) return authError
+
   try {
     const { id } = await params
     const ioId = parseInt(id)
