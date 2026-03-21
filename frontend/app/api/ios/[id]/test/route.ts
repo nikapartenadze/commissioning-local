@@ -158,7 +158,7 @@ export async function POST(
           type: 'UpdateIO',
           id: ioId,
           result: normalizedResult,
-          state: plcState ?? 'FALSE',
+          state: plcState ?? '',
           timestamp,
           comments: sanitizedComments ?? '',
         }),

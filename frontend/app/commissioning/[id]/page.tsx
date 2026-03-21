@@ -333,7 +333,7 @@ export default function CommissioningPage() {
     loadPlcConfig()
     loadIos()
 
-    // Poll cloud status every 30 seconds
+    // Poll cloud status every 60 seconds (auto-sync already checks cloud every 60s)
     const checkCloud = () => {
       fetch('/api/cloud/status')
         .then(r => r.ok ? r.json() : null)
@@ -341,7 +341,7 @@ export default function CommissioningPage() {
         .catch(() => setIsCloudConnected(false))
     }
     checkCloud()
-    const cloudInterval = setInterval(checkCloud, 10000)
+    const cloudInterval = setInterval(checkCloud, 60000)
 
     return () => {
       isInitializedRef.current = false
@@ -586,7 +586,7 @@ export default function CommissioningPage() {
               // Full IO update: update everything (result changes from Pass/Fail/Clear)
               updatedIo = {
                 ...io,
-                state: update.State,
+                state: update.State || io.state,  // Preserve existing state if broadcast has none
                 result: update.Result === "Not Tested" ? null : update.Result,
                 timestamp: update.Timestamp || io.timestamp,
                 comments: update.Comments !== undefined ? update.Comments : io.comments // Handle null comments explicitly
