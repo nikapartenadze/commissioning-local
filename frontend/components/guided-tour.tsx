@@ -59,8 +59,7 @@ const steps: Step[] = [
     title: '3. When an Input Changes — Pass/Fail Dialog',
     content: (
       <div>
-        <p>When you trigger an input on the panel, this dialog appears automatically:</p>
-        <TourImage src="/guide/pass-fail-dialog.png" alt="Pass/Fail dialog" />
+        <p>When you trigger an input on the panel, a dialog appears automatically.</p>
         <p style={{ marginTop: 8, fontSize: 13 }}>
           Click <b style={{ color: '#22c55e' }}>Pass</b> if it worked correctly, or <b style={{ color: '#ef4444' }}>Fail</b> if something is wrong.
         </p>
