@@ -178,7 +178,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           const update: IOUpdate = {
             Id: ioMsg.id,
             Result: ioMsg.result as IOUpdate['Result'],
-            State: ioMsg.state ? 'TRUE' : 'FALSE',
+            State: ioMsg.state === 'TRUE' ? 'TRUE' : ioMsg.state === 'FALSE' ? 'FALSE' : 'NOT_SET' as any,
             Timestamp: ioMsg.timestamp,
             Comments: ioMsg.comments
           }
