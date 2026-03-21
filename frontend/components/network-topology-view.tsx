@@ -318,14 +318,14 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
   const portStripW = (totalPorts - 1) * PORT_SPACING + PORT_RECT_W
 
   // DPM block (wide, short) — always 4 rows, columns sized to fit
-  const DPM_PORT_R = 11
+  const DPM_PORT_R = 18
   const DPM_PORT_ROWS = 4
   const DPM_PORT_COLS = Math.ceil(totalPorts / DPM_PORT_ROWS)
-  const DPM_PORT_SPACE_X = 38
-  const DPM_PORT_SPACE_Y = 38
-  const DPM_PAD_X = 24
-  const DPM_PAD_TOP = 16
-  const DPM_PAD_BOT = 16
+  const DPM_PORT_SPACE_X = 52
+  const DPM_PORT_SPACE_Y = 52
+  const DPM_PAD_X = 32
+  const DPM_PAD_TOP = 24
+  const DPM_PAD_BOT = 24
   const dpmW = DPM_PAD_X * 2 + (DPM_PORT_COLS - 1) * DPM_PORT_SPACE_X + DPM_PORT_R * 2
   const dpmH = DPM_PAD_TOP + (DPM_PORT_ROWS - 1) * DPM_PORT_SPACE_Y + DPM_PORT_R * 2 + DPM_PAD_BOT
 
@@ -343,7 +343,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
   // ── Layout Y positions ──
   const DEVICE_Y = 10
   const PORT_STRIP_Y = DEVICE_Y + DEVICE_H + 20
-  const DPM_LABEL_H = 28 // space for name above the card
+  const DPM_LABEL_H = 36 // space for name above the card
   const DPM_Y = PORT_STRIP_Y + PORT_RECT_H + 20 + DPM_LABEL_H
   const totalH = DPM_Y + dpmH + 20
 
@@ -528,10 +528,10 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
             const dpmLabelColor = dpmStatus === 'gray' ? 'hsl(var(--primary))' : statusToHex(dpmStatus)
             return (
               <>
-                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 12} textAnchor="middle" fontSize={11} fontWeight="bold" fill={dpmLabelColor}>
+                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 14} textAnchor="middle" fontSize={14} fontWeight="bold" fill={dpmLabelColor}>
                   {node.name}
                 </text>
-                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 24} textAnchor="middle" fontSize={8} fontFamily="monospace" className="fill-muted-foreground">
+                <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 30} textAnchor="middle" fontSize={10} fontFamily="monospace" className="fill-muted-foreground">
                   DATA POWER MODULE
                 </text>
                 <rect x={dpmX} y={DPM_Y} width={dpmW} height={dpmH} rx={8} fill="hsl(var(--card))" stroke={dpmStroke} strokeWidth={2} />
@@ -555,9 +555,9 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                   stroke={isConnected ? 'hsl(var(--foreground))' : 'hsl(var(--border))'} strokeWidth={isConnected ? 2 : 1}
                 />
                 {isConnected && (
-                  <circle cx={x} cy={y} r={DPM_PORT_R - 4} fill="none" stroke="hsl(var(--card))" strokeWidth={1.5} />
+                  <circle cx={x} cy={y} r={DPM_PORT_R - 6} fill="none" stroke="hsl(var(--card))" strokeWidth={2} />
                 )}
-                <text x={x} y={y + 3.5} textAnchor="middle" fontSize={8} fontWeight="bold" fontFamily="monospace"
+                <text x={x} y={y + 4.5} textAnchor="middle" fontSize={12} fontWeight="bold" fontFamily="monospace"
                   fill={isConnected ? 'hsl(var(--card))' : 'hsl(var(--muted-foreground))'}
                 >
                   {portNum}
