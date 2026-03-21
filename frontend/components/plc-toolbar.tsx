@@ -15,7 +15,9 @@ import {
   ZapOff,
   AlertTriangle,
   FileEdit,
+  HelpCircle,
 } from "lucide-react"
+import Link from "next/link"
 import { cn } from "@/lib/utils"
 
 interface TagStatus {
@@ -48,6 +50,7 @@ interface PlcToolbarProps {
   tagStatus?: TagStatus | null
   onShowTagStatus?: () => void
   onShowChangeRequests?: () => void
+  onStartTour?: () => void
 }
 
 export function PlcToolbar({
@@ -72,7 +75,8 @@ export function PlcToolbar({
   onFilterChange,
   tagStatus = null,
   onShowTagStatus,
-  onShowChangeRequests
+  onShowChangeRequests,
+  onStartTour
 }: PlcToolbarProps) {
   const progressPercent = totalIos > 0 ? ((passedIos + failedIos) / totalIos) * 100 : 0
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
@@ -83,6 +87,7 @@ export function PlcToolbar({
       <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 flex-wrap">
         {/* START/STOP Button */}
         <Button
+          data-tour="start-button"
           size="lg"
           className={cn(
             "h-11 sm:h-14 px-3 sm:px-6 text-sm sm:text-lg font-bold uppercase tracking-wider transition-all",
@@ -223,11 +228,13 @@ export function PlcToolbar({
             variant="ghost"
             size="lg"
             className="h-10 w-10 sm:h-12 sm:w-12 p-0"
+            data-tour="csv-export"
             onClick={onDownloadCsv}
             title="Export CSV"
           >
             <Download className="w-5 h-5 sm:w-6 sm:h-6" />
           </Button>
+
 
           <Button
             variant="ghost"
@@ -281,6 +288,7 @@ export function PlcToolbar({
           {/* PLC Status */}
           {currentUser?.isAdmin ? (
             <Button
+              data-tour="plc-status"
               variant={isPlcConnected ? "ghost" : "outline"}
               size="lg"
               className={cn(
@@ -301,6 +309,7 @@ export function PlcToolbar({
             </Button>
           ) : (
             <div
+              data-tour="plc-status"
               className={cn(
                 "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-2 flex items-center rounded-md",
                 isPlcConnected ? "text-green-600" : isPlcReconnecting ? "text-amber-500 animate-pulse" : "text-red-600"
@@ -338,6 +347,7 @@ export function PlcToolbar({
           {/* Cloud Status */}
           {currentUser && (
             <Button
+              data-tour="cloud-status"
               variant="ghost"
               size="lg"
               className={cn(
@@ -358,6 +368,26 @@ export function PlcToolbar({
             </Button>
           )}
 
+          {/* Guide — interactive tour + static guide link */}
+          <div className="flex items-center gap-0.5">
+            {onStartTour && (
+              <Button
+                variant="outline"
+                size="lg"
+                className="h-10 sm:h-12 px-3 sm:px-4 bg-blue-500/10 border-blue-500/30 text-blue-500 hover:bg-blue-500/20 hover:text-blue-400 font-bold"
+                title="Start Interactive Tour"
+                onClick={onStartTour}
+              >
+                <HelpCircle className="w-4 h-4 mr-1.5" />
+                <span className="text-xs sm:text-sm uppercase tracking-wide">Guide</span>
+              </Button>
+            )}
+            <Link href="/guide" target="_blank">
+              <Button variant="ghost" size="icon" className="h-10 w-10 sm:h-12 sm:w-12 text-muted-foreground hover:text-foreground" title="Open Full Guide (new tab)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </Button>
+            </Link>
+          </div>
         </div>
       </div>
     </div>
