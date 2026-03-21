@@ -138,10 +138,10 @@ copy "%FRONTEND_DIR%\server.js" "%OUTPUT_DIR%\app\" >nul
 REM PLC native library
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\" >nul
 
-REM Prisma
+REM Prisma (runtime only — skip engines/cache/fetch-engine, not needed after db push)
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\prisma" "%OUTPUT_DIR%\app\prisma"
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\.prisma" "%OUTPUT_DIR%\app\node_modules\.prisma"
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\@prisma" "%OUTPUT_DIR%\app\node_modules\@prisma"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\@prisma\client" "%OUTPUT_DIR%\app\node_modules\@prisma\client"
 
 REM ws module
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
