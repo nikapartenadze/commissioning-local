@@ -374,7 +374,7 @@ export function EnhancedIoDataGrid({
     <>
     <div className="h-full flex flex-col border-t border-border bg-card">
       {/* Compact Search Bar */}
-      <div className="flex items-center gap-2 p-2 border-b bg-muted/30 flex-shrink-0">
+      <div data-tour="search-area" className="flex items-center gap-2 p-2 border-b bg-muted/30 flex-shrink-0">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
           <div className="flex flex-wrap gap-1 pl-10 pr-10 py-2 border rounded bg-background min-h-[44px] items-center">
@@ -433,6 +433,7 @@ export function EnhancedIoDataGrid({
 
       {/* Data Grid with Virtual Scrolling */}
       <div
+        data-tour="io-grid"
         ref={parentRef}
         className={cn(
           "flex-1 overflow-auto grab-scroll min-h-0",
