@@ -34,6 +34,7 @@ import {
 import { useSignalR, IOUpdate, CommentUpdate, ErrorEvent } from "@/lib/signalr-client"
 import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/lib/api-config"
 import { ErrorBoundary } from "@/components/error-boundary"
+import { GuidedTour } from "@/components/guided-tour"
 import { logger } from "@/lib/logger"
 
 // Debug flags - set to true to enable specific logging
@@ -93,9 +94,10 @@ export default function CommissioningPage() {
     }
   }, [currentUser, userLoading, router])
 
-  // Auto-open config dialog when not configured
+  // Auto-open config dialog when not configured — only for admins
+  // Technicians can't configure PLC/cloud, so don't show them the dialog
   useEffect(() => {
-    if (isUnconfigured && currentUser) {
+    if (isUnconfigured && currentUser?.isAdmin) {
       setShowConfigDialog(true)
     }
   }, [isUnconfigured, currentUser])
@@ -155,6 +157,7 @@ export default function CommissioningPage() {
   const [errorLog, setErrorLog] = useState<ErrorEvent[]>([])
   const [tagStatus, setTagStatus] = useState<TagStatus | null>(null)
   const [showTagStatusDialog, setShowTagStatusDialog] = useState(false)
+  const [showTour, setShowTour] = useState(false)
 
   // localStorage key for dialog queue persistence
   const DIALOG_QUEUE_STORAGE_KEY = 'io-checkout-dialog-queue'
@@ -1293,6 +1296,7 @@ export default function CommissioningPage() {
           } : null}
           onShowTagStatus={() => setShowTagStatusDialog(true)}
           onShowChangeRequests={() => setShowChangeRequestsPanel(true)}
+          onStartTour={() => setShowTour(true)}
         />
       </div>
 
@@ -1323,6 +1327,9 @@ export default function CommissioningPage() {
       </div>
       </>
       )}
+
+      {/* Guided Tour */}
+      <GuidedTour run={showTour} onFinish={() => setShowTour(false)} />
 
       {/* Test Results Chart - Overlay */}
       {showGraph && (
