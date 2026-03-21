@@ -105,17 +105,29 @@ export class PlcClient extends EventEmitter {
   // Active write handles keyed by tag name (for concurrent multi-user output operations)
   private writeHandles: Map<string, TagHandle> = new Map();
 
+  // Bound listener references for cleanup
+  private boundTagValueChange: (event: TagValueChangeEvent) => void;
+  private boundConnectionStatusChange: (isConnected: boolean) => void;
+  private boundError: (error: Error) => void;
+  private boundReadCycleComplete: (cycleTimeMs: number, successCount: number, failCount: number) => void;
+
   constructor(config: PlcClientConfig = {}) {
     super();
     this.config = { ...DEFAULT_CLIENT_CONFIG, ...config };
     this.tagReader = createTagReader(this.config);
 
+    // Store bound listeners for later removal
+    this.boundTagValueChange = this.handleTagValueChange.bind(this);
+    this.boundConnectionStatusChange = this.handleConnectionStatusChange.bind(this);
+    this.boundError = (error) => this.emit('error', error);
+    this.boundReadCycleComplete = (cycleTimeMs, successCount, failCount) =>
+      this.emit('readCycleComplete', cycleTimeMs, successCount, failCount);
+
     // Forward tag reader events
-    this.tagReader.on('tagValueChanged', this.handleTagValueChange.bind(this));
-    this.tagReader.on('connectionStatusChanged', this.handleConnectionStatusChange.bind(this));
-    this.tagReader.on('error', (error) => this.emit('error', error));
-    this.tagReader.on('readCycleComplete', (cycleTimeMs, successCount, failCount) =>
-      this.emit('readCycleComplete', cycleTimeMs, successCount, failCount));
+    this.tagReader.on('tagValueChanged', this.boundTagValueChange);
+    this.tagReader.on('connectionStatusChanged', this.boundConnectionStatusChange);
+    this.tagReader.on('error', this.boundError);
+    this.tagReader.on('readCycleComplete', this.boundReadCycleComplete);
   }
 
   /**
@@ -467,9 +479,9 @@ export class PlcClient extends EventEmitter {
    */
   get tagCount(): number {
     let count = 0;
-    for (const tag of this.ioTags.values()) {
+    this.ioTags.forEach((tag) => {
       if (tag.id >= 0) count++;
-    }
+    });
     return count;
   }
 
@@ -488,6 +500,13 @@ export class PlcClient extends EventEmitter {
     this.isDisposed = true;
 
     this.cancelReconnect();
+
+    // Remove event listeners from tagReader before disposing
+    this.tagReader.off('tagValueChanged', this.boundTagValueChange);
+    this.tagReader.off('connectionStatusChanged', this.boundConnectionStatusChange);
+    this.tagReader.off('error', this.boundError);
+    this.tagReader.off('readCycleComplete', this.boundReadCycleComplete);
+
     this.tagReader.dispose();
 
     this.destroyAllWriteHandles();
