@@ -150,6 +150,11 @@ REM Seed scripts
 copy "%FRONTEND_DIR%\prisma\seed-diagnostics.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
 copy "%FRONTEND_DIR%\prisma\seed-network.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
 
+REM Test plan docs
+copy "%PROJECT_DIR%\TEST-PLAN.xlsx" "%OUTPUT_DIR%\" 2>nul
+copy "%PROJECT_DIR%\TEST-PLAN.html" "%OUTPUT_DIR%\" 2>nul
+copy "%PROJECT_DIR%\TEST-PLAN.md" "%OUTPUT_DIR%\" 2>nul
+
 REM ── Create .env ──
 (
 echo DATABASE_URL=file:../database.db
