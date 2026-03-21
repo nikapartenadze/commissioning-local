@@ -138,6 +138,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
     console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
 
+    // Safety check: warn if cloud has significantly fewer IOs than local
+    const localIoCount = await prisma.io.count()
+    let pullWarning: string | undefined
+    if (localIoCount > 0 && cloudIos.length < localIoCount) {
+      const reduction = ((localIoCount - cloudIos.length) / localIoCount) * 100
+      if (reduction > 50) {
+        pullWarning = `Cloud returned ${cloudIos.length} IOs but local has ${localIoCount} (${reduction.toFixed(0)}% fewer). Proceeding as requested.`
+        console.warn(`[CloudPull] WARNING: ${pullWarning}`)
+      }
+    }
+
     // Upsert IOs instead of delete+create to preserve test data
     const result = await prisma.$transaction(async (tx) => {
       // Ensure default project exists
@@ -282,6 +293,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       message: `Successfully pulled ${result} IOs from cloud`,
       iosCount: result,
       ioCount: result,
+      ...(pullWarning ? { warning: pullWarning } : {}),
       debug: {
         cloudIosLength: cloudIos.length,
         cloudResponseKeys: Object.keys(cloudData),

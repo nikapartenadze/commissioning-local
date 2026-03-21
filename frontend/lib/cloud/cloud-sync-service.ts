@@ -725,16 +725,16 @@ export class CloudSyncService {
         // Check version conflict rules
         if (pending.version < localVersion) {
           // Admin modified data - reject permanently
-          log.warn(
-            `Version conflict for IO ${pending.ioId}: pending ${pending.version} < local ${localVersion}. Rejecting.`
+          log.error(
+            `TEST RESULT LOST: Version conflict for IO ${pending.ioId} — pending version ${pending.version} < local version ${localVersion}. This test result has been permanently discarded due to admin precedence.`
           )
           result.rejectedIds.push(pending.ioId)
           result.errors.set(pending.ioId, 'Version conflict - admin precedence')
           continue
         } else if (pending.version > localVersion) {
           // Anomaly - reject for safety
-          log.warn(
-            `Version anomaly for IO ${pending.ioId}: pending ${pending.version} > local ${localVersion}. Rejecting.`
+          log.error(
+            `TEST RESULT LOST: Version anomaly for IO ${pending.ioId} — pending version ${pending.version} > local version ${localVersion}. This test result has been permanently discarded due to version mismatch.`
           )
           result.rejectedIds.push(pending.ioId)
           result.errors.set(pending.ioId, 'Version anomaly')

@@ -75,7 +75,15 @@ const broadcastHttpServer = createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/broadcast') {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 1048576) {
+        res.writeHead(413);
+        res.end('Payload too large');
+        req.destroy();
+        return;
+      }
+    });
     req.on('end', () => {
       try {
         const message = JSON.parse(body);
@@ -83,8 +91,14 @@ const broadcastHttpServer = createServer((req, res) => {
         let sent = 0;
         plcClients.forEach(ws => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(data);
-            sent++;
+            try {
+              ws.send(data);
+              sent++;
+            } catch (err) {
+              console.error('[WS] Failed to send to client, removing:', err.message);
+              plcClients.delete(ws);
+              try { ws.terminate(); } catch { /* ignore */ }
+            }
           }
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
