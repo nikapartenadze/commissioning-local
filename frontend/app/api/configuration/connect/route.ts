@@ -7,8 +7,9 @@ export const dynamic = 'force-dynamic';
  * Uses Node.js libplctag bindings - no C# backend required
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { configService } from '@/lib/config/config-service';
+import { requireAuth } from '@/lib/auth/middleware';
 import { PlcConnectRequest } from '@/lib/config/types';
 import { connectPlc, loadPlcTags, getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { isLibraryLoaded, getLibraryPath } from '@/lib/plc';
@@ -19,7 +20,10 @@ import { prisma } from '@/lib/db';
  * Connect to PLC with provided IP and path configuration.
  * Updates config and connects using Node.js libplctag bindings.
  */
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const authError = requireAuth(request)
+  if (authError) return authError
+
   try {
     const body = await request.json() as PlcConnectRequest;
 

@@ -176,6 +176,16 @@ class AutoSyncService {
           }).catch(() => {})
         }
       }
+      // Clean up permanently failed PendingSync entries (retryCount > 100)
+      try {
+        const staleDeleted = await prisma.pendingSync.deleteMany({
+          where: { retryCount: { gt: 100 } },
+        })
+        if (staleDeleted.count > 0) {
+          console.warn(`[AutoSync] Cleaned up ${staleDeleted.count} permanently failed PendingSync entries (retryCount > 100)`)
+        }
+      } catch { /* ignore cleanup errors */ }
+
       // Also push pending change requests to cloud
       try {
         const pendingRequests = await prisma.changeRequest.findMany({

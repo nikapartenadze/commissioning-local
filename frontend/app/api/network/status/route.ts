@@ -49,8 +49,9 @@ export async function GET(request: NextRequest) {
     const client = getPlcClient()
 
     // Create handles for tags not yet in the reader (first call only)
+    const tagArray = Array.from(statusTags)
     const tagsToCreate: string[] = []
-    for (const tagName of statusTags) {
+    for (const tagName of tagArray) {
       if (!createdTags.has(tagName) && !failedTags.has(tagName) && !client.hasTag(tagName)) {
         tagsToCreate.push(tagName)
       }
@@ -77,7 +78,7 @@ export async function GET(request: NextRequest) {
 
     // Read cached values from the 75ms polling loop — no fresh PLC reads
     const results: Record<string, boolean | null> = {}
-    for (const tagName of statusTags) {
+    for (const tagName of tagArray) {
       if (failedTags.has(tagName)) {
         results[tagName] = null
         continue
