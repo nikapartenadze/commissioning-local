@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { getPlcTags } from '@/lib/plc-client-manager'
+import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { sanitizeComment, createTimestamp } from '@/lib/services/io-test-service'
 
 interface RouteParams {
@@ -169,6 +169,24 @@ export async function PUT(
       }
     } catch (syncError) {
       console.error('[IO Update] Failed to create PendingSync:', syncError)
+    }
+
+    // Broadcast to all connected browsers via WebSocket
+    try {
+      await fetch(getWsBroadcastUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'UpdateIO',
+          id: ioId,
+          result: updatedIo.result ?? 'Not Tested',
+          state: plcState ?? 'FALSE',
+          timestamp: updatedIo.timestamp ?? '',
+          comments: updatedIo.comments ?? '',
+        }),
+      })
+    } catch {
+      // WebSocket broadcast is best-effort
     }
 
     return NextResponse.json({
