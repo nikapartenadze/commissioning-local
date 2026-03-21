@@ -11,6 +11,8 @@
     "build": "next build",
     "start": "next start -p 3020",
     "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "postinstall": "prisma generate",
     "plc-server": "node scripts/plc-websocket-server.js",
     "test:plc": "tsx test-plc.ts",
@@ -62,6 +64,7 @@
     "@types/react": "^18.3.4",
     "@types/react-dom": "^18.3.0",
     "@types/ws": "^8.5.10",
+    "@vitejs/plugin-react": "^6.0.1",
     "autoprefixer": "^10.4.20",
     "concurrently": "^8.2.2",
     "eslint": "^9.37.0",
@@ -69,6 +72,7 @@
     "prisma": "^5.19.0",
     "tailwindcss": "^3.4.10",
     "tsx": "^4.21.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.0"
   }
 }
