@@ -442,23 +442,16 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                   y: e.clientY - rect.top,
                 })
               }}>
-                {/* Card body — status color on border only, not top header area */}
-                <rect
-                  x={cx - DEVICE_W / 2} y={DEVICE_Y + 16}
-                  width={DEVICE_W} height={DEVICE_H - 16}
-                  fill={bodyColor} fillOpacity={0.08}
-                  stroke={bodyColor} strokeWidth={1.5} strokeOpacity={0.7}
-                />
-                {/* Top rounded corners */}
+                {/* Card outline — status color border, transparent fill */}
                 <rect
                   x={cx - DEVICE_W / 2} y={DEVICE_Y}
                   width={DEVICE_W} height={DEVICE_H}
                   rx={4}
-                  fill="none"
+                  fill="hsl(var(--card))"
                   stroke={bodyColor} strokeWidth={1.5} strokeOpacity={0.7}
                 />
                 {/* Blue header strip — solid background, white text */}
-                <rect x={cx - DEVICE_W / 2 + 1} y={DEVICE_Y + 1} width={DEVICE_W - 2} height={15} rx={3} fill={headerColor} fillOpacity={0.85} />
+                <rect x={cx - DEVICE_W / 2 + 1} y={DEVICE_Y + 1} width={DEVICE_W - 2} height={15} rx={3} fill={headerColor} />
                 <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill="#fff">
                   {deviceType}
                 </text>
