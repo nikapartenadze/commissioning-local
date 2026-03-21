@@ -102,23 +102,6 @@ export default function CommissioningPage() {
     }
   }, [isUnconfigured, currentUser])
 
-  // Check simulator status on mount
-  useEffect(() => {
-    const checkSimulatorStatus = async () => {
-      try {
-        const response = await authFetch(API_ENDPOINTS.simulatorStatus)
-        if (response.ok) {
-          const data = await response.json()
-          setIsSimulatorEnabled(data.enabled)
-        }
-      } catch (error) {
-        logger.error('Error checking simulator status:', error)
-      }
-    }
-    
-    checkSimulatorStatus()
-  }, [])
-  
   // State management
   const [ios, setIos] = useState<IoItem[]>([])
   const [filteredIos, setFilteredIos] = useState<IoItem[]>([])
@@ -148,7 +131,6 @@ export default function CommissioningPage() {
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
-  const [isSimulatorEnabled, setIsSimulatorEnabled] = useState(false)
   const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null>(null)
   const [showChangeRequestDialog, setShowChangeRequestDialog] = useState(false)
   const [showChangeRequestsPanel, setShowChangeRequestsPanel] = useState(false)
@@ -667,19 +649,19 @@ export default function CommissioningPage() {
         setIos(data)
         setFilteredIos(data)
 
-        // Initialize previousStates with current states to prevent flood of dialogs on load
-        // Without this, every TRUE state would be treated as a "change" from undefined
-        const initialStates: Record<number, string> = {}
-        for (const io of data as IoItem[]) {
-          if (io.state) {
-            initialStates[io.id] = io.state
+        // Initialize previousStates ONLY on first load to prevent flood of dialogs
+        // On subsequent reloads (auto-sync, cloud pull), keep existing previousStates
+        // so that state change detection isn't reset (which would cause false dialog triggers)
+        setPreviousStates(prev => {
+          if (Object.keys(prev).length > 0) return prev  // Already initialized, keep existing
+          const initialStates: Record<number, string> = {}
+          for (const io of data as IoItem[]) {
+            if (io.state) {
+              initialStates[io.id] = io.state
+            }
           }
-        }
-        setPreviousStates(initialStates)
-        if (DEBUG_OTHER) {
-          console.log('📊 Initialized previousStates for', Object.keys(initialStates).length, 'IOs')
-        }
-
+          return initialStates
+        })
         // Note: Don't auto-connect WebSocket here - only connect when PLC is connected
         // WebSocket is for real-time PLC tag updates, not needed for just viewing IOs
 
@@ -1047,23 +1029,6 @@ export default function CommissioningPage() {
     setShowCloudSyncDialog(true)
   }
 
-  const handleToggleSimulator = async () => {
-    try {
-      const endpoint = isSimulatorEnabled ? 'disable' : 'enable'
-      const response = await fetch(endpoint === 'enable' ? API_ENDPOINTS.simulatorEnable : API_ENDPOINTS.simulatorDisable, {
-        method: 'POST'
-      })
-      
-      if (response.ok) {
-        setIsSimulatorEnabled(!isSimulatorEnabled)
-        logger.log(`Simulator ${!isSimulatorEnabled ? 'enabled' : 'disabled'}`)
-      } else {
-        logger.error('Failed to toggle simulator')
-      }
-    } catch (error) {
-      logger.error('Error toggling simulator:', error)
-    }
-  }
 
   const handleCloudPull = async (newConfig: PlcConfig) => {
     logger.log('Cloud pull completed with config:', newConfig)
