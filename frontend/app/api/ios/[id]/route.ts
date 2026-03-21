@@ -180,7 +180,7 @@ export async function PUT(
           type: 'UpdateIO',
           id: ioId,
           result: updatedIo.result ?? 'Not Tested',
-          state: plcState ?? 'FALSE',
+          state: plcState ?? '',
           timestamp: updatedIo.timestamp ?? '',
           comments: updatedIo.comments ?? '',
         }),
