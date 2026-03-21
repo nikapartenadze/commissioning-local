@@ -444,14 +444,14 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
               }}>
                 {/* Full card background */}
                 <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
-                {/* Body border — status color, drawn as a path that skips the top */}
+                {/* Body border — status color, inset 1px, skips the top */}
                 <path
-                  d={`M ${cx - DEVICE_W / 2} ${DEVICE_Y + 16}
-                      L ${cx - DEVICE_W / 2} ${DEVICE_Y + DEVICE_H - 4}
-                      Q ${cx - DEVICE_W / 2} ${DEVICE_Y + DEVICE_H} ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y + DEVICE_H}
-                      L ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y + DEVICE_H}
-                      Q ${cx + DEVICE_W / 2} ${DEVICE_Y + DEVICE_H} ${cx + DEVICE_W / 2} ${DEVICE_Y + DEVICE_H - 4}
-                      L ${cx + DEVICE_W / 2} ${DEVICE_Y + 16}`}
+                  d={`M ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + 16}
+                      L ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + DEVICE_H - 4}
+                      Q ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + DEVICE_H - 1} ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y + DEVICE_H - 1}
+                      L ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y + DEVICE_H - 1}
+                      Q ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + DEVICE_H - 1} ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + DEVICE_H - 4}
+                      L ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + 16}`}
                   fill="none" stroke={bodyColor} strokeWidth={1.5} strokeOpacity={0.7}
                 />
                 {/* Blue header — top with rounded top corners */}
