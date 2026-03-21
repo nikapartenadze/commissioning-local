@@ -442,16 +442,29 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
                   y: e.clientY - rect.top,
                 })
               }}>
-                {/* Card outline — status color border, transparent fill */}
-                <rect
-                  x={cx - DEVICE_W / 2} y={DEVICE_Y}
-                  width={DEVICE_W} height={DEVICE_H}
-                  rx={4}
-                  fill="hsl(var(--card))"
-                  stroke={bodyColor} strokeWidth={1.5} strokeOpacity={0.7}
+                {/* Full card background */}
+                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
+                {/* Body border — status color, drawn as a path that skips the top */}
+                <path
+                  d={`M ${cx - DEVICE_W / 2} ${DEVICE_Y + 16}
+                      L ${cx - DEVICE_W / 2} ${DEVICE_Y + DEVICE_H - 4}
+                      Q ${cx - DEVICE_W / 2} ${DEVICE_Y + DEVICE_H} ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y + DEVICE_H}
+                      L ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y + DEVICE_H}
+                      Q ${cx + DEVICE_W / 2} ${DEVICE_Y + DEVICE_H} ${cx + DEVICE_W / 2} ${DEVICE_Y + DEVICE_H - 4}
+                      L ${cx + DEVICE_W / 2} ${DEVICE_Y + 16}`}
+                  fill="none" stroke={bodyColor} strokeWidth={1.5} strokeOpacity={0.7}
                 />
-                {/* Blue header strip — solid background, white text */}
-                <rect x={cx - DEVICE_W / 2 + 1} y={DEVICE_Y + 1} width={DEVICE_W - 2} height={15} rx={3} fill={headerColor} />
+                {/* Blue header — top with rounded top corners */}
+                <path
+                  d={`M ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y}
+                      Q ${cx - DEVICE_W / 2} ${DEVICE_Y} ${cx - DEVICE_W / 2} ${DEVICE_Y + 4}
+                      L ${cx - DEVICE_W / 2} ${DEVICE_Y + 16}
+                      L ${cx + DEVICE_W / 2} ${DEVICE_Y + 16}
+                      L ${cx + DEVICE_W / 2} ${DEVICE_Y + 4}
+                      Q ${cx + DEVICE_W / 2} ${DEVICE_Y} ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y}
+                      Z`}
+                  fill={headerColor}
+                />
                 <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill="#fff">
                   {deviceType}
                 </text>
