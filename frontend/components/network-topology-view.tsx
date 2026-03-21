@@ -291,13 +291,8 @@ function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
 
 // ── Star Diagram: thin vertical device cards, distance-sorted lanes ─
 
-const PORT_FILL: Record<string, string> = {
-  VFD: '#e74c3c',      // red
-  FIOM: '#2980b9',     // steel blue
-  PMM: '#e67e22',      // orange
-  SIO: '#8e44ad',      // deep purple
-  POINT_IO: '#27ae60', // emerald
-}
+// All devices use blue for the header strip
+const DEVICE_HEADER_COLOR = '#3b82f6'
 
 function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record<string, boolean | null> }) {
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -376,16 +371,8 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
         )}
       </div>
 
-      {/* Legend + zoom controls */}
-      <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-3 flex-wrap">
-          {Object.entries(PORT_FILL).map(([type, color]) => (
-            <div key={type} className="flex items-center gap-1">
-              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: color }} />
-              <span className="text-[10px] text-muted-foreground">{type}</span>
-            </div>
-          ))}
-        </div>
+      {/* Zoom controls */}
+      <div className="flex items-center justify-end px-1">
         <div className="flex items-center gap-1">
           <button onClick={vp.zoomOut} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
             <ZoomOut className="w-4 h-4" />
@@ -438,7 +425,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
           {connectedPorts.map((port, devIdx) => {
             const cx = devCx(devIdx)
             const deviceType = getDeviceType(port.deviceName || '')
-            const headerColor = '#3b82f6' // blue header strip
+            const headerColor = DEVICE_HEADER_COLOR
             const s = getStatusColor(port.statusTag, tagStates)
             const bodyColor = statusToHex(s)
 
@@ -580,7 +567,7 @@ function StarDiagram({ node, tagStates }: { node: NetworkNode; tagStates: Record
               </button>
             </div>
             <div className="text-xs text-muted-foreground space-y-0.5">
-              <p>Type: <span className="font-medium" style={{ color: PORT_FILL[selectedDevice.type] }}>{selectedDevice.type}</span></p>
+              <p>Type: <span className="font-medium text-blue-500">{selectedDevice.type}</span></p>
               <p>IP: <span className="font-mono text-foreground">{selectedDevice.ip}</span></p>
               <p>Port: <span className="font-mono text-foreground">{selectedDevice.port}</span></p>
             </div>
