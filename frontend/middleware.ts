@@ -6,7 +6,7 @@ export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Always allow static assets, auth endpoints, and health
-  if (PUBLIC_PATHS.some(p => pathname === p) || pathname.startsWith('/_next/')) {
+  if (PUBLIC_PATHS.some(p => pathname === p) || pathname.startsWith('/_next/') || pathname.startsWith('/guide/')) {
     return NextResponse.next()
   }
 

@@ -202,9 +202,12 @@ export function PinLogin() {
           )}
 
           {/* Help Text */}
-          <div className="text-center text-xs text-muted-foreground">
+          <div className="text-center text-xs text-muted-foreground space-y-2">
             <p>Need help? Contact your administrator</p>
-            <p className="mt-1">Session expires after 8 hours</p>
+            <p>Session expires after 8 hours</p>
+            <a href="/guide" target="_blank" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-500 hover:bg-blue-500/20 font-medium text-xs transition-colors">
+              Read the Guide
+            </a>
           </div>
         </CardContent>
       </Card>
