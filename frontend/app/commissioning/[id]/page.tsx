@@ -586,7 +586,7 @@ export default function CommissioningPage() {
               // Full IO update: update everything (result changes from Pass/Fail/Clear)
               updatedIo = {
                 ...io,
-                state: update.State || io.state,  // Preserve existing state if broadcast has none
+                state: (update.State === 'TRUE' || update.State === 'FALSE') ? update.State : io.state,
                 result: update.Result === "Not Tested" ? null : update.Result,
                 timestamp: update.Timestamp || io.timestamp,
                 comments: update.Comments !== undefined ? update.Comments : io.comments // Handle null comments explicitly
