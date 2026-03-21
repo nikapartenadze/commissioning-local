@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server'
 import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { prisma } from '@/lib/db'
+import { requireAuth } from '@/lib/auth/middleware'
 
 /**
  * POST /api/ios/[id]/fire-output
@@ -16,6 +17,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const authError = requireAuth(request)
+  if (authError) return authError
+
   try {
     const { id } = await params
     const ioId = parseInt(id, 10)
