@@ -347,6 +347,12 @@ export interface TagStatusUpdateMessage {
   connected: boolean
 }
 
+export interface CloudConnectionChangedMessage {
+  type: 'CloudConnectionChanged'
+  connected: boolean
+  state: 'connected' | 'reconnecting' | 'disconnected'
+}
+
 export type PlcWebSocketMessage =
   | UpdateStateMessage
   | UpdateIOMessage
@@ -356,3 +362,4 @@ export type PlcWebSocketMessage =
   | TestingStateChangedMessage
   | ConfigReloadMessage
   | TagStatusUpdateMessage
+  | CloudConnectionChangedMessage
