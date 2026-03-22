@@ -5,7 +5,8 @@ import {
   ArrowLeft, ArrowRight, CheckCircle2, Cpu,
   Play, Cloud, Download, Search,
   Network, Settings, Users, HelpCircle, AlertTriangle,
-  Zap, MessageSquare, RotateCcw, Home, BookOpen, Wrench
+  Zap, MessageSquare, RotateCcw, Home, BookOpen, Wrench,
+  Database, FileDown, ClipboardList, UserPlus, Shield
 } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
@@ -286,6 +287,134 @@ const steps: GuideStep[] = [
             desc="Restart the laptop and double-click START.bat. All data is safe in the database. Reconnect PLC from the config dialog."
           />
         </div>
+      </div>
+    ),
+  },
+  {
+    id: "user-management",
+    title: "Managing Users",
+    icon: <UserPlus className="w-5 h-5" />,
+    adminOnly: true,
+    content: (
+      <div className="space-y-4">
+        <p>Admins can create, edit, and deactivate user accounts. Each user logs in with a unique 6-digit PIN.</p>
+        <StepList steps={[
+          "Click \"Manage Users\" in the top-right toolbar",
+          "You'll see a list of all users with their roles and status",
+          "Click \"Add User\" to create a new account",
+          "Enter the user's name, assign a 6-digit PIN, and choose their role (Admin or User)",
+          "Click Save — the user can now log in immediately",
+        ]} />
+        <div className="grid gap-3 sm:grid-cols-2 mt-2">
+          <InfoCard icon={<Shield />} title="Admin Role" desc="Full access — PLC config, cloud sync, user management, all settings" />
+          <InfoCard icon={<Users />} title="User Role" desc="Testing only — can pass/fail IOs, add comments, view results" />
+        </div>
+        <h3 className="text-sm font-semibold mt-4">Resetting a PIN</h3>
+        <StepList steps={[
+          "Open Manage Users",
+          "Click the edit button on the user's row",
+          "Enter a new 6-digit PIN",
+          "Click Save — the user logs in with the new PIN next time",
+        ]} />
+        <h3 className="text-sm font-semibold mt-4">Deactivating a User</h3>
+        <p className="text-sm text-muted-foreground">
+          Toggle the user's active status to prevent login. Their test history is preserved.
+          Deactivated users cannot log in until reactivated.
+        </p>
+        <Tip>The default admin PIN is 111111. Change it after first login for security.</Tip>
+      </div>
+    ),
+  },
+  {
+    id: "csv-export",
+    title: "Exporting Results (CSV)",
+    icon: <FileDown className="w-5 h-5" />,
+    content: (
+      <div className="space-y-4">
+        <p>Export your test results as a CSV file for reporting, archiving, or sharing with stakeholders.</p>
+        <StepList steps={[
+          "Open the I/O Testing page",
+          "Click the download icon (↓) in the toolbar, near the column visibility controls",
+          "A CSV file downloads with all IO data — description, IO point, state, result, tester, timestamp, and comments",
+          "Open in Excel, Google Sheets, or any spreadsheet tool",
+        ]} />
+        <Tip>The CSV includes all IOs regardless of your current filter. If you have Pass/Fail/Untested filters active, the export still includes everything.</Tip>
+        <Warning>Export regularly during commissioning as a backup. While data is safe in the local database and cloud, a CSV gives you an offline copy you can email or print.</Warning>
+      </div>
+    ),
+  },
+  {
+    id: "change-requests",
+    title: "Change Requests",
+    icon: <ClipboardList className="w-5 h-5" />,
+    adminOnly: true,
+    content: (
+      <div className="space-y-4">
+        <p>If an IO definition is incorrect (wrong description, wrong tag name, etc.), technicians or admins can submit a change request instead of modifying the data directly.</p>
+        <StepList steps={[
+          "Find the IO that needs correction",
+          "Click the change request icon on that row",
+          "Select the request type (rename, reassign, remove, etc.)",
+          "Add a description of what needs to change and why",
+          "Submit — the request is saved and visible to all admins",
+        ]} />
+        <h3 className="text-sm font-semibold mt-4">Reviewing Change Requests (Admin)</h3>
+        <StepList steps={[
+          "Open the change requests panel from the toolbar",
+          "Review each pending request — see who submitted it and why",
+          "Approve or reject with an optional comment",
+          "Approved changes should be made in the cloud system, then re-pulled",
+        ]} />
+        <Tip>Change requests create a paper trail. Even rejected requests are preserved so you can see what was considered and why.</Tip>
+      </div>
+    ),
+  },
+  {
+    id: "backups",
+    title: "Database Backups",
+    icon: <Database className="w-5 h-5" />,
+    adminOnly: true,
+    content: (
+      <div className="space-y-4">
+        <p>The app stores all data in a local SQLite database. Backups let you save a snapshot you can restore from if needed.</p>
+        <StepList steps={[
+          "Open the backup panel from the admin toolbar",
+          "Click \"Create Backup\" — a timestamped copy of the database is saved",
+          "Click \"Download\" on any backup to save it to your computer",
+          "To restore, upload a backup file — this replaces the current database",
+        ]} />
+        <Warning>Restoring a backup overwrites all current data. Make sure to create a fresh backup before restoring an older one.</Warning>
+        <h3 className="text-sm font-semibold mt-4">When to Create Backups</h3>
+        <div className="space-y-2">
+          <TipCard title="Before Pull IOs" desc="Pulling new IO definitions replaces the current list. A backup preserves your existing results." />
+          <TipCard title="End of Shift" desc="Create a backup at the end of each work day as insurance." />
+          <TipCard title="Before Major Changes" desc="If you're about to re-configure PLC connections or sync settings, back up first." />
+        </div>
+        <Tip>Backups can also be synced to the cloud for off-site safekeeping.</Tip>
+      </div>
+    ),
+  },
+  {
+    id: "diagnostics",
+    title: "Diagnostic Help",
+    icon: <HelpCircle className="w-5 h-5" />,
+    content: (
+      <div className="space-y-4">
+        <p>When an IO fails, the app can suggest troubleshooting steps based on the device type.</p>
+        <StepList steps={[
+          "When viewing a failed IO, look for the help (?) icon",
+          "Click it to see diagnostic steps specific to that tag type (FIOM, VFD, PMM, etc.)",
+          "Follow the suggested steps — check wiring, verify power, inspect connections",
+          "Common failure modes and solutions are pre-loaded for each device type",
+        ]} />
+        <h3 className="text-sm font-semibold mt-4">Available Diagnostics by Device Type</h3>
+        <div className="grid gap-2 sm:grid-cols-2 mt-2">
+          <InfoCard icon={<Cpu />} title="FIOM" desc="Field IO modules — check terminal wiring, DIN rail power, module LEDs" />
+          <InfoCard icon={<Zap />} title="VFD" desc="Motor drives — verify motor wiring, drive fault codes, parameter settings" />
+          <InfoCard icon={<Network />} title="DPM" desc="Network switches — check Ethernet cables, port LEDs, ring status" />
+          <InfoCard icon={<Settings />} title="PMM / SIO" desc="Power monitors, smart IO — verify CT connections, scaling, communication" />
+        </div>
+        <Tip>Diagnostics are pre-seeded by your admin. If steps are missing for a device type, ask your admin to add them via the diagnostics management page.</Tip>
       </div>
     ),
   },

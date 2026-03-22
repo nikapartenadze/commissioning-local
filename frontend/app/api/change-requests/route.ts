@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { configService } from '@/lib/config'
 
 // GET — list change requests with optional filters
 export async function GET(request: NextRequest) {
@@ -58,6 +59,38 @@ export async function POST(request: NextRequest) {
         status: 'pending',
       },
     })
+
+    // Sync to cloud (non-blocking)
+    const config = await configService.getConfig()
+    if (config.remoteUrl && config.apiPassword) {
+      try {
+        const syncUrl = `${config.remoteUrl}/api/sync/change-requests`
+        await fetch(syncUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': config.apiPassword,
+          },
+          body: JSON.stringify({
+            requests: [{
+              ioId: changeRequest.ioId,
+              subsystemId: config.subsystemId ? parseInt(String(config.subsystemId), 10) : null,
+              requestType: changeRequest.requestType,
+              currentValue: changeRequest.currentValue,
+              requestedValue: changeRequest.requestedValue,
+              structuredChanges: changeRequest.structuredChanges,
+              reason: changeRequest.reason,
+              requestedBy: changeRequest.requestedBy,
+              createdAt: changeRequest.createdAt,
+            }],
+          }),
+          signal: AbortSignal.timeout(10000),
+        })
+        console.log('[ChangeRequest] Synced to cloud')
+      } catch (err) {
+        console.warn('[ChangeRequest] Cloud sync failed (saved locally):', err instanceof Error ? err.message : err)
+      }
+    }
 
     return NextResponse.json({ success: true, changeRequest })
   } catch (error) {

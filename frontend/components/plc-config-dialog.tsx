@@ -283,6 +283,7 @@ export function PlcConfigDialog({
             if (retryRes.ok) {
               const retryResult = await retryRes.json()
               addPullLog(`Pulled ${retryResult.ioCount} IOs`)
+
               setPullStatus({ type: 'success', message: `Synced & pulled ${retryResult.ioCount} IOs` })
               onCloudPull(localConfig)
             } else {
@@ -304,6 +305,7 @@ export function PlcConfigDialog({
             if (forceRes.ok) {
               const forceResult = await forceRes.json()
               addPullLog(`Force-pulled ${forceResult.ioCount} IOs (backup created)`)
+
               setPullStatus({ type: 'success', message: `Pulled ${forceResult.ioCount} IOs` })
               onCloudPull(localConfig)
             } else {
