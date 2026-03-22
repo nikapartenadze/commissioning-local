@@ -89,6 +89,7 @@ const CONSOLE_PATTERNS = [
   /Merged \d+ test results/,
   /Pulled \d+ change request/,
   /Pushed \d+ change request/,
+  /CloudSSE.*Connected|CloudSSE.*Disconnected|CloudSSE.*Reconnecting/,
   /Successfully pulled/,
   /Successfully upserted/,
   /Auto-assigned tagType/,

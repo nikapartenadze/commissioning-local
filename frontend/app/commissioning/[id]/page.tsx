@@ -333,19 +333,14 @@ export default function CommissioningPage() {
     loadPlcConfig()
     loadIos()
 
-    // Poll cloud status every 60 seconds (auto-sync already checks cloud every 60s)
-    const checkCloud = () => {
-      fetch('/api/cloud/status')
-        .then(r => r.ok ? r.json() : null)
-        .then(data => { if (data) setIsCloudConnected(data.connected === true) })
-        .catch(() => setIsCloudConnected(false))
-    }
-    checkCloud()
-    const cloudInterval = setInterval(checkCloud, 60000)
+    // Initial cloud status check (SSE will push live updates after this)
+    fetch('/api/cloud/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setIsCloudConnected(data.connected === true) })
+      .catch(() => setIsCloudConnected(false))
 
     return () => {
       isInitializedRef.current = false
-      clearInterval(cloudInterval)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]) // Only re-run when projectId changes
@@ -455,6 +450,17 @@ export default function CommissioningPage() {
       signalR.offIOsUpdated(handleIOsUpdated)
     }
   }, [signalR.onIOsUpdated, signalR.offIOsUpdated])
+
+  // Handle cloud connection state changes via WebSocket (from SSE client)
+  useEffect(() => {
+    const handleCloudChange = (connected: boolean) => {
+      setIsCloudConnected(connected)
+    }
+    signalR.onCloudConnectionChange(handleCloudChange)
+    return () => {
+      signalR.offCloudConnectionChange(handleCloudChange)
+    }
+  }, [signalR.onCloudConnectionChange, signalR.offCloudConnectionChange])
 
   // Handle SignalR comment updates
   useEffect(() => {
