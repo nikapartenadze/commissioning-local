@@ -34,8 +34,8 @@ InstallDirRegKey HKLM "Software\${APP_SHORT}" "InstallDir"
 RequestExecutionLevel admin
 
 ; ── UI ──────────────────────────────────────────────────────
-!define MUI_ICON "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
-!define MUI_UNICON "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
+!define MUI_ICON "app.ico"
+!define MUI_UNICON "app.ico"
 !define MUI_ABORTWARNING
 
 !insertmacro MUI_PAGE_WELCOME
