@@ -47,10 +47,25 @@ const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 
 try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
+const MAX_LOG_FILES = 3; // Keep at most 3 rotated files per type (30MB total max)
+
 function logTimestamp() { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
+function cleanupOldLogs(baseName) { try {
+  const dir = path.dirname(baseName);
+  const ext = path.extname(baseName);
+  const name = path.basename(baseName, ext);
+  const rotated = fs.readdirSync(dir)
+    .filter(f => f.startsWith(name + '.') && f.endsWith(ext) && f !== path.basename(baseName))
+    .sort()
+    .reverse();
+  for (let i = MAX_LOG_FILES; i < rotated.length; i++) {
+    try { fs.unlinkSync(path.join(dir, rotated[i])); } catch {}
+  }
+} catch {} }
 function appendLog(file, line) { try {
   if (fs.existsSync(file) && fs.statSync(file).size > MAX_LOG_SIZE) {
     fs.renameSync(file, file.replace('.log', `.${Date.now()}.log`));
+    cleanupOldLogs(file);
   }
   fs.appendFileSync(file, line + '\n');
 } catch {} }
