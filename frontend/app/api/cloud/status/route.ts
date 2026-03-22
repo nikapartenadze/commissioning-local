@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
+import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 import { configService } from '@/lib/config'
 import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
@@ -36,11 +37,18 @@ export async function GET(): Promise<NextResponse<CloudSyncStatusResponse>> {
     }
     const config = cloudSyncService.getConfig()
 
-    // Determine connection status — always do a health check if URL is configured
+    // Use SSE connection state if available (real-time, no HTTP overhead)
+    // Fall back to health check only if SSE is not running
     let connected = false
     let error: string | undefined
 
-    if (config.remoteUrl) {
+    const sseClient = getCloudSseClient()
+    if (sseClient) {
+      connected = sseClient.isConnected
+      if (!connected && sseClient.connectionState === 'reconnecting') {
+        error = 'Reconnecting to cloud...'
+      }
+    } else if (config.remoteUrl) {
       try {
         connected = await cloudSyncService.isCloudAvailable()
         if (connected) {
