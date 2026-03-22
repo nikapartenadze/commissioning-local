@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, RefreshCw, PanelRightOpen, PanelRightClose, Search } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -600,6 +600,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [error, setError] = useState<string | null>(null)
   const [expandedNodeId, setExpandedNodeId] = useState<number | null>(null)
   const [tagStates, setTagStates] = useState<Record<string, boolean | null>>({})
+  const [showTable, setShowTable] = useState(false)
+  const [tableSearch, setTableSearch] = useState('')
 
   // Poll PLC for network device status tags every 3 seconds
   useEffect(() => {
@@ -624,28 +626,41 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
     return () => { cancelled = true; clearInterval(interval) }
   }, [rings, subsystemId])
 
-  useEffect(() => {
-    async function fetchTopology() {
-      setLoading(true)
-      setError(null)
-      try {
-        // 1. Try local data first
-        const params = subsystemId ? `?subsystemId=${subsystemId}` : ''
-        const res = await authFetch(`${API_ENDPOINTS.networkTopology}${params}`)
-        const data: TopologyResponse = await res.json()
+  const [refreshing, setRefreshing] = useState(false)
 
-        if (data.success && data.rings.length > 0) {
-          setRings(data.rings)
-          return
+  const fetchTopology = async (pullFromCloud = false) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const params = subsystemId ? `?subsystemId=${subsystemId}` : ''
+
+      // If explicitly refreshing, pull from cloud first
+      if (pullFromCloud) {
+        setRefreshing(true)
+        try {
+          await authFetch('/api/cloud/pull-network', { method: 'POST' })
+        } catch {
+          // Cloud pull failed — fall through to show local data
         }
+        setRefreshing(false)
+      }
 
-        // 2. No local data — try pulling from cloud (uses saved config)
+      // Fetch local data
+      const res = await authFetch(`${API_ENDPOINTS.networkTopology}${params}`)
+      const data: TopologyResponse = await res.json()
+
+      if (data.success && data.rings.length > 0) {
+        setRings(data.rings)
+        return
+      }
+
+      // No local data — try pulling from cloud automatically
+      if (!pullFromCloud) {
         try {
           const pullRes = await authFetch('/api/cloud/pull-network', { method: 'POST' })
           const pullData = await pullRes.json()
 
           if (pullData.success && pullData.rings > 0) {
-            // Re-fetch local data after cloud pull
             const res2 = await authFetch(`${API_ENDPOINTS.networkTopology}${params}`)
             const data2: TopologyResponse = await res2.json()
             if (data2.success) {
@@ -656,15 +671,17 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         } catch {
           // Cloud pull failed — not an error, just no data
         }
-
-        // 3. No data anywhere
-        setRings([])
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Network error')
-      } finally {
-        setLoading(false)
       }
+
+      setRings([])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Network error')
+    } finally {
+      setLoading(false)
     }
+  }
+
+  useEffect(() => {
     fetchTopology()
   }, [subsystemId])
 
@@ -694,55 +711,218 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
       <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
         <Network className="w-10 h-10 mb-2" />
         <p>No network topology data found.</p>
-        <p className="text-sm mt-1">Run the network seed script to populate data.</p>
+        <p className="text-sm mt-1">Network data is pulled automatically from the cloud when available.</p>
       </div>
     )
   }
 
+  // Flatten all devices for the table
+  const allDevices = rings.flatMap(ring =>
+    ring.nodes.flatMap(node =>
+      node.ports
+        .filter(p => p.deviceName)
+        .map(port => ({
+          ringName: ring.name,
+          dpmName: node.name,
+          dpmIp: node.ipAddress,
+          portNumber: port.portNumber,
+          deviceName: port.deviceName!,
+          deviceIp: port.deviceIp,
+          deviceType: port.deviceType,
+          statusTag: port.statusTag,
+          status: getStatusColor(port.statusTag, tagStates),
+        }))
+    )
+  )
+
+  const filteredDevices = tableSearch
+    ? allDevices.filter(d =>
+        d.deviceName.toLowerCase().includes(tableSearch.toLowerCase()) ||
+        d.dpmName.toLowerCase().includes(tableSearch.toLowerCase()) ||
+        (d.deviceType || '').toLowerCase().includes(tableSearch.toLowerCase()) ||
+        (d.deviceIp || '').includes(tableSearch) ||
+        (d.statusTag || '').toLowerCase().includes(tableSearch.toLowerCase())
+      )
+    : allDevices
+
+  const statusCounts = {
+    healthy: allDevices.filter(d => d.status === 'green').length,
+    faulted: allDevices.filter(d => d.status === 'red').length,
+    unknown: allDevices.filter(d => d.status === 'gray').length,
+  }
+
   return (
-    <div className="space-y-6">
-      {rings.map((ring) => {
-        const expandedNode = ring.nodes.find((n) => n.id === expandedNodeId) || null
+    <div className="flex gap-0 h-full">
+      {/* Main topology view */}
+      <div className={cn("space-y-6", showTable ? "flex-1 min-w-0" : "w-full")}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+              {statusCounts.healthy} healthy
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+              {statusCounts.faulted} faulted
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-gray-500" />
+              {statusCounts.unknown} unknown
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => fetchTopology(true)}
+              disabled={refreshing}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
+              {refreshing ? "Refreshing..." : "Refresh from Cloud"}
+            </button>
+            <button
+              onClick={() => setShowTable(!showTable)}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors"
+            >
+              {showTable ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+              {showTable ? "Hide Table" : "Device Table"}
+            </button>
+          </div>
+        </div>
+        {rings.map((ring) => {
+          const expandedNode = ring.nodes.find((n) => n.id === expandedNodeId) || null
 
-        return (
-          <Card key={ring.id} className="bg-card border">
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-lg text-foreground">
-                <Network className="w-5 h-5 text-blue-400" />
-                {ring.name}
-                <Badge variant="outline" className="ml-2 text-xs text-muted-foreground border-border">
-                  {ring.nodes.length} DPMs
-                </Badge>
-                <Badge variant="outline" className="text-xs text-muted-foreground border-border">
-                  {ring.nodes.reduce((sum, n) => sum + n.ports.filter((p) => p.deviceName).length, 0)} devices
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {/* Ring diagram */}
-              <div className="overflow-x-auto">
-                <RingLayout
-                  ring={ring}
-                  expandedNodeId={expandedNodeId}
-                  onToggleNode={handleToggleNode}
-                  tagStates={tagStates}
-                />
-              </div>
-
-              <p className="text-xs text-center text-muted-foreground pt-1">
-                Click a DPM node to view connected devices
-              </p>
-
-              {/* Expanded device grid */}
-              {expandedNode && (
-                <div className="border-t pt-3">
-                  <StarDiagram node={expandedNode} tagStates={tagStates} />
+          return (
+            <Card key={ring.id} className="bg-card border">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-lg text-foreground">
+                  <Network className="w-5 h-5 text-blue-400" />
+                  {ring.name}
+                  <Badge variant="outline" className="ml-2 text-xs text-muted-foreground border-border">
+                    {ring.nodes.length} DPMs
+                  </Badge>
+                  <Badge variant="outline" className="text-xs text-muted-foreground border-border">
+                    {ring.nodes.reduce((sum, n) => sum + n.ports.filter((p) => p.deviceName).length, 0)} devices
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {/* Ring diagram */}
+                <div className="overflow-x-auto">
+                  <RingLayout
+                    ring={ring}
+                    expandedNodeId={expandedNodeId}
+                    onToggleNode={handleToggleNode}
+                    tagStates={tagStates}
+                  />
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        )
-      })}
+
+                <p className="text-xs text-center text-muted-foreground pt-1">
+                  Click a DPM node to view connected devices
+                </p>
+
+                {/* Expanded device grid */}
+                {expandedNode && (
+                  <div className="border-t pt-3">
+                    <StarDiagram node={expandedNode} tagStates={tagStates} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+
+      {/* Device table sidebar */}
+      {showTable && (
+        <div className="w-[480px] flex-shrink-0 border-l bg-card/50 flex flex-col h-[calc(100vh-120px)] sticky top-[60px]">
+          <div className="p-3 border-b space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-sm">All Devices ({allDevices.length})</h3>
+              <button onClick={() => setShowTable(false)} className="p-1 rounded hover:bg-accent">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search devices, IO points..."
+                value={tableSearch}
+                onChange={e => setTableSearch(e.target.value)}
+                className="w-full pl-8 pr-3 py-2 text-sm rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-card border-b">
+                <tr className="text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium w-6"></th>
+                  <th className="px-2 py-2 font-medium">Device</th>
+                  <th className="px-2 py-2 font-medium">IO Point</th>
+                  <th className="px-2 py-2 font-medium">Type</th>
+                  <th className="px-2 py-2 font-medium">DPM</th>
+                  <th className="px-2 py-2 font-medium">Port</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredDevices.map((device, i) => (
+                  <tr
+                    key={`${device.dpmName}-${device.portNumber}-${i}`}
+                    className="border-b border-border/50 hover:bg-accent/50 transition-colors"
+                  >
+                    <td className="px-3 py-2">
+                      <span className={cn(
+                        "block w-2.5 h-2.5 rounded-full",
+                        device.status === 'green' && "bg-green-500",
+                        device.status === 'red' && "bg-red-500",
+                        device.status === 'gray' && "bg-gray-500",
+                      )} />
+                    </td>
+                    <td className="px-2 py-2">
+                      <div className="font-medium text-foreground truncate max-w-[120px]" title={device.deviceName}>
+                        {device.deviceName}
+                      </div>
+                      {device.deviceIp && (
+                        <div className="text-muted-foreground text-[10px] font-mono">{device.deviceIp}</div>
+                      )}
+                    </td>
+                    <td className="px-2 py-2">
+                      {device.statusTag ? (
+                        <span className="font-mono text-[10px] text-muted-foreground truncate block max-w-[120px]" title={device.statusTag}>
+                          {device.statusTag}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground/50">—</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-2">
+                      {device.deviceType && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                          {device.deviceType}
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 text-muted-foreground truncate max-w-[80px]" title={device.dpmName}>
+                      {device.dpmName}
+                    </td>
+                    <td className="px-2 py-2 text-muted-foreground text-center">
+                      {device.portNumber}
+                    </td>
+                  </tr>
+                ))}
+                {filteredDevices.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">
+                      {tableSearch ? "No devices match your search" : "No devices found"}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

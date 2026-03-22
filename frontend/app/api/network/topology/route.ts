@@ -8,7 +8,11 @@ export async function GET(request: NextRequest) {
   try {
     const subsystemId = request.nextUrl.searchParams.get('subsystemId')
 
-    const where = subsystemId ? { subsystemId: parseInt(subsystemId, 10) } : {}
+    if (!subsystemId) {
+      return NextResponse.json({ success: true, rings: [] })
+    }
+
+    const where = { subsystemId: parseInt(subsystemId, 10) }
 
     const rings = await prisma.networkRing.findMany({
       where,
