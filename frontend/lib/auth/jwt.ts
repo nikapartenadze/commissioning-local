@@ -71,6 +71,9 @@ export function verifyToken(token: string): DecodedToken | null {
     const decoded = jwt.verify(token, config.secretKey, options) as DecodedToken;
     return decoded;
   } catch (error) {
+    if (error instanceof Error && error.message.includes('JWT_SECRET_KEY')) {
+      console.error('[Auth] JWT_SECRET_KEY not configured — cannot verify tokens');
+    }
     // Token is invalid, expired, or has wrong signature
     return null;
   }

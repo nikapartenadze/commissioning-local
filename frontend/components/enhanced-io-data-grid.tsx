@@ -122,6 +122,7 @@ export function EnhancedIoDataGrid({
   const [showDiagnosticDialog, setShowDiagnosticDialog] = useState(false)
   const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
   const [moduleHealth, setModuleHealth] = useState<Record<string, 'ok' | 'warning' | 'error'>>({})
+  const [activeKeywordFilters, setActiveKeywordFilters] = useState<string[]>([])
   const COLUMN_WIDTHS = useColumnWidths()
 
   // Fetch module health status periodically
@@ -196,6 +197,56 @@ export function EnhancedIoDataGrid({
     setSearchTerm('')
   }
 
+  // Auto-detect keyword filters from IO descriptions and names
+  const keywordFilters = useMemo(() => {
+    if (ios.length === 0) return []
+
+    // Common industrial keywords to look for
+    const KEYWORDS = [
+      'PE', 'LPE', 'TPE', 'FPE',
+      'VFD', 'AUX', 'FIOM', 'PMM', 'SIO',
+      'MOTOR', 'PHOTO', 'PROX', 'SAFETY',
+      'DISCONNECT', 'TRACKING',
+      'SPARE',
+    ]
+
+    // Count occurrences across all IOs
+    const counts: Record<string, number> = {}
+    for (const io of ios) {
+      const text = `${io.name || ''} ${io.description || ''}`.toUpperCase()
+      for (const kw of KEYWORDS) {
+        if (text.includes(kw)) {
+          counts[kw] = (counts[kw] || 0) + 1
+        }
+      }
+    }
+
+    // Also detect module prefixes (e.g., NCP1_1, UL26_19) from IO names
+    const modulePrefixes: Record<string, number> = {}
+    for (const io of ios) {
+      const name = io.name || ''
+      const match = name.match(/^([A-Z]+\d+_\d+)_/)
+      if (match) {
+        const prefix = match[1]
+        modulePrefixes[prefix] = (modulePrefixes[prefix] || 0) + 1
+      }
+    }
+
+    // Only include keywords that match at least 2 IOs
+    const result = Object.entries(counts)
+      .filter(([, count]) => count >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .map(([keyword, count]) => ({ keyword, count }))
+
+    return result
+  }, [ios])
+
+  const toggleKeywordFilter = (keyword: string) => {
+    setActiveKeywordFilters(prev =>
+      prev.includes(keyword) ? prev.filter(k => k !== keyword) : [...prev, keyword]
+    )
+  }
+
   const filteredIos = useMemo(() => {
     const filtered = ios.filter(io => {
       // Apply quick filter first
@@ -209,6 +260,12 @@ export function EnhancedIoDataGrid({
       if (activeQuickFilter === 'inputs') {
         const name = io.name || ''
         if (name.includes(':O.') || name.includes(':SO.')) return false
+      }
+
+      // Apply keyword filters (AND logic — must match ALL active keywords)
+      if (activeKeywordFilters.length > 0) {
+        const text = `${io.name || ''} ${io.description || ''}`.toUpperCase()
+        if (!activeKeywordFilters.every(kw => text.includes(kw))) return false
       }
 
       if (filterTags.length === 0 && !searchTerm.trim()) return true
@@ -245,7 +302,7 @@ export function EnhancedIoDataGrid({
     }
 
     return [...filtered].sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
-  }, [ios, filterTags, searchTerm, activeQuickFilter, sortMode])
+  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, sortMode])
 
   useEffect(() => {
     if (onFilteredDataChange) {
@@ -425,11 +482,41 @@ export function EnhancedIoDataGrid({
         </select>
 
         {/* Count Badge */}
-        <div className="h-[44px] px-4 flex items-center bg-muted rounded font-mono text-sm">
+        <div className="h-[44px] px-4 flex items-center bg-muted rounded font-mono text-sm whitespace-nowrap">
           <span className="font-bold">{filteredIos.length}</span>
           <span className="text-muted-foreground ml-1">/ {ios.length}</span>
         </div>
       </div>
+
+      {/* Keyword Filter Pills */}
+      {keywordFilters.length > 0 && (
+        <div className="flex items-center gap-1.5 px-2 py-1.5 border-b bg-muted/20 flex-shrink-0 overflow-x-auto">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium shrink-0">Filter:</span>
+          {keywordFilters.map(({ keyword, count }) => (
+            <button
+              key={keyword}
+              onClick={() => toggleKeywordFilter(keyword)}
+              className={cn(
+                "px-2 py-0.5 rounded-full text-xs font-medium transition-colors shrink-0",
+                activeKeywordFilters.includes(keyword)
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted hover:bg-accent text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {keyword}
+              <span className="ml-1 opacity-60">{count}</span>
+            </button>
+          ))}
+          {activeKeywordFilters.length > 0 && (
+            <button
+              onClick={() => setActiveKeywordFilters([])}
+              className="px-2 py-0.5 rounded-full text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Data Grid with Virtual Scrolling */}
       <div
