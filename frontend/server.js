@@ -40,7 +40,10 @@ const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 // Production Logging — clean console + detailed file logs
 // ============================================================================
 
-const LOG_DIR = path.join(__dirname, 'logs');
+// Use ProgramData logs dir if database is there (service install), otherwise app dir (portable)
+const dbUrl = process.env.DATABASE_URL || '';
+const programDataMatch = dbUrl.match(/file:([A-Z]:\\ProgramData\\[^\\]+)\\/i);
+const LOG_DIR = programDataMatch ? path.join(programDataMatch[1], 'logs') : path.join(__dirname, 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'app.log');
 const ERROR_FILE = path.join(LOG_DIR, 'errors.log');
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
