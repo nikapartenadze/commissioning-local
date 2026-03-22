@@ -12,6 +12,7 @@
 
 import { prisma } from '@/lib/db'
 import { configService } from '@/lib/config'
+import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 30000 (30s)
@@ -75,9 +76,24 @@ class AutoSyncService {
 
     // Do an initial push attempt after 5 seconds (let server fully start)
     setTimeout(() => this.pushToCloud(), 5000)
+
+    // Start SSE client for real-time cloud updates (after 10s to let config load)
+    setTimeout(async () => {
+      try {
+        const config = await configService.getConfig()
+        if (config.remoteUrl && config.subsystemId) {
+          startCloudSse({
+            remoteUrl: config.remoteUrl,
+            apiPassword: config.apiPassword || '',
+            subsystemId: config.subsystemId,
+          })
+        }
+      } catch {}
+    }, 10000)
   }
 
   stop(): void {
+    stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
     if (this.pullTimer) clearInterval(this.pullTimer)
     this.pushTimer = null
@@ -238,6 +254,16 @@ class AutoSyncService {
 
   private async pullFromCloud(): Promise<void> {
     if (this.isPulling) return
+
+    // Skip pull if SSE is connected and received events recently
+    const sseClient = getCloudSseClient()
+    if (sseClient?.isConnected && sseClient.lastEventAt &&
+        Date.now() - sseClient.lastEventAt.getTime() < 90000) {
+      this._lastPullAt = new Date()
+      this._lastPullResult = 'skipped (SSE active)'
+      return
+    }
+
     this.isPulling = true
 
     try {
