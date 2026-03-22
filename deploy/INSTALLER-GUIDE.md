@@ -56,6 +56,21 @@
 
 > Everything in `ProgramData` survives upgrades. Everything in `Program Files` gets replaced.
 
+### Log Files
+
+All logs are in **`C:\ProgramData\IOCheckout\logs\`**:
+
+| File | What's in it |
+|------|-------------|
+| **`app.log`** | Detailed app activity — PLC connections, cloud sync, test recordings (with timestamps) |
+| **`errors.log`** | Errors and warnings only — check this first when something breaks |
+| **`service.log`** | Raw console output captured by the service manager |
+| **`service-error.log`** | Raw error output captured by the service manager |
+
+- Logs **auto-rotate** at 10MB — old files are renamed with a timestamp
+- Max **3 rotated files** per type (30MB cap) — old ones auto-deleted
+- Logs are **preserved across upgrades** — useful for diagnosing issues after an update
+
 ---
 
 ## Service Management
