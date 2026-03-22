@@ -36,12 +36,150 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
 const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 
-console.log('='.repeat(60));
+// ============================================================================
+// Production Logging — clean console + detailed file logs
+// ============================================================================
+
+const LOG_DIR = path.join(__dirname, 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'app.log');
+const ERROR_FILE = path.join(LOG_DIR, 'errors.log');
+const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
+
+try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+
+function logTimestamp() { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
+function appendLog(file, line) { try {
+  if (fs.existsSync(file) && fs.statSync(file).size > MAX_LOG_SIZE) {
+    fs.renameSync(file, file.replace('.log', `.${Date.now()}.log`));
+  }
+  fs.appendFileSync(file, line + '\n');
+} catch {} }
+
+// Messages matching these patterns go to CONSOLE + file (user-facing)
+const CONSOLE_PATTERNS = [
+  /IO Checkout Tool/,
+  /Ready in \d+ms/,
+  /Starting Next\.js/,
+  /Background auto-sync started/,
+  /Shutting down/,
+  /Connection status: (connected|error)/,
+  /PLC connected|PLC connection lost|PLC connection failed/,
+  /PLC native library/,
+  /libplctag.*initialized/,
+  /libplctag.*failed/,
+  /Pushed \d+ results/,
+  /Pushing \d+ pending/,
+  /Updated \d+ IOs/,
+  /Pulling \d+ IO/,
+  /Merged \d+ test results/,
+  /Pulled \d+ change request/,
+  /Pushed \d+ change request/,
+  /Successfully pulled/,
+  /Successfully upserted/,
+  /Auto-assigned tagType/,
+  /Cloud config saved/,
+  /Configuration saved/,
+  /Configuration loaded/,
+  /Config file not found/,
+  /Tag creation complete/,
+  /PLC unreachable/,
+  /Testing mode for/,
+  /Test recorded for/,
+  /User logged in/,
+  /Auto-seeded \d+ diagnostic/,
+  /ERROR|EADDRINUSE/,
+];
+
+// Messages matching these patterns are FILE-ONLY (noise)
+const SUPPRESS_PATTERNS = [
+  /\[TagReader\] Tag .* creation returned/,
+  /\[TagReader\] Batch \d+/,
+  /\[TagReader\] Grouped/,
+  /\[TagReader\] Creating \d+ individual/,
+  /\[TagReader\] First batch failed/,
+  /\[TagReader\] PLC reachable but grouped/,
+  /\[TagReader\] waitForStatus/,
+  /\[WS\] Broadcast API/,
+  /\[WS\] PLC WebSocket server/,
+  /\[PlcClientManager\] Creating new/,
+  /\[PlcClientManager\] IO \d+/,
+  /\[AutoSync\] Push interval/,
+  /\[AutoSync\] Stopped/,
+  /\[AutoSync\] Push error/,
+  /\[AutoSync\] Pull error/,
+  /\[AutoSync\] Cleaned up/,
+  /no changes detected/,
+  /nothing to push/,
+  /no IOs from cloud/,
+  /no remote URL/,
+  /no subsystem/,
+  /CloudSync.*updateConfig/,
+  /CloudSync.*Configuration after/,
+  /CloudPull.*Cloud response/,
+  /CloudPull.*IOs extracted/,
+  /CloudPull.*Retrieved/,
+  /CloudPull.*Ensured subsystem/,
+  /CloudPull.*Cleared/,
+  /CloudPull.*Failed to update/,
+  /Connect API.*Sample tag/,
+  /Connect API.*Loaded \d+ tags/,
+  /Connect API.*libplctag library status/,
+  /IOs API.*Got \d+ tags/,
+  /ConfigService.*Watching/,
+  /ConfigService.*Stopped watching/,
+  /ConfigService.*changed externally/,
+  /ConfigService.*Error in change/,
+  /ConfigService.*Error starting/,
+  /Request error/,
+  /prisma:error/,
+  /\[DB\] WAL mode/,
+  /\[DB\] busy_timeout/,
+  /Failed to send to client/,
+];
+
+if (process.env.NODE_ENV === 'production') {
+  const origLog = console.log.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origError = console.error.bind(console);
+
+  console.log = (...args) => {
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+    const ts = logTimestamp();
+    appendLog(LOG_FILE, `${ts} [INFO]  ${msg}`);
+    if (SUPPRESS_PATTERNS.some(p => p.test(msg))) return; // file only
+    if (CONSOLE_PATTERNS.some(p => p.test(msg))) { origLog(msg); return; }
+    // Default: suppress in production (file only)
+  };
+
+  console.warn = (...args) => {
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+    const ts = logTimestamp();
+    appendLog(LOG_FILE, `${ts} [WARN]  ${msg}`);
+    appendLog(ERROR_FILE, `${ts} [WARN]  ${msg}`);
+    if (SUPPRESS_PATTERNS.some(p => p.test(msg))) return;
+    origWarn(`⚠ ${msg}`);
+  };
+
+  console.error = (...args) => {
+    const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+    const ts = logTimestamp();
+    appendLog(LOG_FILE, `${ts} [ERROR] ${msg}`);
+    appendLog(ERROR_FILE, `${ts} [ERROR] ${msg}`);
+    if (SUPPRESS_PATTERNS.some(p => p.test(msg))) return;
+    origError(`✗ ${msg}`);
+  };
+}
+
+// ============================================================================
+// Startup Banner
+// ============================================================================
+
+console.log('');
 console.log('IO Checkout Tool - Production Server');
-console.log('='.repeat(60));
-console.log(`App:       http://${HOSTNAME}:${PORT}`);
-console.log(`WebSocket: ws://${HOSTNAME}:${WS_PORT}`);
-console.log('='.repeat(60));
+console.log('');
+console.log(`  App:       http://${HOSTNAME}:${PORT}`);
+console.log(`  WebSocket: ws://${HOSTNAME}:${WS_PORT}`);
+console.log('');
 
 // ============================================================================
 // PLC WebSocket Server (real-time tag state broadcasts)
