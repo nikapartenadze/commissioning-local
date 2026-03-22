@@ -14,7 +14,7 @@
 ; ── Version & Metadata ──────────────────────────────────────
 !define APP_NAME "IO Checkout Tool"
 !define APP_SHORT "IOCheckout"
-!define APP_PUBLISHER "LCI"
+!define APP_PUBLISHER "autStand"
 !define APP_URL "https://commissioning.lci.ge"
 !ifndef APP_VERSION
   !define APP_VERSION "2.8.0"
@@ -51,7 +51,8 @@ RequestExecutionLevel admin
 ; ── Install Section ─────────────────────────────────────────
 Section "Install"
   SetOutPath "$INSTDIR"
-  StrCpy $DATA_DIR "$COMMONAPPDATA\IOCheckout"
+  ReadEnvStr $DATA_DIR "ProgramData"
+StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
 
   ; Stop existing service if upgrading
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE_NAME}'
@@ -70,9 +71,10 @@ Section "Install"
   SetOutPath "$INSTDIR\app"
   File /r "${PORTABLE_DIR}\app\*.*"
 
-  ; ── Copy NSSM ──
+  ; ── Copy NSSM + icon ──
   SetOutPath "$INSTDIR"
   File "${NSSM_PATH}"
+  File "app.ico"
 
   ; ── Create .env pointing to data directory ──
   FileOpen $0 "$INSTDIR\app\.env" w
@@ -150,8 +152,18 @@ Section "Install"
   FileOpen $0 "$SMPROGRAMS\${APP_NAME}\Open IO Checkout.url" w
   FileWrite $0 "[InternetShortcut]$\r$\n"
   FileWrite $0 "URL=http://localhost:3000$\r$\n"
+  FileWrite $0 "IconIndex=0$\r$\n"
+  FileWrite $0 "IconFile=$INSTDIR\app.ico$\r$\n"
   FileClose $0
   CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+
+  ; ── Desktop Shortcut ──
+  FileOpen $0 "$DESKTOP\IO Checkout.url" w
+  FileWrite $0 "[InternetShortcut]$\r$\n"
+  FileWrite $0 "URL=http://localhost:3000$\r$\n"
+  FileWrite $0 "IconIndex=0$\r$\n"
+  FileWrite $0 "IconFile=$INSTDIR\app.ico$\r$\n"
+  FileClose $0
 
   ; ── Uninstaller ──
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -160,7 +172,8 @@ SectionEnd
 
 ; ── Uninstall Section ───────────────────────────────────────
 Section "Uninstall"
-  StrCpy $DATA_DIR "$COMMONAPPDATA\IOCheckout"
+  ReadEnvStr $DATA_DIR "ProgramData"
+StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
 
   ; Stop and remove service
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE_NAME}'
@@ -175,10 +188,12 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\node"
   RMDir /r "$INSTDIR\app"
   Delete "$INSTDIR\nssm.exe"
+  Delete "$INSTDIR\app.ico"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
-  ; Remove Start Menu
+  ; Remove shortcuts
+  Delete "$DESKTOP\IO Checkout.url"
   RMDir /r "$SMPROGRAMS\${APP_NAME}"
 
   ; Remove registry
