@@ -92,6 +92,8 @@ export interface WebSocketConnection {
   offIOsUpdated: (callback: () => void) => void
   onReconnected: (callback: () => void) => void
   offReconnected: (callback: () => void) => void
+  onCloudConnectionChange: (callback: (connected: boolean) => void) => void
+  offCloudConnectionChange: (callback: (connected: boolean) => void) => void
 }
 
 // ============================================================================
@@ -144,6 +146,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const iosUpdatedCallbacksRef = useRef<Set<() => void>>(new Set())
   const tagStatusCallbacksRef = useRef<Set<(update: TagStatusUpdate) => void>>(new Set())
   const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
+  const cloudConnectionCallbacksRef = useRef<Set<(connected: boolean) => void>>(new Set())
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
@@ -235,6 +238,16 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           iosUpdatedCallbacksRef.current.forEach((cb) => {
             try { cb() } catch (error) {
               console.error('[PlcWebSocket] Error in IOsUpdated callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'CloudConnectionChanged': {
+          const connected = (message as any).connected === true
+          cloudConnectionCallbacksRef.current.forEach((cb) => {
+            try { cb(connected) } catch (error) {
+              console.error('[PlcWebSocket] Error in CloudConnection callback:', error)
             }
           })
           break
@@ -534,6 +547,14 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     reconnectedCallbacksRef.current.delete(callback)
   }, [])
 
+  const onCloudConnectionChange = useCallback((callback: (connected: boolean) => void) => {
+    cloudConnectionCallbacksRef.current.add(callback)
+  }, [])
+
+  const offCloudConnectionChange = useCallback((callback: (connected: boolean) => void) => {
+    cloudConnectionCallbacksRef.current.delete(callback)
+  }, [])
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -566,7 +587,9 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     onIOsUpdated,
     offIOsUpdated,
     onReconnected,
-    offReconnected
+    offReconnected,
+    onCloudConnectionChange,
+    offCloudConnectionChange,
   }
 }
 
