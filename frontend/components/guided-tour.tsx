@@ -49,7 +49,6 @@ const steps: Step[] = [
     content: (
       <div>
         <p>Each row is one IO point. Green dot = input is ON. The result column shows Pass, Fail, or untested.</p>
-        <TourImage src="/guide/io-grid.png" alt="IO grid" />
       </div>
     ),
     disableBeacon: true,

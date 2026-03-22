@@ -33,14 +33,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
     setIsMounted(true)
   }, [])
 
-  // Load from localStorage on mount and check for auto-logout
+  // Load from localStorage on mount and verify token is still valid
   useEffect(() => {
     if (!isMounted) return
 
     const stored = localStorage.getItem('currentUser')
     const loginTime = localStorage.getItem('loginTime')
+    const token = localStorage.getItem('authToken')
 
-    if (stored && loginTime) {
+    if (stored && loginTime && token) {
       try {
         const user = JSON.parse(stored)
         const loginDate = new Date(loginTime)
@@ -48,22 +49,54 @@ export function UserProvider({ children }: { children: ReactNode }) {
         // Check if 8 hours have passed (auto-logout)
         const hoursSinceLogin = (Date.now() - loginDate.getTime()) / (1000 * 60 * 60)
 
-        if (hoursSinceLogin < 8) {
-          setCurrentUserState({
-            ...user,
-            loginTime: loginDate
-          })
-        } else {
+        if (hoursSinceLogin >= 8) {
           // Auto-logout after 8 hours
           localStorage.removeItem('currentUser')
           localStorage.removeItem('loginTime')
           localStorage.removeItem('authToken')
+          document.cookie = 'authToken=; path=/; max-age=0'
+          setIsLoading(false)
+          return
         }
+
+        // Verify token is still valid on the server before restoring session
+        fetch('/api/auth/verify', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+          .then(res => {
+            if (res.ok) {
+              // Token is valid — restore session
+              setCurrentUserState({
+                ...user,
+                loginTime: loginDate
+              })
+            } else {
+              // Token is invalid (server restarted, secret changed, etc.)
+              // Clear stale session — user needs to re-login
+              localStorage.removeItem('currentUser')
+              localStorage.removeItem('loginTime')
+              localStorage.removeItem('authToken')
+              document.cookie = 'authToken=; path=/; max-age=0'
+            }
+          })
+          .catch(() => {
+            // Server not reachable — still restore from localStorage
+            // (offline mode: trust local data, will fail on API calls anyway)
+            setCurrentUserState({
+              ...user,
+              loginTime: loginDate
+            })
+          })
+          .finally(() => {
+            setIsLoading(false)
+          })
+        return // Don't setIsLoading here — it's handled in .finally()
       } catch (error) {
         console.error('Error loading user from localStorage:', error)
         localStorage.removeItem('currentUser')
         localStorage.removeItem('loginTime')
         localStorage.removeItem('authToken')
+        document.cookie = 'authToken=; path=/; max-age=0'
       }
     }
 

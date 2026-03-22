@@ -254,6 +254,7 @@ export async function authFetch(
       localStorage.removeItem('authToken')
       localStorage.removeItem('currentUser')
       localStorage.removeItem('loginTime')
+      document.cookie = 'authToken=; path=/; max-age=0'
       window.location.href = '/'
     }
   }
