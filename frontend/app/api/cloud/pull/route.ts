@@ -263,18 +263,13 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.warn('[CloudPull] Failed to save config:', e)
     }
 
-    // Update CloudSyncService in-memory config + mark connected
+    // Mark CloudSyncService as connected (it reads config from configService on demand)
     try {
       const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
       const syncService = getCloudSyncService()
-      syncService.updateConfig({
-        remoteUrl: remoteUrl,
-        apiPassword: apiPassword,
-        subsystemId: subsystemId,
-      })
       syncService.setConnectionState('connected')
     } catch (e) {
-      console.warn('[CloudPull] Failed to update sync service config:', e)
+      console.warn('[CloudPull] Failed to update sync service state:', e)
     }
 
     // Broadcast to all clients to reload their IO data
