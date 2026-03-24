@@ -193,6 +193,8 @@ export function GuidedTour({ run, onFinish }: GuidedTourProps) {
   const backColor = isDark ? '#a0a0a0' : '#666666'
   const skipColor = isDark ? '#666' : '#999'
 
+  if (!mounted) return null
+
   return (
     <Joyride
       steps={steps}
