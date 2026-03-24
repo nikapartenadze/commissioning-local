@@ -82,10 +82,15 @@ class AutoSyncService {
       try {
         const config = await configService.getConfig()
         if (config.remoteUrl && config.subsystemId) {
-          startCloudSse({
+          const sseClient = startCloudSse({
             remoteUrl: config.remoteUrl,
             apiPassword: config.apiPassword || '',
             subsystemId: config.subsystemId,
+          })
+          // When SSE (re)connects, immediately push any pending items
+          sseClient.onConnect(() => {
+            console.log('[AutoSync] Cloud reconnected — pushing pending items now')
+            this.pushToCloud()
           })
         }
       } catch {}
@@ -270,9 +275,7 @@ class AutoSyncService {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       this._lastPushResult = `error: ${msg}`
-      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED')) {
-        console.warn(`[AutoSync] Push error: ${msg}`)
-      }
+      console.warn(`[AutoSync] Push error: ${msg}`)
     } finally {
       this.isPushing = false
     }
