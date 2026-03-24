@@ -988,7 +988,7 @@ export default function CommissioningPage() {
       }
 
       const response = await authFetch(API_ENDPOINTS.ioComment(io.id), {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ comments: comment })
       })
