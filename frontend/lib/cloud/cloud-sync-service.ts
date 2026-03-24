@@ -26,6 +26,7 @@ import {
   SyncResult,
   BatchSyncResult,
 } from './types'
+import { configService } from '@/lib/config'
 
 // =============================================================================
 // Logger
@@ -47,7 +48,7 @@ const log = {
 // =============================================================================
 
 export class CloudSyncService {
-  private config: CloudSyncConfig
+  private localConfig: Pick<CloudSyncConfig, 'batchSize' | 'batchDelayMs' | 'connectionTimeoutMs' | 'retryDelayMs' | 'maxRetries'>
   private connectionStatus: CloudConnectionStatus = {
     state: 'disconnected',
   }
@@ -55,29 +56,78 @@ export class CloudSyncService {
   private connectionStateListeners: Set<(status: CloudConnectionStatus) => void> = new Set()
 
   constructor(config: Partial<CloudSyncConfig> = {}) {
-    this.config = { ...DEFAULT_CLOUD_CONFIG, ...config }
+    this.localConfig = {
+      batchSize: config.batchSize ?? DEFAULT_CLOUD_CONFIG.batchSize,
+      batchDelayMs: config.batchDelayMs ?? DEFAULT_CLOUD_CONFIG.batchDelayMs,
+      connectionTimeoutMs: config.connectionTimeoutMs ?? DEFAULT_CLOUD_CONFIG.connectionTimeoutMs,
+      retryDelayMs: config.retryDelayMs ?? DEFAULT_CLOUD_CONFIG.retryDelayMs,
+      maxRetries: config.maxRetries ?? DEFAULT_CLOUD_CONFIG.maxRetries,
+    }
   }
 
   // ===========================================================================
   // Configuration
   // ===========================================================================
 
-  updateConfig(config: Partial<CloudSyncConfig>): void {
+  /**
+   * Read cloud config (remoteUrl, apiPassword, subsystemId) fresh from configService.
+   * Non-cloud config (batchSize, retryConfig) stays in memory.
+   */
+  private async getCloudConfig(): Promise<{ remoteUrl: string; apiPassword: string; subsystemId: number }> {
+    const appConfig = await configService.getConfig()
+    return {
+      remoteUrl: appConfig.remoteUrl || '',
+      apiPassword: appConfig.apiPassword || '',
+      subsystemId: Number(appConfig.subsystemId) || 0,
+    }
+  }
+
+  /**
+   * Write-through to configService. Updates cloud settings in config.json.
+   * Non-cloud settings (batchSize, etc.) are stored in memory only.
+   */
+  async updateConfig(config: Partial<CloudSyncConfig>): Promise<void> {
     log.info('updateConfig called with:', {
       remoteUrl: config.remoteUrl,
       subsystemId: config.subsystemId,
       apiPassword: config.apiPassword ? `set (${config.apiPassword.length} chars)` : 'NOT SET',
     })
-    this.config = { ...this.config, ...config }
+
+    // Update non-cloud config in memory
+    if (config.batchSize !== undefined) this.localConfig.batchSize = config.batchSize
+    if (config.batchDelayMs !== undefined) this.localConfig.batchDelayMs = config.batchDelayMs
+    if (config.connectionTimeoutMs !== undefined) this.localConfig.connectionTimeoutMs = config.connectionTimeoutMs
+    if (config.retryDelayMs !== undefined) this.localConfig.retryDelayMs = config.retryDelayMs
+    if (config.maxRetries !== undefined) this.localConfig.maxRetries = config.maxRetries
+
+    // Write cloud config through to configService (persists to config.json)
+    const cloudUpdates: Record<string, unknown> = {}
+    if (config.remoteUrl !== undefined) cloudUpdates.remoteUrl = config.remoteUrl
+    if (config.apiPassword !== undefined) cloudUpdates.apiPassword = config.apiPassword
+    if (config.subsystemId !== undefined) cloudUpdates.subsystemId = String(config.subsystemId)
+
+    if (Object.keys(cloudUpdates).length > 0) {
+      await configService.saveConfig(cloudUpdates)
+    }
+
+    const fresh = await this.getCloudConfig()
     log.info('Configuration after update:', {
-      remoteUrl: this.config.remoteUrl,
-      subsystemId: this.config.subsystemId,
-      apiPassword: this.config.apiPassword ? `set (${this.config.apiPassword.length} chars)` : 'NOT SET',
+      remoteUrl: fresh.remoteUrl,
+      subsystemId: fresh.subsystemId,
+      apiPassword: fresh.apiPassword ? `set (${fresh.apiPassword.length} chars)` : 'NOT SET',
     })
   }
 
-  getConfig(): CloudSyncConfig {
-    return { ...this.config }
+  /**
+   * Get a snapshot of the full config (cloud fields from configService + local fields).
+   * Async because cloud fields come from configService.
+   */
+  async getConfig(): Promise<CloudSyncConfig> {
+    const cloud = await this.getCloudConfig()
+    return {
+      ...cloud,
+      ...this.localConfig,
+    }
   }
 
   // ===========================================================================
@@ -118,16 +168,17 @@ export class CloudSyncService {
   // HTTP Helper Methods
   // ===========================================================================
 
-  private addApiKeyHeader(headers: Headers): void {
-    if (this.config.apiPassword) {
-      headers.set('X-API-Key', this.config.apiPassword)  // Must match C# backend header name
+  private async addApiKeyHeader(headers: Headers): Promise<void> {
+    const { apiPassword } = await this.getCloudConfig()
+    if (apiPassword) {
+      headers.set('X-API-Key', apiPassword)  // Must match C# backend header name
     }
   }
 
   private async fetchWithTimeout(
     url: string,
     options: RequestInit = {},
-    timeoutMs: number = this.config.connectionTimeoutMs
+    timeoutMs: number = this.localConfig.connectionTimeoutMs
   ): Promise<Response> {
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -146,7 +197,7 @@ export class CloudSyncService {
   private async fetchWithRetry(
     url: string,
     options: RequestInit = {},
-    maxRetries: number = this.config.maxRetries
+    maxRetries: number = this.localConfig.maxRetries
   ): Promise<Response> {
     let lastError: Error | null = null
 
@@ -193,22 +244,23 @@ export class CloudSyncService {
   // ===========================================================================
 
   async isCloudAvailable(): Promise<boolean> {
-    if (!this.config.remoteUrl) {
+    const { remoteUrl } = await this.getCloudConfig()
+    if (!remoteUrl) {
       return false
     }
 
     try {
       const headers = new Headers({ 'Content-Type': 'application/json' })
-      this.addApiKeyHeader(headers)
+      await this.addApiKeyHeader(headers)
 
       const response = await this.fetchWithTimeout(
-        `${this.config.remoteUrl}/api/sync/health`,
+        `${remoteUrl}/api/sync/health`,
         { method: 'GET', headers },
         10000
       )
 
       if (response.ok) {
-        log.info(`Cloud health check passed for ${this.config.remoteUrl}`)
+        log.info(`Cloud health check passed for ${remoteUrl}`)
         this.setConnectionState('connected')
         return true
       }
@@ -228,18 +280,19 @@ export class CloudSyncService {
   // ===========================================================================
 
   async getSubsystemIos(subsystemId: number): Promise<Io[]> {
-    if (!this.config.remoteUrl) {
+    const cloudConfig = await this.getCloudConfig()
+    if (!cloudConfig.remoteUrl) {
       log.warn('Cloud URL not configured')
       return []
     }
 
-    const url = `${this.config.remoteUrl}/api/sync/subsystem/${subsystemId}`
+    const url = `${cloudConfig.remoteUrl}/api/sync/subsystem/${subsystemId}`
     log.info(`Fetching IOs from: ${url}`)
-    log.info(`API Password configured: ${this.config.apiPassword ? 'yes (' + this.config.apiPassword.length + ' chars)' : 'no'}`)
+    log.info(`API Password configured: ${cloudConfig.apiPassword ? 'yes (' + cloudConfig.apiPassword.length + ' chars)' : 'no'}`)
 
     try {
       const headers = new Headers({ 'Content-Type': 'application/json' })
-      this.addApiKeyHeader(headers)
+      await this.addApiKeyHeader(headers)
 
       const response = await this.fetchWithTimeout(
         url,
@@ -306,7 +359,7 @@ export class CloudSyncService {
     if (
       this.connectionStatus.state !== 'connected' &&
       this.connectionStatus.lastConnectionAttempt &&
-      Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.config.retryDelayMs
+      Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
     ) {
       await this.addToOfflineQueue(update)
       log.debug(`Queued IO ${update.id} for offline sync (connection unavailable)`)
@@ -332,7 +385,7 @@ export class CloudSyncService {
     if (updates.length === 0) return true
 
     // For small batches, try batch sync first
-    if (updates.length > 1 && updates.length <= this.config.batchSize) {
+    if (updates.length > 1 && updates.length <= this.localConfig.batchSize) {
       if (await this.tryRealtimeBatchSync(updates)) {
         log.info(`Successfully batch synced ${updates.length} updates`)
         return true
@@ -370,14 +423,15 @@ export class CloudSyncService {
   async syncTestHistories(subsystemId: number, histories: TestHistoryDto[]): Promise<boolean> {
     if (histories.length === 0) return true
 
-    if (!this.config.remoteUrl) {
+    const cloudConfig = await this.getCloudConfig()
+    if (!cloudConfig.remoteUrl) {
       log.warn('Cloud URL not configured - cannot sync TestHistories')
       return false
     }
 
     try {
       const headers = new Headers({ 'Content-Type': 'application/json' })
-      this.addApiKeyHeader(headers)
+      await this.addApiKeyHeader(headers)
 
       const batch: TestHistorySyncBatchDto = {
         subsystemId,
@@ -385,7 +439,7 @@ export class CloudSyncService {
       }
 
       const response = await this.fetchWithTimeout(
-        `${this.config.remoteUrl}/api/sync/test-histories`,
+        `${cloudConfig.remoteUrl}/api/sync/test-histories`,
         {
           method: 'POST',
           headers,
@@ -424,7 +478,7 @@ export class CloudSyncService {
     if (
       this.connectionStatus.state !== 'connected' &&
       this.connectionStatus.lastConnectionAttempt &&
-      Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.config.retryDelayMs
+      Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
     ) {
       log.debug(`Skipping sync for IO ${update.id} - offline`)
       return false
@@ -432,18 +486,19 @@ export class CloudSyncService {
 
     // Try HTTP sync
     try {
-      if (!this.config.remoteUrl) {
+      const { remoteUrl } = await this.getCloudConfig()
+      if (!remoteUrl) {
         log.warn('Cloud URL not configured')
         return false
       }
 
       const headers = new Headers({ 'Content-Type': 'application/json' })
-      this.addApiKeyHeader(headers)
+      await this.addApiKeyHeader(headers)
 
       const batch: IoSyncBatchDto = { updates: [update] }
 
       const response = await this.fetchWithTimeout(
-        `${this.config.remoteUrl}/api/sync/update`,
+        `${remoteUrl}/api/sync/update`,
         {
           method: 'POST',
           headers,
@@ -480,25 +535,26 @@ export class CloudSyncService {
     if (
       this.connectionStatus.state !== 'connected' &&
       this.connectionStatus.lastConnectionAttempt &&
-      Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.config.retryDelayMs
+      Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
     ) {
       log.debug('Skipping batch sync - offline')
       return false
     }
 
     try {
-      if (!this.config.remoteUrl) {
+      const { remoteUrl } = await this.getCloudConfig()
+      if (!remoteUrl) {
         log.warn('Cloud URL not configured for HTTP batch fallback')
         return false
       }
 
       const headers = new Headers({ 'Content-Type': 'application/json' })
-      this.addApiKeyHeader(headers)
+      await this.addApiKeyHeader(headers)
 
       const batch: IoSyncBatchDto = { updates }
 
       const response = await this.fetchWithTimeout(
-        `${this.config.remoteUrl}/api/sync/update`,
+        `${remoteUrl}/api/sync/update`,
         {
           method: 'POST',
           headers,
@@ -609,10 +665,10 @@ export class CloudSyncService {
     const successfulIds: number[] = []
 
     // Process in batches
-    for (let i = 0; i < pendingSyncs.length; i += this.config.batchSize) {
-      const batch = pendingSyncs.slice(i, i + this.config.batchSize)
+    for (let i = 0; i < pendingSyncs.length; i += this.localConfig.batchSize) {
+      const batch = pendingSyncs.slice(i, i + this.localConfig.batchSize)
       log.info(
-        `Processing batch of ${batch.length} pending syncs (batch ${Math.floor(i / this.config.batchSize) + 1}/${Math.ceil(pendingSyncs.length / this.config.batchSize)})`
+        `Processing batch of ${batch.length} pending syncs (batch ${Math.floor(i / this.localConfig.batchSize) + 1}/${Math.ceil(pendingSyncs.length / this.localConfig.batchSize)})`
       )
 
       const batchSuccessIds = await this.tryBatchSyncPending(batch)
@@ -624,8 +680,8 @@ export class CloudSyncService {
       }
 
       // Small delay between batches
-      if (i + this.config.batchSize < pendingSyncs.length) {
-        await this.delay(this.config.batchDelayMs)
+      if (i + this.localConfig.batchSize < pendingSyncs.length) {
+        await this.delay(this.localConfig.batchDelayMs)
       }
     }
 
@@ -793,6 +849,8 @@ export function getCloudSyncService(config?: Partial<CloudSyncConfig>): CloudSyn
   if (!cloudSyncServiceInstance) {
     cloudSyncServiceInstance = new CloudSyncService(config)
   } else if (config) {
+    // updateConfig is async (writes through to configService), but we fire-and-forget
+    // for backward compatibility with callers that don't await
     cloudSyncServiceInstance.updateConfig(config)
   }
   return cloudSyncServiceInstance
