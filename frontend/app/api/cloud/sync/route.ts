@@ -5,6 +5,8 @@ import { prisma } from '@/lib/db'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { ioRepository } from '@/lib/db/repositories/io-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
+import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
+import { configService } from '@/lib/config'
 import type { IoUpdateDto, SyncResult } from '@/lib/cloud/types'
 
 /**
@@ -71,10 +73,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
 
     console.log(`[CloudSync] Found ${pendingSyncs.length} pending syncs`)
 
-    // Initialize cloud sync service
+    // Initialize cloud sync service — ensure it has config from config.json
     const cloudSyncService = getCloudSyncService()
+    const savedConfig = await configService.getConfig()
+    if (savedConfig.remoteUrl && !cloudSyncService.getConfig().remoteUrl) {
+      cloudSyncService.updateConfig({
+        remoteUrl: savedConfig.remoteUrl,
+        apiPassword: savedConfig.apiPassword,
+      })
+    }
 
-    // Update config if provided
+    // Update config if provided in request
     if (remoteUrl || apiPassword) {
       cloudSyncService.updateConfig({
         ...(remoteUrl && { remoteUrl }),
@@ -83,8 +92,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
       })
     }
 
-    // Check cloud availability
-    const isAvailable = await cloudSyncService.isCloudAvailable()
+    // Check cloud availability — trust SSE if connected, otherwise health check
+    const sseClient = getCloudSseClient()
+    const sseConnected = sseClient?.isConnected ?? false
+    const isAvailable = sseConnected || await cloudSyncService.isCloudAvailable()
     if (!isAvailable && !force) {
       console.warn('[CloudSync] Cloud not available, keeping items in queue')
       return NextResponse.json({
