@@ -4,7 +4,6 @@ import { NextResponse } from 'next/server'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
-import { configService } from '@/lib/config'
 import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
 /**
@@ -26,16 +25,9 @@ export async function GET(): Promise<NextResponse<CloudSyncStatusResponse>> {
     // Get pending sync count from database
     const pendingSyncCount = await pendingSyncRepository.count()
 
-    // Ensure cloud sync service has config from persisted config.json
+    // Cloud sync service reads config from configService on demand
     const cloudSyncService = getCloudSyncService()
-    const savedConfig = await configService.getConfig()
-    if (savedConfig.remoteUrl && !cloudSyncService.getConfig().remoteUrl) {
-      cloudSyncService.updateConfig({
-        remoteUrl: savedConfig.remoteUrl,
-        apiPassword: savedConfig.apiPassword,
-      })
-    }
-    const config = cloudSyncService.getConfig()
+    const config = await cloudSyncService.getConfig()
 
     // Use SSE connection state if available (real-time, no HTTP overhead)
     // Fall back to health check only if SSE is not running
@@ -111,7 +103,7 @@ export async function POST(request: Request): Promise<NextResponse<CloudSyncStat
     const cloudSyncService = getCloudSyncService()
 
     if (remoteUrl || apiPassword || subsystemId) {
-      cloudSyncService.updateConfig({
+      await cloudSyncService.updateConfig({
         ...(remoteUrl && { remoteUrl }),
         ...(apiPassword && { apiPassword }),
         ...(subsystemId && { subsystemId }),
@@ -122,7 +114,7 @@ export async function POST(request: Request): Promise<NextResponse<CloudSyncStat
     let connected = false
     let error: string | undefined
 
-    const config = cloudSyncService.getConfig()
+    const config = await cloudSyncService.getConfig()
 
     if (config.remoteUrl) {
       try {
