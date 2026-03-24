@@ -29,8 +29,18 @@ const steps: GuideStep[] = [
     content: (
       <div className="space-y-4">
         <p className="text-lg">
-          This guide will walk you through everything you need to know to use the
-          <strong> IO Checkout Tool</strong> for commissioning.
+          This app helps you test every input and output on a PLC system. Your job is simple:
+        </p>
+        <div className="bg-card border rounded-lg p-4 space-y-2">
+          <p className="text-sm"><strong>1.</strong> Log in with your PIN</p>
+          <p className="text-sm"><strong>2.</strong> Press <strong>START</strong></p>
+          <p className="text-sm"><strong>3.</strong> Go to the panel and trigger a device (flip a switch, block a sensor, etc.)</p>
+          <p className="text-sm"><strong>4.</strong> The app detects the change and asks: <strong className="text-green-500">Pass</strong> or <strong className="text-red-500">Fail</strong>?</p>
+          <p className="text-sm"><strong>5.</strong> Click your answer — move to the next device — repeat</p>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          That's the entire workflow. Everything else — cloud sync, comments, exports — happens automatically or is optional.
+          This guide covers each part in detail.
         </p>
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
           <p className="text-sm text-blue-400 font-medium">This guide is read-only</p>
@@ -40,12 +50,6 @@ const steps: GuideStep[] = [
           </p>
         </div>
         <Video src="/guide/flow-full-workflow.webm" caption="Full workflow overview — login, navigate, search, test" />
-        <div className="grid gap-3 sm:grid-cols-2 mt-6">
-          <InfoCard icon={<Cpu />} title="Connect to PLC" desc="Read live tag states from the controller" />
-          <InfoCard icon={<CheckCircle2 />} title="Test I/Os" desc="Mark inputs/outputs as Pass or Fail" />
-          <InfoCard icon={<Cloud />} title="Cloud Sync" desc="Results sync automatically to the cloud" />
-          <InfoCard icon={<Network />} title="Network View" desc="See DPM topology and device status" />
-        </div>
       </div>
     ),
   },
@@ -55,15 +59,19 @@ const steps: GuideStep[] = [
     icon: <Users className="w-5 h-5" />,
     content: (
       <div className="space-y-4">
-        <p>Open the app URL on your tablet or laptop browser. You'll see the login screen.</p>
+        <p>Open the app URL on your tablet or laptop browser. You'll see the login screen with a number pad.</p>
         <Video src="/guide/flow-tech-login.webm" caption="Login flow — enter your 6-digit PIN" />
         <Screenshot src="/guide/login.png" alt="Login screen with PIN entry" />
         <StepList steps={[
-          "Enter your 6-digit PIN (default admin PIN: 111111)",
-          "Click Log In",
-          "You'll see the main commissioning page",
+          "Tap your 6-digit PIN on the number pad",
+          "Tap the checkmark button to log in",
+          "The IO list loads — you're ready to work",
         ]} />
-        <Tip>Ask your admin to create your personal PIN if you don't have one yet.</Tip>
+        <Tip>Your admin will give you your PIN. If you're the admin setting up for the first time, the default PIN is <strong>111111</strong>.</Tip>
+        <div className="bg-card border rounded-lg p-3 text-sm space-y-1">
+          <p><strong>After login you'll see:</strong></p>
+          <p className="text-muted-foreground">A table with all the IO points for your subsystem. Each row is one device connection (a sensor, motor, switch, etc.) that needs to be tested. If the table is empty, your admin needs to pull IOs from cloud first.</p>
+        </div>
       </div>
     ),
   },
@@ -116,12 +124,27 @@ const steps: GuideStep[] = [
     icon: <Settings className="w-5 h-5" />,
     content: (
       <div className="space-y-4">
-        <p>The toolbar at the top shows your connection status and testing controls.</p>
+        <p>The toolbar at the top of the screen has everything you need. Here's what each part does:</p>
         <Screenshot src="/guide/toolbar.png" alt="Main toolbar with status indicators" />
-        <div className="grid gap-2 mt-2">
+        <div className="space-y-3">
+          <div className="bg-card border rounded-lg p-3 text-sm">
+            <p className="font-medium">START / STOP button</p>
+            <p className="text-muted-foreground mt-1">Toggles testing mode. When green (START), testing is off. Press it to begin — it turns red (STOP). While testing is active, the app watches for state changes on the PLC.</p>
+          </div>
+          <div className="bg-card border rounded-lg p-3 text-sm">
+            <p className="font-medium">Pass / Fail / Left counters</p>
+            <p className="text-muted-foreground mt-1">Shows how many IOs you've passed, failed, and how many are left to test. Click any counter to filter the table to show only those IOs.</p>
+          </div>
+          <div className="bg-card border rounded-lg p-3 text-sm">
+            <p className="font-medium">Connection status bar (Cloud → Backend → PLC → Modules)</p>
+            <p className="text-muted-foreground mt-1">Shows the health of each connection in the chain. You need all of these green for testing to work.</p>
+          </div>
+        </div>
+        <h3 className="text-sm font-semibold mt-2">Status colors</h3>
+        <div className="grid gap-2">
           <IndicatorRow icon={<div className="w-3 h-3 rounded-full bg-green-500" />} label="Green" desc="Connected and working" />
-          <IndicatorRow icon={<div className="w-3 h-3 rounded-full bg-red-500" />} label="Red" desc="Not connected — click to configure" />
-          <IndicatorRow icon={<div className="w-3 h-3 rounded-full bg-amber-500 animate-pulse" />} label="Amber (pulsing)" desc="Reconnecting — wait, it will recover automatically" />
+          <IndicatorRow icon={<div className="w-3 h-3 rounded-full bg-red-500" />} label="Red" desc="Not connected — ask your admin to configure" />
+          <IndicatorRow icon={<div className="w-3 h-3 rounded-full bg-amber-500 animate-pulse" />} label="Amber" desc="Reconnecting — wait, it recovers automatically" />
         </div>
       </div>
     ),
@@ -132,21 +155,23 @@ const steps: GuideStep[] = [
     icon: <CheckCircle2 className="w-5 h-5" />,
     content: (
       <div className="space-y-4">
-        <p className="text-lg font-medium">This is your main workflow.</p>
+        <p className="text-lg font-medium">This is your main workflow — what you'll do for every IO.</p>
         <StepList steps={[
-          "Press START in the toolbar to enter testing mode",
-          "Go to the panel and physically trigger an input (press button, block photoeye, flip switch, etc.)",
-          "The IO's state dot turns green in the table",
-          "This dialog appears automatically:",
+          "Press the green START button in the toolbar — this puts the app in testing mode",
+          "Walk to the electrical panel and trigger the device you want to test (flip a switch, block a sensor, press a button — whatever that IO is wired to)",
+          "Come back to your tablet — a dialog has appeared automatically because the app detected the state change",
         ]} />
-        <Screenshot src="/guide/pass-fail-dialog.png" alt="Pass/Fail dialog — appears when an IO state changes" />
-        <StepList steps={[
-          "Click Pass if the correct IO responded",
-          "Click Fail if the wrong IO responded or nothing happened",
-          "Click Cancel to skip this IO for now",
-          "The row turns green (Pass) or red (Fail) in the table",
-        ]} />
-        <Screenshot src="/guide/io-grid-results.png" alt="IO testing grid — green rows passed, red rows failed, gray not tested" />
+        <Screenshot src="/guide/pass-fail-dialog.png" alt="Pass/Fail dialog — appears automatically when the app detects a state change" />
+        <div className="bg-card border rounded-lg p-3 text-sm space-y-2">
+          <p><strong>What to click:</strong></p>
+          <p><strong className="text-green-500">Pass</strong> — the correct IO responded to your action. The wiring is good.</p>
+          <p><strong className="text-red-500">Fail</strong> — the wrong IO responded, or nothing happened. Something is wrong.</p>
+          <p><strong>Cancel</strong> — skip this one for now and come back later.</p>
+        </div>
+        <p className="text-sm text-muted-foreground">After you click Pass or Fail, the row in the table updates with the result. Move on to the next device and repeat.</p>
+        <Screenshot src="/guide/io-grid-results.png" alt="IO testing grid — green rows passed, red rows failed, gray rows not yet tested" />
+        <Warning>You don't need to find the IO in the table first. Just trigger the device — the app finds it for you. The dialog shows which IO changed so you can confirm it's the right one.</Warning>
+        <Tip>If you press START and nothing happens when you trigger a device, check that the PLC icon in the toolbar is green (connected). If it's red, the PLC isn't connected yet — ask your admin.</Tip>
       </div>
     ),
   },
@@ -173,16 +198,20 @@ const steps: GuideStep[] = [
     icon: <Zap className="w-5 h-5" />,
     content: (
       <div className="space-y-4">
-        <p>For output IOs, you need to manually activate them to test.</p>
+        <p>Inputs are triggered by you at the panel — the app detects them. But <strong>outputs</strong> work the other way: you activate them from the app and verify at the panel that the right thing happens.</p>
+        <div className="bg-card border rounded-lg p-3 text-sm space-y-1">
+          <p><strong>Input</strong> = you trigger the device → app detects it (sensor, switch, button)</p>
+          <p><strong>Output</strong> = app activates the device → you verify it (motor, valve, light)</p>
+        </div>
         <Screenshot src="/guide/fire-output.png" alt="Fire button — hold to activate output on PLC" />
         <StepList steps={[
-          "Find the output IO in the table",
-          "Click and HOLD the FIRE button (lightning bolt icon)",
-          "The output activates on the PLC — verify the physical device (motor spins, light turns on, valve opens)",
-          "Release the button — output turns OFF",
-          "The Pass/Fail dialog appears — mark the result",
+          "Find the output IO in the table (use the \"Out\" filter button to show only outputs)",
+          "Click and HOLD the FIRE button (lightning bolt icon) on that row",
+          "While holding: look at the panel — the device should activate (motor spins, light turns on, valve opens)",
+          "Release the button — the device turns OFF",
+          "The Pass/Fail dialog appears — mark the result based on what you observed",
         ]} />
-        <Warning>Outputs activate real equipment. Make sure it's safe before firing — check that personnel are clear of moving parts.</Warning>
+        <Warning>The FIRE button activates real equipment. Before pressing it, make sure the area around the device is clear and safe. Never fire an output while someone is working near the equipment.</Warning>
       </div>
     ),
   },
@@ -192,15 +221,14 @@ const steps: GuideStep[] = [
     icon: <MessageSquare className="w-5 h-5" />,
     content: (
       <div className="space-y-4">
-        <p>You can add notes to any IO — useful for documenting issues or observations.</p>
-        <Screenshot src="/guide/comment-section.png" alt="Comment field on an IO — saves automatically" />
+        <p>You can add notes to any IO — useful for documenting issues, observations, or context for off-site engineers.</p>
         <StepList steps={[
-          "Click on any IO row to expand it",
-          "Type your comment in the comment field",
-          "Comments save automatically and sync to the cloud within 1-2 seconds",
-          "When marking an IO as Failed, you can add a comment in the failure dialog",
+          "Find the IO in the table — look for the \"+ Add note\" text in the Notes column",
+          "Click it and type your comment",
+          "Comments save automatically — no save button needed",
+          "Your comment syncs to the cloud within 1-2 seconds",
         ]} />
-        <Tip>Comments are visible to all technicians and appear in the cloud dashboard. Use them to communicate issues to off-site engineers helping with troubleshooting.</Tip>
+        <Tip>Comments are visible to everyone — other technicians on site and engineers on the cloud dashboard. Use them to leave notes like \"wire loose on terminal 3\" or \"need to recheck after panel power cycle\".</Tip>
       </div>
     ),
   },
@@ -228,14 +256,20 @@ const steps: GuideStep[] = [
     icon: <Cloud className="w-5 h-5" />,
     content: (
       <div className="space-y-4">
-        <p>Your test results sync to the cloud automatically. You don't need to do anything.</p>
+        <p>You don't need to do anything for sync — it's fully automatic.</p>
+        <div className="bg-card border rounded-lg p-3 text-sm space-y-2">
+          <p>Every time you mark Pass or Fail, the result is:</p>
+          <p className="text-muted-foreground"><strong>1.</strong> Saved to the local database immediately (crash-safe, never lost)</p>
+          <p className="text-muted-foreground"><strong>2.</strong> Pushed to the cloud within 1-2 seconds</p>
+          <p className="text-muted-foreground"><strong>3.</strong> Visible to off-site engineers on the cloud dashboard in real-time</p>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <InfoCard icon={<Zap />} title="Instant Push" desc="Every Pass/Fail syncs within 1-2 seconds" />
           <InfoCard icon={<RotateCcw />} title="Auto Retry" desc="If cloud is offline, retries every 30 seconds" />
-          <InfoCard icon={<Download />} title="Auto Pull" desc="Other users' results appear within 60 seconds" />
-          <InfoCard icon={<CheckCircle2 />} title="Crash Safe" desc="Results are saved locally first, never lost" />
+          <InfoCard icon={<Download />} title="Multi-User" desc="Other technicians' results appear within 60 seconds" />
+          <InfoCard icon={<CheckCircle2 />} title="Offline Safe" desc="Lose Wi-Fi? Keep testing. Syncs when you reconnect" />
         </div>
-        <Tip>If you lose Wi-Fi or the cloud goes down, keep testing. Everything syncs automatically when connectivity returns.</Tip>
+        <Tip>You never need to manually sync, save, or upload anything. Just test and the rest happens automatically.</Tip>
       </div>
     ),
   },
