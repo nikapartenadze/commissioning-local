@@ -41,7 +41,7 @@ export function CloudSyncDialog({
         console.log('✅ Upload completed:', result)
         
         if (result.success) {
-          setUploadedCount(result.uploadedCount || 0)
+          setUploadedCount(result.syncedCount || 0)
           setSyncStatus('success')
         } else {
           console.error('❌ Upload returned success=false:', result)
