@@ -6,7 +6,6 @@ import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-reposi
 import { ioRepository } from '@/lib/db/repositories/io-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
-import { configService } from '@/lib/config'
 import type { IoUpdateDto, SyncResult } from '@/lib/cloud/types'
 
 /**
@@ -46,7 +45,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
 
       // Still validate cloud connection
       const syncService = getCloudSyncService()
-      const config = syncService.getConfig()
+      const config = await syncService.getConfig()
       const serverUrl = remoteUrl || config.remoteUrl
 
       if (serverUrl) {
@@ -73,19 +72,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
 
     console.log(`[CloudSync] Found ${pendingSyncs.length} pending syncs`)
 
-    // Initialize cloud sync service — ensure it has config from config.json
+    // Initialize cloud sync service (reads config from configService on demand)
     const cloudSyncService = getCloudSyncService()
-    const savedConfig = await configService.getConfig()
-    if (savedConfig.remoteUrl && !cloudSyncService.getConfig().remoteUrl) {
-      cloudSyncService.updateConfig({
-        remoteUrl: savedConfig.remoteUrl,
-        apiPassword: savedConfig.apiPassword,
-      })
-    }
 
     // Update config if provided in request
     if (remoteUrl || apiPassword) {
-      cloudSyncService.updateConfig({
+      await cloudSyncService.updateConfig({
         ...(remoteUrl && { remoteUrl }),
         ...(apiPassword && { apiPassword }),
         batchSize,
