@@ -89,6 +89,32 @@ class AutoSyncService {
           })
         }
       } catch {}
+
+      // Subscribe to config changes so SSE client stays in sync
+      configService.onChange((event) => {
+        const cloudFieldsChanged = event.changedFields.some(f =>
+          f === 'remoteUrl' || f === 'apiPassword' || f === 'subsystemId'
+        )
+        if (cloudFieldsChanged) {
+          const c = event.currentConfig
+          if (c.remoteUrl && c.subsystemId) {
+            const sseClient = getCloudSseClient()
+            if (sseClient) {
+              sseClient.updateConfig({
+                remoteUrl: c.remoteUrl,
+                apiPassword: c.apiPassword || '',
+                subsystemId: c.subsystemId,
+              })
+            } else {
+              startCloudSse({
+                remoteUrl: c.remoteUrl,
+                apiPassword: c.apiPassword || '',
+                subsystemId: c.subsystemId,
+              })
+            }
+          }
+        }
+      })
     }, 10000)
   }
 
