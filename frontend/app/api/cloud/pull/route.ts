@@ -199,7 +199,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
             comments: cloudIo.comments ?? null,
           }
 
-          // Only overwrite tagType if cloud provides a non-null value
           if (cloudIo.tagType != null) {
             updateData.tagType = cloudIo.tagType
           }
