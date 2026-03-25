@@ -210,14 +210,19 @@ class CloudSseClient {
         // Keep-alive, no action needed
         break
 
-      case 'io-updated': {
-        await this.handleIoUpdated(event)
+      case 'io-updated':
+      case 'io_updated': {
+        const ioData = event.data || event
+        await this.handleIoUpdated(ioData)
         break
       }
 
-      case 'io-batch-updated': {
-        if (Array.isArray(event.updates)) {
-          for (const update of event.updates) {
+      case 'io-batch-updated':
+      case 'io_batch_updated':
+      case 'batch_ios_updated': {
+        const batchData = event.data || event.updates || event
+        if (Array.isArray(batchData)) {
+          for (const update of batchData) {
             await this.handleIoUpdated(update)
           }
         }
@@ -240,7 +245,7 @@ class CloudSseClient {
     try {
       const localIo = await prisma.io.findUnique({
         where: { id: ioId },
-        select: { result: true },
+        select: { result: true, version: true },
       })
 
       if (!localIo) return // IO doesn't exist locally
@@ -254,9 +259,11 @@ class CloudSseClient {
       if (event.tagType !== undefined) updateData.tagType = event.tagType
       if (event.version !== undefined) updateData.version = BigInt(Number(event.version) || 0)
 
-      // Merge test results only if local has none
-      if (!localIo.result && event.result) {
-        updateData.result = event.result
+      // Merge test results if local has none OR cloud version is newer
+      const cloudVersion = BigInt(Number(event.version) || 0)
+      const localVersion = localIo.version ?? BigInt(0)
+      if (event.result !== undefined && (!localIo.result || cloudVersion > localVersion)) {
+        updateData.result = event.result || null
         updateData.timestamp = event.timestamp ?? null
         updateData.comments = event.comments ?? null
       }
