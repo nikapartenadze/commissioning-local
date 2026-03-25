@@ -50,6 +50,7 @@ model Io {
   tagType           String?   @map("TagType")
   cloudSyncedAt     DateTime? @map("CloudSyncedAt")
   networkDeviceName String?   @map("NetworkDeviceName")
+  assignedTo        String?   @map("AssignedTo")
 
   subsystem     Subsystem     @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
   testHistories TestHistory[]

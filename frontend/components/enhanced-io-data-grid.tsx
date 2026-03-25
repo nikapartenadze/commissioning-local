@@ -23,6 +23,7 @@ type IoItem = {
   subsystemName: string
   tagType?: string | null
   failureMode?: string | null
+  assignedTo?: string | null
 }
 
 type TestHistory = {
@@ -47,8 +48,9 @@ interface EnhancedIoDataGridProps {
   onRowClick?: (io: IoItem) => void
   onShowFireOutputDialog?: (io: IoItem) => void
   onCommentChange?: (io: IoItem, comment: string) => void
-  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null
+  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null
   onRequestChange?: (io: IoItem) => void
+  currentUser?: { fullName: string; isAdmin: boolean } | null
 }
 
 // Column widths — responsive via hook
@@ -105,7 +107,8 @@ export function EnhancedIoDataGrid({
   onShowFireOutputDialog,
   onCommentChange,
   activeQuickFilter = null,
-  onRequestChange
+  onRequestChange,
+  currentUser
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -123,6 +126,13 @@ export function EnhancedIoDataGrid({
   const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
   const [moduleHealth, setModuleHealth] = useState<Record<string, 'ok' | 'warning' | 'error'>>({})
   const [activeKeywordFilters, setActiveKeywordFilters] = useState<string[]>([])
+  const [assignMode, setAssignMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [users, setUsers] = useState<{ id: number; fullName: string }[]>([])
+  const [assignTarget, setAssignTarget] = useState<string>('')
+  const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null)
+  const [assignKeywordInput, setAssignKeywordInput] = useState('')
+  const [showAssignKeywordInput, setShowAssignKeywordInput] = useState(false)
   const COLUMN_WIDTHS = useColumnWidths()
 
   // Fetch module health status periodically
@@ -147,6 +157,91 @@ export function EnhancedIoDataGrid({
 
     fetchModuleHealth()
   }, [])
+
+  // Fetch users when assign mode is activated
+  useEffect(() => {
+    if (!assignMode) return
+    const fetchUsers = async () => {
+      try {
+        const response = await authFetch('/api/users')
+        if (response.ok) {
+          const data = await response.json()
+          setUsers(data.filter((u: { isActive: boolean }) => u.isActive))
+        }
+      } catch { /* ignore */ }
+    }
+    fetchUsers()
+  }, [assignMode])
+
+  // Clear selection when leaving assign mode
+  useEffect(() => {
+    if (!assignMode) {
+      setSelectedIds(new Set())
+      setShowAssignKeywordInput(false)
+    }
+  }, [assignMode])
+
+  const toggleSelection = (ioId: number, index: number, shiftKey: boolean) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (shiftKey && lastClickedIndex !== null) {
+        const start = Math.min(lastClickedIndex, index)
+        const end = Math.max(lastClickedIndex, index)
+        for (let i = start; i <= end; i++) {
+          next.add(filteredIos[i].id)
+        }
+      } else {
+        if (next.has(ioId)) next.delete(ioId)
+        else next.add(ioId)
+      }
+      return next
+    })
+    setLastClickedIndex(index)
+  }
+
+  const handleAssign = async () => {
+    if (selectedIds.size === 0 || !assignTarget) return
+    try {
+      const response = await authFetch('/api/ios/assign', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ioIds: Array.from(selectedIds), assignedTo: assignTarget }),
+      })
+      if (response.ok) {
+        // Trigger a re-fetch by reloading — parent handles data
+        window.location.reload()
+      }
+    } catch { /* ignore */ }
+  }
+
+  const handleUnassign = async () => {
+    if (selectedIds.size === 0) return
+    try {
+      const response = await authFetch('/api/ios/assign', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ioIds: Array.from(selectedIds), assignedTo: null }),
+      })
+      if (response.ok) {
+        window.location.reload()
+      }
+    } catch { /* ignore */ }
+  }
+
+  const selectByKeyword = () => {
+    if (!assignKeywordInput.trim()) return
+    const kw = assignKeywordInput.trim().toLowerCase()
+    const matchingIds = filteredIos
+      .filter(io => (io.name?.toLowerCase().includes(kw) || io.description?.toLowerCase().includes(kw)))
+      .map(io => io.id)
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      matchingIds.forEach(id => next.add(id))
+      return next
+    })
+    setAssignKeywordInput('')
+    setShowAssignKeywordInput(false)
+  }
 
   // Extract module name from IO name (prefix before ':')
   const getModuleName = (ioName: string): string | null => {
@@ -260,6 +355,9 @@ export function EnhancedIoDataGrid({
       if (activeQuickFilter === 'inputs') {
         const name = io.name || ''
         if (name.includes(':O.') || name.includes(':SO.')) return false
+      }
+      if (activeQuickFilter === 'my-ios') {
+        if (!currentUser?.fullName || io.assignedTo !== currentUser.fullName) return false
       }
 
       // Apply keyword filters (AND logic — must match ALL active keywords)
@@ -486,6 +584,21 @@ export function EnhancedIoDataGrid({
           <span className="font-bold">{filteredIos.length}</span>
           <span className="text-muted-foreground ml-1">/ {ios.length}</span>
         </div>
+
+        {/* Assign Mode Toggle (admin only) */}
+        {currentUser?.isAdmin && (
+          <button
+            onClick={() => setAssignMode(!assignMode)}
+            className={cn(
+              "h-[44px] px-3 text-sm rounded font-medium whitespace-nowrap border",
+              assignMode
+                ? "bg-primary text-primary-foreground"
+                : "bg-background hover:bg-accent"
+            )}
+          >
+            {assignMode ? 'Exit Assign' : 'Assign'}
+          </button>
+        )}
       </div>
 
       {/* Keyword Filter Pills */}
@@ -633,8 +746,31 @@ export function EnhancedIoDataGrid({
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
                   }}
-                  onClick={() => isTesting && onRowClick?.(io)}
+                  onClick={() => {
+                    if (assignMode) {
+                      toggleSelection(io.id, virtualRow.index, false)
+                    } else if (isTesting) {
+                      onRowClick?.(io)
+                    }
+                  }}
                 >
+                   {/* Assign mode checkbox */}
+                   {assignMode && (
+                     <div
+                       className="w-10 flex items-center justify-center flex-shrink-0"
+                       onClick={(e) => {
+                         e.stopPropagation()
+                         toggleSelection(io.id, virtualRow.index, e.shiftKey)
+                       }}
+                     >
+                       <input
+                         type="checkbox"
+                         checked={selectedIds.has(io.id)}
+                         onChange={() => {}}
+                         className="h-5 w-5 accent-primary cursor-pointer"
+                       />
+                     </div>
+                   )}
                    <div
                      className="px-4 py-2 text-sm font-medium flex-shrink-0 flex items-center select-text"
                      style={{ width: `${COLUMN_WIDTHS.description}px` }}
@@ -676,6 +812,14 @@ export function EnhancedIoDataGrid({
                        )
                      })()}
                      <div className="truncate">{io.name}</div>
+                     {io.assignedTo && (
+                       <span
+                         className="ml-1 shrink-0 inline-flex items-center justify-center h-5 min-w-[20px] px-1 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-[10px] font-bold uppercase"
+                         title={`Assigned to ${io.assignedTo}`}
+                       >
+                         {io.assignedTo.split(' ').map(w => w[0]).join('').slice(0, 2)}
+                       </span>
+                     )}
                    </div>
                   {showStateColumn && (
                     <div
@@ -897,6 +1041,78 @@ export function EnhancedIoDataGrid({
         ioDescription={selectedIo.description}
         history={loadingHistory ? [] : historyData}
       />
+    )}
+
+    {/* Assign Mode Bottom Bar */}
+    {assignMode && (
+      <div className="fixed bottom-0 left-0 right-0 z-50 bg-card border-t-2 border-primary shadow-lg px-4 py-3 flex items-center gap-3 flex-wrap">
+        <span className="text-sm font-bold">{selectedIds.size} selected</span>
+
+        <button
+          onClick={() => setShowAssignKeywordInput(!showAssignKeywordInput)}
+          className="px-3 py-1.5 text-sm border rounded hover:bg-accent"
+        >
+          Select by keyword
+        </button>
+
+        {showAssignKeywordInput && (
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              placeholder="e.g. VFD"
+              value={assignKeywordInput}
+              onChange={(e) => setAssignKeywordInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') selectByKeyword() }}
+              className="px-2 py-1.5 text-sm border rounded bg-background w-32"
+              autoFocus
+            />
+            <button onClick={selectByKeyword} className="px-2 py-1.5 text-sm border rounded hover:bg-accent">Go</button>
+          </div>
+        )}
+
+        <button
+          onClick={() => setSelectedIds(new Set(filteredIos.map(io => io.id)))}
+          className="px-3 py-1.5 text-sm border rounded hover:bg-accent"
+        >
+          Select all
+        </button>
+
+        <button
+          onClick={() => setSelectedIds(new Set())}
+          className="px-3 py-1.5 text-sm border rounded hover:bg-accent"
+        >
+          Clear
+        </button>
+
+        <div className="ml-auto flex items-center gap-2">
+          <select
+            value={assignTarget}
+            onChange={(e) => setAssignTarget(e.target.value)}
+            className="h-9 px-2 text-sm border rounded bg-background"
+          >
+            <option value="">Select user...</option>
+            {users.map(u => (
+              <option key={u.id} value={u.fullName}>{u.fullName}</option>
+            ))}
+          </select>
+
+          <button
+            onClick={handleAssign}
+            disabled={selectedIds.size === 0 || !assignTarget}
+            className="px-4 py-1.5 text-sm font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
+          >
+            Assign
+          </button>
+
+          <button
+            onClick={handleUnassign}
+            disabled={selectedIds.size === 0}
+            className="px-4 py-1.5 text-sm font-medium border rounded hover:bg-accent disabled:opacity-50"
+          >
+            Unassign
+          </button>
+        </div>
+      </div>
     )}
 
     {diagnosticIo && diagnosticIo.tagType && (
