@@ -640,21 +640,14 @@ export default function CommissioningPage() {
           if (!data) return
           setIsCloudConnected(data.connected === true)
           if (data.changed && data.changed.length > 0) {
-            // Reload only the changed IOs
-            fetch(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(10000) })
-              .then(r => r.ok ? r.json() : null)
-              .then((iosData: IoItem[] | null) => {
-                if (!iosData) return
-                const changedSet = new Set(data.changed)
-                setIos(prev => prev.map(io => {
-                  if (changedSet.has(io.id)) {
-                    const updated = iosData.find((d: IoItem) => d.id === io.id)
-                    return updated || io
-                  }
-                  return io
-                }))
-              })
-              .catch(() => {})
+            // Merge changed IOs directly — sync-pull returns full IO data
+            setIos(prev => prev.map(io => {
+              const updated = data.changed.find((c: any) => c.id === io.id)
+              if (updated) {
+                return { ...io, result: updated.result, comments: updated.comments, timestamp: updated.timestamp, version: updated.version }
+              }
+              return io
+            }))
           }
         })
         .catch(() => setIsCloudConnected(false))
