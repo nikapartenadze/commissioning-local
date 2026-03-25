@@ -13,7 +13,6 @@ import { NetworkStatusBreadcrumbs } from "@/components/network-status-breadcrumb
 import { TagStatusPanel } from "@/components/tag-status-panel"
 import { TagStatusDialog, TagStatus } from "@/components/tag-status-dialog"
 import { ValueChangeDialog } from "@/components/value-change-dialog"
-import { BatchReviewDialog } from "@/components/batch-review-dialog"
 import { FailCommentDialog } from "@/components/fail-comment-dialog"
 import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
 import { ChangeRequestDialog } from "@/components/change-request-dialog"
@@ -132,12 +131,6 @@ export default function CommissioningPage() {
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
-
-  // Batch review state — buffers rapid state changes and shows batch dialog
-  const [showBatchReviewDialog, setShowBatchReviewDialog] = useState(false)
-  const [batchReviewIos, setBatchReviewIos] = useState<IoItem[]>([])
-  const batchBufferRef = useRef<IoItem[]>([])
-  const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null>(null)
   const [showChangeRequestDialog, setShowChangeRequestDialog] = useState(false)
   const [showChangeRequestsPanel, setShowChangeRequestsPanel] = useState(false)
@@ -210,57 +203,40 @@ export default function CommissioningPage() {
     }
   }, [dialogQueue, currentDialogIo, showFailCommentDialog, showFireOutputDialog])
 
-  // Flush the batch buffer: if 1 item, use single dialog; if 2+, show batch dialog
-  const flushBatchBuffer = useCallback(() => {
-    const buffered = batchBufferRef.current
-    batchBufferRef.current = []
-    batchTimerRef.current = null
-
-    if (buffered.length === 0) return
-
-    if (buffered.length === 1) {
-      // Single change — use the existing single dialog flow
-      const io = buffered[0]
-      if (DEBUG_OTHER) {
-        console.log('➕ Single state change, using normal dialog:', io.name)
-      }
-      setDialogQueue(prev => {
-        if (prev.some(q => q.id === io.id)) return prev
-        return [...prev, io]
-      })
-      setCurrentDialogIo(current => {
-        if (current && current.id === io.id) {
-          setDialogQueue(q => q.filter(queuedIo => queuedIo.id !== io.id))
-        }
-        return current
-      })
-    } else {
-      // Multiple changes — show batch review dialog
-      if (DEBUG_OTHER) {
-        console.log('📋 Batch state change:', buffered.length, 'IOs — showing batch review dialog')
-      }
-      setBatchReviewIos(buffered)
-      setShowBatchReviewDialog(true)
-    }
-  }, [])
-
-  // Add IO to dialog queue (with 1.5s buffer for batch detection)
+  // Add IO to dialog queue
   const addToDialogQueue = useCallback((io: IoItem) => {
     if (DEBUG_OTHER) {
-      console.log('➕ Buffering state change:', io.name)
+      console.log('➕ Adding to dialog queue:', io.name)
     }
-
-    // Skip if already in buffer
-    if (batchBufferRef.current.some(b => b.id === io.id)) return
-
-    batchBufferRef.current.push(io)
-
-    // Reset the timer on each new arrival (sliding window of 1.5s)
-    if (batchTimerRef.current) {
-      clearTimeout(batchTimerRef.current)
-    }
-    batchTimerRef.current = setTimeout(flushBatchBuffer, 1500)
-  }, [flushBatchBuffer])
+    
+    setDialogQueue(prev => {
+      // Check if this IO is already in queue (avoid duplicates)
+      const isAlreadyInQueue = prev.some(queuedIo => queuedIo.id === io.id)
+      if (isAlreadyInQueue) {
+        if (DEBUG_OTHER) {
+          console.log('⚠️ IO already in queue, skipping:', io.name)
+        }
+        return prev
+      }
+      const newQueue = [...prev, io]
+      if (DEBUG_OTHER) {
+        console.log('📋 Queue updated. Total waiting:', newQueue.length)
+      }
+      return newQueue
+    })
+    
+    // Also check if this IO is currently being shown (use state updater for latest value)
+    setCurrentDialogIo(current => {
+      if (current && current.id === io.id) {
+        if (DEBUG_OTHER) {
+          console.log('⚠️ IO already being shown in dialog, removing from queue')
+        }
+        // Remove it from queue if it somehow got added
+        setDialogQueue(q => q.filter(queuedIo => queuedIo.id !== io.id))
+      }
+      return current
+    })
+  }, [])
 
   // Navigation handlers - removed back button since we go directly to testing page
 
@@ -997,32 +973,8 @@ export default function CommissioningPage() {
     setPendingFailIo(null)
     setShowValueChangeDialog(false)
     setShowFailCommentDialog(false)
-    setShowBatchReviewDialog(false)
-    setBatchReviewIos([])
-    batchBufferRef.current = []
-    if (batchTimerRef.current) {
-      clearTimeout(batchTimerRef.current)
-      batchTimerRef.current = null
-    }
     localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
   }
-
-  const handleBatchReviewComplete = useCallback((decisions: Map<number, 'pass' | 'fail' | 'skip' | null>) => {
-    setShowBatchReviewDialog(false)
-    const reviewedIos = batchReviewIos
-
-    for (const io of reviewedIos) {
-      const decision = decisions.get(io.id)
-      if (decision === 'pass') {
-        handleMarkPassed(io)
-      } else if (decision === 'fail') {
-        handleMarkFailed(io, 'Failed in batch review')
-      }
-      // 'skip' and null — do nothing
-    }
-
-    setBatchReviewIos([])
-  }, [batchReviewIos])
 
   const handleCommentChange = async (io: IoItem, comment: string) => {
     try {
@@ -1316,7 +1268,6 @@ export default function CommissioningPage() {
           onShowTagStatus={() => setShowTagStatusDialog(true)}
           onShowChangeRequests={() => setShowChangeRequestsPanel(true)}
           onStartTour={() => setShowTour(true)}
-          subsystemId={plcConfig.subsystemId}
         />
       </div>
 
@@ -1405,15 +1356,6 @@ export default function CommissioningPage() {
           onNo={handleValueChangeNo}
           onCancel={handleValueChangeCancel}
           onClearAll={handleClearAllDialogs}
-          onStopTesting={plcStatus.isTesting ? handleToggleTesting : undefined}
-        />
-
-        {/* Batch Review Dialog — shown when multiple IOs change state simultaneously */}
-        <BatchReviewDialog
-          open={showBatchReviewDialog}
-          onOpenChange={setShowBatchReviewDialog}
-          ios={batchReviewIos.map(io => ios.find(i => i.id === io.id) || io)}
-          onComplete={handleBatchReviewComplete}
           onStopTesting={plcStatus.isTesting ? handleToggleTesting : undefined}
         />
 
