@@ -189,12 +189,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         cloudIoIds.push(cloudIo.id)
 
         try {
-          // Build update object: only update tagType from cloud if cloud provides one
           const updateData: Record<string, unknown> = {
             name: cloudIo.name,
             description: cloudIo.description ?? null,
             order: cloudIo.order ?? null,
             version: BigInt(Number(cloudIo.version) || 0),
+            result: cloudIo.result ?? null,
+            timestamp: cloudIo.timestamp ?? null,
+            comments: cloudIo.comments ?? null,
           }
 
           // Only overwrite tagType if cloud provides a non-null value
@@ -212,9 +214,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
               order: cloudIo.order ?? null,
               version: BigInt(Number(cloudIo.version) || 0),
               tagType: cloudIo.tagType ?? null,
+              result: cloudIo.result ?? null,
+              timestamp: cloudIo.timestamp ?? null,
+              comments: cloudIo.comments ?? null,
             },
             update: updateData,
-            // Don't overwrite: result, timestamp, comments, cloudSyncedAt
           })
           upsertedCount++
         } catch (error) {
