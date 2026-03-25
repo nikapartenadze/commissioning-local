@@ -41,9 +41,11 @@ export interface AutoSyncStatus {
 class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
   private pullTimer: NodeJS.Timeout | null = null
+  private networkStatusTimer: NodeJS.Timeout | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
+  private isPushingNetworkStatus = false
   private lastPullVersion: string | null = null
   private _lastPushAt: Date | null = null
   private _lastPullAt: Date | null = null
@@ -76,6 +78,9 @@ class AutoSyncService {
 
     // Do an initial push attempt after 5 seconds (let server fully start)
     setTimeout(() => this.pushToCloud(), 5000)
+
+    // Push network status to cloud every 5 seconds (lightweight, tag booleans only)
+    this.networkStatusTimer = setInterval(() => this.pushNetworkStatus(), 5000)
 
     // Start SSE client for real-time cloud updates (after 10s to let config load)
     setTimeout(async () => {
@@ -127,8 +132,10 @@ class AutoSyncService {
     stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
     if (this.pullTimer) clearInterval(this.pullTimer)
+    if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
     this.pushTimer = null
     this.pullTimer = null
+    this.networkStatusTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
@@ -454,6 +461,67 @@ class AutoSyncService {
       }
     } finally {
       this.isPulling = false
+    }
+  }
+
+  private async pushNetworkStatus(): Promise<void> {
+    if (this.isPushingNetworkStatus) return
+    this.isPushingNetworkStatus = true
+
+    try {
+      const config = await configService.getConfig()
+      const remoteUrl = config.remoteUrl
+      const apiPassword = config.apiPassword
+      const subsystemId = config.subsystemId
+
+      if (!remoteUrl || !subsystemId) return
+
+      // Read PLC connection + network tag values
+      let connected = false
+      let tags: Record<string, boolean | null> = {}
+
+      try {
+        const { hasPlcClient, getPlcClient } = await import('@/lib/plc-client-manager')
+        if (hasPlcClient() && getPlcClient().isConnected) {
+          connected = true
+          // Read network tags from database
+          const rings = await prisma.networkRing.findMany({
+            where: { subsystemId: parseInt(String(subsystemId), 10) },
+            include: { nodes: { include: { ports: true } } },
+          })
+
+          for (const ring of rings) {
+            if (ring.mcmTag) tags[ring.mcmTag] = getPlcClient().readTagCached(ring.mcmTag)
+            for (const node of ring.nodes) {
+              if (node.statusTag) tags[node.statusTag] = getPlcClient().readTagCached(node.statusTag)
+              for (const port of node.ports) {
+                if (port.statusTag) tags[port.statusTag] = getPlcClient().readTagCached(port.statusTag)
+              }
+            }
+          }
+        }
+      } catch {
+        // PLC not available — send disconnected status
+      }
+
+      await fetch(`${remoteUrl}/api/sync/network-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword || '',
+        },
+        body: JSON.stringify({
+          subsystemId: parseInt(String(subsystemId), 10),
+          connected,
+          tags,
+          timestamp: new Date().toISOString(),
+        }),
+        signal: AbortSignal.timeout(5000),
+      })
+    } catch {
+      // Network status push is best-effort — don't log noise
+    } finally {
+      this.isPushingNetworkStatus = false
     }
   }
 }
