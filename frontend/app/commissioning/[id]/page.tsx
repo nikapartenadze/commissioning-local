@@ -635,16 +635,26 @@ export default function CommissioningPage() {
 
     signalR.onIOUpdate(handleIOUpdate)
 
-    // Reload all IOs when auto-sync pulls new data from cloud
+    // Merge changed IOs when auto-sync pulls new data from cloud
     const handleIOsUpdated = () => {
-      console.log('🔄 Cloud sync updated IOs — reloading data')
       fetch(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
         .then(r => r.ok ? r.json() : null)
-        .then(data => {
-          if (data) {
-            setIos(data)
-            setFilteredIos(data)
-          }
+        .then((data: IoItem[] | null) => {
+          if (!data) return
+          setIos(prev => {
+            // Only update IOs that actually changed (by comparing result, comments, version)
+            let changed = false
+            const merged = prev.map(io => {
+              const cloud = data.find(d => d.id === io.id)
+              if (!cloud) return io
+              if (io.result !== cloud.result || io.comments !== cloud.comments || io.version !== cloud.version) {
+                changed = true
+                return { ...io, result: cloud.result, comments: cloud.comments, timestamp: cloud.timestamp, version: cloud.version }
+              }
+              return io
+            })
+            return changed ? merged : prev
+          })
         })
         .catch(() => {})
     }
