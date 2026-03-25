@@ -117,6 +117,12 @@ export async function POST(
         },
       })
 
+      // Track this IO so SSE doesn't echo it back
+      try {
+        const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
+        getCloudSseClient()?.trackPushedId(ioId)
+      } catch {}
+
       // Attempt immediate sync — if it succeeds, remove from queue
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')

@@ -323,8 +323,8 @@ export default function CommissioningPage() {
     loadPlcConfig()
     loadIos()
 
-    // Initial cloud status check
-    fetch('/api/cloud/sync-pull', { signal: AbortSignal.timeout(10000) })
+    // Initial cloud status check (SSE handles live updates after this)
+    fetch('/api/cloud/status')
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data) setIsCloudConnected(data.connected === true) })
       .catch(() => setIsCloudConnected(false))
@@ -442,7 +442,15 @@ export default function CommissioningPage() {
   }, [signalR.onIOsUpdated, signalR.offIOsUpdated])
 
   // Handle cloud connection state changes via WebSocket (from SSE client)
-  // Cloud connection status is managed by the 3s sync-pull poll — no WebSocket override
+  useEffect(() => {
+    const handleCloudChange = (connected: boolean) => {
+      setIsCloudConnected(connected)
+    }
+    signalR.onCloudConnectionChange(handleCloudChange)
+    return () => {
+      signalR.offCloudConnectionChange(handleCloudChange)
+    }
+  }, [signalR.onCloudConnectionChange, signalR.offCloudConnectionChange])
 
   // Handle SignalR comment updates
   useEffect(() => {
@@ -627,30 +635,8 @@ export default function CommissioningPage() {
 
     signalR.onIOUpdate(handleIOUpdate)
 
-    // Poll cloud for IO changes every 5 seconds
-    const cloudPollInterval = setInterval(() => {
-      fetch('/api/cloud/sync-pull', { signal: AbortSignal.timeout(10000) })
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-          if (!data) return
-          setIsCloudConnected(data.connected === true)
-          if (data.changed && data.changed.length > 0) {
-            // Merge changed IOs directly — sync-pull returns full IO data
-            setIos(prev => prev.map(io => {
-              const updated = data.changed.find((c: any) => c.id === io.id)
-              if (updated) {
-                return { ...io, result: updated.result, comments: updated.comments, timestamp: updated.timestamp, version: updated.version }
-              }
-              return io
-            }))
-          }
-        })
-        .catch(() => setIsCloudConnected(false))
-    }, 3000)
-
     return () => {
       signalR.offIOUpdate(handleIOUpdate)
-      clearInterval(cloudPollInterval)
     }
   }, [addToDialogQueue]) // Handlers registered once, use refs for mutable state
 
