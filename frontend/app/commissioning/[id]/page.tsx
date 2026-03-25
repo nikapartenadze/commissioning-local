@@ -103,6 +103,11 @@ export default function CommissioningPage() {
     }
   }, [isUnconfigured, currentUser])
 
+  // Auto-start background sync (SSE + push/pull) on page load
+  useEffect(() => {
+    fetch('/api/cloud/auto-sync', { method: 'POST' }).catch(() => {})
+  }, [])
+
   // State management
   const [ios, setIos] = useState<IoItem[]>([])
   const [filteredIos, setFilteredIos] = useState<IoItem[]>([])
