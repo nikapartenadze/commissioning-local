@@ -276,6 +276,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.warn('[CloudPull] Failed to update sync service state:', e)
     }
 
+    // Auto-start background sync (SSE + push/pull loops) if not already running
+    try {
+      const { startAutoSync, getAutoSyncService } = await import('@/lib/cloud/auto-sync')
+      if (!getAutoSyncService()?.running) {
+        startAutoSync()
+        console.log('[CloudPull] Auto-sync started after successful pull')
+      }
+    } catch (e) {
+      console.warn('[CloudPull] Failed to start auto-sync:', e)
+    }
+
     // Broadcast to all clients to reload their IO data
     try {
       await fetch(getWsBroadcastUrl(), {
