@@ -50,11 +50,8 @@ if not defined NSSM_PATH (
 )
 echo   NSSM found: %NSSM_PATH%
 
-REM ── Get version from package.json ──
-for /f "tokens=2 delims=:, " %%v in ('findstr /C:"\"version\"" "%PROJECT_DIR%\frontend\package.json"') do (
-    set "RAW_VER=%%v"
-)
-set "APP_VERSION=%RAW_VER:"=%"
+REM ── Get version ──
+set "APP_VERSION=2.9.2"
 echo   App version: %APP_VERSION%
 
 REM ── Step 1: Build portable distribution first ──
