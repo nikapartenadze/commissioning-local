@@ -42,6 +42,8 @@ class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
   private pullTimer: NodeJS.Timeout | null = null
   private networkStatusTimer: NodeJS.Timeout | null = null
+  private networkStatusDebounce: NodeJS.Timeout | null = null
+  private networkStatusListener: ((event: any) => void) | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
@@ -75,10 +77,12 @@ class AutoSyncService {
     // Start pull loop (check for IO definition changes)
     this.pullTimer = setInterval(() => this.pullFromCloud(), this.config.pullIntervalMs)
 
-    // Start network status sync loop (every 5s)
+    // Network status: push on ConnectionFaulted value changes (instant via debounce)
+    // Plus heartbeat every 30s as fallback
     this.networkStatusTimer = setInterval(() => {
       this.syncNetworkStatus().catch(() => {})
-    }, 5000)
+    }, 30000)
+    this.setupNetworkStatusListener()
 
     // Do an initial push attempt after 5 seconds (let server fully start)
     setTimeout(() => this.pushToCloud(), 5000)
@@ -129,14 +133,49 @@ class AutoSyncService {
     }, 10000)
   }
 
+  private setupNetworkStatusListener(): void {
+    try {
+      // Listen for ConnectionFaulted tag changes via the PLC client
+      const { getPlcClient } = require('@/lib/plc-client-manager')
+      const client = getPlcClient()
+      if (client) {
+        this.networkStatusListener = (event: any) => {
+          // Only react to ConnectionFaulted tags
+          if (event.tagName && event.tagName.includes('ConnectionFaulted')) {
+            // Debounce 500ms — multiple tags may change together (e.g., PLC reconnect)
+            if (this.networkStatusDebounce) clearTimeout(this.networkStatusDebounce)
+            this.networkStatusDebounce = setTimeout(() => {
+              this.syncNetworkStatus().catch(() => {})
+            }, 500)
+          }
+        }
+        client.on('tagValueChanged', this.networkStatusListener)
+        console.log('[AutoSync] Listening for ConnectionFaulted changes (instant push)')
+      }
+    } catch {
+      // PLC client not available yet — heartbeat will cover it
+    }
+  }
+
   stop(): void {
     stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
     if (this.pullTimer) clearInterval(this.pullTimer)
     if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
+    if (this.networkStatusDebounce) clearTimeout(this.networkStatusDebounce)
+    // Remove tag change listener
+    if (this.networkStatusListener) {
+      try {
+        const { getPlcClient } = require('@/lib/plc-client-manager')
+        const client = getPlcClient()
+        if (client) client.off('tagValueChanged', this.networkStatusListener)
+      } catch {}
+      this.networkStatusListener = null
+    }
     this.pushTimer = null
     this.pullTimer = null
     this.networkStatusTimer = null
+    this.networkStatusDebounce = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
