@@ -23,7 +23,7 @@ export interface AutoSyncConfig {
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 30000,
-  pullIntervalMs: 60000,
+  pullIntervalMs: 3000,
   enabled: true,
   maxRetries: 3,
 }
@@ -41,9 +41,6 @@ export interface AutoSyncStatus {
 class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
   private pullTimer: NodeJS.Timeout | null = null
-  private networkStatusTimer: NodeJS.Timeout | null = null
-  private networkStatusDebounce: NodeJS.Timeout | null = null
-  private networkStatusListener: ((event: any) => void) | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
@@ -76,13 +73,6 @@ class AutoSyncService {
 
     // Start pull loop (check for IO definition changes)
     this.pullTimer = setInterval(() => this.pullFromCloud(), this.config.pullIntervalMs)
-
-    // Network status: push on ConnectionFaulted value changes (instant via debounce)
-    // Plus heartbeat every 30s as fallback
-    this.networkStatusTimer = setInterval(() => {
-      this.syncNetworkStatus().catch(() => {})
-    }, 30000)
-    this.setupNetworkStatusListener()
 
     // Do an initial push attempt after 5 seconds (let server fully start)
     setTimeout(() => this.pushToCloud(), 5000)
@@ -133,49 +123,12 @@ class AutoSyncService {
     }, 10000)
   }
 
-  private setupNetworkStatusListener(): void {
-    try {
-      // Listen for ConnectionFaulted tag changes via the PLC client
-      const { getPlcClient } = require('@/lib/plc-client-manager')
-      const client = getPlcClient()
-      if (client) {
-        this.networkStatusListener = (event: any) => {
-          // Only react to ConnectionFaulted tags
-          if (event.tagName && event.tagName.includes('ConnectionFaulted')) {
-            // Debounce 500ms — multiple tags may change together (e.g., PLC reconnect)
-            if (this.networkStatusDebounce) clearTimeout(this.networkStatusDebounce)
-            this.networkStatusDebounce = setTimeout(() => {
-              this.syncNetworkStatus().catch(() => {})
-            }, 500)
-          }
-        }
-        client.on('tagValueChanged', this.networkStatusListener)
-        console.log('[AutoSync] Listening for ConnectionFaulted changes (instant push)')
-      }
-    } catch {
-      // PLC client not available yet — heartbeat will cover it
-    }
-  }
-
   stop(): void {
     stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
     if (this.pullTimer) clearInterval(this.pullTimer)
-    if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
-    if (this.networkStatusDebounce) clearTimeout(this.networkStatusDebounce)
-    // Remove tag change listener
-    if (this.networkStatusListener) {
-      try {
-        const { getPlcClient } = require('@/lib/plc-client-manager')
-        const client = getPlcClient()
-        if (client) client.off('tagValueChanged', this.networkStatusListener)
-      } catch {}
-      this.networkStatusListener = null
-    }
     this.pushTimer = null
     this.pullTimer = null
-    this.networkStatusTimer = null
-    this.networkStatusDebounce = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
@@ -331,15 +284,6 @@ class AutoSyncService {
   private async pullFromCloud(): Promise<void> {
     if (this.isPulling) return
 
-    // Skip pull if SSE is connected and received events recently
-    const sseClient = getCloudSseClient()
-    if (sseClient?.isConnected && sseClient.lastEventAt &&
-        Date.now() - sseClient.lastEventAt.getTime() < 90000) {
-      this._lastPullAt = new Date()
-      this._lastPullResult = 'skipped (SSE active)'
-      return
-    }
-
     this.isPulling = true
 
     try {
@@ -396,7 +340,6 @@ class AutoSyncService {
         if (!cloudIo.name || cloudIo.id <= 0) continue
 
         try {
-          // Check if local IO exists and compare versions
           const localIo = await prisma.io.findUnique({
             where: { id: cloudIo.id },
             select: { result: true, version: true },
@@ -415,9 +358,7 @@ class AutoSyncService {
             updateData.tagType = cloudIo.tagType
           }
 
-          // Merge test results from cloud when:
-          // 1. Local has no result, OR
-          // 2. Cloud version is newer (someone tested/edited on cloud or another local tool)
+          // Merge test results when local has none OR cloud version is newer
           if (cloudIo.result !== undefined && (!localIo?.result || cloudVersion > localVersion)) {
             updateData.result = cloudIo.result || null
             updateData.timestamp = cloudIo.timestamp ?? null
@@ -513,62 +454,6 @@ class AutoSyncService {
       }
     } finally {
       this.isPulling = false
-    }
-  }
-
-  private async syncNetworkStatus(): Promise<void> {
-    try {
-      const config = await configService.getConfig()
-      const { remoteUrl, apiPassword, subsystemId } = config
-
-      if (!remoteUrl || !apiPassword || !subsystemId) return
-
-      // Fetch current network status from local API
-      const localResp = await fetch('http://localhost:3000/api/network/status', {
-        signal: AbortSignal.timeout(3000),
-      })
-      if (!localResp.ok) return
-
-      const statusData = await localResp.json()
-
-      // Build tags map from the response
-      const tags: Record<string, boolean> = {}
-      const devices = statusData.devices || statusData
-      if (Array.isArray(devices)) {
-        for (const device of devices) {
-          if (device.tag && typeof device.faulted === 'boolean') {
-            tags[device.tag] = device.faulted
-          } else if (device.tagName && typeof device.value === 'boolean') {
-            tags[device.tagName] = device.value
-          }
-        }
-      } else if (typeof devices === 'object') {
-        // If it's already a key-value map
-        Object.assign(tags, devices)
-      }
-
-      const payload = {
-        subsystemId: parseInt(subsystemId, 10),
-        connected: statusData.connected ?? true,
-        tags,
-        timestamp: new Date().toISOString(),
-      }
-
-      await fetch(`${remoteUrl}/api/sync/network-status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiPassword,
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(5000),
-      })
-    } catch (error) {
-      // Log only unexpected errors, not connection failures
-      const msg = error instanceof Error ? error.message : String(error)
-      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED') && !msg.includes('TimeoutError')) {
-        console.warn(`[AutoSync] Network status sync error: ${msg}`)
-      }
     }
   }
 }
