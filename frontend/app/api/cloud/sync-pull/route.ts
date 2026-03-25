@@ -63,8 +63,9 @@ export async function GET() {
       const cloudVersion = BigInt(Number(cloudIo.version) || 0)
       const localVersion = localIo.version ?? BigInt(0)
 
-      // Only update if cloud version is different
-      if (cloudVersion !== localVersion) {
+      // Only update if cloud version is HIGHER (cloud has newer data)
+      // Never overwrite local changes that haven't synced yet
+      if (cloudVersion > localVersion) {
         await prisma.io.update({
           where: { id: cloudIo.id },
           data: {
