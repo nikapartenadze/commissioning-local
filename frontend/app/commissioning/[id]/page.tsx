@@ -442,15 +442,7 @@ export default function CommissioningPage() {
   }, [signalR.onIOsUpdated, signalR.offIOsUpdated])
 
   // Handle cloud connection state changes via WebSocket (from SSE client)
-  useEffect(() => {
-    const handleCloudChange = (connected: boolean) => {
-      setIsCloudConnected(connected)
-    }
-    signalR.onCloudConnectionChange(handleCloudChange)
-    return () => {
-      signalR.offCloudConnectionChange(handleCloudChange)
-    }
-  }, [signalR.onCloudConnectionChange, signalR.offCloudConnectionChange])
+  // Cloud connection status is managed by the 3s sync-pull poll — no WebSocket override
 
   // Handle SignalR comment updates
   useEffect(() => {
