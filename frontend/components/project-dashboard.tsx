@@ -166,7 +166,7 @@ export function ProjectDashboard({ project, ios, subsystems }: ProjectDashboardP
         'IsOutput', 'HasResult', 'IsPassed', 'IsFailed' // Computed properties
       ],
       ...dataToExport.map(io => {
-        const isOutput = io.name?.includes(':O.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO') || io.name?.toLowerCase().includes('output') || false
+        const isOutput = io.name?.includes(':O.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO') || io.name?.endsWith('_DO') || io.name?.toLowerCase().includes('output') || false
         const hasResult = !!io.result
         const isPassed = io.result === TEST_CONSTANTS.RESULT_PASSED
         const isFailed = io.result === TEST_CONSTANTS.RESULT_FAILED

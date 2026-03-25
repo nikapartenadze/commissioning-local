@@ -41,7 +41,7 @@ export async function GET(request: Request) {
       tagType: io.tagType,
       assignedTo: io.assignedTo,
       state: stateMap.get(io.id) ?? null,
-      isOutput: io.name?.includes(':O.') || io.name?.includes(':SO.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO'),
+      isOutput: io.name?.includes(':O.') || io.name?.includes(':SO.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO') || io.name?.endsWith('_DO'),
       hasResult: !!io.result,
       isPassed: io.result === 'Passed',
       isFailed: io.result === 'Failed'

@@ -48,7 +48,7 @@ export async function GET(
       order: io.order,
       version: io.version.toString(),
       state: tag?.state ?? null,
-      isOutput: io.name?.includes(':O.') || io.name?.includes(':SO.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO'),
+      isOutput: io.name?.includes(':O.') || io.name?.includes(':SO.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO') || io.name?.endsWith('_DO'),
       hasResult: !!io.result,
       isPassed: io.result === 'Passed',
       isFailed: io.result === 'Failed'
