@@ -396,26 +396,30 @@ class AutoSyncService {
         if (!cloudIo.name || cloudIo.id <= 0) continue
 
         try {
-          // Check if local IO exists and has test data
+          // Check if local IO exists and compare versions
           const localIo = await prisma.io.findUnique({
             where: { id: cloudIo.id },
-            select: { result: true },
+            select: { result: true, version: true },
           })
+
+          const cloudVersion = BigInt(Number(cloudIo.version) || 0)
+          const localVersion = localIo?.version ?? BigInt(0)
 
           const updateData: Record<string, unknown> = {
             name: cloudIo.name,
             description: cloudIo.description ?? null,
             order: cloudIo.order ?? null,
-            version: BigInt(Number(cloudIo.version) || 0),
+            version: cloudVersion,
           }
           if (cloudIo.tagType != null) {
             updateData.tagType = cloudIo.tagType
           }
 
-          // Merge test results from cloud when local has none
-          // This lets multiple users see each other's results
-          if (!localIo?.result && cloudIo.result) {
-            updateData.result = cloudIo.result
+          // Merge test results from cloud when:
+          // 1. Local has no result, OR
+          // 2. Cloud version is newer (someone tested/edited on cloud or another local tool)
+          if (cloudIo.result !== undefined && (!localIo?.result || cloudVersion > localVersion)) {
+            updateData.result = cloudIo.result || null
             updateData.timestamp = cloudIo.timestamp ?? null
             updateData.comments = cloudIo.comments ?? null
             mergedResults++
