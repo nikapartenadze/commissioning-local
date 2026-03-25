@@ -23,7 +23,7 @@ export interface AutoSyncConfig {
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 30000,
-  pullIntervalMs: 3000,
+  pullIntervalMs: 60000,
   enabled: true,
   maxRetries: 3,
 }
