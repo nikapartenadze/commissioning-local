@@ -23,7 +23,7 @@ export interface AutoSyncConfig {
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 30000,
-  pullIntervalMs: 60000,
+  pullIntervalMs: 3000,
   enabled: true,
   maxRetries: 3,
 }
@@ -283,15 +283,6 @@ class AutoSyncService {
 
   private async pullFromCloud(): Promise<void> {
     if (this.isPulling) return
-
-    // Skip pull if SSE is connected and received events recently
-    const sseClient = getCloudSseClient()
-    if (sseClient?.isConnected && sseClient.lastEventAt &&
-        Date.now() - sseClient.lastEventAt.getTime() < 90000) {
-      this._lastPullAt = new Date()
-      this._lastPullResult = 'skipped (SSE active)'
-      return
-    }
 
     this.isPulling = true
 
