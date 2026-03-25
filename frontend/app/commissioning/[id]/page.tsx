@@ -640,8 +640,24 @@ export default function CommissioningPage() {
 
     signalR.onIOUpdate(handleIOUpdate)
 
+    // Reload all IOs when auto-sync pulls new data from cloud
+    const handleIOsUpdated = () => {
+      console.log('🔄 Cloud sync updated IOs — reloading data')
+      fetch(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data) {
+            setIos(data)
+            setFilteredIos(data)
+          }
+        })
+        .catch(() => {})
+    }
+    signalR.onIOsUpdated(handleIOsUpdated)
+
     return () => {
       signalR.offIOUpdate(handleIOUpdate)
+      signalR.offIOsUpdated(handleIOsUpdated)
     }
   }, [addToDialogQueue]) // Handlers registered once, use refs for mutable state
 
