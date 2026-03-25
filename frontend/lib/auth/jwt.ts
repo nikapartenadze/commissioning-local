@@ -13,14 +13,44 @@ export interface DecodedToken extends JwtPayload {
   jti?: string;
 }
 
-const getJwtConfig = () => {
-  const secretKey = process.env.JWT_SECRET_KEY;
-  if (!secretKey) {
-    throw new Error('JWT_SECRET_KEY environment variable is not configured');
+let _cachedSecret: string | null = null;
+
+const getOrCreateSecret = (): string => {
+  if (_cachedSecret) return _cachedSecret;
+
+  const envSecret = process.env.JWT_SECRET_KEY;
+  if (envSecret && envSecret !== 'change-this-to-a-random-secret') {
+    _cachedSecret = envSecret;
+    return envSecret;
   }
 
+  // Auto-generate a persistent secret on first use
+  const fs = require('fs');
+  const path = require('path');
+  const secretFile = path.join(process.cwd(), '.jwt-secret');
+
+  try {
+    if (fs.existsSync(secretFile)) {
+      _cachedSecret = fs.readFileSync(secretFile, 'utf8').trim();
+      return _cachedSecret!;
+    }
+  } catch {}
+
+  // Generate and persist
+  const newSecret = crypto.randomUUID() + '-' + crypto.randomUUID();
+  try {
+    fs.writeFileSync(secretFile, newSecret, 'utf8');
+    console.log('[Auth] Generated new JWT secret (saved to .jwt-secret)');
+  } catch {
+    console.warn('[Auth] Could not persist JWT secret to file — tokens will invalidate on restart');
+  }
+  _cachedSecret = newSecret;
+  return newSecret;
+};
+
+const getJwtConfig = () => {
   return {
-    secretKey,
+    secretKey: getOrCreateSecret(),
     issuer: process.env.JWT_ISSUER || 'io-checkout-tool',
     audience: process.env.JWT_AUDIENCE || 'io-checkout-frontend',
     expirationHours: parseInt(process.env.JWT_EXPIRATION_HOURS || '8', 10),
