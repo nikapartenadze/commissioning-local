@@ -4,7 +4,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { requireAdmin } from '@/lib/auth/middleware'
 import { hashPin } from '@/lib/auth/password'
-import { revokeTokensForUser } from '@/lib/auth/jwt'
 
 // PUT /api/users/[id]/reset-pin — reset a user's PIN (admin only)
 export async function PUT(
@@ -37,9 +36,6 @@ export async function PUT(
     where: { id },
     data: { pin: hashedPin },
   })
-
-  // Revoke active tokens to force re-login with new PIN
-  revokeTokensForUser(id.toString())
 
   return NextResponse.json({ success: true })
 }

@@ -15,7 +15,6 @@ import {
   ZapOff,
   AlertTriangle,
   FileEdit,
-  FileText,
   HelpCircle,
 } from "lucide-react"
 import Link from "next/link"
@@ -52,7 +51,6 @@ interface PlcToolbarProps {
   onShowTagStatus?: () => void
   onShowChangeRequests?: () => void
   onStartTour?: () => void
-  subsystemId?: string
 }
 
 export function PlcToolbar({
@@ -78,8 +76,7 @@ export function PlcToolbar({
   tagStatus = null,
   onShowTagStatus,
   onShowChangeRequests,
-  onStartTour,
-  subsystemId
+  onStartTour
 }: PlcToolbarProps) {
   const progressPercent = totalIos > 0 ? ((passedIos + failedIos) / totalIos) * 100 : 0
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
@@ -238,20 +235,6 @@ export function PlcToolbar({
             <Download className="w-5 h-5 sm:w-6 sm:h-6" />
           </Button>
 
-
-          <Button
-            variant="ghost"
-            size="lg"
-            className="h-10 w-10 sm:h-12 sm:w-12 p-0"
-            onClick={() => {
-              if (subsystemId) {
-                window.open(`/api/ios/report?subsystemId=${subsystemId}`, '_blank')
-              }
-            }}
-            title="Generate Commissioning Report"
-          >
-            <FileText className="w-5 h-5 sm:w-6 sm:h-6" />
-          </Button>
 
           <Button
             variant="ghost"

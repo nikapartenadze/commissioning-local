@@ -3,7 +3,6 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { requireAdmin } from '@/lib/auth/middleware'
-import { revokeTokensForUser } from '@/lib/auth/jwt'
 
 // PUT /api/users/[id]/toggle-active — toggle user active status (admin only)
 export async function PUT(
@@ -36,11 +35,6 @@ export async function PUT(
       isActive: true,
     },
   })
-
-  // Revoke active tokens when user is deactivated
-  if (!updated.isActive) {
-    revokeTokensForUser(id.toString())
-  }
 
   return NextResponse.json(updated)
 }
