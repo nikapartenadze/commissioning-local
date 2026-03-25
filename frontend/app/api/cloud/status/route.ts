@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
+import { startAutoSync, getAutoSyncService } from '@/lib/cloud/auto-sync'
 import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
 /**
@@ -51,6 +52,14 @@ export async function GET(): Promise<NextResponse<CloudSyncStatusResponse>> {
       }
     } else {
       error = 'Remote URL not configured'
+    }
+
+    // Auto-start sync if cloud is reachable and config exists but sync isn't running
+    if (connected && config.remoteUrl && !getAutoSyncService()?.running) {
+      try {
+        startAutoSync()
+        console.log('[CloudStatus] Auto-started sync service')
+      } catch {}
     }
 
     // Get stats for additional info
