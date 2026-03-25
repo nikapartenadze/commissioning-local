@@ -31,6 +31,9 @@ export async function GET() {
         },
         signal: AbortSignal.timeout(8000),
       })
+      if (resp.status === 429) {
+        return NextResponse.json({ changed: [], connected: true, reason: 'rate limited', backoff: true })
+      }
       if (!resp.ok) {
         return NextResponse.json({ changed: [], connected: false, reason: `cloud ${resp.status}` })
       }
