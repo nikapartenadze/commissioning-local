@@ -240,7 +240,7 @@ class CloudSseClient {
     try {
       const localIo = await prisma.io.findUnique({
         where: { id: ioId },
-        select: { result: true },
+        select: { result: true, version: true },
       })
 
       if (!localIo) return // IO doesn't exist locally
@@ -254,9 +254,13 @@ class CloudSseClient {
       if (event.tagType !== undefined) updateData.tagType = event.tagType
       if (event.version !== undefined) updateData.version = BigInt(Number(event.version) || 0)
 
-      // Merge test results only if local has none
-      if (!localIo.result && event.result) {
-        updateData.result = event.result
+      // Merge test results from cloud if:
+      // 1. Local has no result, OR
+      // 2. Cloud version is newer (someone edited on cloud dashboard)
+      const cloudVersion = BigInt(Number(event.version) || 0)
+      const localVersion = localIo.version ?? BigInt(0)
+      if (event.result !== undefined && (!localIo.result || cloudVersion > localVersion)) {
+        updateData.result = event.result || null
         updateData.timestamp = event.timestamp ?? null
         updateData.comments = event.comments ?? null
       }
