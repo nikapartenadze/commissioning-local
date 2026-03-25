@@ -41,6 +41,7 @@ export interface AutoSyncStatus {
 class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
   private pullTimer: NodeJS.Timeout | null = null
+  private networkStatusTimer: NodeJS.Timeout | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
@@ -73,6 +74,11 @@ class AutoSyncService {
 
     // Start pull loop (check for IO definition changes)
     this.pullTimer = setInterval(() => this.pullFromCloud(), this.config.pullIntervalMs)
+
+    // Start network status sync loop (every 5s)
+    this.networkStatusTimer = setInterval(() => {
+      this.syncNetworkStatus().catch(() => {})
+    }, 5000)
 
     // Do an initial push attempt after 5 seconds (let server fully start)
     setTimeout(() => this.pushToCloud(), 5000)
@@ -127,8 +133,10 @@ class AutoSyncService {
     stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
     if (this.pullTimer) clearInterval(this.pullTimer)
+    if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
     this.pushTimer = null
     this.pullTimer = null
+    this.networkStatusTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
@@ -462,6 +470,62 @@ class AutoSyncService {
       }
     } finally {
       this.isPulling = false
+    }
+  }
+
+  private async syncNetworkStatus(): Promise<void> {
+    try {
+      const config = await configService.getConfig()
+      const { remoteUrl, apiPassword, subsystemId } = config
+
+      if (!remoteUrl || !apiPassword || !subsystemId) return
+
+      // Fetch current network status from local API
+      const localResp = await fetch('http://localhost:3000/api/network/status', {
+        signal: AbortSignal.timeout(3000),
+      })
+      if (!localResp.ok) return
+
+      const statusData = await localResp.json()
+
+      // Build tags map from the response
+      const tags: Record<string, boolean> = {}
+      const devices = statusData.devices || statusData
+      if (Array.isArray(devices)) {
+        for (const device of devices) {
+          if (device.tag && typeof device.faulted === 'boolean') {
+            tags[device.tag] = device.faulted
+          } else if (device.tagName && typeof device.value === 'boolean') {
+            tags[device.tagName] = device.value
+          }
+        }
+      } else if (typeof devices === 'object') {
+        // If it's already a key-value map
+        Object.assign(tags, devices)
+      }
+
+      const payload = {
+        subsystemId: parseInt(subsystemId, 10),
+        connected: statusData.connected ?? true,
+        tags,
+        timestamp: new Date().toISOString(),
+      }
+
+      await fetch(`${remoteUrl}/api/sync/network-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5000),
+      })
+    } catch (error) {
+      // Log only unexpected errors, not connection failures
+      const msg = error instanceof Error ? error.message : String(error)
+      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED') && !msg.includes('TimeoutError')) {
+        console.warn(`[AutoSync] Network status sync error: ${msg}`)
+      }
     }
   }
 }
