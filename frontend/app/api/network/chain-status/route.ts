@@ -9,21 +9,9 @@ export async function GET() {
     const plcStatus = getPlcStatus()
     const config = await configService.getConfig()
 
-    // Check cloud connection — simple health check
-    let cloudConnected = false
-    let cloudMessage = 'Cloud not configured'
-    if (config.remoteUrl) {
-      try {
-        const resp = await fetch(`${config.remoteUrl}/api/sync/health`, {
-          headers: { 'X-API-Key': config.apiPassword || '' },
-          signal: AbortSignal.timeout(5000),
-        })
-        cloudConnected = resp.ok
-        cloudMessage = cloudConnected ? `Connected to ${config.remoteUrl}` : 'Cloud unreachable'
-      } catch {
-        cloudMessage = 'Cloud unreachable'
-      }
-    }
+    // Cloud connection — just check if config exists (sync-pull handles actual connectivity)
+    const cloudConnected = !!config.remoteUrl
+    const cloudMessage = config.remoteUrl ? `Configured: ${config.remoteUrl}` : 'Cloud not configured'
 
     // Return NetworkChainStatus format expected by component
     return NextResponse.json({
