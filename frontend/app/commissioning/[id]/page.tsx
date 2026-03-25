@@ -627,7 +627,7 @@ export default function CommissioningPage() {
 
     signalR.onIOUpdate(handleIOUpdate)
 
-    // Poll cloud for IO changes every 3 seconds — simple and reliable
+    // Poll cloud for IO changes every 10 seconds
     const cloudPollInterval = setInterval(() => {
       fetch('/api/cloud/sync-pull', { signal: AbortSignal.timeout(10000) })
         .then(r => r.ok ? r.json() : null)
