@@ -50,6 +50,7 @@ interface IoItem {
   comments: string | null
   state: string | null
   subsystemName: string
+  assignedTo?: string | null
 }
 
 interface ChartData {
@@ -132,7 +133,7 @@ export default function CommissioningPage() {
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
 
-  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null>(null)
+  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null>(null)
   const [showChangeRequestDialog, setShowChangeRequestDialog] = useState(false)
   const [showChangeRequestsPanel, setShowChangeRequestsPanel] = useState(false)
   const [changeRequestIo, setChangeRequestIo] = useState<IoItem | null>(null)
@@ -606,11 +607,17 @@ export default function CommissioningPage() {
             )
 
             if (shouldShowDialog) {
+              // Skip dialog if IO is assigned to a different user
+              const user = currentUserRef.current
+              if (updatedIo.assignedTo && user?.fullName && updatedIo.assignedTo !== user.fullName) {
+                // IO assigned to someone else — skip dialog for this user
+              } else {
               if (DEBUG_OTHER) {
                 console.log('💡 Triggering ValueChangeDialog for:', io.name, 'Type:', isOutput(io.name) ? 'OUTPUT' : 'INPUT', 'Current state:', update.State, 'Current result:', io.result)
               }
               // Add to queue instead of showing immediately
               addToDialogQueue(updatedIo)
+              }
             }
 
             // Update previous state
@@ -1284,6 +1291,7 @@ export default function CommissioningPage() {
               setChangeRequestIo(io)
               setShowChangeRequestDialog(true)
             }}
+            currentUser={currentUser ? { fullName: currentUser.fullName, isAdmin: currentUser.isAdmin } : null}
           />
       </div>
       </>
