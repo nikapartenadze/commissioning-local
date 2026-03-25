@@ -13,6 +13,71 @@ export interface DecodedToken extends JwtPayload {
   jti?: string;
 }
 
+// --- Token revocation blacklist (in-memory, resets on server restart) ---
+
+interface TokenEntry {
+  userId: string;
+  expiresAt: number; // unix ms
+}
+
+const _getTokenStore = (): Map<string, TokenEntry> => {
+  const g = globalThis as any;
+  if (!g.__tokenStore) g.__tokenStore = new Map<string, TokenEntry>();
+  return g.__tokenStore;
+};
+
+const _getRevokedSet = (): Set<string> => {
+  const g = globalThis as any;
+  if (!g.__revokedTokens) g.__revokedTokens = new Set<string>();
+  return g.__revokedTokens;
+};
+
+let _checkCount = 0;
+
+/** Track a token so it can be revoked later by userId */
+export function trackToken(jti: string, userId: string, expiresInMs: number): void {
+  _getTokenStore().set(jti, { userId, expiresAt: Date.now() + expiresInMs });
+}
+
+/** Revoke all active tokens for a given user */
+export function revokeTokensForUser(userId: string): void {
+  const store = _getTokenStore();
+  const revoked = _getRevokedSet();
+  const now = Date.now();
+  store.forEach((entry, jti) => {
+    if (entry.userId === userId && entry.expiresAt > now) {
+      revoked.add(jti);
+    }
+  });
+}
+
+/** Check if a token JTI has been revoked */
+function isTokenRevoked(jti: string | undefined): boolean {
+  if (!jti) return false;
+
+  // Periodic cleanup every 100 checks
+  _checkCount++;
+  if (_checkCount >= 100) {
+    _checkCount = 0;
+    _cleanupExpired();
+  }
+
+  return _getRevokedSet().has(jti);
+}
+
+function _cleanupExpired(): void {
+  const store = _getTokenStore();
+  const revoked = _getRevokedSet();
+  const now = Date.now();
+  const expired: string[] = [];
+  store.forEach((entry, jti) => {
+    if (entry.expiresAt <= now) expired.push(jti);
+  });
+  expired.forEach(jti => { store.delete(jti); revoked.delete(jti); });
+}
+
+// ---
+
 let _cachedSecret: string | null = null;
 
 const getOrCreateSecret = (): string => {
@@ -81,7 +146,9 @@ export function generateToken(user: {
     expiresIn: `${config.expirationHours}h`,
   };
 
-  return jwt.sign(payload, config.secretKey, options);
+  const token = jwt.sign(payload, config.secretKey, options);
+  trackToken(payload.jti, user.id.toString(), config.expirationHours * 3600 * 1000);
+  return token;
 }
 
 /**
@@ -99,6 +166,9 @@ export function verifyToken(token: string): DecodedToken | null {
     };
 
     const decoded = jwt.verify(token, config.secretKey, options) as DecodedToken;
+    if (isTokenRevoked(decoded.jti)) {
+      return null;
+    }
     return decoded;
   } catch (error) {
     if (error instanceof Error && error.message.includes('JWT_SECRET_KEY')) {
