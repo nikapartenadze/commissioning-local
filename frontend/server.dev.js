@@ -213,6 +213,7 @@ async function main() {
     console.log(`> Broadcast: http://127.0.0.1:${HTTP_PORT}/broadcast`);
     console.log('='.repeat(60));
     console.log('Press Ctrl+C to stop all servers');
+
   } catch (error) {
     console.error('Failed to start servers:', error);
     shutdown();
