@@ -9,17 +9,19 @@ export async function GET() {
     const plcStatus = getPlcStatus()
     const config = await configService.getConfig()
 
-    // Check cloud connection state
+    // Check cloud connection — simple health check
     let cloudConnected = false
     let cloudMessage = 'Cloud not configured'
     if (config.remoteUrl) {
       try {
-        const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
-        const syncService = getCloudSyncService()
-        cloudConnected = syncService.isConnected
-        cloudMessage = cloudConnected ? `Connected to ${config.remoteUrl}` : 'Cloud disconnected'
+        const resp = await fetch(`${config.remoteUrl}/api/sync/health`, {
+          headers: { 'X-API-Key': config.apiPassword || '' },
+          signal: AbortSignal.timeout(5000),
+        })
+        cloudConnected = resp.ok
+        cloudMessage = cloudConnected ? `Connected to ${config.remoteUrl}` : 'Cloud unreachable'
       } catch {
-        cloudMessage = 'Cloud sync service unavailable'
+        cloudMessage = 'Cloud unreachable'
       }
     }
 
