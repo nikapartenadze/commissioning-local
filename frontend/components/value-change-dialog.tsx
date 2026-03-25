@@ -42,7 +42,7 @@ export function ValueChangeDialog({
 
   const isOutput = (ioName: string | null): boolean => {
     if (!ioName) return false
-    return ioName.includes(':O.') || ioName.includes(':SO.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO')
+    return ioName.includes(':O.') || ioName.includes(':SO.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.endsWith('_DO')
   }
 
   const isOutputTag = isOutput(io.name)
