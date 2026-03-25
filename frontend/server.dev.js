@@ -183,6 +183,9 @@ function startNextJs() {
 function shutdown() {
   console.log('\nShutting down...');
 
+  // Stop auto-sync
+  fetch(`http://localhost:${NEXTJS_PORT}/api/cloud/auto-sync`, { method: 'DELETE' }).catch(() => {});
+
   clearInterval(heartbeatInterval);
 
   if (nextServer && !nextServer.killed) {
@@ -213,6 +216,16 @@ async function main() {
     console.log(`> Broadcast: http://127.0.0.1:${HTTP_PORT}/broadcast`);
     console.log('='.repeat(60));
     console.log('Press Ctrl+C to stop all servers');
+
+    // Start auto-sync (SSE + background push/pull) after Next.js is ready
+    setTimeout(async () => {
+      try {
+        const resp = await fetch(`http://localhost:${NEXTJS_PORT}/api/cloud/auto-sync`, { method: 'POST' });
+        if (resp.ok) {
+          console.log('[Server] Background auto-sync started');
+        }
+      } catch {}
+    }, 8000);
 
   } catch (error) {
     console.error('Failed to start servers:', error);
