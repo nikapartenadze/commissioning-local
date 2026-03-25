@@ -328,8 +328,8 @@ export default function CommissioningPage() {
     loadPlcConfig()
     loadIos()
 
-    // Initial cloud status check (SSE will push live updates after this)
-    fetch('/api/cloud/status')
+    // Initial cloud status check
+    fetch('/api/cloud/sync-pull', { signal: AbortSignal.timeout(10000) })
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data) setIsCloudConnected(data.connected === true) })
       .catch(() => setIsCloudConnected(false))
@@ -447,15 +447,7 @@ export default function CommissioningPage() {
   }, [signalR.onIOsUpdated, signalR.offIOsUpdated])
 
   // Handle cloud connection state changes via WebSocket (from SSE client)
-  useEffect(() => {
-    const handleCloudChange = (connected: boolean) => {
-      setIsCloudConnected(connected)
-    }
-    signalR.onCloudConnectionChange(handleCloudChange)
-    return () => {
-      signalR.offCloudConnectionChange(handleCloudChange)
-    }
-  }, [signalR.onCloudConnectionChange, signalR.offCloudConnectionChange])
+  // Cloud connection status is managed by the 3s sync-pull poll — no WebSocket override
 
   // Handle SignalR comment updates
   useEffect(() => {
@@ -640,24 +632,37 @@ export default function CommissioningPage() {
 
     signalR.onIOUpdate(handleIOUpdate)
 
-    // Reload all IOs when auto-sync pulls new data from cloud
-    const handleIOsUpdated = () => {
-      console.log('🔄 Cloud sync updated IOs — reloading data')
-      fetch(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
+    // Poll cloud for IO changes every 10 seconds
+    const cloudPollInterval = setInterval(() => {
+      fetch('/api/cloud/sync-pull', { signal: AbortSignal.timeout(10000) })
         .then(r => r.ok ? r.json() : null)
         .then(data => {
-          if (data) {
-            setIos(data)
-            setFilteredIos(data)
+          if (!data) return
+          setIsCloudConnected(data.connected === true)
+          if (data.changed && data.changed.length > 0) {
+            // Reload only the changed IOs
+            fetch(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(10000) })
+              .then(r => r.ok ? r.json() : null)
+              .then((iosData: IoItem[] | null) => {
+                if (!iosData) return
+                const changedSet = new Set(data.changed)
+                setIos(prev => prev.map(io => {
+                  if (changedSet.has(io.id)) {
+                    const updated = iosData.find((d: IoItem) => d.id === io.id)
+                    return updated || io
+                  }
+                  return io
+                }))
+              })
+              .catch(() => {})
           }
         })
-        .catch(() => {})
-    }
-    signalR.onIOsUpdated(handleIOsUpdated)
+        .catch(() => setIsCloudConnected(false))
+    }, 3000)
 
     return () => {
       signalR.offIOUpdate(handleIOUpdate)
-      signalR.offIOsUpdated(handleIOsUpdated)
+      clearInterval(cloudPollInterval)
     }
   }, [addToDialogQueue]) // Handlers registered once, use refs for mutable state
 
