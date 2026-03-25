@@ -39,6 +39,7 @@ export async function GET(request: Request) {
       order: io.order,
       version: io.version.toString(), // BigInt to string for JSON serialization
       tagType: io.tagType,
+      assignedTo: io.assignedTo,
       state: stateMap.get(io.id) ?? null,
       isOutput: io.name?.includes(':O.') || io.name?.includes(':SO.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO'),
       hasResult: !!io.result,

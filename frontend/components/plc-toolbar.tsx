@@ -46,8 +46,8 @@ interface PlcToolbarProps {
   currentUser?: { isAdmin: boolean; fullName: string } | null
   onToggleSimulator?: () => void
   isSimulatorEnabled?: boolean
-  activeFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null
-  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | null) => void
+  activeFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null
+  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null) => void
   tagStatus?: TagStatus | null
   onShowTagStatus?: () => void
   onShowChangeRequests?: () => void
@@ -183,6 +183,23 @@ export function PlcToolbar({
           >
             Out
           </button>
+
+          {currentUser?.fullName && (
+            <>
+              <div className="w-px h-8 bg-border mx-0.5 sm:mx-1 hidden sm:block" />
+              <button
+                onClick={() => onFilterChange?.(activeFilter === 'my-ios' ? null : 'my-ios')}
+                className={cn(
+                  "h-11 sm:h-14 px-2 sm:px-4 flex items-center justify-center rounded-md transition-all text-xs sm:text-sm font-medium",
+                  activeFilter === 'my-ios'
+                    ? "bg-purple-600 text-white"
+                    : "bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400"
+                )}
+              >
+                My IOs
+              </button>
+            </>
+          )}
         </div>
 
         {/* Progress Bar - Flex grow to fill space */}
