@@ -113,115 +113,205 @@ function RingLayout({
   tagStates: Record<string, boolean | null>
 }) {
   const nodes = ring.nodes
-  const containerRef = useRef<HTMLDivElement>(null)
-  const mcmRef = useRef<HTMLDivElement>(null)
-  const lastNodeRef = useRef<HTMLButtonElement>(null)
-  const [returnPath, setReturnPath] = useState<{ left: number; right: number } | null>(null)
+  const NODES_PER_ROW = 4
+  const NODE_COLS = NODES_PER_ROW + 1 // MCM + 4 node columns
+  const totalRows = Math.ceil(nodes.length / NODES_PER_ROW)
 
+  const containerRef = useRef<HTMLDivElement>(null)
+  const nodeRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
+  const [paths, setPaths] = useState<string[]>([])
+  const [arrowHeads, setArrowHeads] = useState<{ x: number; y: number; angle: number }[]>([])
+  const [svgSize, setSvgSize] = useState({ w: 0, h: 0 })
+
+  // Logical column for each node (1-based, MCM=1)
+  const getLogCol = (nodeIdx: number) => {
+    const rowIdx = Math.floor(nodeIdx / NODES_PER_ROW)
+    const posInRow = nodeIdx % NODES_PER_ROW
+    return rowIdx % 2 === 0 ? posInRow + 2 : NODE_COLS - posInRow
+  }
+  const getLogRow = (nodeIdx: number) => Math.floor(nodeIdx / NODES_PER_ROW) + 1
+
+  // Measure DOM and compute SVG paths
   useEffect(() => {
     const measure = () => {
-      if (!containerRef.current || !mcmRef.current || !lastNodeRef.current) return
-      const containerRect = containerRef.current.getBoundingClientRect()
-      const mcmRect = mcmRef.current.getBoundingClientRect()
-      const lastRect = lastNodeRef.current.getBoundingClientRect()
-      setReturnPath({
-        left: mcmRect.left + mcmRect.width / 2 - containerRect.left,
-        right: containerRect.right - (lastRect.left + lastRect.width / 2),
-      })
+      const container = containerRef.current
+      if (!container) return
+      const cRect = container.getBoundingClientRect()
+
+      const getCenter = (key: string) => {
+        const el = nodeRefs.current.get(key)
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: r.left + r.width / 2 - cRect.left, y: r.top + r.height / 2 - cRect.top, w: r.width, h: r.height }
+      }
+
+      // Build ordered list: MCM, node0, node1, ..., nodeN, then return to MCM
+      const allKeys = ['mcm', ...nodes.map((_, i) => `node-${i}`)]
+      const centers = allKeys.map(k => getCenter(k)).filter(Boolean) as { x: number; y: number; w: number; h: number }[]
+
+      if (centers.length < 2) return
+
+      const newPaths: string[] = []
+      const newArrows: { x: number; y: number; angle: number }[] = []
+
+      for (let i = 0; i < centers.length - 1; i++) {
+        const from = centers[i]
+        const to = centers[i + 1]
+        const fromRow = i === 0 ? 1 : getLogRow(i - 1)
+        const toRow = i === 0 ? 1 : getLogRow(i)
+
+        if (fromRow === toRow) {
+          // Horizontal: edge of card to edge of next card
+          const dir = to.x > from.x ? 1 : -1
+          const x1 = from.x + dir * (from.w / 2 + 2)
+          const x2 = to.x - dir * (to.w / 2 + 2)
+          newPaths.push(`M${x1},${from.y} L${x2},${to.y}`)
+          const angle = dir > 0 ? 0 : 180
+          newArrows.push({ x: x2, y: to.y, angle })
+        } else {
+          // Vertical turn: go down from bottom of card, then across to next card
+          const x1 = from.x
+          const y1 = from.y + from.h / 2 + 2
+          const x2 = to.x
+          const y2 = to.y - to.h / 2 - 2
+          const yMid = (y1 + y2) / 2
+          newPaths.push(`M${x1},${y1} L${x1},${yMid} L${x2},${yMid} L${x2},${y2}`)
+          newArrows.push({ x: x2, y: y2, angle: 90 })
+        }
+      }
+
+      // Return path: last node → back to MCM
+      if (centers.length > 2) {
+        const last = centers[centers.length - 1]
+        const mcm = centers[0]
+        const lastLogRow = getLogRow(nodes.length - 1)
+
+        if (lastLogRow === 1) {
+          // Same row as MCM — go down, left, up
+          const margin = 24
+          const x1 = last.x
+          const y1 = last.y + last.h / 2 + 2
+          const yBottom = y1 + margin
+          const x2 = mcm.x
+          const y2 = mcm.y + mcm.h / 2 + 2
+          newPaths.push(`M${x1},${y1} L${x1},${yBottom} L${x2},${yBottom} L${x2},${y2}`)
+          newArrows.push({ x: x2, y: y2, angle: -90 })
+        } else {
+          // Different row — go left to MCM column, then up
+          const dir = last.x > mcm.x ? -1 : 1
+          const x1 = last.x + dir * (last.w / 2 + 2)
+          const xMcm = mcm.x
+          const yLast = last.y
+          const y2 = mcm.y + mcm.h / 2 + 2
+          newPaths.push(`M${x1},${yLast} L${xMcm},${yLast} L${xMcm},${y2}`)
+          newArrows.push({ x: xMcm, y: y2, angle: -90 })
+        }
+      }
+
+      setSvgSize({ w: cRect.width, h: cRect.height })
+      setPaths(newPaths)
+      setArrowHeads(newArrows)
     }
+
     measure()
+    const timer = setTimeout(measure, 100)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [nodes.length])
+    return () => { clearTimeout(timer); window.removeEventListener('resize', measure) }
+  }, [nodes.length, expandedNodeId])
+
+  const renderNode = (node: typeof nodes[0]) => {
+    const isExpanded = expandedNodeId === node.id
+    const status = getStatusColor(node.statusTag, tagStates)
+    const deviceCount = node.ports.filter((p) => p.deviceName).length
+    return (
+      <button
+        onClick={() => onToggleNode(node.id)}
+        className={cn(
+          'w-full relative rounded-lg border-2 px-4 py-3 text-center transition-all',
+          isExpanded
+            ? 'border-blue-400 bg-accent ring-1 ring-blue-400/20'
+            : 'border-border bg-card hover:border-muted-foreground'
+        )}
+      >
+        <div className="absolute top-2 right-2">
+          <StatusDot status={status} size="md" />
+        </div>
+        <p className="text-sm font-bold text-foreground">{node.name}</p>
+        <p className="text-xs font-mono text-muted-foreground mt-0.5">{node.ipAddress || ''}</p>
+        <Badge variant="outline" className="mt-1.5 text-[10px] border-border text-muted-foreground">
+          {deviceCount} devices
+        </Badge>
+        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-blue-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-muted-foreground rotate-90" />
+          )}
+        </div>
+      </button>
+    )
+  }
 
   return (
-    <div className="relative" ref={containerRef}>
-      {/* Ring: top row of nodes with connecting lines */}
-      <div className="relative px-4 pt-4 pb-4">
-        {/* Forward path: horizontal flex row */}
-        <div className="flex items-center gap-0">
-          {/* MCM Controller */}
-          <div className="shrink-0" ref={mcmRef}>
-            <div className="relative rounded-lg border-2 border-blue-500/50 bg-blue-500/10 px-5 py-4 min-w-[170px] text-center">
-              <div className="absolute top-2 right-2">
-                <StatusDot status={getStatusColor(ring.mcmTag, tagStates)} size="md" />
-              </div>
-              <p className="text-sm font-bold text-blue-500">{ring.mcmName}</p>
-              <p className="text-xs font-mono text-blue-400/70 mt-0.5">{ring.mcmIp || ''}</p>
-              <Badge variant="outline" className="mt-1.5 text-[10px] border-blue-500/30 text-blue-400">
-                Controller
-              </Badge>
+    <div className="relative px-4 pt-4 pb-8 overflow-x-auto" ref={containerRef}>
+      {/* SVG overlay for all connection paths */}
+      <svg
+        className="absolute inset-0 pointer-events-none"
+        width={svgSize.w || '100%'}
+        height={svgSize.h || '100%'}
+        style={{ overflow: 'visible' }}
+      >
+        <defs>
+          <marker id="ring-arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto-start-reverse">
+            <path d="M0,1 L7,4 L0,7 Z" fill="rgba(16,185,129,0.6)" />
+          </marker>
+        </defs>
+        {paths.map((d, i) => (
+          <path key={i} d={d} fill="none" stroke="rgba(16,185,129,0.45)" strokeWidth="2" strokeDasharray="8 5" />
+        ))}
+        {arrowHeads.map((a, i) => (
+          <g key={`ah-${i}`} transform={`translate(${a.x},${a.y}) rotate(${a.angle})`}>
+            <polygon points="-6,-4 2,0 -6,4" fill="rgba(16,185,129,0.6)" />
+          </g>
+        ))}
+      </svg>
+
+      {/* Node grid */}
+      <div
+        className="grid items-center relative"
+        style={{
+          gridTemplateColumns: `repeat(${NODE_COLS}, minmax(150px, 1fr))`,
+          gap: '28px 48px',
+        }}
+      >
+        {/* MCM Controller — row 1, col 1 */}
+        <div
+          ref={(el) => { nodeRefs.current.set('mcm', el) }}
+          style={{ gridRow: 1, gridColumn: 1 }}
+        >
+          <div className="relative rounded-lg border-2 border-blue-500/50 bg-blue-500/10 px-4 py-3 text-center">
+            <div className="absolute top-2 right-2">
+              <StatusDot status={getStatusColor(ring.mcmTag, tagStates)} size="md" />
             </div>
+            <p className="text-sm font-bold text-blue-500">{ring.mcmName}</p>
+            <p className="text-xs font-mono text-blue-400/70 mt-0.5">{ring.mcmIp || ''}</p>
+            <Badge variant="outline" className="mt-1.5 text-[10px] border-blue-500/30 text-blue-400">
+              Controller
+            </Badge>
           </div>
-
-          {/* Connecting lines + DPM nodes */}
-          {nodes.map((node, idx) => {
-            const isExpanded = expandedNodeId === node.id
-            const status = getStatusColor(node.statusTag, tagStates)
-            const deviceCount = node.ports.filter((p) => p.deviceName).length
-            const isLast = idx === nodes.length - 1
-
-            return (
-              <div key={node.id} className="flex items-center">
-                {/* Dashed connecting line */}
-                <div className="w-12 sm:w-16 md:w-24 border-t-2 border-dashed border-emerald-500/50" />
-
-                {/* DPM Node */}
-                <button
-                  ref={isLast ? lastNodeRef : undefined}
-                  onClick={() => onToggleNode(node.id)}
-                  className={cn(
-                    'shrink-0 relative rounded-lg border-2 px-5 py-4 min-w-[170px] text-center transition-all',
-                    isExpanded
-                      ? 'border-blue-400 bg-accent ring-1 ring-blue-400/20'
-                      : 'border-border bg-card hover:border-muted-foreground'
-                  )}
-                >
-                  <div className="absolute top-2 right-2">
-                    <StatusDot status={status} size="md" />
-                  </div>
-                  <p className="text-sm font-bold text-foreground">{node.name}</p>
-                  <p className="text-xs font-mono text-muted-foreground mt-0.5">{node.ipAddress || ''}</p>
-                  <Badge
-                    variant="outline"
-                    className="mt-1.5 text-[10px] border-border text-muted-foreground"
-                  >
-                    {deviceCount} devices
-                  </Badge>
-                  <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
-                    {isExpanded ? (
-                      <ChevronDown className="w-4 h-4 text-blue-400" />
-                    ) : (
-                      <ChevronRight className="w-4 h-4 text-muted-foreground rotate-90" />
-                    )}
-                  </div>
-                </button>
-              </div>
-            )
-          })}
         </div>
 
+        {/* DPM Nodes */}
+        {nodes.map((node, idx) => (
+          <div
+            key={node.id}
+            ref={(el) => { nodeRefs.current.set(`node-${idx}`, el) }}
+            style={{ gridRow: getLogRow(idx), gridColumn: getLogCol(idx) }}
+          >
+            {renderNode(node)}
+          </div>
+        ))}
       </div>
-      {/* Return path: bottom loop connecting MCM back to last DPM */}
-      {returnPath && (
-        <div className="relative h-6">
-          {/* Left vertical drop from MCM center */}
-          <div
-            className="absolute top-0 w-0 h-3 border-l-2 border-dashed border-emerald-500/40"
-            style={{ left: `${returnPath.left}px` }}
-          />
-          {/* Right vertical drop from last DPM center */}
-          <div
-            className="absolute top-0 w-0 h-3 border-l-2 border-dashed border-emerald-500/40"
-            style={{ right: `${returnPath.right}px` }}
-          />
-          {/* Horizontal bar across bottom */}
-          <div
-            className="absolute top-3 border-t-2 border-dashed border-emerald-500/40"
-            style={{ left: `${returnPath.left}px`, right: `${returnPath.right}px` }}
-          />
-        </div>
-      )}
     </div>
   )
 }
@@ -754,7 +844,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   return (
     <div className="flex gap-0 h-full">
       {/* Main topology view */}
-      <div className={cn("space-y-6", showTable ? "flex-1 min-w-0" : "w-full")}>
+      <div className={cn("space-y-6 pt-4", showTable ? "flex-1 min-w-0" : "w-full")}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <span className="flex items-center gap-1.5">
