@@ -12,12 +12,14 @@ import { cn } from '@/lib/utils'
 interface NetworkPort {
   id: number
   nodeId: number
-  portNumber: number
+  portNumber: string
   cableLabel: string | null
   deviceName: string | null
   deviceIp: string | null
   deviceType: string | null
   statusTag: string | null
+  parentPortId: number | null
+  subPorts?: NetworkPort[]
 }
 
 interface NetworkNode {
@@ -381,37 +383,27 @@ interface FiomPort {
   pins: { pin: number; type: string; ioName: string; description: string }[]
 }
 
-function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; subsystemId?: number; tagStates: Record<string, boolean | null> }) {
-  const [ports, setPorts] = useState<FiomPort[]>([])
-  const [loading, setLoading] = useState(true)
+function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates: Record<string, boolean | null> }) {
+  const fiomName = fiomPort.deviceName || ''
+  const subPorts = fiomPort.subPorts || []
   const viewportRef = useRef<HTMLDivElement>(null)
   const vp = useViewport(viewportRef)
-  const [selectedPort, setSelectedPort] = useState<{ portNum: number; pins: FiomPort['pins']; x: number; y: number } | null>(null)
+  const [selectedPort, setSelectedPort] = useState<{ port: NetworkPort; x: number; y: number } | null>(null)
 
-  useEffect(() => {
-    async function fetchPorts() {
-      try {
-        const params = new URLSearchParams({ fiomName })
-        if (subsystemId) params.set('subsystemId', String(subsystemId))
-        const res = await authFetch(`/api/network/fiom-ports?${params}`)
-        const data = await res.json()
-        if (data.success) setPorts(data.ports || [])
-      } catch {}
-      setLoading(false)
-    }
-    fetchPorts()
-  }, [fiomName, subsystemId])
+  if (subPorts.length === 0) return <div className="py-8 text-center text-sm text-muted-foreground">No sub-devices found for {fiomName}</div>
 
-  if (loading) return <div className="py-8 text-center text-sm text-muted-foreground">Loading FIOM ports...</div>
-  if (ports.length === 0) return <div className="py-8 text-center text-sm text-muted-foreground">No port data found for {fiomName}</div>
+  // Determine how many X-ports we have (extract max port index from "X0","X2","X3"...)
+  const xNumbers = subPorts.map(p => parseInt(p.portNumber.replace('X', ''))).filter(n => !isNaN(n))
+  const TOTAL_PORTS = Math.max(8, ...xNumbers.map(n => n + 1))
+  const connectedPorts = subPorts.filter(p => p.deviceName)
 
-  const TOTAL_PORTS = 8
-  const connectedPorts = ports.filter(p => p.pins.some(pin => pin.description !== 'SPARE'))
-
-  // Status for each FIOM port from PLC tags
-  function portStatus(portNum: number): 'green' | 'red' | 'gray' {
-    const tag = `${fiomName}_X${portNum}.Communication_Faulted`
-    return getStatusColor(tag, tagStates)
+  // Status from the actual Communication_Faulted status tag stored on each sub-port
+  function portStatus(port: NetworkPort): 'green' | 'red' | 'gray' {
+    return getStatusColor(port.statusTag, tagStates)
+  }
+  function portStatusByLabel(label: string): 'green' | 'red' | 'gray' {
+    const p = subPorts.find(sp => sp.portNumber === label)
+    return p ? portStatus(p) : 'gray'
   }
 
   // Layout — same structure as DPM star: device cards on top, port strip, FIOM block
@@ -453,14 +445,8 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
     }
   }
 
-  // FIOM-level status: green only if ALL connected ports are healthy
-  const fiomStatus = (() => {
-    if (connectedPorts.length === 0) return 'gray' as const
-    const statuses = connectedPorts.map(p => portStatus(p.portNum))
-    if (statuses.some(s => s === 'red')) return 'red' as const
-    if (statuses.every(s => s === 'green')) return 'green' as const
-    return 'gray' as const
-  })()
+  // FIOM-level status: use the parent FIOM's own ConnectionFaulted tag
+  const fiomStatus = getStatusColor(fiomPort.statusTag, tagStates)
   const fiomStroke = statusToHex(fiomStatus)
 
   return (
@@ -495,10 +481,10 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
           style={{ transform: `translate(${vp.pan.x}px, ${vp.pan.y}px) scale(${vp.zoom})`, transformOrigin: '0 0' }}
         >
           <defs>
-            {connectedPorts.map((port) => {
-              const cx = portStripCx(port.portNum)
+            {connectedPorts.map((port, idx) => {
+              const cx = portStripCx(idx)
               return (
-                <clipPath key={`clip-f-${port.portNum}`} id={`clip-f-${fiomName}-${port.portNum}`}>
+                <clipPath key={`clip-f-${port.id}`} id={`clip-f-${port.id}`}>
                   <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} />
                 </clipPath>
               )
@@ -506,11 +492,11 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
           </defs>
 
           {/* Cable lines */}
-          {connectedPorts.map((port) => {
-            const cx = portStripCx(port.portNum)
-            const s = portStatus(port.portNum)
+          {connectedPorts.map((port, idx) => {
+            const cx = portStripCx(idx)
+            const s = portStatus(port)
             return (
-              <line key={`cable-${port.portNum}`}
+              <line key={`cable-${port.id}`}
                 x1={cx} y1={DEVICE_Y + DEVICE_H} x2={cx} y2={PORT_STRIP_Y}
                 stroke={statusToHex(s)} strokeWidth={1.5} strokeOpacity={0.7}
               />
@@ -518,24 +504,16 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
           })}
 
           {/* Device cards — same style as DPM star */}
-          {connectedPorts.map((port) => {
-            const cx = portStripCx(port.portNum)
-            const s = portStatus(port.portNum)
+          {connectedPorts.map((port, idx) => {
+            const cx = portStripCx(idx)
+            const s = portStatus(port)
             const color = statusToHex(s)
-            const mainPin = port.pins.find(p => p.description !== 'SPARE')
-            const desc = mainPin?.description || ''
-            const pinType = mainPin?.type || ''
 
             return (
-              <g key={`dev-${port.portNum}`} className="cursor-pointer" onClick={(e) => {
+              <g key={`dev-${port.id}`} className="cursor-pointer" onClick={(e) => {
                 e.stopPropagation()
                 const rect = viewportRef.current?.getBoundingClientRect()
-                if (rect) setSelectedPort({
-                  portNum: port.portNum,
-                  pins: port.pins,
-                  x: e.clientX - rect.left,
-                  y: e.clientY - rect.top,
-                })
+                if (rect) setSelectedPort({ port, x: e.clientX - rect.left, y: e.clientY - rect.top })
               }}>
                 <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
                 <path
@@ -547,11 +525,11 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
                   fill={DEVICE_HEADER_COLOR}
                 />
                 <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill="#fff">
-                  X{port.portNum}·{pinType}
+                  {port.portNumber}
                 </text>
-                <g clipPath={`url(#clip-f-${fiomName}-${port.portNum})`}>
+                <g clipPath={`url(#clip-f-${port.id})`}>
                   <text x={cx} y={DEVICE_Y + 24} textAnchor="start" fontSize={8} fontWeight="bold" fill={color}
-                    transform={`rotate(90, ${cx}, ${DEVICE_Y + 24})`}>{desc}</text>
+                    transform={`rotate(90, ${cx}, ${DEVICE_Y + 24})`}>{port.deviceName}</text>
                 </g>
                 <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={color} fillOpacity={0.6} />
               </g>
@@ -561,8 +539,9 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
           {/* Port reference strip */}
           {Array.from({ length: TOTAL_PORTS }, (_, i) => {
             const cx = portStripCx(i)
-            const isConnected = connectedPorts.some(p => p.portNum === i)
-            const s = isConnected ? portStatus(i) : 'gray' as const
+            const label = `X${i}`
+            const isConnected = connectedPorts.some((_, idx) => idx === i)
+            const s = isConnected ? portStatusByLabel(connectedPorts[i]?.portNumber || label) : 'gray' as const
             const color = statusToHex(s)
             return (
               <g key={`strip-${i}`}>
@@ -572,7 +551,7 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
                 />
                 <text x={cx} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4} textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace"
                   fill={isConnected ? color : 'hsl(var(--muted-foreground))'}
-                >X{i}</text>
+                >{connectedPorts[i]?.portNumber || `X${i}`}</text>
               </g>
             )
           })}
@@ -589,10 +568,11 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
           />
 
           {/* Port circles inside FIOM */}
-          {Array.from({ length: TOTAL_PORTS }, (_, i) => {
+          {Array.from({ length: Math.min(TOTAL_PORTS, 8) }, (_, i) => {
             const { x, y } = fiomPortPos(i)
-            const isConnected = connectedPorts.some(p => p.portNum === i)
-            const s = isConnected ? portStatus(i) : 'gray' as const
+            const subPort = connectedPorts[i]
+            const isConnected = !!subPort
+            const s = isConnected ? portStatus(subPort) : 'gray' as const
             const color = statusToHex(s)
             return (
               <g key={`fp-${i}`}>
@@ -615,18 +595,15 @@ function FiomDiagram({ fiomName, subsystemId, tagStates }: { fiomName: string; s
             style={{ left: Math.min(selectedPort.x, 400), top: Math.max(selectedPort.y - 100, 8) }}
           >
             <div className="flex items-center justify-between mb-2">
-              <span className="font-bold text-sm text-foreground">Port X{selectedPort.portNum}</span>
+              <span className="font-bold text-sm text-foreground">{selectedPort.port.deviceName}</span>
               <button onClick={() => setSelectedPort(null)} className="text-muted-foreground hover:text-foreground p-0.5">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="text-xs space-y-1.5">
-              {selectedPort.pins.map((pin, i) => (
-                <div key={i} className={cn("flex items-start gap-2", pin.description === 'SPARE' && "text-muted-foreground/50")}>
-                  <span className="font-mono text-muted-foreground w-14 shrink-0">PIN{pin.pin} {pin.type}</span>
-                  <span className={cn("font-medium", pin.description !== 'SPARE' && "text-foreground")}>{pin.description}</span>
-                </div>
-              ))}
+            <div className="text-xs space-y-1">
+              <p className="text-muted-foreground">Port: <span className="font-mono text-foreground">{selectedPort.port.portNumber}</span></p>
+              {selectedPort.port.deviceIp && <p className="text-muted-foreground">IP: <span className="font-mono text-foreground">{selectedPort.port.deviceIp}</span></p>}
+              <p className="text-muted-foreground">Status: <span className="font-mono text-foreground">{selectedPort.port.statusTag || 'N/A'}</span></p>
             </div>
           </div>
         )}
@@ -644,10 +621,10 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
   const viewportRef = useRef<HTMLDivElement>(null)
   const vp = useViewport(viewportRef)
   const [selectedDevice, setSelectedDevice] = useState<{ name: string; type: string; ip: string; port: number; x: number; y: number } | null>(null)
-  const [expandedFiom, setExpandedFiom] = useState<string | null>(null)
+  const [expandedFiom, setExpandedFiom] = useState<NetworkPort | null>(null)
 
   const FIRST_VISIBLE_PORT = 5 // skip ports 1-4 (unreachable)
-  const connectedPorts = node.ports.filter((p) => p.deviceName && p.portNumber >= FIRST_VISIBLE_PORT)
+  const connectedPorts = node.ports.filter((p) => p.deviceName && !p.parentPortId && parseInt(p.portNumber) >= FIRST_VISIBLE_PORT)
   const totalPorts = node.totalPorts
   const visiblePortCount = totalPorts - FIRST_VISIBLE_PORT + 1
 
@@ -797,7 +774,9 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                 e.stopPropagation()
                 const isFiom = deviceType === 'FIOM'
                 if (isFiom) {
-                  setExpandedFiom(prev => prev === port.deviceName ? null : (port.deviceName || null))
+                  // Build the port with subPorts from all ports on this node that have parentPortId = this port's id
+                  const fiomWithSubs = { ...port, subPorts: node.ports.filter(p => p.parentPortId === port.id) }
+                  setExpandedFiom(prev => prev?.id === port.id ? null : fiomWithSubs)
                   setSelectedDevice(null)
                 } else {
                   const rect = viewportRef.current?.getBoundingClientRect()
@@ -815,9 +794,9 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                 {isFiomDevice && (
                   <g>
                     <circle cx={cx} cy={DEVICE_Y + DEVICE_H + 6} r={3} fill={bodyColor}
-                      opacity={expandedFiom === port.deviceName ? 1 : 0.5}
+                      opacity={expandedFiom?.id === port.id ? 1 : 0.5}
                     />
-                    {expandedFiom !== port.deviceName && (
+                    {expandedFiom?.id !== port.id && (
                       <circle cx={cx} cy={DEVICE_Y + DEVICE_H + 6} r={5} fill="none" stroke={bodyColor} strokeWidth={1}>
                         <animate attributeName="r" values="3;7;3" dur="2s" repeatCount="indefinite" />
                         <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite" />
@@ -975,18 +954,19 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
       {/* FIOM modal */}
       {expandedFiom && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setExpandedFiom(null)}>
-          <div className="relative bg-card border rounded-xl shadow-2xl w-[90vw] max-w-[900px] max-h-[85vh] overflow-auto" onClick={e => e.stopPropagation()}>
+          <div className="relative bg-card border rounded-xl shadow-2xl w-[90vw] max-w-[900px] max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b bg-card/95 backdrop-blur-sm">
               <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-emerald-500">{expandedFiom}</span>
-                <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-500">FIBER I/O MODULE</Badge>
+                <span className="text-sm font-semibold text-foreground">{expandedFiom.deviceName}</span>
+                <Badge variant="outline" className="text-[10px]">FIBER I/O MODULE</Badge>
+                <span className="text-xs text-muted-foreground font-mono">{expandedFiom.deviceIp}</span>
               </div>
               <button onClick={() => setExpandedFiom(null)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="p-4">
-              <FiomDiagram fiomName={expandedFiom} subsystemId={subsystemId} tagStates={tagStates} />
+              <FiomDiagram fiomPort={expandedFiom} tagStates={tagStates} />
             </div>
           </div>
         </div>
