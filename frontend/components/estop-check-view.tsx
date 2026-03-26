@@ -106,6 +106,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const [expandedZones, setExpandedZones] = useState<Set<number>>(new Set())
   const [searchTerm, setSearchTerm] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+  const lastDataRef = useRef<string>('')
 
   const toggleZone = (zoneId: number) => {
     setExpandedZones(prev => {
@@ -134,7 +135,12 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         const res = await authFetch(url, { signal: controller.signal })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const json: EStopStatusResponse = await res.json()
-        setData(json)
+        // Only update state if data actually changed (prevents re-render flicker)
+        const jsonStr = JSON.stringify(json)
+        if (jsonStr !== lastDataRef.current) {
+          lastDataRef.current = jsonStr
+          setData(json)
+        }
         setError(null)
 
         // Auto-expand all zones on first load
