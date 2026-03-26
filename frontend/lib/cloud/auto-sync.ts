@@ -3,7 +3,8 @@
  *
  * Runs in the background on the server:
  * - Push: Drains PendingSync queue to cloud every 30s
- * - Pull: Checks for IO definition changes from cloud every 60s
+ * - Pull: On SSE (re)connect only — no polling. SSE is the primary real-time channel;
+ *         a full pull on reconnect catches any events missed during disconnect.
  *
  * Preserves data ownership:
  * - Cloud owns IO definitions (name, description, order)
@@ -16,14 +17,12 @@ import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/clou
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 30000 (30s)
-  pullIntervalMs: number    // default 60000 (60s)
   enabled: boolean          // default true
   maxRetries: number        // default 3
 }
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 30000,
-  pullIntervalMs: 5000,
   enabled: true,
   maxRetries: 3,
 }
@@ -40,7 +39,6 @@ export interface AutoSyncStatus {
 
 class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
-  private pullTimer: NodeJS.Timeout | null = null
   private networkStatusTimer: NodeJS.Timeout | null = null
   private config: AutoSyncConfig
   private isPushing = false
@@ -66,15 +64,12 @@ class AutoSyncService {
     if (this._running) return
 
     console.log('[AutoSync] Starting background sync...')
-    console.log(`[AutoSync] Push interval: ${this.config.pushIntervalMs}ms, Pull interval: ${this.config.pullIntervalMs}ms`)
+    console.log(`[AutoSync] Push interval: ${this.config.pushIntervalMs}ms, Pull: on SSE (re)connect only`)
 
     this._running = true
 
     // Start push loop (drain pending syncs)
     this.pushTimer = setInterval(() => this.pushToCloud(), this.config.pushIntervalMs)
-
-    // Start pull loop (check for IO definition changes)
-    this.pullTimer = setInterval(() => this.pullFromCloud(), this.config.pullIntervalMs)
 
     // Do an initial push attempt after 5 seconds (let server fully start)
     setTimeout(() => this.pushToCloud(), 5000)
@@ -92,10 +87,11 @@ class AutoSyncService {
             apiPassword: config.apiPassword || '',
             subsystemId: config.subsystemId,
           })
-          // When SSE (re)connects, immediately push any pending items
+          // When SSE (re)connects, push pending items + pull to catch missed events
           sseClient.onConnect(() => {
-            console.log('[AutoSync] Cloud reconnected — pushing pending items now')
+            console.log('[AutoSync] Cloud SSE connected — pushing pending + pulling to catch up')
             this.pushToCloud()
+            this.pullFromCloud()
           })
         }
       } catch {}
@@ -131,10 +127,8 @@ class AutoSyncService {
   stop(): void {
     stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
-    if (this.pullTimer) clearInterval(this.pullTimer)
     if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
     this.pushTimer = null
-    this.pullTimer = null
     this.networkStatusTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
@@ -370,9 +364,6 @@ class AutoSyncService {
             updateData.timestamp = cloudIo.timestamp ?? null
             updateData.comments = cloudIo.comments ?? null
             mergedResults++
-            console.log(`[AutoSync] Merging result for IO ${cloudIo.id}: cloud=${cloudIo.result} (v${cloudVersion}) → local was ${localIo?.result} (v${localVersion})`)
-          } else if (cloudIo.result !== undefined && localIo?.result && cloudVersion <= localVersion) {
-            console.log(`[AutoSync] SKIPPED merge for IO ${cloudIo.id}: cloud=${cloudIo.result} (v${cloudVersion}), local=${localIo?.result} (v${localVersion}) — local version not older`)
           }
 
           await prisma.io.upsert({

@@ -19,7 +19,6 @@ export async function POST(request: NextRequest) {
     try {
       const body = await request.json()
       if (body.pushIntervalMs) config.pushIntervalMs = body.pushIntervalMs
-      if (body.pullIntervalMs) config.pullIntervalMs = body.pullIntervalMs
       if (body.enabled !== undefined) config.enabled = body.enabled
       if (body.maxRetries) config.maxRetries = body.maxRetries
     } catch {
