@@ -18,6 +18,7 @@ import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
 import { ChangeRequestDialog } from "@/components/change-request-dialog"
 import { ChangeRequestsPanel } from "@/components/change-requests-panel"
 import NetworkTopologyView from "@/components/network-topology-view"
+import EStopCheckView from "@/components/estop-check-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -117,8 +118,9 @@ export default function CommissioningPage() {
   const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
-  const [activeTab, setActiveTab] = useState<'io' | 'network'>(() => {
+  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop'>(() => {
     if (typeof window !== 'undefined' && window.location.hash === '#network') return 'network'
+    if (typeof window !== 'undefined' && window.location.hash === '#estop') return 'estop'
     return 'io'
   })
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
@@ -1192,6 +1194,16 @@ export default function CommissioningPage() {
               >
                 Network
               </button>
+              <button
+                onClick={() => { setActiveTab('estop'); window.location.hash = 'estop' }}
+                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                  activeTab === 'estop'
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                EStop Check
+              </button>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -1235,6 +1247,10 @@ export default function CommissioningPage() {
       {activeTab === 'network' ? (
         <div className="flex-1 min-h-0 overflow-auto">
           <NetworkTopologyView subsystemId={parseInt(plcConfig.subsystemId) || 16} />
+        </div>
+      ) : activeTab === 'estop' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <EStopCheckView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
         </div>
       ) : (
       <>
