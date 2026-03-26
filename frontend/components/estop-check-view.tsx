@@ -9,96 +9,75 @@ import { cn } from '@/lib/utils'
 
 // ── Types ──────────────────────────────────────────────────────────
 
-interface IoPoint {
-  tag: string
-  value: boolean | null
-}
-
-interface Vfd {
-  tag: string
-  stoTag: string
-  stoActive: boolean | null
-}
-
+interface IoPoint { tag: string; value: boolean | null }
+interface Vfd { tag: string; stoTag: string; stoActive: boolean | null }
 interface Epc {
-  id: number
-  name: string
-  checkTag: string
-  checkTagValue: boolean | null
-  ioPoints: IoPoint[]
-  mustStopVfds: Vfd[]
-  keepRunningVfds: Vfd[]
+  id: number; name: string; checkTag: string; checkTagValue: boolean | null
+  ioPoints: IoPoint[]; mustStopVfds: Vfd[]; keepRunningVfds: Vfd[]
 }
-
-interface Zone {
-  id: number
-  name: string
-  epcs: Epc[]
-}
-
-interface EStopStatusResponse {
-  success: boolean
-  connected: boolean
-  zones: Zone[]
-}
-
-interface EStopCheckViewProps {
-  subsystemId?: number
-}
+interface Zone { id: number; name: string; epcs: Epc[] }
+interface EStopStatusResponse { success: boolean; connected: boolean; zones: Zone[] }
+interface EStopCheckViewProps { subsystemId?: number }
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-function StatusDot({ active, size = 'sm' }: { active: boolean | null; size?: 'sm' | 'md' | 'lg' }) {
-  const color =
-    active === true ? 'bg-emerald-400 shadow-emerald-400/50'
-      : active === false ? 'bg-red-500 shadow-red-500/50'
-        : 'bg-gray-500 shadow-gray-500/30'
-  const sz = size === 'lg' ? 'w-3.5 h-3.5' : size === 'md' ? 'w-3 h-3' : 'w-2.5 h-2.5'
-  return <span className={cn('inline-block rounded-full shadow-sm', sz, color)} />
-}
 
 function VfdBadge({ vfd, expectStoActive }: { vfd: Vfd; expectStoActive: boolean }) {
   const isGood = vfd.stoActive !== null && vfd.stoActive === expectStoActive
   const isBad = vfd.stoActive !== null && vfd.stoActive !== expectStoActive
-
-  const bg = isGood
-    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
-    : isBad
-      ? 'bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/30'
-      : 'bg-muted text-muted-foreground border-border'
-
   return (
     <span
-      className={cn('inline-flex items-center gap-1 px-2 py-0.5 text-xs font-mono rounded border', bg)}
+      className={cn(
+        'inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono rounded border transition-colors',
+        isGood ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+          : isBad ? 'bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/30'
+            : 'bg-muted text-muted-foreground border-border'
+      )}
       title={`${vfd.stoTag} = ${vfd.stoActive === null ? 'N/A' : vfd.stoActive}`}
     >
-      <span className={cn('w-1.5 h-1.5 rounded-full', isGood ? 'bg-emerald-500' : isBad ? 'bg-red-500' : 'bg-gray-400')} />
+      <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', isGood ? 'bg-emerald-500' : isBad ? 'bg-red-500' : 'bg-gray-400')} />
       {vfd.tag}
     </span>
   )
 }
 
-function EpcSummary({ epc }: { epc: Epc }) {
-  const mustStopOk = epc.mustStopVfds.filter(v => v.stoActive === true).length
-  const mustStopBad = epc.mustStopVfds.filter(v => v.stoActive === false).length
-  const keepRunOk = epc.keepRunningVfds.filter(v => v.stoActive === false).length
-  const keepRunBad = epc.keepRunningVfds.filter(v => v.stoActive === true).length
+/** Compact horizontal EPC card with left status bar */
+function EpcCard({ epc, isSelected, onClick }: { epc: Epc; isSelected: boolean; onClick: () => void }) {
+  const statusColor = epc.checkTagValue === true ? 'bg-emerald-500' : epc.checkTagValue === false ? 'bg-red-500' : 'bg-gray-400'
   const totalVfds = epc.mustStopVfds.length + epc.keepRunningVfds.length
-  const totalOk = mustStopOk + keepRunOk
-  const totalBad = mustStopBad + keepRunBad
-  const noData = totalOk === 0 && totalBad === 0
+  const okCount = epc.mustStopVfds.filter(v => v.stoActive === true).length + epc.keepRunningVfds.filter(v => v.stoActive === false).length
+  const failCount = epc.mustStopVfds.filter(v => v.stoActive === false).length + epc.keepRunningVfds.filter(v => v.stoActive === true).length
+  const noData = okCount === 0 && failCount === 0
 
   return (
-    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-      {noData ? (
-        <span>No PLC data</span>
-      ) : (
-        <>
-          {totalOk > 0 && <span className="text-emerald-600 dark:text-emerald-400">{totalOk}/{totalVfds} OK</span>}
-          {totalBad > 0 && <span className="text-red-600 dark:text-red-400">{totalBad} FAIL</span>}
-        </>
+    <button
+      onClick={onClick}
+      className={cn(
+        'relative flex items-center gap-2.5 pl-0 pr-3 py-1.5 rounded-md border text-left transition-all group overflow-hidden',
+        isSelected
+          ? 'border-primary/60 bg-primary/5 shadow-sm ring-1 ring-primary/20'
+          : 'border-border/60 hover:border-border hover:bg-muted/30'
       )}
-    </div>
+    >
+      {/* Left status bar */}
+      <div className={cn('w-1 self-stretch rounded-l-md shrink-0', statusColor)} />
+
+      {/* Content */}
+      <div className="flex-1 min-w-0 py-0.5">
+        <p className="text-xs font-mono font-semibold leading-none truncate">{epc.name}</p>
+        <p className="text-[10px] text-muted-foreground mt-1 leading-none">
+          {noData ? (
+            <span className="opacity-50">No PLC</span>
+          ) : (
+            <>
+              {okCount > 0 && <span className="text-emerald-600 dark:text-emerald-400">{okCount}</span>}
+              {okCount > 0 && failCount > 0 && <span className="mx-0.5 opacity-40">/</span>}
+              {failCount > 0 && <span className="text-red-500">{failCount}</span>}
+              <span className="opacity-40 ml-0.5">of {totalVfds}</span>
+            </>
+          )}
+        </p>
+      </div>
+    </button>
   )
 }
 
@@ -140,7 +119,6 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         setError(null)
         if (loading && json.zones.length > 0) {
           setExpandedZones(new Set(json.zones.map(z => z.id)))
-          // Auto-select first EPC so detail panel is always visible
           const firstEpc = json.zones[0]?.epcs[0]
           if (firstEpc && !selectedEpc) setSelectedEpc(firstEpc.id)
         }
@@ -151,7 +129,6 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         setLoading(false)
       }
     }
-
     fetchStatus()
     const id = setInterval(fetchStatus, 3000)
     return () => { clearInterval(id); abortRef.current?.abort() }
@@ -169,7 +146,6 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const connected = data?.connected ?? false
   const search = searchTerm.toLowerCase().trim()
 
-  // Filter
   const zones = search
     ? allZones.map(zone => {
         const epcs = zone.epcs.filter(epc =>
@@ -184,70 +160,65 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
       }).filter((z): z is Zone => z !== null)
     : allZones
 
-  // Find selected EPC data (from unfiltered data for full detail)
-  const selectedEpcData = selectedEpc
-    ? allZones.flatMap(z => z.epcs).find(e => e.id === selectedEpc) ?? null
-    : null
-  const selectedZoneName = selectedEpc
-    ? allZones.find(z => z.epcs.some(e => e.id === selectedEpc))?.name ?? ''
-    : ''
+  const selectedEpcData = selectedEpc ? allZones.flatMap(z => z.epcs).find(e => e.id === selectedEpc) ?? null : null
+  const selectedZoneName = selectedEpc ? allZones.find(z => z.epcs.some(e => e.id === selectedEpc))?.name ?? '' : ''
 
-  // Filter VFDs within detail if searching
   const detailMustStop = selectedEpcData && search
     ? selectedEpcData.mustStopVfds.filter(v => v.tag.toLowerCase().includes(search) || v.stoTag.toLowerCase().includes(search))
     : selectedEpcData?.mustStopVfds ?? []
   const detailKeepRun = selectedEpcData && search
     ? selectedEpcData.keepRunningVfds.filter(v => v.tag.toLowerCase().includes(search) || v.stoTag.toLowerCase().includes(search))
     : selectedEpcData?.keepRunningVfds ?? []
-  // If search doesn't match any VFDs specifically, show all
   const showAllVfds = search && detailMustStop.length === 0 && detailKeepRun.length === 0
   const finalMustStop = showAllVfds ? (selectedEpcData?.mustStopVfds ?? []) : detailMustStop
   const finalKeepRun = showAllVfds ? (selectedEpcData?.keepRunningVfds ?? []) : detailKeepRun
 
   return (
-    <div className="p-4 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+    <div className="p-4 space-y-3 h-full flex flex-col">
+      {/* Header row */}
+      <div className="flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2.5">
           <OctagonX className="w-5 h-5 text-red-500" />
-          <h2 className="text-lg font-semibold">Emergency Pull Cord Check</h2>
+          <h2 className="text-base font-semibold">EStop Check</h2>
         </div>
-        <Badge variant="outline" className={cn('text-xs', connected ? 'border-emerald-500/50 text-emerald-600 dark:text-emerald-400' : 'border-red-500/50 text-red-600 dark:text-red-400')}>
-          <span className={cn('w-2 h-2 rounded-full mr-1.5', connected ? 'bg-emerald-500' : 'bg-red-500')} />
-          PLC {connected ? 'Connected' : 'Disconnected'}
-        </Badge>
-      </div>
-
-      {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <input
-          type="text"
-          placeholder="Search EPCs, VFDs, zones, tags..."
-          value={searchTerm}
-          onChange={e => setSearchTerm(e.target.value)}
-          className="w-full pl-9 pr-8 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50"
-        />
-        {searchTerm && (
-          <button onClick={() => setSearchTerm('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-            <X className="w-4 h-4" />
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Search inline */}
+          <div className="relative w-56">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="w-full pl-8 pr-7 py-1.5 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary/50"
+            />
+            {searchTerm && (
+              <button onClick={() => setSearchTerm('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+          <Badge variant="outline" className={cn('text-[10px] shrink-0', connected ? 'border-emerald-500/50 text-emerald-600 dark:text-emerald-400' : 'border-red-500/50 text-red-600 dark:text-red-400')}>
+            <span className={cn('w-1.5 h-1.5 rounded-full mr-1', connected ? 'bg-emerald-500' : 'bg-red-500')} />
+            PLC
+          </Badge>
+        </div>
       </div>
 
       {error && data && (
-        <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-1.5">
-          Poll error: {error}
+        <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-1 shrink-0">
+          {error}
         </div>
       )}
 
-      <div className="flex gap-4">
-        {/* Left: Zone list with compact EPC cards */}
-        <div className="w-2/5 min-w-[300px] max-w-[480px] space-y-3 overflow-y-auto">
+      {/* Main split layout */}
+      <div className="flex gap-3 flex-1 min-h-0 overflow-hidden">
+        {/* Left: EPC selector */}
+        <div className="w-[340px] shrink-0 overflow-y-auto space-y-2 pr-1">
           {zones.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
-              <ShieldAlert className="w-8 h-8 mb-2 opacity-50" />
-              <p className="text-sm">{search ? 'No matches' : 'No EStop zones configured'}</p>
+            <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+              <ShieldAlert className="w-6 h-6 mb-1.5 opacity-40" />
+              <p className="text-xs">{search ? 'No matches' : 'No data'}</p>
             </div>
           ) : (
             zones.map(zone => {
@@ -256,29 +227,22 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                 <div key={zone.id}>
                   <button
                     onClick={() => toggleZone(zone.id)}
-                    className="flex items-center gap-2 w-full text-left py-1.5 px-1 hover:bg-muted/50 rounded transition-colors"
+                    className="flex items-center gap-1.5 w-full text-left py-1 px-0.5 hover:bg-muted/40 rounded transition-colors"
                   >
-                    {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
-                    <span className="font-semibold text-sm">{zone.name}</span>
-                    <Badge variant="secondary" className="text-xs ml-1">{zone.epcs.length}</Badge>
+                    {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
+                    <span className="text-xs font-semibold truncate">{zone.name}</span>
+                    <Badge variant="secondary" className="text-[10px] ml-auto shrink-0 px-1.5 py-0">{zone.epcs.length}</Badge>
                   </button>
 
                   {isExpanded && (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 ml-5 mt-1">
+                    <div className="flex flex-wrap gap-1.5 ml-4 mt-1 mb-2">
                       {zone.epcs.map(epc => (
-                        <button
+                        <EpcCard
                           key={epc.id}
+                          epc={epc}
+                          isSelected={selectedEpc === epc.id}
                           onClick={() => setSelectedEpc(epc.id)}
-                          className={cn(
-                            'flex flex-col items-center justify-center p-2 rounded-lg border text-center transition-all hover:shadow-md aspect-square',
-                            selectedEpc === epc.id
-                              ? 'border-primary bg-primary/5 shadow-md ring-1 ring-primary/30'
-                              : 'border-border hover:border-muted-foreground/30'
-                          )}
-                        >
-                          <StatusDot active={epc.checkTagValue} size="lg" />
-                          <p className="text-[10px] font-mono font-medium mt-1 leading-tight">{epc.name}</p>
-                        </button>
+                        />
                       ))}
                     </div>
                   )}
@@ -288,38 +252,42 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           )}
         </div>
 
-        {/* Right: Detail panel for selected EPC */}
+        {/* Right: Detail panel */}
         {selectedEpcData && (
           <div className="flex-1 min-w-0 overflow-y-auto">
-            <Card className="sticky top-0">
-              <div className="flex items-center justify-between px-4 py-3 border-b">
-                <div className="flex items-center gap-3">
-                  <StatusDot active={selectedEpcData.checkTagValue} size="lg" />
-                  <div>
-                    <h3 className="font-mono font-semibold text-base">{selectedEpcData.name}</h3>
-                    <p className="text-xs text-muted-foreground font-mono">{selectedEpcData.checkTag}</p>
-                  </div>
+            <Card className="h-full">
+              {/* Detail header */}
+              <div className="flex items-center gap-3 px-4 py-3 border-b">
+                <div className={cn(
+                  'w-2.5 h-2.5 rounded-full shrink-0 shadow-sm',
+                  selectedEpcData.checkTagValue === true ? 'bg-emerald-400 shadow-emerald-400/40'
+                    : selectedEpcData.checkTagValue === false ? 'bg-red-500 shadow-red-500/40'
+                      : 'bg-gray-500'
+                )} />
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-mono font-semibold text-sm leading-none">{selectedEpcData.name}</h3>
+                  <p className="text-[10px] text-muted-foreground font-mono mt-0.5">{selectedEpcData.checkTag}</p>
                 </div>
-                <Badge variant="outline" className="text-xs">{selectedZoneName}</Badge>
+                <Badge variant="outline" className="text-[10px] shrink-0">{selectedZoneName}</Badge>
               </div>
 
-              <CardContent className="p-4 space-y-5">
+              <CardContent className="p-4 space-y-4">
                 {/* IO Points */}
                 {selectedEpcData.ioPoints.length > 0 && (
                   <div>
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">IO Points (Normally Closed)</p>
-                    <div className="flex flex-wrap gap-2">
+                    <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-2">IO Points (NC)</p>
+                    <div className="flex flex-wrap gap-1.5">
                       {selectedEpcData.ioPoints.map(io => (
                         <span
                           key={io.tag}
                           className={cn(
-                            'inline-flex items-center gap-1.5 px-3 py-1 text-xs font-mono rounded-md border',
+                            'inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono rounded border',
                             io.value === true ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
                               : io.value === false ? 'bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/30'
                                 : 'bg-muted text-muted-foreground border-border'
                           )}
                         >
-                          <span className={cn('w-2 h-2 rounded-full', io.value === true ? 'bg-emerald-500' : io.value === false ? 'bg-red-500' : 'bg-gray-400')} />
+                          <span className={cn('w-1.5 h-1.5 rounded-full', io.value === true ? 'bg-emerald-500' : io.value === false ? 'bg-red-500' : 'bg-gray-400')} />
                           {io.tag}
                         </span>
                       ))}
@@ -327,36 +295,32 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   </div>
                 )}
 
-                {/* Must Stop VFDs */}
+                {/* Must Stop */}
                 {finalMustStop.length > 0 && (
                   <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <Square className="w-3.5 h-3.5 text-red-500" />
-                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Must Stop <span className="normal-case opacity-60">({finalMustStop.length})</span>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <Square className="w-3 h-3 text-red-500" />
+                      <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Must Stop <span className="normal-case opacity-50">({finalMustStop.length})</span>
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {finalMustStop.map(vfd => (
-                        <VfdBadge key={vfd.tag} vfd={vfd} expectStoActive={true} />
-                      ))}
+                      {finalMustStop.map(vfd => <VfdBadge key={vfd.tag} vfd={vfd} expectStoActive={true} />)}
                     </div>
                   </div>
                 )}
 
-                {/* Keep Running VFDs */}
+                {/* Keep Running */}
                 {finalKeepRun.length > 0 && (
                   <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <Play className="w-3.5 h-3.5 text-emerald-500" />
-                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Keep Running <span className="normal-case opacity-60">({finalKeepRun.length})</span>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <Play className="w-3 h-3 text-emerald-500" />
+                      <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                        Keep Running <span className="normal-case opacity-50">({finalKeepRun.length})</span>
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {finalKeepRun.map(vfd => (
-                        <VfdBadge key={vfd.tag} vfd={vfd} expectStoActive={false} />
-                      ))}
+                      {finalKeepRun.map(vfd => <VfdBadge key={vfd.tag} vfd={vfd} expectStoActive={false} />)}
                     </div>
                   </div>
                 )}
