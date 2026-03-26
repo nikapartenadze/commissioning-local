@@ -283,7 +283,7 @@ class CloudSseClient {
           body: JSON.stringify({
             type: 'UpdateIO',
             id: ioId,
-            result: event.result ?? localIo.result ?? 'Not Tested',
+            result: event.result !== undefined ? (event.result || 'Not Tested') : (localIo.result || 'Not Tested'),
             state: '',
             timestamp: event.timestamp ?? '',
             comments: event.comments ?? '',
