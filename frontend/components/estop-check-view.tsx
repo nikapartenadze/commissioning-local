@@ -264,21 +264,21 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   </button>
 
                   {isExpanded && (
-                    <div className="flex flex-wrap gap-2 ml-5 mt-1">
+                    <div className="grid grid-cols-3 gap-2 ml-5 mt-1">
                       {zone.epcs.map(epc => (
                         <button
                           key={epc.id}
                           onClick={() => setSelectedEpc(epc.id)}
                           className={cn(
-                            'flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all hover:shadow-md',
+                            'flex items-center gap-2 px-3 py-2.5 rounded-lg border text-left transition-all hover:shadow-md',
                             selectedEpc === epc.id
                               ? 'border-primary bg-primary/5 shadow-md ring-1 ring-primary/30'
                               : 'border-border hover:border-muted-foreground/30'
                           )}
                         >
                           <StatusDot active={epc.checkTagValue} size="lg" />
-                          <div>
-                            <p className="text-xs font-mono font-medium whitespace-nowrap">{epc.name}</p>
+                          <div className="min-w-0">
+                            <p className="text-xs font-mono font-medium truncate">{epc.name}</p>
                             <EpcSummary epc={epc} />
                           </div>
                         </button>
