@@ -243,7 +243,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
 
       <div className="flex gap-4">
         {/* Left: Zone list with compact EPC cards */}
-        <div className="w-1/3 min-w-[260px] max-w-[340px] space-y-3 overflow-y-auto">
+        <div className="w-2/5 min-w-[300px] max-w-[480px] space-y-3 overflow-y-auto">
           {zones.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
               <ShieldAlert className="w-8 h-8 mb-2 opacity-50" />
@@ -264,23 +264,20 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   </button>
 
                   {isExpanded && (
-                    <div className="grid grid-cols-1 gap-1.5 ml-5 mt-1">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 ml-5 mt-1">
                       {zone.epcs.map(epc => (
                         <button
                           key={epc.id}
                           onClick={() => setSelectedEpc(epc.id)}
                           className={cn(
-                            'flex items-center gap-3 p-3 rounded-lg border text-left transition-all hover:shadow-md',
+                            'flex flex-col items-center justify-center p-2 rounded-lg border text-center transition-all hover:shadow-md aspect-square',
                             selectedEpc === epc.id
                               ? 'border-primary bg-primary/5 shadow-md ring-1 ring-primary/30'
                               : 'border-border hover:border-muted-foreground/30'
                           )}
                         >
                           <StatusDot active={epc.checkTagValue} size="lg" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-mono font-medium truncate">{epc.name}</p>
-                            <EpcSummary epc={epc} />
-                          </div>
+                          <p className="text-[10px] font-mono font-medium mt-1 leading-tight">{epc.name}</p>
                         </button>
                       ))}
                     </div>
