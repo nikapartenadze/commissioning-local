@@ -620,7 +620,7 @@ const DEVICE_HEADER_COLOR = '#3b82f6'
 function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagStates: Record<string, boolean | null>; subsystemId?: number }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const vp = useViewport(viewportRef)
-  const [selectedDevice, setSelectedDevice] = useState<{ name: string; type: string; ip: string; port: number; x: number; y: number } | null>(null)
+  const [selectedDevice, setSelectedDevice] = useState<{ name: string; type: string; ip: string; port: number | string; x: number; y: number } | null>(null)
   const [expandedFiom, setExpandedFiom] = useState<NetworkPort | null>(null)
 
   const FIRST_VISIBLE_PORT = 5 // skip ports 1-4 (unreachable)
@@ -657,9 +657,9 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
   const dpmX = totalW / 2 - dpmW / 2
 
   // Each port gets an X position; remap so port 5 starts at index 0
-  function portStripCx(portNum: number) { return portStripStartX + (portNum - FIRST_VISIBLE_PORT) * PORT_SPACING }
+  function portStripCx(portNum: number | string) { return portStripStartX + (Number(portNum) - FIRST_VISIBLE_PORT) * PORT_SPACING }
   // Device X = its port's X (no separate device row — they're above their ports)
-  function devCx(devIdx: number) { return portStripCx(connectedPorts[devIdx].portNumber) }
+  function devCx(devIdx: number) { return portStripCx(Number(connectedPorts[devIdx].portNumber)) }
 
   // ── Layout Y positions ──
   const DEVICE_Y = 10
@@ -682,7 +682,7 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
 
   // Only show ports 5 and above
   const allPorts = Array.from({ length: visiblePortCount }, (_, i) =>
-    node.ports.find((p) => p.portNumber === i + FIRST_VISIBLE_PORT) || null
+    node.ports.find((p) => Number(p.portNumber) === i + FIRST_VISIBLE_PORT) || null
   )
 
   return (
