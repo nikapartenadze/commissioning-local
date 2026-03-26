@@ -3,7 +3,8 @@
  *
  * Runs in the background on the server:
  * - Push: Drains PendingSync queue to cloud every 30s
- * - Pull: Checks for IO definition changes from cloud every 60s
+ * - Pull: On SSE (re)connect only — no polling. SSE is the primary real-time channel;
+ *         a full pull on reconnect catches any events missed during disconnect.
  *
  * Preserves data ownership:
  * - Cloud owns IO definitions (name, description, order)
@@ -16,14 +17,12 @@ import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/clou
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 30000 (30s)
-  pullIntervalMs: number    // default 60000 (60s)
   enabled: boolean          // default true
   maxRetries: number        // default 3
 }
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 30000,
-  pullIntervalMs: 3000,
   enabled: true,
   maxRetries: 3,
 }
@@ -40,10 +39,11 @@ export interface AutoSyncStatus {
 
 class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
-  private pullTimer: NodeJS.Timeout | null = null
+  private networkStatusTimer: NodeJS.Timeout | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
+  private isPushingNetworkStatus = false
   private lastPullVersion: string | null = null
   private _lastPushAt: Date | null = null
   private _lastPullAt: Date | null = null
@@ -64,18 +64,18 @@ class AutoSyncService {
     if (this._running) return
 
     console.log('[AutoSync] Starting background sync...')
-    console.log(`[AutoSync] Push interval: ${this.config.pushIntervalMs}ms, Pull interval: ${this.config.pullIntervalMs}ms`)
+    console.log(`[AutoSync] Push interval: ${this.config.pushIntervalMs}ms, Pull: on SSE (re)connect only`)
 
     this._running = true
 
     // Start push loop (drain pending syncs)
     this.pushTimer = setInterval(() => this.pushToCloud(), this.config.pushIntervalMs)
 
-    // Start pull loop (check for IO definition changes)
-    this.pullTimer = setInterval(() => this.pullFromCloud(), this.config.pullIntervalMs)
-
     // Do an initial push attempt after 5 seconds (let server fully start)
     setTimeout(() => this.pushToCloud(), 5000)
+
+    // Push network status to cloud every 5 seconds (lightweight, tag booleans only)
+    this.networkStatusTimer = setInterval(() => this.pushNetworkStatus(), 5000)
 
     // Start SSE client for real-time cloud updates (after 10s to let config load)
     setTimeout(async () => {
@@ -87,10 +87,11 @@ class AutoSyncService {
             apiPassword: config.apiPassword || '',
             subsystemId: config.subsystemId,
           })
-          // When SSE (re)connects, immediately push any pending items
+          // When SSE (re)connects, push pending items + pull to catch missed events
           sseClient.onConnect(() => {
-            console.log('[AutoSync] Cloud reconnected — pushing pending items now')
+            console.log('[AutoSync] Cloud SSE connected — pushing pending + pulling to catch up')
             this.pushToCloud()
+            this.pullFromCloud()
           })
         }
       } catch {}
@@ -126,9 +127,9 @@ class AutoSyncService {
   stop(): void {
     stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
-    if (this.pullTimer) clearInterval(this.pullTimer)
+    if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
     this.pushTimer = null
-    this.pullTimer = null
+    this.networkStatusTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
@@ -321,10 +322,9 @@ class AutoSyncService {
         return
       }
 
-      // Quick change detection — include a sample of results to detect other users' test data
-      const resultSample = cloudIos.slice(0, 10).map((io: { result?: string | null }) => io.result || '-').join('')
-      const changeSignature = `${cloudIos.length}-${cloudIos[0]?.id}-${cloudIos[cloudIos.length - 1]?.id}-${resultSample}`
-      if (changeSignature === this.lastPullVersion) {
+      // Change detection — hash all versions to detect any change anywhere
+      const versionHash = cloudIos.map((io: any) => `${io.id}:${io.version}:${io.result || '-'}`).join('|')
+      if (versionHash === this.lastPullVersion) {
         this._lastPullAt = new Date()
         this._lastPullResult = 'no changes detected'
         return
@@ -389,7 +389,7 @@ class AutoSyncService {
         }
       }
 
-      this.lastPullVersion = changeSignature
+      this.lastPullVersion = versionHash
       this._lastPullAt = new Date()
       this._lastPullResult = `updated ${updatedCount} IOs${mergedResults > 0 ? `, merged ${mergedResults} results from other users` : ''}`
 
@@ -454,6 +454,67 @@ class AutoSyncService {
       }
     } finally {
       this.isPulling = false
+    }
+  }
+
+  private async pushNetworkStatus(): Promise<void> {
+    if (this.isPushingNetworkStatus) return
+    this.isPushingNetworkStatus = true
+
+    try {
+      const config = await configService.getConfig()
+      const remoteUrl = config.remoteUrl
+      const apiPassword = config.apiPassword
+      const subsystemId = config.subsystemId
+
+      if (!remoteUrl || !subsystemId) return
+
+      // Read PLC connection + network tag values
+      let connected = false
+      let tags: Record<string, boolean | null> = {}
+
+      try {
+        const { hasPlcClient, getPlcClient } = await import('@/lib/plc-client-manager')
+        if (hasPlcClient() && getPlcClient().isConnected) {
+          connected = true
+          // Read network tags from database
+          const rings = await prisma.networkRing.findMany({
+            where: { subsystemId: parseInt(String(subsystemId), 10) },
+            include: { nodes: { include: { ports: true } } },
+          })
+
+          for (const ring of rings) {
+            if (ring.mcmTag) tags[ring.mcmTag] = getPlcClient().readTagCached(ring.mcmTag)
+            for (const node of ring.nodes) {
+              if (node.statusTag) tags[node.statusTag] = getPlcClient().readTagCached(node.statusTag)
+              for (const port of node.ports) {
+                if (port.statusTag) tags[port.statusTag] = getPlcClient().readTagCached(port.statusTag)
+              }
+            }
+          }
+        }
+      } catch {
+        // PLC not available — send disconnected status
+      }
+
+      await fetch(`${remoteUrl}/api/sync/network-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword || '',
+        },
+        body: JSON.stringify({
+          subsystemId: parseInt(String(subsystemId), 10),
+          connected,
+          tags,
+          timestamp: new Date().toISOString(),
+        }),
+        signal: AbortSignal.timeout(5000),
+      })
+    } catch {
+      // Network status push is best-effort — don't log noise
+    } finally {
+      this.isPushingNetworkStatus = false
     }
   }
 }
