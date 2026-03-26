@@ -370,6 +370,9 @@ class AutoSyncService {
             updateData.timestamp = cloudIo.timestamp ?? null
             updateData.comments = cloudIo.comments ?? null
             mergedResults++
+            console.log(`[AutoSync] Merging result for IO ${cloudIo.id}: cloud=${cloudIo.result} (v${cloudVersion}) → local was ${localIo?.result} (v${localVersion})`)
+          } else if (cloudIo.result !== undefined && localIo?.result && cloudVersion <= localVersion) {
+            console.log(`[AutoSync] SKIPPED merge for IO ${cloudIo.id}: cloud=${cloudIo.result} (v${cloudVersion}), local=${localIo?.result} (v${localVersion}) — local version not older`)
           }
 
           await prisma.io.upsert({
