@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, ShieldAlert, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, ShieldAlert, ChevronDown, ChevronRight, Search, X } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -104,6 +104,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedZones, setExpandedZones] = useState<Set<number>>(new Set())
+  const [searchTerm, setSearchTerm] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
   const toggleZone = (zoneId: number) => {
@@ -177,8 +178,26 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
     )
   }
 
-  const zones = data?.zones ?? []
+  const allZones = data?.zones ?? []
   const connected = data?.connected ?? false
+
+  // Filter zones/EPCs by search term — matches EPC name, check tag, zone name, VFD tag, IO point tag
+  const search = searchTerm.toLowerCase().trim()
+  const zones = search
+    ? allZones
+        .map(zone => {
+          const epcs = zone.epcs.filter(epc =>
+            epc.name.toLowerCase().includes(search) ||
+            epc.checkTag.toLowerCase().includes(search) ||
+            zone.name.toLowerCase().includes(search) ||
+            epc.ioPoints.some(io => io.tag.toLowerCase().includes(search)) ||
+            epc.mustStopVfds.some(vfd => vfd.tag.toLowerCase().includes(search) || vfd.stoTag.toLowerCase().includes(search)) ||
+            epc.keepRunningVfds.some(vfd => vfd.tag.toLowerCase().includes(search) || vfd.stoTag.toLowerCase().includes(search))
+          )
+          return epcs.length > 0 ? { ...zone, epcs } : null
+        })
+        .filter((z): z is Zone => z !== null)
+    : allZones
 
   return (
     <div className="p-4 space-y-4">
@@ -205,6 +224,31 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           />
           PLC {connected ? 'Connected' : 'Disconnected'}
         </Badge>
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <input
+          type="text"
+          placeholder="Search EPCs, VFDs, zones, tags..."
+          value={searchTerm}
+          onChange={e => setSearchTerm(e.target.value)}
+          className="w-full pl-9 pr-8 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/50"
+        />
+        {searchTerm && (
+          <button
+            onClick={() => setSearchTerm('')}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+        {search && (
+          <p className="text-xs text-muted-foreground mt-1">
+            {zones.reduce((sum, z) => sum + z.epcs.length, 0)} EPC{zones.reduce((sum, z) => sum + z.epcs.length, 0) !== 1 ? 's' : ''} in {zones.length} zone{zones.length !== 1 ? 's' : ''} matching "{searchTerm}"
+          </p>
+        )}
       </div>
 
       {/* Error banner (non-blocking, data may be stale) */}
