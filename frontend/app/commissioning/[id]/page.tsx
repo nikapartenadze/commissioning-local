@@ -117,7 +117,10 @@ export default function CommissioningPage() {
   const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
-  const [activeTab, setActiveTab] = useState<'io' | 'network'>('io')
+  const [activeTab, setActiveTab] = useState<'io' | 'network'>(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#network') return 'network'
+    return 'io'
+  })
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
   const [showFireOutputDialog, setShowFireOutputDialog] = useState(false)
   const [showValueChangeDialog, setShowValueChangeDialog] = useState(false)
@@ -1170,7 +1173,7 @@ export default function CommissioningPage() {
             <div className="h-6 w-px bg-border" />
             <div className="flex bg-muted rounded p-0.5 gap-0.5">
               <button
-                onClick={() => setActiveTab('io')}
+                onClick={() => { setActiveTab('io'); window.location.hash = '' }}
                 className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
                   activeTab === 'io'
                     ? 'bg-background shadow text-foreground'
@@ -1180,7 +1183,7 @@ export default function CommissioningPage() {
                 I/O Testing
               </button>
               <button
-                onClick={() => setActiveTab('network')}
+                onClick={() => { setActiveTab('network'); window.location.hash = 'network' }}
                 className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
                   activeTab === 'network'
                     ? 'bg-background shadow text-foreground'
