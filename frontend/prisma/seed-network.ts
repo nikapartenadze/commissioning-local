@@ -135,7 +135,7 @@ async function main() {
       await prisma.networkPort.create({
         data: {
           nodeId: node.id,
-          portNumber: device.port,
+          portNumber: String(device.port),
           deviceName: device.name,
           deviceIp: device.ip,
           deviceType: getDeviceType(device.name),
