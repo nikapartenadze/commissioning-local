@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     const portMap = new Map<number, { portNum: number; pins: { pin: number; type: string; ioName: string; description: string }[] }>()
 
     for (const io of ios) {
-      const match = io.name.match(/_X(\d+)\.PIN(\d+)_(D[IO])$/)
+      const match = (io.name ?? '').match(/_X(\d+)\.PIN(\d+)_(D[IO])$/)
       if (!match) continue
 
       const portNum = parseInt(match[1])
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
       portMap.get(portNum)!.pins.push({
         pin: pinNum,
         type: pinType,
-        ioName: io.name,
+        ioName: io.name ?? '',
         description: io.description || 'SPARE',
       })
     }
