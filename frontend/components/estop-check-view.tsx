@@ -140,6 +140,9 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         setError(null)
         if (loading && json.zones.length > 0) {
           setExpandedZones(new Set(json.zones.map(z => z.id)))
+          // Auto-select first EPC so detail panel is always visible
+          const firstEpc = json.zones[0]?.epcs[0]
+          if (firstEpc && !selectedEpc) setSelectedEpc(firstEpc.id)
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return
@@ -240,7 +243,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
 
       <div className="flex gap-4">
         {/* Left: Zone list with compact EPC cards */}
-        <div className={cn('space-y-3 overflow-y-auto', selectedEpcData ? 'w-1/3 min-w-[280px]' : 'w-full')}>
+        <div className="w-1/3 min-w-[260px] max-w-[340px] space-y-3 overflow-y-auto">
           {zones.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
               <ShieldAlert className="w-8 h-8 mb-2 opacity-50" />
@@ -261,11 +264,11 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   </button>
 
                   {isExpanded && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 ml-6 mt-1">
+                    <div className="grid grid-cols-1 gap-1.5 ml-5 mt-1">
                       {zone.epcs.map(epc => (
                         <button
                           key={epc.id}
-                          onClick={() => setSelectedEpc(selectedEpc === epc.id ? null : epc.id)}
+                          onClick={() => setSelectedEpc(epc.id)}
                           className={cn(
                             'flex items-center gap-3 p-3 rounded-lg border text-left transition-all hover:shadow-md',
                             selectedEpc === epc.id
@@ -297,12 +300,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   <StatusDot active={selectedEpcData.checkTagValue} size="lg" />
                   <div>
                     <h3 className="font-mono font-semibold text-base">{selectedEpcData.name}</h3>
-                    <p className="text-xs text-muted-foreground">{selectedZoneName} &middot; {selectedEpcData.checkTag}</p>
+                    <p className="text-xs text-muted-foreground font-mono">{selectedEpcData.checkTag}</p>
                   </div>
                 </div>
-                <button onClick={() => setSelectedEpc(null)} className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-muted">
-                  <X className="w-4 h-4" />
-                </button>
+                <Badge variant="outline" className="text-xs">{selectedZoneName}</Badge>
               </div>
 
               <CardContent className="p-4 space-y-5">
