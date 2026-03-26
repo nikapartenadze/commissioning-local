@@ -219,6 +219,9 @@ export const API_ENDPOINTS = {
 
   // Network Topology
   networkTopology: '/api/network/topology',
+
+  // EStop Check
+  estopStatus: '/api/estop/status',
 } as const
 
 /**
