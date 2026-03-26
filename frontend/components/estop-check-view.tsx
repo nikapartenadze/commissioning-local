@@ -181,19 +181,44 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const allZones = data?.zones ?? []
   const connected = data?.connected ?? false
 
-  // Filter zones/EPCs by search term — matches EPC name, check tag, zone name, VFD tag, IO point tag
+  // Filter zones/EPCs/VFDs by search term
   const search = searchTerm.toLowerCase().trim()
   const zones = search
     ? allZones
         .map(zone => {
-          const epcs = zone.epcs.filter(epc =>
-            epc.name.toLowerCase().includes(search) ||
-            epc.checkTag.toLowerCase().includes(search) ||
-            zone.name.toLowerCase().includes(search) ||
-            epc.ioPoints.some(io => io.tag.toLowerCase().includes(search)) ||
-            epc.mustStopVfds.some(vfd => vfd.tag.toLowerCase().includes(search) || vfd.stoTag.toLowerCase().includes(search)) ||
-            epc.keepRunningVfds.some(vfd => vfd.tag.toLowerCase().includes(search) || vfd.stoTag.toLowerCase().includes(search))
-          )
+          const epcs = zone.epcs
+            .map(epc => {
+              // Check if the EPC itself matches (name, check tag)
+              const epcMatches = epc.name.toLowerCase().includes(search) ||
+                epc.checkTag.toLowerCase().includes(search)
+
+              // Filter VFDs that match
+              const matchedMustStop = epc.mustStopVfds.filter(vfd =>
+                vfd.tag.toLowerCase().includes(search) || vfd.stoTag.toLowerCase().includes(search)
+              )
+              const matchedKeepRunning = epc.keepRunningVfds.filter(vfd =>
+                vfd.tag.toLowerCase().includes(search) || vfd.stoTag.toLowerCase().includes(search)
+              )
+              // Filter IO points that match
+              const matchedIo = epc.ioPoints.filter(io => io.tag.toLowerCase().includes(search))
+
+              const hasVfdMatch = matchedMustStop.length > 0 || matchedKeepRunning.length > 0
+              const hasIoMatch = matchedIo.length > 0
+
+              if (epcMatches) return epc // EPC name match — show full card
+              if (hasVfdMatch || hasIoMatch) {
+                // VFD/IO match — show card but only matching VFDs
+                return {
+                  ...epc,
+                  mustStopVfds: hasVfdMatch ? matchedMustStop : epc.mustStopVfds,
+                  keepRunningVfds: hasVfdMatch ? matchedKeepRunning : epc.keepRunningVfds,
+                  ioPoints: hasIoMatch ? matchedIo : epc.ioPoints,
+                }
+              }
+              return null
+            })
+            .filter((e): e is Epc => e !== null)
+
           return epcs.length > 0 ? { ...zone, epcs } : null
         })
         .filter((z): z is Zone => z !== null)
