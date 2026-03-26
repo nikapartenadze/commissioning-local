@@ -23,7 +23,7 @@ export interface AutoSyncConfig {
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 30000,
-  pullIntervalMs: 60000,
+  pullIntervalMs: 5000,
   enabled: true,
   maxRetries: 3,
 }
@@ -328,10 +328,9 @@ class AutoSyncService {
         return
       }
 
-      // Quick change detection — include a sample of results to detect other users' test data
-      const resultSample = cloudIos.slice(0, 10).map((io: { result?: string | null }) => io.result || '-').join('')
-      const changeSignature = `${cloudIos.length}-${cloudIos[0]?.id}-${cloudIos[cloudIos.length - 1]?.id}-${resultSample}`
-      if (changeSignature === this.lastPullVersion) {
+      // Change detection — hash all versions to detect any change anywhere
+      const versionHash = cloudIos.map((io: any) => `${io.id}:${io.version}:${io.result || '-'}`).join('|')
+      if (versionHash === this.lastPullVersion) {
         this._lastPullAt = new Date()
         this._lastPullResult = 'no changes detected'
         return
@@ -396,7 +395,7 @@ class AutoSyncService {
         }
       }
 
-      this.lastPullVersion = changeSignature
+      this.lastPullVersion = versionHash
       this._lastPullAt = new Date()
       this._lastPullResult = `updated ${updatedCount} IOs${mergedResults > 0 ? `, merged ${mergedResults} results from other users` : ''}`
 
