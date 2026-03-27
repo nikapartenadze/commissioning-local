@@ -59,11 +59,14 @@ export async function POST(request: NextRequest) {
     await prisma.networkRing.deleteMany({ where: { subsystemId } })
 
     // Insert rings, nodes, ports from cloud data
+    // Two-pass: first create all ports without parentPortId, then link sub-ports
     let totalNodes = 0
     let totalDevices = 0
+    const cloudIdToLocalId = new Map<number, number>() // cloud port ID → local port ID
+    const pendingParentLinks: { localPortId: number; cloudParentId: number }[] = []
 
     for (const ring of data.rings) {
-      await prisma.networkRing.create({
+      const createdRing = await prisma.networkRing.create({
         data: {
           subsystemId,
           name: ring.name,
@@ -95,10 +98,37 @@ export async function POST(request: NextRequest) {
             }),
           },
         },
+        include: { nodes: { include: { ports: true } } },
       })
+
+      // Build cloud ID → local ID mapping for parentPortId linking
+      for (const node of createdRing.nodes) {
+        const cloudNode = (ring.nodes || []).find((n: any) => n.name === node.name)
+        if (!cloudNode) continue
+        for (const localPort of node.ports) {
+          const cloudPort = (cloudNode.ports || []).find((p: any) => p.portNumber === localPort.portNumber)
+          if (cloudPort?.id) {
+            cloudIdToLocalId.set(cloudPort.id, localPort.id)
+            if (cloudPort.parentPortId) {
+              pendingParentLinks.push({ localPortId: localPort.id, cloudParentId: cloudPort.parentPortId })
+            }
+          }
+        }
+      }
     }
 
-    console.log(`[PullNetwork] Imported ${data.rings.length} rings, ${totalNodes} nodes, ${totalDevices} devices`)
+    // Second pass: link sub-ports to their parent FIOM ports
+    for (const link of pendingParentLinks) {
+      const localParentId = cloudIdToLocalId.get(link.cloudParentId)
+      if (localParentId) {
+        await prisma.networkPort.update({
+          where: { id: link.localPortId },
+          data: { parentPortId: localParentId },
+        })
+      }
+    }
+
+    console.log(`[PullNetwork] Imported ${data.rings.length} rings, ${totalNodes} nodes, ${totalDevices} devices, ${pendingParentLinks.length} sub-port links`)
 
     return NextResponse.json({
       success: true,

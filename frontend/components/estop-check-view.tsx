@@ -111,8 +111,11 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedEpc, setSelectedEpc] = useState<number | null>(null)
   const [expandedZones, setExpandedZones] = useState<Set<number>>(new Set())
+  const [pulling, setPulling] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const lastDataRef = useRef<string>('')
+  const triedCloudPull = useRef(false)
+  const initializedRef = useRef(false)
 
   const toggleZone = useCallback((zoneId: number) => {
     setExpandedZones(prev => {
@@ -138,11 +141,38 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           setData(json)
         }
         setError(null)
-        if (loading && json.zones.length > 0) {
+        if (!initializedRef.current && json.zones.length > 0) {
+          initializedRef.current = true
           setExpandedZones(new Set(json.zones.map(z => z.id)))
           // Auto-select first EPC so detail panel is always visible
           const firstEpc = json.zones[0]?.epcs[0]
-          if (firstEpc && !selectedEpc) setSelectedEpc(firstEpc.id)
+          if (firstEpc) setSelectedEpc(firstEpc.id)
+        }
+        // Auto-pull from cloud if no local data (once)
+        if (loading && json.zones.length === 0 && !triedCloudPull.current) {
+          triedCloudPull.current = true
+          try {
+            setPulling(true)
+            const pullRes = await authFetch('/api/cloud/pull-estop', { method: 'POST' })
+            const pullData = await pullRes.json()
+            if (pullData.success && pullData.zones > 0) {
+              // Re-fetch local status to pick up the newly pulled data
+              const res2 = await authFetch(url, { signal: controller.signal })
+              if (res2.ok) {
+                const json2: EStopStatusResponse = await res2.json()
+                setData(json2)
+                if (json2.zones.length > 0) {
+                  setExpandedZones(new Set(json2.zones.map(z => z.id)))
+                  const firstEpc = json2.zones[0]?.epcs[0]
+                  if (firstEpc) setSelectedEpc(firstEpc.id)
+                }
+              }
+            }
+          } catch {
+            // Cloud pull failed — not an error, just no data
+          } finally {
+            setPulling(false)
+          }
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return
@@ -158,8 +188,24 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subsystemId])
 
-  if (loading) {
-    return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-muted-foreground" /></div>
+  const handleManualPull = async () => {
+    setPulling(true)
+    try {
+      const pullRes = await authFetch('/api/cloud/pull-estop', { method: 'POST' })
+      const pullData = await pullRes.json()
+      if (!pullData.success) {
+        setError(pullData.error || 'Pull failed')
+      }
+      // The 3s poll will pick up the new data automatically
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Pull failed')
+    } finally {
+      setPulling(false)
+    }
+  }
+
+  if (loading || pulling) {
+    return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />{pulling && <span className="ml-2 text-sm text-muted-foreground">Pulling EStop data from cloud...</span>}</div>
   }
   if (error && !data) {
     return <div className="flex flex-col items-center justify-center h-64 gap-3"><ShieldAlert className="w-10 h-10 text-red-500" /><p className="text-sm text-muted-foreground">{error}</p></div>
@@ -248,6 +294,15 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
             <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
               <ShieldAlert className="w-8 h-8 mb-2 opacity-50" />
               <p className="text-sm">{search ? 'No matches' : 'No EStop zones configured'}</p>
+              {!search && (
+                <button
+                  onClick={handleManualPull}
+                  disabled={pulling}
+                  className="mt-3 text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Pull from Cloud
+                </button>
+              )}
             </div>
           ) : (
             zones.map(zone => {

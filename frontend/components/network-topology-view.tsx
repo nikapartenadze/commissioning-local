@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, RefreshCw, PanelRightOpen, PanelRightClose, Search } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, RefreshCw, PanelRightOpen, PanelRightClose, Search, Copy, Check } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -79,6 +79,19 @@ function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' |
   const sizeClass = size === 'md' ? 'w-3 h-3' : 'w-2.5 h-2.5'
   return (
     <span className={cn('inline-block rounded-full shadow-sm', sizeClass, colors[status])} />
+  )
+}
+
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
+      className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+      title={`Copy "${text}"`}
+    >
+      {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+    </button>
   )
 }
 
@@ -481,8 +494,10 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
           style={{ transform: `translate(${vp.pan.x}px, ${vp.pan.y}px) scale(${vp.zoom})`, transformOrigin: '0 0' }}
         >
           <defs>
-            {connectedPorts.map((port, idx) => {
-              const cx = portStripCx(idx)
+            {connectedPorts.map((port) => {
+              const portIdx = parseInt(port.portNumber.replace('X', ''))
+              if (isNaN(portIdx)) return null
+              const cx = portStripCx(portIdx)
               return (
                 <clipPath key={`clip-f-${port.id}`} id={`clip-f-${port.id}`}>
                   <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} />
@@ -492,8 +507,10 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
           </defs>
 
           {/* Cable lines */}
-          {connectedPorts.map((port, idx) => {
-            const cx = portStripCx(idx)
+          {connectedPorts.map((port) => {
+            const portIdx = parseInt(port.portNumber.replace('X', ''))
+            if (isNaN(portIdx)) return null
+            const cx = portStripCx(portIdx)
             const s = portStatus(port)
             return (
               <line key={`cable-${port.id}`}
@@ -503,9 +520,11 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
             )
           })}
 
-          {/* Device cards — same style as DPM star */}
-          {connectedPorts.map((port, idx) => {
-            const cx = portStripCx(idx)
+          {/* Device cards — placed at actual X-port position */}
+          {connectedPorts.map((port) => {
+            const portIdx = parseInt(port.portNumber.replace('X', ''))
+            if (isNaN(portIdx)) return null
+            const cx = portStripCx(portIdx)
             const s = portStatus(port)
             const color = statusToHex(s)
 
@@ -540,8 +559,9 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
           {Array.from({ length: TOTAL_PORTS }, (_, i) => {
             const cx = portStripCx(i)
             const label = `X${i}`
-            const isConnected = connectedPorts.some((_, idx) => idx === i)
-            const s = isConnected ? portStatusByLabel(connectedPorts[i]?.portNumber || label) : 'gray' as const
+            const matchingPort = connectedPorts.find(p => p.portNumber === label)
+            const isConnected = !!matchingPort
+            const s = isConnected ? portStatus(matchingPort) : 'gray' as const
             const color = statusToHex(s)
             return (
               <g key={`strip-${i}`}>
@@ -551,7 +571,7 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
                 />
                 <text x={cx} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4} textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace"
                   fill={isConnected ? color : 'hsl(var(--muted-foreground))'}
-                >{connectedPorts[i]?.portNumber || `X${i}`}</text>
+                >{label}</text>
               </g>
             )
           })}
@@ -570,7 +590,7 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
           {/* Port circles inside FIOM */}
           {Array.from({ length: Math.min(TOTAL_PORTS, 8) }, (_, i) => {
             const { x, y } = fiomPortPos(i)
-            const subPort = connectedPorts[i]
+            const subPort = connectedPorts.find(p => p.portNumber === `X${i}`)
             const isConnected = !!subPort
             const s = isConnected ? portStatus(subPort) : 'gray' as const
             const color = statusToHex(s)
@@ -595,15 +615,18 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
             style={{ left: Math.min(selectedPort.x, 400), top: Math.max(selectedPort.y - 100, 8) }}
           >
             <div className="flex items-center justify-between mb-2">
-              <span className="font-bold text-sm text-foreground">{selectedPort.port.deviceName}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-sm text-foreground">{selectedPort.port.deviceName}</span>
+                <CopyBtn text={selectedPort.port.deviceName || ''} />
+              </div>
               <button onClick={() => setSelectedPort(null)} className="text-muted-foreground hover:text-foreground p-0.5">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
             <div className="text-xs space-y-1">
-              <p className="text-muted-foreground">Port: <span className="font-mono text-foreground">{selectedPort.port.portNumber}</span></p>
-              {selectedPort.port.deviceIp && <p className="text-muted-foreground">IP: <span className="font-mono text-foreground">{selectedPort.port.deviceIp}</span></p>}
-              <p className="text-muted-foreground">Status: <span className="font-mono text-foreground">{selectedPort.port.statusTag || 'N/A'}</span></p>
+              <p className="text-muted-foreground flex items-center gap-1">Port: <span className="font-mono text-foreground">{selectedPort.port.portNumber}</span> <CopyBtn text={selectedPort.port.portNumber} /></p>
+              {selectedPort.port.deviceIp && <p className="text-muted-foreground flex items-center gap-1">IP: <span className="font-mono text-foreground">{selectedPort.port.deviceIp}</span> <CopyBtn text={selectedPort.port.deviceIp} /></p>}
+              <p className="text-muted-foreground flex items-center gap-1">Status: <span className="font-mono text-foreground">{selectedPort.port.statusTag || 'N/A'}</span> {selectedPort.port.statusTag && <CopyBtn text={selectedPort.port.statusTag} />}</p>
             </div>
           </div>
         )}
@@ -790,20 +813,31 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                   })
                 }
               }}>
-                {/* FIOM indicator — pulsing dot showing it's expandable, colored by fault status */}
-                {isFiomDevice && (
-                  <g>
-                    <circle cx={cx} cy={DEVICE_Y + DEVICE_H + 6} r={3} fill={bodyColor}
-                      opacity={expandedFiom?.id === port.id ? 1 : 0.5}
-                    />
-                    {expandedFiom?.id !== port.id && (
-                      <circle cx={cx} cy={DEVICE_Y + DEVICE_H + 6} r={5} fill="none" stroke={bodyColor} strokeWidth={1}>
-                        <animate attributeName="r" values="3;7;3" dur="2s" repeatCount="indefinite" />
-                        <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite" />
-                      </circle>
-                    )}
-                  </g>
-                )}
+                {/* FIOM indicator — animated chevron arrow showing it has sub-devices */}
+                {isFiomDevice && (() => {
+                  const hasSubDevices = node.ports.some(p => p.parentPortId === port.id)
+                  if (!hasSubDevices) return null
+                  const chevronY = DEVICE_Y + DEVICE_H + 4
+                  const isOpen = expandedFiom?.id === port.id
+                  return (
+                    <g>
+                      <path
+                        d={`M ${cx - 5} ${chevronY} L ${cx} ${chevronY + 5} L ${cx + 5} ${chevronY}`}
+                        fill="none" stroke={bodyColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+                        opacity={isOpen ? 1 : 0.8}
+                      />
+                      {!isOpen && (
+                        <path
+                          d={`M ${cx - 5} ${chevronY} L ${cx} ${chevronY + 5} L ${cx + 5} ${chevronY}`}
+                          fill="none" stroke={bodyColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+                        >
+                          <animate attributeName="opacity" values="0.8;0.3;0.8" dur="1.5s" repeatCount="indefinite" />
+                          <animateTransform attributeName="transform" type="translate" values="0,0;0,2;0,0" dur="1.5s" repeatCount="indefinite" />
+                        </path>
+                      )}
+                    </g>
+                  )
+                })()}
                 {/* Full card background */}
                 <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
                 {/* Body border — status color, inset 1px, skips the top */}
@@ -937,15 +971,18 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
             style={{ left: Math.min(selectedDevice.x, 300), top: Math.max(selectedDevice.y - 80, 8) }}
           >
             <div className="flex items-center justify-between mb-1">
-              <span className="font-bold text-sm text-foreground">{selectedDevice.name}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-sm text-foreground">{selectedDevice.name}</span>
+                <CopyBtn text={selectedDevice.name} />
+              </div>
               <button onClick={() => setSelectedDevice(null)} className="text-muted-foreground hover:text-foreground p-0.5">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
             <div className="text-xs text-muted-foreground space-y-0.5">
               <p>Type: <span className="font-medium text-blue-500">{selectedDevice.type}</span></p>
-              <p>IP: <span className="font-mono text-foreground">{selectedDevice.ip}</span></p>
-              <p>Port: <span className="font-mono text-foreground">{selectedDevice.port}</span></p>
+              <p className="flex items-center gap-1">IP: <span className="font-mono text-foreground">{selectedDevice.ip}</span> {selectedDevice.ip !== 'No IP' && <CopyBtn text={selectedDevice.ip} />}</p>
+              <p className="flex items-center gap-1">Port: <span className="font-mono text-foreground">{selectedDevice.port}</span> <CopyBtn text={String(selectedDevice.port)} /></p>
             </div>
           </div>
         )}

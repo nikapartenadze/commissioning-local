@@ -17,17 +17,23 @@ export async function GET() {
   try {
     const connected = hasPlcClient() && getPlcClient().isConnected
 
-    // Query all zones with nested data
-    const zones = await prisma.eStopZone.findMany({
-      include: {
-        epcs: {
-          include: {
-            ioPoints: true,
-            vfds: true,
+    // Query all zones with nested data — table may not exist in schema
+    let zones: any[]
+    try {
+      zones = await (prisma as any).eStopZone.findMany({
+        include: {
+          epcs: {
+            include: {
+              ioPoints: true,
+              vfds: true,
+            },
           },
         },
-      },
-    })
+      })
+    } catch {
+      // EStopZone model not in schema — return empty
+      return NextResponse.json({ success: true, connected, zones: [] })
+    }
 
     if (zones.length === 0) {
       return NextResponse.json({ success: true, connected, zones: [] })
