@@ -47,6 +47,10 @@
   /* Image placeholder */
   .img-placeholder { background: #f1f5f9; border: 2px dashed #cbd5e1; border-radius: 8px; padding: 40px 20px; text-align: center; color: #94a3b8; font-size: 14px; font-style: italic; margin: 16px 0; }
 
+  /* Guide images */
+  .guide-img { max-width: 100%; border-radius: 8px; border: 1px solid #e2e8f0; margin: 16px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .guide-img-sm { max-width: 500px; }
+
   /* Steps */
   .step { display: flex; gap: 14px; margin: 12px 0; }
   .step-num { width: 28px; height: 28px; background: #2563eb; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
@@ -178,7 +182,7 @@
 <h4>Checking Status</h4>
 <p>Run <code>STATUS.bat</code> to see if the application is running and which IP addresses are available for other devices to connect.</p>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of STATUS.bat output showing IP addresses</div>
+<img src="guide-images/portable-folder.png" alt="Portable folder contents" class="guide-img guide-img-sm" />
 
 <h4>Folder Structure</h4>
 <pre><code>portable/
@@ -247,7 +251,7 @@ nssm stop IOCheckout
   <div class="step-content">Press <strong>Enter</strong> or tap the login button.</div>
 </div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the PIN login screen</div>
+<img src="guide-images/login-screen.png" alt="PIN login screen" class="guide-img guide-img-sm" />
 
 <div class="note">
   <strong>Default Admin PIN:</strong> <code>111111</code> — Change this immediately in <em>Manage Users</em> after first login.
@@ -285,7 +289,7 @@ nssm stop IOCheckout
   <div class="step-content">Click <strong>Save</strong>. The cloud status indicator in the breadcrumb should turn green.</div>
 </div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of Configuration dialog with cloud settings</div>
+<img src="guide-images/cloud-config.png" alt="Cloud configuration dialog" class="guide-img guide-img-sm" />
 
 <h3 id="pull-ios">3.2 Pulling IOs from Cloud</h3>
 
@@ -304,7 +308,7 @@ nssm stop IOCheckout
   <strong>Warning:</strong> Pulling IOs replaces ALL existing IO definitions. A backup of the current database is created automatically before the pull.
 </div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of Pull IOs button and confirmation</div>
+<img src="guide-images/cloud-config.png" alt="Pull IOs from cloud" class="guide-img guide-img-sm" />
 
 <h3 id="plc-config">3.3 PLC Configuration & Connection</h3>
 
@@ -335,7 +339,7 @@ nssm stop IOCheckout
   <tr><td style="color:#6b7280;">&#9679; Gray</td><td>Disconnected — Not connected to PLC</td></tr>
 </table>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of PLC configuration with IP and path fields</div>
+<img src="guide-images/plc-config.png" alt="PLC configuration dialog" class="guide-img guide-img-sm" />
 
 <div class="tip">
   <strong>Auto-Reconnect:</strong> If the PLC loses power or the network drops, the tool automatically reconnects every 5 seconds. No admin intervention needed — testing resumes automatically.
@@ -362,7 +366,7 @@ nssm stop IOCheckout
   <div class="step-content">Set role: <strong>Admin</strong> (full access) or <strong>User</strong> (testing only, no config/PLC/cloud).</div>
 </div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of Manage Users dialog</div>
+<div class="img-placeholder">Screenshot: Manage Users dialog (add users with Name, PIN, and Role)</div>
 
 <!-- ══════════════════════════════════════════ 4. TESTING ══════════════════════════════════════════ -->
 <h2 id="testing">4. Testing Workflow</h2>
@@ -384,7 +388,7 @@ nssm stop IOCheckout
   <div class="step-content">Click <strong>STOP</strong> to pause testing. Tag reading stops and states freeze.</div>
 </div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of toolbar with START/STOP button and live states</div>
+<img src="guide-images/toolbar.png" alt="Toolbar with START button and status indicators" class="guide-img" />
 
 <h3 id="test-inputs">4.2 Testing Inputs</h3>
 
@@ -407,7 +411,7 @@ nssm stop IOCheckout
   <div class="step-content">Tap <strong>Pass</strong> (green) or <strong>Fail</strong> (red). Optionally add a comment.</div>
 </div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the Pass/Fail dialog</div>
+<img src="guide-images/pass-fail-dialog.png" alt="Pass/Fail dialog" class="guide-img guide-img-sm" />
 
 <div class="tip">
   <strong>Tip:</strong> The dialog shows which IO changed and its current PLC state. You can search and filter the IO grid using the search bar at the top.
@@ -448,7 +452,7 @@ nssm stop IOCheckout
   <li>The IO is marked red in the grid with the failure details.</li>
 </ol>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the Fail dialog with failure mode selection</div>
+<img src="guide-images/fail-dialog.png" alt="Fail dialog with failure mode selection" class="guide-img guide-img-sm" />
 
 <h3 id="comments">4.5 Adding Comments</h3>
 
@@ -512,9 +516,7 @@ nssm stop IOCheckout
   <strong>Note:</strong> The network view monitors individual device connection status (ConnectionFaulted tags). It does not monitor DLR ring status — only whether each device on the DPM ports is communicating or faulted.
 </div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the network topology with DPM nodes</div>
-
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of a DPM star diagram showing device connection status</div>
+<img src="guide-images/network-topology.png" alt="Network topology with DPM nodes and star diagram" class="guide-img" />
 
 <!-- ══════════════════════════════════════════ 8. TROUBLESHOOTING ══════════════════════════════════════════ -->
 <h2 id="troubleshooting">7. Troubleshooting</h2>
