@@ -41,7 +41,7 @@ export function PlcConfigDialog({
   onPlcConnect,
   onTestConnection
 }: PlcConfigDialogProps) {
-  const [activeTab, setActiveTab] = useState<'subsystem' | 'cloud' | 'plc'>('subsystem')
+  const [activeTab, setActiveTab] = useState<'subsystem' | 'cloud' | 'plc'>('cloud')
   const [profiles, setProfiles] = useState<PlcProfile[]>([])
   const [isSwitching, setIsSwitching] = useState(false)
   const [switchStatus, setSwitchStatus] = useState<string | null>(null)
@@ -161,10 +161,9 @@ export function PlcConfigDialog({
         if (status.plcConnected) {
           setPlcStatus({ type: 'success', message: `Connected to ${status.plcIp} (${status.tagCount} tags)` })
         }
-        // Load PLC profiles
+        // Load PLC profiles (tab stays on 'cloud' by default)
         if (status.plcProfiles && Array.isArray(status.plcProfiles) && status.plcProfiles.length > 0) {
           setProfiles(status.plcProfiles)
-          setActiveTab('subsystem')
         }
       }
     } catch (error) {
