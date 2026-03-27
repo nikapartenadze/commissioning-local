@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IO Checkout Tool — Setup & User Guide</title>
+<style>
+  @page { margin: 1in 0.8in; size: A4; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #1a1a2e; line-height: 1.6; max-width: 860px; margin: 0 auto; padding: 40px 24px; background: #fff; }
+
+  /* Cover */
+  .cover { text-align: center; padding: 80px 0 60px; border-bottom: 3px solid #2563eb; margin-bottom: 48px; page-break-after: always; }
+  .cover h1 { font-size: 36px; font-weight: 800; color: #1e293b; margin-bottom: 8px; letter-spacing: -0.5px; }
+  .cover .subtitle { font-size: 18px; color: #64748b; margin-bottom: 32px; }
+  .cover .meta { font-size: 13px; color: #94a3b8; }
+  .cover .meta span { display: block; margin: 4px 0; }
+  .cover .version { display: inline-block; background: #2563eb; color: #fff; padding: 4px 16px; border-radius: 20px; font-size: 14px; font-weight: 600; margin-top: 24px; }
+
+  /* Headings */
+  h2 { font-size: 24px; font-weight: 700; color: #1e293b; margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; }
+  h3 { font-size: 18px; font-weight: 600; color: #334155; margin: 28px 0 12px; }
+  h4 { font-size: 15px; font-weight: 600; color: #475569; margin: 20px 0 8px; }
+
+  /* Body */
+  p { margin: 8px 0; color: #334155; }
+  ul, ol { margin: 8px 0 16px 24px; color: #334155; }
+  li { margin: 4px 0; }
+  strong { color: #1e293b; }
+  code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'Cascadia Code', 'Consolas', monospace; color: #dc2626; }
+  pre { background: #1e293b; color: #e2e8f0; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 12px 0 16px; font-size: 13px; line-height: 1.5; }
+  pre code { background: none; color: inherit; padding: 0; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 14px; }
+  th { background: #f8fafc; text-align: left; padding: 10px 14px; border: 1px solid #e2e8f0; font-weight: 600; color: #334155; }
+  td { padding: 8px 14px; border: 1px solid #e2e8f0; color: #475569; }
+  tr:nth-child(even) td { background: #f8fafc; }
+
+  /* Callouts */
+  .note, .warning, .tip { padding: 14px 18px; border-radius: 8px; margin: 16px 0; font-size: 14px; }
+  .note { background: #eff6ff; border-left: 4px solid #2563eb; color: #1e40af; }
+  .warning { background: #fef3c7; border-left: 4px solid #f59e0b; color: #92400e; }
+  .tip { background: #ecfdf5; border-left: 4px solid #10b981; color: #065f46; }
+  .note strong, .warning strong, .tip strong { display: block; margin-bottom: 4px; }
+
+  /* Image placeholder */
+  .img-placeholder { background: #f1f5f9; border: 2px dashed #cbd5e1; border-radius: 8px; padding: 40px 20px; text-align: center; color: #94a3b8; font-size: 14px; font-style: italic; margin: 16px 0; }
+
+  /* Steps */
+  .step { display: flex; gap: 14px; margin: 12px 0; }
+  .step-num { width: 28px; height: 28px; background: #2563eb; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+  .step-content { flex: 1; }
+
+  /* Page breaks */
+  .page-break { page-break-before: always; }
+
+  /* TOC */
+  .toc { margin: 20px 0 40px; }
+  .toc a { color: #2563eb; text-decoration: none; display: block; padding: 6px 0; border-bottom: 1px solid #f1f5f9; font-size: 15px; }
+  .toc a:hover { color: #1d4ed8; }
+  .toc .sub { padding-left: 24px; font-size: 14px; color: #64748b; }
+
+  @media print {
+    body { padding: 0; }
+    .no-print { display: none; }
+    h2 { page-break-before: always; }
+    .cover { page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════ COVER ══════════════════════════════════════════ -->
+<div class="cover">
+  <h1>IO Checkout Tool</h1>
+  <p class="subtitle">Setup & User Guide</p>
+  <p class="subtitle" style="font-size:15px; color:#94a3b8;">Industrial I/O Commissioning Application</p>
+  <span class="version">v2.9</span>
+  <div class="meta" style="margin-top: 40px;">
+    <span>For: Field Technicians & System Administrators</span>
+    <span>Platform: Windows Tablet / Desktop</span>
+    <span>Last Updated: March 2026</span>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ TOC ══════════════════════════════════════════ -->
+<h2 style="margin-top:0;">Table of Contents</h2>
+<div class="toc">
+  <a href="#installation">1. Installation</a>
+  <a href="#first-start" class="sub">1.1 First Startup</a>
+  <a href="#firewall" class="sub">1.2 Firewall Setup</a>
+  <a href="#portable" class="sub">1.3 Portable Folder Usage</a>
+  <a href="#installer" class="sub">1.4 Windows Installer (Service)</a>
+  <a href="#login">2. Logging In</a>
+  <a href="#admin-setup">3. Initial Admin Setup</a>
+  <a href="#cloud-config" class="sub">3.1 Cloud Configuration</a>
+  <a href="#pull-ios" class="sub">3.2 Pulling IOs from Cloud</a>
+  <a href="#plc-config" class="sub">3.3 PLC Configuration & Connection</a>
+  <a href="#users" class="sub">3.4 Managing Users</a>
+  <a href="#testing">4. Testing Workflow</a>
+  <a href="#start-stop" class="sub">4.1 Starting & Stopping Testing</a>
+  <a href="#test-inputs" class="sub">4.2 Testing Inputs</a>
+  <a href="#test-outputs" class="sub">4.3 Testing Outputs (Fire)</a>
+  <a href="#fail-modes" class="sub">4.4 Handling Failures</a>
+  <a href="#comments" class="sub">4.5 Adding Comments</a>
+  <a href="#reset" class="sub">4.6 Resetting Results</a>
+  <a href="#sync">5. Cloud Sync</a>
+  <a href="#network">6. Network Topology</a>
+  <a href="#estop">7. E-Stop Check</a>
+  <a href="#troubleshooting">8. Troubleshooting</a>
+  <a href="#reference">9. Quick Reference</a>
+</div>
+
+<!-- ══════════════════════════════════════════ 1. INSTALLATION ══════════════════════════════════════════ -->
+<h2 id="installation">1. Installation</h2>
+
+<p>The IO Checkout Tool runs as a self-contained web application on a Windows machine. It can be deployed in two ways:</p>
+
+<table>
+  <tr><th>Method</th><th>Best For</th><th>Auto-Start</th><th>Service</th></tr>
+  <tr><td><strong>Portable Folder</strong></td><td>Quick deployment, testing, temporary use</td><td>No</td><td>No</td></tr>
+  <tr><td><strong>Windows Installer</strong></td><td>Permanent installation, production use</td><td>Yes (on boot)</td><td>Yes</td></tr>
+</table>
+
+<h3 id="first-start">1.1 First Startup</h3>
+
+<p>Regardless of installation method, the first startup involves:</p>
+<ol>
+  <li>Application starts on <strong>port 3000</strong> (HTTP) and <strong>port 3002</strong> (WebSocket)</li>
+  <li>A blank SQLite database is created automatically</li>
+  <li>A default <code>config.json</code> file is generated</li>
+  <li>The default admin account is ready with PIN <code>111111</code></li>
+</ol>
+
+<div class="warning">
+  <strong>Important:</strong> Change the default admin PIN immediately after first login. Anyone with the PIN can access the system and modify settings.
+</div>
+
+<h3 id="firewall">1.2 Firewall Setup</h3>
+
+<p>Two ports are required for other devices (tablets, laptops) to connect:</p>
+
+<table>
+  <tr><th>Port</th><th>Protocol</th><th>Purpose</th></tr>
+  <tr><td><code>3000</code></td><td>TCP</td><td>Web UI — technicians access this in their browser</td></tr>
+  <tr><td><code>3002</code></td><td>TCP</td><td>WebSocket — real-time PLC state updates</td></tr>
+</table>
+
+<div class="tip">
+  <strong>Automatic:</strong> Firewall rules are configured automatically when <code>START.bat</code> runs. No manual firewall setup is needed.
+</div>
+
+<div class="note">
+  <strong>Note:</strong> Port 3102 is used internally (localhost only) and is not exposed.
+</div>
+
+<h3 id="portable">1.3 Portable Folder Usage</h3>
+
+<p>The portable distribution is a single folder containing everything needed — no installation required.</p>
+
+<h4>Starting the Application</h4>
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Double-click <code>START.bat</code> in the portable folder. A command window will open showing startup logs.</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Wait for the message <em>"All servers started successfully"</em> (takes ~5 seconds).</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">Open a browser and navigate to <code>http://localhost:3000</code> (or <code>http://SERVER_IP:3000</code> from another device).</div>
+</div>
+
+<h4>Stopping the Application</h4>
+<p>Close the command window that was opened by <code>START.bat</code>, or run <code>STOP.bat</code>.</p>
+
+<h4>Checking Status</h4>
+<p>Run <code>STATUS.bat</code> to see if the application is running and which IP addresses are available for other devices to connect.</p>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of STATUS.bat output showing IP addresses</div>
+
+<h4>Folder Structure</h4>
+<pre><code>portable/
+  START.bat              ← Start the application (auto-opens firewall)
+  STOP.bat               ← Stop the application
+  STATUS.bat             ← Check if running + show IPs
+  SETUP-FIREWALL.bat     ← Firewall rules (called by START.bat automatically)
+  config.json            ← Configuration (auto-created)
+  database.db            ← SQLite database (auto-created)
+  app/                   ← Application files (do not modify)
+  node/                  ← Bundled Node.js runtime</code></pre>
+
+<h3 id="installer">1.4 Windows Installer (Service)</h3>
+
+<p>The installer sets up IO Checkout as a <strong>Windows service</strong> that starts automatically on boot and restarts on crash.</p>
+
+<h4>Installation</h4>
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Run the installer <code>.exe</code> as Administrator.</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Follow the setup wizard — default install path is <code>C:\Program Files\IOCheckout\</code>.</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">The service starts automatically after installation. Access at <code>http://localhost:3000</code>.</div>
+</div>
+
+<h4>Data Locations (Preserved Across Upgrades)</h4>
+<table>
+  <tr><th>Item</th><th>Location</th></tr>
+  <tr><td>Database</td><td><code>C:\ProgramData\IOCheckout\database.db</code></td></tr>
+  <tr><td>Configuration</td><td><code>C:\ProgramData\IOCheckout\config.json</code></td></tr>
+  <tr><td>Logs</td><td><code>C:\ProgramData\IOCheckout\logs\</code></td></tr>
+</table>
+
+<h4>Service Management</h4>
+<pre><code># Check service status
+nssm status IOCheckout
+
+# Restart the service
+nssm restart IOCheckout
+
+# Stop the service
+nssm stop IOCheckout
+
+# Or use Windows Services: services.msc → "IOCheckout"</code></pre>
+
+<!-- ══════════════════════════════════════════ 2. LOGIN ══════════════════════════════════════════ -->
+<h2 id="login">2. Logging In</h2>
+
+<p>The application uses <strong>PIN-based authentication</strong>. No usernames — just a 6-digit numeric PIN.</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Open the application in a browser: <code>http://SERVER_IP:3000</code></div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Enter your 6-digit PIN on the login screen.</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">Press <strong>Enter</strong> or tap the login button.</div>
+</div>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the PIN login screen</div>
+
+<div class="note">
+  <strong>Default Admin PIN:</strong> <code>111111</code> — Change this immediately in <em>Manage Users</em> after first login.
+</div>
+
+<p>Sessions last <strong>8 hours</strong>. After that, you'll need to re-enter your PIN.</p>
+
+<!-- ══════════════════════════════════════════ 3. ADMIN SETUP ══════════════════════════════════════════ -->
+<h2 id="admin-setup">3. Initial Admin Setup</h2>
+
+<p>After first login with the default admin PIN, complete these steps to configure the system:</p>
+
+<h3 id="cloud-config">3.1 Cloud Configuration</h3>
+
+<p>The cloud connection allows syncing IO definitions and test results with the central commissioning server.</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Click the <strong>gear icon</strong> in the toolbar to open Configuration.</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Enter the <strong>Cloud URL</strong> (e.g., <code>https://commissioning.lci.ge</code>).</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">Enter the <strong>Subsystem ID</strong> — this identifies which subsystem (MCM) this tool manages.</div>
+</div>
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-content">Enter the <strong>API Password</strong> (project API key from the cloud app).</div>
+</div>
+<div class="step">
+  <div class="step-num">5</div>
+  <div class="step-content">Click <strong>Save</strong>. The cloud status indicator in the breadcrumb should turn green.</div>
+</div>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of Configuration dialog with cloud settings</div>
+
+<h3 id="pull-ios">3.2 Pulling IOs from Cloud</h3>
+
+<p>After configuring the cloud connection, pull the IO definitions:</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Click <strong>"Pull IOs"</strong> in the toolbar (admin only).</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Wait for the download to complete. The IO grid will populate with all IO points for your subsystem.</div>
+</div>
+
+<div class="warning">
+  <strong>Warning:</strong> Pulling IOs replaces ALL existing IO definitions. A backup of the current database is created automatically before the pull.
+</div>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of Pull IOs button and confirmation</div>
+
+<h3 id="plc-config">3.3 PLC Configuration & Connection</h3>
+
+<p>Configure the PLC connection to enable live tag reading:</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Open <strong>Configuration</strong> (gear icon).</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Enter the <strong>PLC IP Address</strong> (e.g., <code>11.200.1.1</code>).</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">Set the <strong>Communication Path</strong> — usually <code>1,0</code> for standard Allen-Bradley Ethernet/IP.</div>
+</div>
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-content">Click <strong>Save</strong>, then click the <strong>Connect</strong> button (plug icon) in the toolbar.</div>
+</div>
+
+<p>Connection states:</p>
+<table>
+  <tr><th>Indicator</th><th>Meaning</th></tr>
+  <tr><td style="color:#22c55e;">&#9679; Green</td><td>Connected — PLC communication active, tags reading every 75ms</td></tr>
+  <tr><td style="color:#f59e0b;">&#9679; Amber</td><td>Reconnecting — PLC was lost, auto-reconnecting every 5 seconds</td></tr>
+  <tr><td style="color:#6b7280;">&#9679; Gray</td><td>Disconnected — Not connected to PLC</td></tr>
+</table>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of PLC configuration with IP and path fields</div>
+
+<div class="tip">
+  <strong>Auto-Reconnect:</strong> If the PLC loses power or the network drops, the tool automatically reconnects every 5 seconds. No admin intervention needed — testing resumes automatically.
+</div>
+
+<h3 id="users">3.4 Managing Users</h3>
+
+<p>Create PIN accounts for each technician:</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Click <strong>"Users"</strong> (people icon) in the toolbar.</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Click <strong>"Add User"</strong>.</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">Enter the technician's <strong>name</strong> and a unique <strong>6-digit PIN</strong>.</div>
+</div>
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-content">Set role: <strong>Admin</strong> (full access) or <strong>User</strong> (testing only, no config/PLC/cloud).</div>
+</div>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of Manage Users dialog</div>
+
+<!-- ══════════════════════════════════════════ 4. TESTING ══════════════════════════════════════════ -->
+<h2 id="testing">4. Testing Workflow</h2>
+
+<h3 id="start-stop">4.1 Starting & Stopping Testing</h3>
+
+<p>Testing mode must be started before IO states are monitored:</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Click the <strong>START</strong> button in the toolbar. The app begins reading PLC tags every 75ms.</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">IO states appear in real-time in the grid. <code>FALSE</code> states show in gray, <code>TRUE</code> in green.</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">Click <strong>STOP</strong> to pause testing. Tag reading stops and states freeze.</div>
+</div>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of toolbar with START/STOP button and live states</div>
+
+<h3 id="test-inputs">4.2 Testing Inputs</h3>
+
+<p>Input testing is <strong>automatic</strong> — the tool detects state changes from the PLC:</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Go to the physical panel and trigger the device (press button, activate sensor, etc.).</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">The IO state changes from <code>FALSE</code> to <code>TRUE</code> in the app.</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">A <strong>Pass/Fail dialog</strong> automatically appears asking for the test result.</div>
+</div>
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-content">Tap <strong>Pass</strong> (green) or <strong>Fail</strong> (red). Optionally add a comment.</div>
+</div>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the Pass/Fail dialog</div>
+
+<div class="tip">
+  <strong>Tip:</strong> The dialog shows which IO changed and its current PLC state. You can search and filter the IO grid using the search bar at the top.
+</div>
+
+<h3 id="test-outputs">4.3 Testing Outputs (Fire)</h3>
+
+<p>Output testing requires <strong>manually triggering</strong> the output from the app:</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">Find the output IO in the grid.</div>
+</div>
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">Click the <strong>fire icon</strong> (lightning bolt) to send a write command to the PLC.</div>
+</div>
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">Verify the physical device activates (light turns on, motor runs, etc.).</div>
+</div>
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-content">Mark as <strong>Pass</strong> or <strong>Fail</strong>.</div>
+</div>
+
+<div class="warning">
+  <strong>Safety:</strong> Only fire outputs when it is safe to do so. Ensure the area is clear and personnel are aware before activating outputs.
+</div>
+
+<h3 id="fail-modes">4.4 Handling Failures</h3>
+
+<p>When an IO fails testing:</p>
+<ol>
+  <li>Select <strong>Fail</strong> in the Pass/Fail dialog.</li>
+  <li>Choose a <strong>failure mode</strong> from the dropdown (e.g., "No Response", "Wrong Device", "Wiring Issue").</li>
+  <li>Add a <strong>comment</strong> describing the issue.</li>
+  <li>The IO is marked red in the grid with the failure details.</li>
+</ol>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the Fail dialog with failure mode selection</div>
+
+<h3 id="comments">4.5 Adding Comments</h3>
+
+<p>Comments can be added to any IO at any time — click the IO row and type in the comment field. Comments sync to the cloud automatically.</p>
+
+<h3 id="reset">4.6 Resetting Results</h3>
+
+<p>To re-test an IO that was already marked Pass or Fail:</p>
+<ol>
+  <li>Click the IO row.</li>
+  <li>Click <strong>Clear/Reset</strong> to remove the existing result.</li>
+  <li>The IO returns to "Not Tested" state and can be tested again.</li>
+</ol>
+
+<div class="note">
+  <strong>Note:</strong> Clearing a result does NOT delete the test history. The previous result remains in the audit trail.
+</div>
+
+<!-- ══════════════════════════════════════════ 5. CLOUD SYNC ══════════════════════════════════════════ -->
+<h2 id="sync">5. Cloud Sync</h2>
+
+<p>The tool syncs test results with the cloud automatically:</p>
+
+<table>
+  <tr><th>Direction</th><th>Timing</th><th>What Syncs</th></tr>
+  <tr><td>Local → Cloud</td><td>Instant (1-2 seconds)</td><td>Every Pass, Fail, Comment, Reset</td></tr>
+  <tr><td>Cloud → Local</td><td>Via SSE (real-time)</td><td>Results from other instances, admin changes</td></tr>
+</table>
+
+<h4>Offline Resilience</h4>
+<p>If the cloud connection is lost:</p>
+<ul>
+  <li>Testing continues normally — all results save locally.</li>
+  <li>Pending changes queue in the database.</li>
+  <li>When connectivity returns, all queued results sync automatically.</li>
+</ul>
+
+<h4>Multi-Instance Support</h4>
+<p>Multiple local tool instances can test the same subsystem simultaneously. Results merge automatically — the cloud is the source of truth for shared data.</p>
+
+<!-- ══════════════════════════════════════════ 6. NETWORK ══════════════════════════════════════════ -->
+<h2 id="network">6. Network Topology</h2>
+
+<p>The Network tab shows the DLR ring topology for your subsystem:</p>
+
+<ul>
+  <li><strong>Ring layout</strong> — MCM controller → DPM nodes in a serpentine pattern (max 4 per row)</li>
+  <li><strong>Star diagram</strong> — Click a DPM to see all connected devices (VFDs, FIOMs, PMMs)</li>
+  <li><strong>FIOM sub-diagram</strong> — Click a FIOM device to see its X-port sub-devices</li>
+  <li><strong>Live status</strong> — Green (healthy), Red (faulted), Gray (unknown)</li>
+</ul>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the network topology ring view</div>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of a DPM star diagram with devices</div>
+
+<!-- ══════════════════════════════════════════ 7. ESTOP ══════════════════════════════════════════ -->
+<h2 id="estop">7. E-Stop Check</h2>
+
+<p>The E-Stop Check tab verifies emergency pull cord (EPC) safety circuits:</p>
+
+<ul>
+  <li><strong>Zones</strong> — EPCs grouped by safety zone</li>
+  <li><strong>IO Points</strong> — Normally-closed contacts that should read TRUE when intact</li>
+  <li><strong>Must Stop VFDs</strong> — Motors that must activate STO (Safe Torque Off) when EPC pulled</li>
+  <li><strong>Keep Running VFDs</strong> — Motors that must NOT activate STO</li>
+</ul>
+
+<p>Status is live from the PLC — pull the cord and verify all indicators match expected states.</p>
+
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of E-Stop check view with zones and VFD matrix</div>
+
+<!-- ══════════════════════════════════════════ 8. TROUBLESHOOTING ══════════════════════════════════════════ -->
+<h2 id="troubleshooting">8. Troubleshooting</h2>
+
+<table>
+  <tr><th>Problem</th><th>Solution</th></tr>
+  <tr><td>Can't connect from tablet</td><td>Restart the app with <code>START.bat</code> (re-applies firewall rules). Check <code>STATUS.bat</code> for the correct IP.</td></tr>
+  <tr><td>PLC won't connect</td><td>Verify PLC IP and path (<code>1,0</code>). Check network cable. Ensure PLC is powered on.</td></tr>
+  <tr><td>IOs not showing</td><td>Pull IOs from cloud first. Check cloud URL and subsystem ID in configuration.</td></tr>
+  <tr><td>State not changing</td><td>Ensure testing mode is started (START button). Check PLC connection indicator.</td></tr>
+  <tr><td>Results not syncing</td><td>Check cloud status indicator. Verify cloud URL and API password.</td></tr>
+  <tr><td>App won't start</td><td>Check if port 3000 is in use: <code>netstat -ano | findstr :3000</code>. Kill the process or change port.</td></tr>
+  <tr><td>"Reconnecting" indicator</td><td>PLC lost connection — auto-reconnects every 5s. No action needed.</td></tr>
+  <tr><td>Forgot admin PIN</td><td>Delete <code>database.db</code> and restart (resets everything). Or contact system admin.</td></tr>
+</table>
+
+<!-- ══════════════════════════════════════════ 9. REFERENCE ══════════════════════════════════════════ -->
+<h2 id="reference">9. Quick Reference</h2>
+
+<h3>Ports</h3>
+<table>
+  <tr><th>Port</th><th>Purpose</th><th>Firewall</th></tr>
+  <tr><td><code>3000</code></td><td>Web UI (HTTP)</td><td>Open</td></tr>
+  <tr><td><code>3002</code></td><td>WebSocket (real-time updates)</td><td>Open</td></tr>
+  <tr><td><code>3102</code></td><td>Internal broadcast API</td><td>Do NOT open</td></tr>
+</table>
+
+<h3>Default Credentials</h3>
+<table>
+  <tr><th>Account</th><th>PIN</th><th>Role</th></tr>
+  <tr><td>Admin</td><td><code>111111</code></td><td>Full access (config, PLC, users, cloud)</td></tr>
+</table>
+
+<h3>Key Files</h3>
+<table>
+  <tr><th>File</th><th>Purpose</th><th>Safe to Delete?</th></tr>
+  <tr><td><code>database.db</code></td><td>All IO data, test results, users</td><td>No (resets everything)</td></tr>
+  <tr><td><code>config.json</code></td><td>PLC IP, cloud URL, subsystem ID</td><td>No (lose configuration)</td></tr>
+  <tr><td><code>logs/</code></td><td>Application logs (auto-rotating)</td><td>Yes (recreated automatically)</td></tr>
+</table>
+
+<h3>Toolbar Icons</h3>
+<table>
+  <tr><th>Icon</th><th>Action</th><th>Access</th></tr>
+  <tr><td>Play/Stop</td><td>Start/Stop testing mode</td><td>All users</td></tr>
+  <tr><td>Plug</td><td>Connect/Disconnect PLC</td><td>Admin only</td></tr>
+  <tr><td>Cloud</td><td>Pull IOs from cloud</td><td>Admin only</td></tr>
+  <tr><td>Gear</td><td>Configuration (PLC, cloud settings)</td><td>Admin only</td></tr>
+  <tr><td>People</td><td>Manage user accounts</td><td>Admin only</td></tr>
+  <tr><td>Download</td><td>Export results to CSV</td><td>All users</td></tr>
+</table>
+
+<div style="text-align:center; margin-top:60px; padding-top:20px; border-top:1px solid #e2e8f0; color:#94a3b8; font-size:13px;">
+  <p>IO Checkout Tool v2.9 — Setup & User Guide</p>
+  <p>LCI Engineering &bull; March 2026</p>
+</div>
+
+</body>
+</html>
