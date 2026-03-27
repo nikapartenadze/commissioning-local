@@ -652,8 +652,29 @@ export default function CommissioningPage() {
       // Load IOs from backend (real PLC data) - retry on failure
       const response = await fetchWithRetry(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
       if (response.ok) {
-        const data = await response.json()
-        setIos(data)
+        const data = await response.json() as IoItem[]
+        // Merge new data into existing array to avoid full re-render flash
+        // React will only re-render rows that actually changed
+        setIos(prev => {
+          if (prev.length === 0) return data // First load — set everything
+          if (prev.length !== data.length) return data // Different count — full replace
+          // Same count — merge by updating only changed IOs
+          const newMap = new Map(data.map((io: IoItem) => [io.id, io]))
+          let changed = false
+          const merged = prev.map(io => {
+            const updated = newMap.get(io.id)
+            if (!updated) return io
+            // Check if anything actually changed
+            if (io.result !== updated.result || io.comments !== updated.comments ||
+                io.timestamp !== updated.timestamp || io.name !== updated.name ||
+                io.description !== updated.description) {
+              changed = true
+              return { ...io, ...updated }
+            }
+            return io
+          })
+          return changed ? merged : prev
+        })
         setFilteredIos(data)
 
         // Initialize previousStates ONLY on first load to prevent flood of dialogs
