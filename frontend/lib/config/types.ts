@@ -33,6 +33,9 @@ export interface AppConfig {
 
   /** Delay in milliseconds between sync batches */
   syncBatchDelayMs: number;
+
+  /** Pre-configured PLC profiles for quick subsystem switching */
+  plcProfiles?: PlcProfile[];
 }
 
 /**
@@ -105,6 +108,21 @@ export const DEFAULT_CONFIG: AppConfig = {
   syncBatchSize: 50,
   syncBatchDelayMs: 500,
 };
+
+/**
+ * PLC profile for quick subsystem switching.
+ * Pre-configured with PLC IP, path, cloud settings per subsystem.
+ */
+export interface PlcProfile {
+  /** Display name (e.g., "MCM09") */
+  name: string;
+  /** Subsystem ID in the cloud */
+  subsystemId: string;
+  /** PLC IP address */
+  plcIp: string;
+  /** PLC communication path */
+  plcPath: string;
+}
 
 /**
  * Configuration change event type.
