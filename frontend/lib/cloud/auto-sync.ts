@@ -251,6 +251,7 @@ class AutoSyncService {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
             body: JSON.stringify({ requests: pendingRequests.map(r => ({
+              localId: r.id, // include local ID so cloud can map it back
               ioId: r.ioId,
               requestType: r.requestType,
               currentValue: r.currentValue,
@@ -264,18 +265,25 @@ class AutoSyncService {
           })
           if (resp.ok) {
             const data = await resp.json()
-            // Update local records with cloud IDs
-            if (data.requests) {
+            // Mark ALL pushed requests as synced regardless of cloud response format
+            // This prevents re-sending old requests forever
+            const ids = pendingRequests.map(r => r.id)
+            await prisma.changeRequest.updateMany({
+              where: { id: { in: ids } },
+              data: { status: 'synced' },
+            })
+            // If cloud returned cloudId mappings, update those too
+            if (data.requests && Array.isArray(data.requests)) {
               for (const cr of data.requests) {
                 if (cr.localId && cr.cloudId) {
                   await prisma.changeRequest.update({
                     where: { id: cr.localId },
-                    data: { cloudId: cr.cloudId, status: 'synced' },
+                    data: { cloudId: cr.cloudId },
                   }).catch(() => {})
                 }
               }
             }
-            console.log(`[AutoSync] Pushed ${pendingRequests.length} change requests to cloud`)
+            console.log(`[AutoSync] Pushed and marked ${ids.length} change requests as synced`)
           }
         }
       } catch { /* ignore change request sync errors */ }
