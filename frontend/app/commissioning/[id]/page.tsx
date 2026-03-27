@@ -1165,18 +1165,20 @@ export default function CommissioningPage() {
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}
       <header className="bg-card border-b flex-shrink-0 z-50">
+        {/* Top row: title + subsystem + actions */}
         <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12">
-          <div className="flex items-center gap-2 sm:gap-4">
-            <h1 className="text-sm sm:text-lg font-bold tracking-tight">IO CHECKOUT</h1>
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+            <h1 className="text-sm sm:text-lg font-bold tracking-tight whitespace-nowrap">IO CHECKOUT</h1>
             <div className="h-6 w-px bg-border hidden sm:block" />
-            <span className="text-xs sm:text-sm font-mono bg-muted px-1.5 sm:px-2 py-0.5 rounded">
+            <span className="text-xs sm:text-sm font-mono bg-muted px-1.5 sm:px-2 py-0.5 rounded whitespace-nowrap">
               SUB {plcConfig.subsystemId}
             </span>
-            <div className="h-6 w-px bg-border" />
-            <div className="flex bg-muted rounded p-0.5 gap-0.5">
+            {/* Tabs inline on md+ screens */}
+            <div className="h-6 w-px bg-border hidden md:block" />
+            <div className="hidden md:flex bg-muted rounded p-0.5 gap-0.5">
               <button
                 onClick={() => { setActiveTab('io'); window.location.hash = '' }}
-                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
                   activeTab === 'io'
                     ? 'bg-background shadow text-foreground'
                     : 'text-muted-foreground hover:text-foreground'
@@ -1186,7 +1188,7 @@ export default function CommissioningPage() {
               </button>
               <button
                 onClick={() => { setActiveTab('network'); window.location.hash = 'network' }}
-                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
                   activeTab === 'network'
                     ? 'bg-background shadow text-foreground'
                     : 'text-muted-foreground hover:text-foreground'
@@ -1196,7 +1198,7 @@ export default function CommissioningPage() {
               </button>
               <button
                 onClick={() => { setActiveTab('estop'); window.location.hash = 'estop' }}
-                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                className={`px-3 py-1 text-sm font-medium rounded transition-colors ${
                   activeTab === 'estop'
                     ? 'bg-background shadow text-foreground'
                     : 'text-muted-foreground hover:text-foreground'
@@ -1209,6 +1211,41 @@ export default function CommissioningPage() {
           <div className="flex items-center gap-1">
             <UserMenu />
             <ThemeToggle />
+          </div>
+        </div>
+        {/* Tabs row on small screens */}
+        <div className="flex md:hidden border-t px-2 py-1">
+          <div className="flex bg-muted rounded p-0.5 gap-0.5 w-full">
+            <button
+              onClick={() => { setActiveTab('io'); window.location.hash = '' }}
+              className={`flex-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
+                activeTab === 'io'
+                  ? 'bg-background shadow text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              I/O Testing
+            </button>
+            <button
+              onClick={() => { setActiveTab('network'); window.location.hash = 'network' }}
+              className={`flex-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
+                activeTab === 'network'
+                  ? 'bg-background shadow text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Network
+            </button>
+            <button
+              onClick={() => { setActiveTab('estop'); window.location.hash = 'estop' }}
+              className={`flex-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
+                activeTab === 'estop'
+                  ? 'bg-background shadow text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              EStop Check
+            </button>
           </div>
         </div>
       </header>
