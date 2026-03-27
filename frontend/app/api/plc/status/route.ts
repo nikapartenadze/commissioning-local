@@ -54,6 +54,7 @@ export async function GET() {
       subsystemId: config.subsystemId || '',
       apiPassword: config.apiPassword || '',
       remoteUrl: config.remoteUrl || 'https://commissioning.lci.ge',
+      plcProfiles: (config as any).plcProfiles || [],
       performanceStats,
       library: libraryStatus,
       isTesting: (globalForTesting.isTestingUsers?.size ?? 0) > 0,
