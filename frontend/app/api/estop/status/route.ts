@@ -100,27 +100,27 @@ export async function GET() {
     const result = zones.map(zone => ({
       id: zone.id,
       name: zone.name,
-      epcs: zone.epcs.map(epc => {
-        const mustStopVfds = epc.vfds.filter(v => v.mustStop)
-        const keepRunningVfds = epc.vfds.filter(v => !v.mustStop)
+      epcs: zone.epcs.map((epc: any) => {
+        const mustStopVfds = epc.vfds.filter((v: any) => v.mustStop)
+        const keepRunningVfds = epc.vfds.filter((v: any) => !v.mustStop)
 
         return {
           id: epc.id,
           name: epc.name,
           checkTag: epc.checkTag,
           checkTagValue: connected ? (tagValues[epc.checkTag] ?? null) : null,
-          ioPoints: epc.ioPoints.map(io => ({
+          ioPoints: epc.ioPoints.map((io: any) => ({
             id: io.id,
             tag: io.tag,
             value: connected ? (tagValues[io.tag] ?? null) : null,
           })),
-          mustStopVfds: mustStopVfds.map(vfd => ({
+          mustStopVfds: mustStopVfds.map((vfd: any) => ({
             id: vfd.id,
             tag: vfd.tag,
             stoTag: vfd.stoTag,
             stoActive: connected ? (tagValues[vfd.stoTag] ?? null) : null,
           })),
-          keepRunningVfds: keepRunningVfds.map(vfd => ({
+          keepRunningVfds: keepRunningVfds.map((vfd: any) => ({
             id: vfd.id,
             tag: vfd.tag,
             stoTag: vfd.stoTag,
