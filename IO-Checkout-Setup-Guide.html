@@ -107,9 +107,8 @@
   <a href="#reset" class="sub">4.6 Resetting Results</a>
   <a href="#sync">5. Cloud Sync</a>
   <a href="#network">6. Network Topology</a>
-  <a href="#estop">7. E-Stop Check</a>
-  <a href="#troubleshooting">8. Troubleshooting</a>
-  <a href="#reference">9. Quick Reference</a>
+  <a href="#troubleshooting">7. Troubleshooting</a>
+  <a href="#reference">8. Quick Reference</a>
 </div>
 
 <!-- ══════════════════════════════════════════ 1. INSTALLATION ══════════════════════════════════════════ -->
@@ -493,37 +492,32 @@ nssm stop IOCheckout
 <!-- ══════════════════════════════════════════ 6. NETWORK ══════════════════════════════════════════ -->
 <h2 id="network">6. Network Topology</h2>
 
-<p>The Network tab shows the DLR ring topology for your subsystem:</p>
+<p>The Network tab displays the network devices connected to each DPM (Data Power Module) and their live connection status from the PLC.</p>
 
+<h4>What It Shows</h4>
 <ul>
-  <li><strong>Ring layout</strong> — MCM controller → DPM nodes in a serpentine pattern (max 4 per row)</li>
-  <li><strong>Star diagram</strong> — Click a DPM to see all connected devices (VFDs, FIOMs, PMMs)</li>
-  <li><strong>FIOM sub-diagram</strong> — Click a FIOM device to see its X-port sub-devices</li>
-  <li><strong>Live status</strong> — Green (healthy), Red (faulted), Gray (unknown)</li>
+  <li><strong>DPM ring layout</strong> — MCM controller and DPM nodes arranged in a serpentine pattern</li>
+  <li><strong>Star diagram</strong> — Click a DPM to see all network devices connected to its ports (VFDs, FIOMs, PMMs, etc.)</li>
+  <li><strong>FIOM sub-devices</strong> — Click a FIOM device to see devices connected to its X-ports</li>
+  <li><strong>Device connection status</strong> — Each device shows live <code>ConnectionFaulted</code> status from the PLC:
+    <ul>
+      <li style="color:#22c55e;">&#9679; Green — device is communicating normally</li>
+      <li style="color:#ef4444;">&#9679; Red — device connection is faulted</li>
+      <li style="color:#6b7280;">&#9679; Gray — no PLC data (disconnected or not monitoring)</li>
+    </ul>
+  </li>
 </ul>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the network topology ring view</div>
+<div class="note">
+  <strong>Note:</strong> The network view monitors individual device connection status (ConnectionFaulted tags). It does not monitor DLR ring status — only whether each device on the DPM ports is communicating or faulted.
+</div>
 
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of a DPM star diagram with devices</div>
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of the network topology with DPM nodes</div>
 
-<!-- ══════════════════════════════════════════ 7. ESTOP ══════════════════════════════════════════ -->
-<h2 id="estop">7. E-Stop Check</h2>
-
-<p>The E-Stop Check tab verifies emergency pull cord (EPC) safety circuits:</p>
-
-<ul>
-  <li><strong>Zones</strong> — EPCs grouped by safety zone</li>
-  <li><strong>IO Points</strong> — Normally-closed contacts that should read TRUE when intact</li>
-  <li><strong>Must Stop VFDs</strong> — Motors that must activate STO (Safe Torque Off) when EPC pulled</li>
-  <li><strong>Keep Running VFDs</strong> — Motors that must NOT activate STO</li>
-</ul>
-
-<p>Status is live from the PLC — pull the cord and verify all indicators match expected states.</p>
-
-<div class="img-placeholder">NEED IMAGE HERE — Screenshot of E-Stop check view with zones and VFD matrix</div>
+<div class="img-placeholder">NEED IMAGE HERE — Screenshot of a DPM star diagram showing device connection status</div>
 
 <!-- ══════════════════════════════════════════ 8. TROUBLESHOOTING ══════════════════════════════════════════ -->
-<h2 id="troubleshooting">8. Troubleshooting</h2>
+<h2 id="troubleshooting">7. Troubleshooting</h2>
 
 <table>
   <tr><th>Problem</th><th>Solution</th></tr>
@@ -538,7 +532,7 @@ nssm stop IOCheckout
 </table>
 
 <!-- ══════════════════════════════════════════ 9. REFERENCE ══════════════════════════════════════════ -->
-<h2 id="reference">9. Quick Reference</h2>
+<h2 id="reference">8. Quick Reference</h2>
 
 <h3>Ports</h3>
 <table>
