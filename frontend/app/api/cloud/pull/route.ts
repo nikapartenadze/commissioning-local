@@ -303,7 +303,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     try {
       // Pull network topology
       const netRes = await fetch(`${remoteUrl}/api/sync/network/${subsystemId}`, {
-        headers: cloudHeaders,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword || '',
+        },
         signal: AbortSignal.timeout(15000),
       })
       if (netRes.ok) {
