@@ -945,7 +945,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
     : dpmDevices
 
   return (
-    <div className="space-y-4 pt-4">
+    <div className="flex flex-col h-full gap-4 pt-4">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
@@ -974,7 +974,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
       {/* Ring diagrams — full width */}
       {rings.map((ring) => (
-        <Card key={ring.id} className="bg-card border">
+        <Card key={ring.id} className="bg-card border flex-shrink-0 overflow-hidden">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-lg text-foreground">
               <Network className="w-5 h-5 text-blue-400" />
@@ -1005,7 +1005,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
       {/* Expanded DPM: Star diagram (left half) + Device table (right half) */}
       {expandedNode && (
-        <div className="flex border rounded-lg overflow-hidden" style={{ height: 'calc(100vh - 260px)', minHeight: 400 }}>
+        <div className="flex border rounded-lg overflow-hidden flex-1 min-h-0">
           {/* Left: Star diagram */}
           <div className="flex-1 min-w-0 flex flex-col">
             <StarDiagram node={expandedNode} tagStates={tagStates} subsystemId={subsystemId} />
