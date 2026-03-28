@@ -10,7 +10,7 @@ import { TestResultsChart } from "@/components/test-results-chart"
 import { AllTestHistoryDialog } from "@/components/all-test-history-dialog"
 import { FireOutputDialog } from "@/components/fire-output-dialog"
 import { NetworkStatusBreadcrumbs } from "@/components/network-status-breadcrumbs"
-import { TagStatusPanel } from "@/components/tag-status-panel"
+// TagStatusPanel removed — data was stale/hardcoded; breadcrumbs show live tag stats
 import { TagStatusDialog, TagStatus } from "@/components/tag-status-dialog"
 import { ValueChangeDialog } from "@/components/value-change-dialog"
 import { FailCommentDialog } from "@/components/fail-comment-dialog"
@@ -18,6 +18,7 @@ import { CloudSyncDialog } from "@/components/cloud-sync-dialog"
 import { ChangeRequestDialog } from "@/components/change-request-dialog"
 import { ChangeRequestsPanel } from "@/components/change-requests-panel"
 import NetworkTopologyView from "@/components/network-topology-view"
+import EStopCheckView from "@/components/estop-check-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -122,11 +123,14 @@ export default function CommissioningPage() {
   const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
-  const [activeTab, setActiveTab] = useState<'io' | 'network'>(() => {
+  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop'>(() => {
     if (typeof window !== 'undefined' && window.location.hash === '#network') return 'network'
+    if (typeof window !== 'undefined' && window.location.hash === '#estop') return 'estop'
     return 'io'
   })
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
+  const [networkStats, setNetworkStats] = useState<{ healthy: number; faulted: number; unknown: number }>({ healthy: 0, faulted: 0, unknown: 0 })
+  const [estopStats, setEstopStats] = useState<{ ok: number; failed: number; noData: number }>({ ok: 0, failed: 0, noData: 0 })
   const [showFireOutputDialog, setShowFireOutputDialog] = useState(false)
   const [showValueChangeDialog, setShowValueChangeDialog] = useState(false)
   const [showFailCommentDialog, setShowFailCommentDialog] = useState(false)
@@ -136,7 +140,10 @@ export default function CommissioningPage() {
   const [previousStates, setPreviousStates] = useState<Record<number, string>>({})
   const [outputFiringInProgress, setOutputFiringInProgress] = useState<Record<number, boolean>>({})
   const [isOrderMode, setIsOrderMode] = useState(true)
-  
+
+  // Track if testing was active before switching to non-IO tab (so we can resume on return)
+  const wasTestingBeforeTabSwitch = useRef(false)
+
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
@@ -264,6 +271,57 @@ export default function CommissioningPage() {
     apiPassword: "",
     remoteUrl: ""
   })
+
+  // Poll network/estop stats when on those tabs
+  useEffect(() => {
+    if (activeTab === 'network') {
+      let active = true
+      const poll = async () => {
+        try {
+          const res = await authFetch(`/api/network/status?subsystemId=${plcConfig.subsystemId}`)
+          if (res.ok && active) {
+            const data = await res.json()
+            if (data.success && data.tags) {
+              const values = Object.values(data.tags as Record<string, boolean | null>)
+              setNetworkStats({
+                healthy: values.filter(v => v === false).length,
+                faulted: values.filter(v => v === true).length,
+                unknown: values.filter(v => v === null || v === undefined).length,
+              })
+            }
+          }
+        } catch {}
+      }
+      poll()
+      const interval = setInterval(poll, 3000)
+      return () => { active = false; clearInterval(interval) }
+    } else if (activeTab === 'estop') {
+      let active = true
+      const poll = async () => {
+        try {
+          const res = await authFetch(`/api/estop/status?subsystemId=${plcConfig.subsystemId}`)
+          if (res.ok && active) {
+            const data = await res.json()
+            if (data.zones) {
+              let ok = 0, failed = 0, noData = 0
+              for (const zone of data.zones) {
+                for (const epc of zone.epcs || []) {
+                  const checkVal = epc.checkTagValue
+                  if (checkVal === null || checkVal === undefined) noData++
+                  else if (checkVal === false) ok++
+                  else failed++
+                }
+              }
+              setEstopStats({ ok, failed, noData })
+            }
+          }
+        } catch {}
+      }
+      poll()
+      const interval = setInterval(poll, 3000)
+      return () => { active = false; clearInterval(interval) }
+    }
+  }, [activeTab, plcConfig.subsystemId])
 
   // SignalR connection for real-time updates
   const signalR = useSignalR(getSignalRHubUrl())
@@ -655,8 +713,29 @@ export default function CommissioningPage() {
       // Load IOs from backend (real PLC data) - retry on failure
       const response = await fetchWithRetry(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
       if (response.ok) {
-        const data = await response.json()
-        setIos(data)
+        const data = await response.json() as IoItem[]
+        // Merge new data into existing array to avoid full re-render flash
+        // React will only re-render rows that actually changed
+        setIos(prev => {
+          if (prev.length === 0) return data // First load — set everything
+          if (prev.length !== data.length) return data // Different count — full replace
+          // Same count — merge by updating only changed IOs
+          const newMap = new Map(data.map((io: IoItem) => [io.id, io]))
+          let changed = false
+          const merged = prev.map(io => {
+            const updated = newMap.get(io.id)
+            if (!updated) return io
+            // Check if anything actually changed
+            if (io.result !== updated.result || io.comments !== updated.comments ||
+                io.timestamp !== updated.timestamp || io.name !== updated.name ||
+                io.description !== updated.description) {
+              changed = true
+              return { ...io, ...updated }
+            }
+            return io
+          })
+          return changed ? merged : prev
+        })
         setFilteredIos(data)
 
         // Initialize previousStates ONLY on first load to prevent flood of dialogs
@@ -938,11 +1017,14 @@ export default function CommissioningPage() {
   }
 
   const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string) => {
-    // Mark as failed with the provided comment and failure mode
+    // Prepend failure mode to comment so it syncs to cloud
+    const fullComment = failureMode
+      ? (comment ? `[${failureMode}] ${comment}` : `[${failureMode}]`)
+      : comment
     if (DEBUG_OTHER) {
-      console.log('🎯 Marking as failed with comment:', io.name, comment, 'Failure mode:', failureMode)
+      console.log('🎯 Marking as failed with comment:', io.name, fullComment, 'Failure mode:', failureMode)
     }
-    handleMarkFailed(io, comment, failureMode)
+    handleMarkFailed(io, fullComment, failureMode)
     setPendingFailIo(null)
     // NOW clear currentDialogIo to advance the queue
     setCurrentDialogIo(null)
@@ -1168,28 +1250,41 @@ export default function CommissioningPage() {
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}
       <header className="bg-card border-b flex-shrink-0 z-50">
+        {/* Top row: title + tabs + actions */}
         <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12">
-          <div className="flex items-center gap-2 sm:gap-4">
-            <h1 className="text-sm sm:text-lg font-bold tracking-tight">IO CHECKOUT</h1>
-            <div className="h-6 w-px bg-border hidden sm:block" />
-            <span className="text-xs sm:text-sm font-mono bg-muted px-1.5 sm:px-2 py-0.5 rounded">
+          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-hidden">
+            <h1 className="text-sm sm:text-lg font-bold tracking-tight whitespace-nowrap hidden lg:block">IO CHECKOUT</h1>
+            <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
               SUB {plcConfig.subsystemId}
             </span>
-            <div className="h-6 w-px bg-border" />
-            <div className="flex bg-muted rounded p-0.5 gap-0.5">
+            <div className="h-5 w-px bg-border shrink-0" />
+            <div className="flex bg-muted rounded p-0.5 gap-0.5 shrink-0">
               <button
-                onClick={() => { setActiveTab('io'); window.location.hash = '' }}
-                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                onClick={() => {
+                  // Resuming IO tab — restart testing if it was active before we left
+                  if (activeTab !== 'io' && wasTestingBeforeTabSwitch.current && !plcStatus.isTesting) {
+                    handleToggleTesting()
+                  }
+                  setActiveTab('io'); window.location.hash = ''
+                }}
+                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                   activeTab === 'io'
                     ? 'bg-background shadow text-foreground'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                I/O Testing
+                I/O
               </button>
               <button
-                onClick={() => { setActiveTab('network'); window.location.hash = 'network' }}
-                className={`px-2.5 sm:px-3 py-1 text-xs sm:text-sm font-medium rounded transition-colors ${
+                onClick={() => {
+                  // Leaving IO tab — pause testing to suppress pass/fail prompts
+                  if (plcStatus.isTesting) {
+                    wasTestingBeforeTabSwitch.current = true
+                    handleToggleTesting()
+                  }
+                  setActiveTab('network'); window.location.hash = 'network'
+                }}
+                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                   activeTab === 'network'
                     ? 'bg-background shadow text-foreground'
                     : 'text-muted-foreground hover:text-foreground'
@@ -1197,9 +1292,26 @@ export default function CommissioningPage() {
               >
                 Network
               </button>
+              <button
+                onClick={() => {
+                  // Leaving IO tab — pause testing to suppress pass/fail prompts
+                  if (plcStatus.isTesting) {
+                    wasTestingBeforeTabSwitch.current = true
+                    handleToggleTesting()
+                  }
+                  setActiveTab('estop'); window.location.hash = 'estop'
+                }}
+              className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
+                activeTab === 'estop'
+                  ? 'bg-background shadow text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              EStop
+            </button>
             </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
             <UserMenu />
             <ThemeToggle />
           </div>
@@ -1224,8 +1336,6 @@ export default function CommissioningPage() {
       {/* Network Status - Shows PLC path, cloud connection, etc */}
       <NetworkStatusBreadcrumbs className="flex-shrink-0 border-b" />
 
-      {/* Tag Status Panel - Shows PLC tag connection errors */}
-      <TagStatusPanel className="flex-shrink-0" />
 
       {/* Error Log - Collapsible, only shows when errors exist */}
       {errorLog.length > 0 && (
@@ -1240,6 +1350,10 @@ export default function CommissioningPage() {
       {activeTab === 'network' ? (
         <div className="flex-1 min-h-0 overflow-auto">
           <NetworkTopologyView subsystemId={parseInt(plcConfig.subsystemId) || 16} />
+        </div>
+      ) : activeTab === 'estop' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <EStopCheckView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
         </div>
       ) : (
       <>
@@ -1273,6 +1387,9 @@ export default function CommissioningPage() {
           onShowChangeRequests={() => setShowChangeRequestsPanel(true)}
           onStartTour={() => setShowTour(true)}
           subsystemId={plcConfig.subsystemId}
+          activeTab={activeTab}
+          networkStats={networkStats}
+          estopStats={estopStats}
         />
       </div>
 
