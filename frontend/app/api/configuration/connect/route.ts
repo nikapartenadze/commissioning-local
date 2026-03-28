@@ -88,8 +88,6 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    let networkTags: Array<{ id: number; name: string; description?: string; tagType?: string }> = [];
-
     if (ios.length > 0) {
       const tags = ios.map(io => ({
         id: io.id,
@@ -98,34 +96,8 @@ export async function POST(request: NextRequest) {
         tagType: io.tagType || undefined,
       }));
 
-      // Also load network status tags (ConnectionFaulted) so they're polled in the same loop
-      try {
-        const rings = await prisma.networkRing.findMany({
-          include: { nodes: { include: { ports: true } } },
-        });
-        let netId = -1; // Negative IDs to avoid collision with real IO IDs
-        for (const ring of rings) {
-          if (ring.mcmTag) {
-            networkTags.push({ id: netId--, name: ring.mcmTag, description: `MCM ${ring.mcmName} status`, tagType: 'network_status' });
-          }
-          for (const node of ring.nodes) {
-            if (node.statusTag) {
-              networkTags.push({ id: netId--, name: node.statusTag, description: `DPM ${node.name} status`, tagType: 'network_status' });
-            }
-            for (const port of node.ports) {
-              if (port.statusTag) {
-                networkTags.push({ id: netId--, name: port.statusTag, description: `${port.deviceName || 'Device'} status`, tagType: 'network_status' });
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.log('[Connect API] No network topology data to load status tags');
-      }
-
-      const allTags = [...tags, ...networkTags];
-      loadPlcTags(allTags);
-      console.log(`[Connect API] Loaded ${tags.length} IO tags + ${networkTags.length} network status tags into PLC client`);
+      loadPlcTags(tags);
+      console.log(`[Connect API] Loaded ${tags.length} IO tags into PLC client`);
       console.log('[Connect API] Sample tag names:', tags.slice(0, 5).map(t => t.name));
     } else {
       console.log('[Connect API] No IOs found in database - pull IOs from cloud first');
@@ -158,37 +130,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build tag report — separate IO tags from network status tags
+    // Build tag report (IO tags only)
     const rawFailedTags = connectResult.failedTags || [];
-    const ioNames = new Set(ios.map(io => io.name || ''));
-    const networkTagNames = new Set(networkTags.map(t => t.name));
-
-    // Only show IO tag failures in the report (not network status tags)
-    const ioFailedTags = rawFailedTags.filter(t => !networkTagNames.has(t.name));
-    const networkFailedTags = rawFailedTags.filter(t => networkTagNames.has(t.name));
-
     const ioLookup = new Map(ios.map(io => [io.name || '', io.description || '']));
-    const failedTags = ioFailedTags.map(t => ({
+    const failedTags = rawFailedTags.map(t => ({
       name: t.name,
       description: ioLookup.get(t.name) || '',
       error: t.error,
     }));
 
     const plcReachable = connectResult.plcReachable ?? false;
-    const ioTagsSuccessful = (connectResult.tagsSuccessful || 0) - (networkTags.length - networkFailedTags.length);
+    console.log(`[Connect API] Tag report: ${connectResult.tagsSuccessful || 0} successful, ${rawFailedTags.length} failed`);
+
     const tagReport = {
       plcIp: body.ip,
       plcPath: body.path,
       plcReachable,
       timestamp: new Date().toISOString(),
       totalTags: ios.length,
-      tagsSuccessful: Math.max(0, ioTagsSuccessful),
-      tagsFailed: ioFailedTags.length,
+      tagsSuccessful: connectResult.tagsSuccessful || 0,
+      tagsFailed: rawFailedTags.length,
       failedTags: failedTags.slice(0, 100),
-      // Network stats shown separately
-      networkTotalTags: networkTags.length,
-      networkSuccessful: networkTags.length - networkFailedTags.length,
-      networkFailed: networkFailedTags.length,
     };
 
     if (!connectResult.success) {
