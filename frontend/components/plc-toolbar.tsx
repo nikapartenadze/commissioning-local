@@ -53,6 +53,9 @@ interface PlcToolbarProps {
   onShowChangeRequests?: () => void
   onStartTour?: () => void
   subsystemId?: string
+  activeTab?: 'io' | 'network' | 'estop'
+  networkStats?: { healthy: number; faulted: number; unknown: number }
+  estopStats?: { ok: number; failed: number; noData: number }
 }
 
 export function PlcToolbar({
@@ -77,6 +80,9 @@ export function PlcToolbar({
   onFilterChange,
   tagStatus = null,
   onShowTagStatus,
+  activeTab = 'io',
+  networkStats,
+  estopStats,
   onShowChangeRequests,
   onStartTour,
   subsystemId
@@ -117,47 +123,84 @@ export function PlcToolbar({
         {/* Divider - hidden on small screens */}
         <div className="w-px h-10 bg-border hidden sm:block" />
 
-        {/* Quick Filter Buttons */}
+        {/* Contextual stat cards based on active tab */}
         <div className="flex items-center gap-0.5 sm:gap-1">
-          <button
-            onClick={() => onFilterChange?.(activeFilter === 'passed' ? null : 'passed')}
-            className={cn(
-              "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
-              activeFilter === 'passed'
-                ? "bg-green-600 text-white"
-                : "bg-green-500/10 hover:bg-green-500/20 text-green-600 dark:text-green-400"
-            )}
-          >
-            <span className="text-lg sm:text-2xl font-bold leading-none">{passedIos}</span>
-            <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Pass</span>
-          </button>
+          {activeTab === 'io' && (
+            <>
+              <button
+                onClick={() => onFilterChange?.(activeFilter === 'passed' ? null : 'passed')}
+                className={cn(
+                  "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+                  activeFilter === 'passed'
+                    ? "bg-green-600 text-white"
+                    : "bg-green-500/10 hover:bg-green-500/20 text-green-600 dark:text-green-400"
+                )}
+              >
+                <span className="text-lg sm:text-2xl font-bold leading-none">{passedIos}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Pass</span>
+              </button>
+              <button
+                onClick={() => onFilterChange?.(activeFilter === 'failed' ? null : 'failed')}
+                className={cn(
+                  "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+                  activeFilter === 'failed'
+                    ? "bg-red-600 text-white"
+                    : "bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400"
+                )}
+              >
+                <span className="text-lg sm:text-2xl font-bold leading-none">{failedIos}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Fail</span>
+              </button>
+              <button
+                onClick={() => onFilterChange?.(activeFilter === 'not-tested' ? null : 'not-tested')}
+                className={cn(
+                  "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+                  activeFilter === 'not-tested'
+                    ? "bg-slate-600 text-white"
+                    : "bg-slate-500/10 hover:bg-slate-500/20 text-slate-600 dark:text-slate-400"
+                )}
+              >
+                <span className="text-lg sm:text-2xl font-bold leading-none">{notTestedIos}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Left</span>
+              </button>
+            </>
+          )}
 
-          <button
-            onClick={() => onFilterChange?.(activeFilter === 'failed' ? null : 'failed')}
-            className={cn(
-              "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
-              activeFilter === 'failed'
-                ? "bg-red-600 text-white"
-                : "bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400"
-            )}
-          >
-            <span className="text-lg sm:text-2xl font-bold leading-none">{failedIos}</span>
-            <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Fail</span>
-          </button>
+          {activeTab === 'network' && networkStats && (
+            <>
+              <div className="h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md bg-green-500/10 text-green-600 dark:text-green-400 font-mono">
+                <span className="text-lg sm:text-2xl font-bold leading-none">{networkStats.healthy}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Healthy</span>
+              </div>
+              <div className="h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md bg-red-500/10 text-red-600 dark:text-red-400 font-mono">
+                <span className="text-lg sm:text-2xl font-bold leading-none">{networkStats.faulted}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Faulted</span>
+              </div>
+              <div className="h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md bg-slate-500/10 text-slate-600 dark:text-slate-400 font-mono">
+                <span className="text-lg sm:text-2xl font-bold leading-none">{networkStats.unknown}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Unknown</span>
+              </div>
+            </>
+          )}
 
-          <button
-            onClick={() => onFilterChange?.(activeFilter === 'not-tested' ? null : 'not-tested')}
-            className={cn(
-              "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
-              activeFilter === 'not-tested'
-                ? "bg-slate-600 text-white"
-                : "bg-slate-500/10 hover:bg-slate-500/20 text-slate-600 dark:text-slate-400"
-            )}
-          >
-            <span className="text-lg sm:text-2xl font-bold leading-none">{notTestedIos}</span>
-            <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Left</span>
-          </button>
+          {activeTab === 'estop' && estopStats && (
+            <>
+              <div className="h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md bg-green-500/10 text-green-600 dark:text-green-400 font-mono">
+                <span className="text-lg sm:text-2xl font-bold leading-none">{estopStats.ok}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">OK</span>
+              </div>
+              <div className="h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md bg-red-500/10 text-red-600 dark:text-red-400 font-mono">
+                <span className="text-lg sm:text-2xl font-bold leading-none">{estopStats.failed}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Failed</span>
+              </div>
+              <div className="h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md bg-slate-500/10 text-slate-600 dark:text-slate-400 font-mono">
+                <span className="text-lg sm:text-2xl font-bold leading-none">{estopStats.noData}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">No Data</span>
+              </div>
+            </>
+          )}
 
+          {activeTab === 'io' && <>
           <div className="w-px h-8 bg-border mx-0.5 sm:mx-1 hidden sm:block" />
 
           <button
@@ -183,8 +226,9 @@ export function PlcToolbar({
           >
             Out
           </button>
+          </>}
 
-          {currentUser?.fullName && (
+          {currentUser?.fullName && activeTab === 'io' && (
             <>
               <div className="w-px h-8 bg-border mx-0.5 sm:mx-1 hidden sm:block" />
               <button
