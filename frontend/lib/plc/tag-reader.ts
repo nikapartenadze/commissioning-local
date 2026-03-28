@@ -159,13 +159,16 @@ export class TagReaderService extends EventEmitter {
 
     try {
       // Create the tag handle using PlcTagConfig
+      // Use timeout=0 for non-blocking creation — the synchronous FFI call with timeout>0
+      // blocks the Node.js event loop, preventing HTTP responses and timeouts from working.
+      // We poll status asynchronously via waitForStatus() instead.
       handle = createTag({
         gateway: this.gateway,
         path: this.path,
         name: name,
         elemSize: elemSize,
         elemCount: elemCount,
-        timeout: timeout,
+        timeout: 0,
       });
 
       if (handle < 0) {
@@ -174,7 +177,7 @@ export class TagReaderService extends EventEmitter {
         return { success: false, error: `Create failed: ${errorMsg}` };
       }
 
-      // Wait for tag creation to complete
+      // Wait for tag creation to complete (async polling, doesn't block event loop)
       const status = await this.waitForStatus(handle, timeout);
       if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
         const errorMsg = getStatusMessage(status);
@@ -236,7 +239,7 @@ export class TagReaderService extends EventEmitter {
         name: parentName,
         elemSize,
         elemCount: 1,
-        timeout,
+        timeout: 0,
       });
 
       if (handle < 0) {
@@ -354,18 +357,64 @@ export class TagReaderService extends EventEmitter {
       console.log(`[TagReader] Grouped ${totalGrouped} bit-notation tags into ${bitGroups.size} parent word reads`);
     }
 
-    // --- Step 2: Create grouped parent handles ---
-    for (const [parentName, children] of Array.from(bitGroups.entries())) {
-      const maxBit = Math.max(...children.map((c: { bitIndex: number; tagName: string }) => c.bitIndex));
-      // Determine smallest element size that fits all bits
-      const elemSize = maxBit <= 7 ? 1 : maxBit <= 15 ? 2 : 4;
+    // --- Step 2: Create grouped parent handles (in parallel batches) ---
+    const groupEntries = Array.from(bitGroups.entries());
+    const groupBatches: typeof groupEntries[] = [];
+    for (let i = 0; i < groupEntries.length; i += this.config.batchSize) {
+      groupBatches.push(groupEntries.slice(i, i + this.config.batchSize));
+    }
 
-      const result = await this.createGroupedWord(parentName, elemSize, children);
-      if (result.success) {
-        for (const child of children) successful.push(child.tagName);
-      } else {
-        for (const child of children) {
-          failed.push({ name: child.tagName, error: result.error || 'Parent word creation failed' });
+    let groupBatchIndex = 0;
+    for (const groupBatch of groupBatches) {
+      groupBatchIndex++;
+      const results = await Promise.allSettled(
+        groupBatch.map(async ([parentName, children]) => {
+          const maxBit = Math.max(...children.map((c: { bitIndex: number; tagName: string }) => c.bitIndex));
+          const elemSize = maxBit <= 7 ? 1 : maxBit <= 15 ? 2 : 4;
+          const result = await this.createGroupedWord(parentName, elemSize, children);
+          return { parentName, children, result };
+        })
+      );
+
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          if (r.value.result.success) {
+            for (const child of r.value.children) successful.push(child.tagName);
+          } else {
+            for (const child of r.value.children) {
+              failed.push({ name: child.tagName, error: r.value.result.error || 'Parent word creation failed' });
+            }
+          }
+        } else {
+          // Promise rejected — shouldn't happen but handle gracefully
+          const entry = groupBatch[results.indexOf(r)];
+          if (entry) {
+            for (const child of entry[1]) {
+              failed.push({ name: child.tagName, error: r.reason?.message || 'Exception' });
+            }
+          }
+        }
+      }
+
+      console.log(`[TagReader] Group batch ${groupBatchIndex}/${groupBatches.length}: ${successful.length} success so far`);
+
+      // Early exit: if first batch completely fails with connection errors, PLC is unreachable
+      if (groupBatchIndex === 1 && successful.length === 0 && failed.length > 0) {
+        const hasConnectionErrors = failed.some(f => isConnectionError(f.error));
+        if (hasConnectionErrors) {
+          console.log('[TagReader] PLC unreachable (connection error from grouped tags) — skipping all remaining');
+          // Mark remaining grouped tags as failed
+          for (let i = 1; i < groupBatches.length; i++) {
+            for (const [, children] of groupBatches[i]) {
+              for (const child of children) {
+                failed.push({ name: child.tagName, error: 'Skipped (PLC unreachable)' });
+              }
+            }
+          }
+          for (const name of individualTags) {
+            failed.push({ name, error: 'Skipped (PLC unreachable)' });
+          }
+          return { successful, failed, plcReachable: false };
         }
       }
     }
