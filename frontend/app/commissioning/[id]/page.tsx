@@ -124,6 +124,60 @@ export default function CommissioningPage() {
     return 'io'
   })
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
+  const [networkStats, setNetworkStats] = useState<{ healthy: number; faulted: number; unknown: number }>({ healthy: 0, faulted: 0, unknown: 0 })
+  const [estopStats, setEstopStats] = useState<{ ok: number; failed: number; noData: number }>({ ok: 0, failed: 0, noData: 0 })
+
+  // Poll network/estop stats when on those tabs
+  useEffect(() => {
+    if (activeTab === 'network') {
+      let active = true
+      const poll = async () => {
+        try {
+          const res = await authFetch(`/api/network/status?subsystemId=${plcConfig.subsystemId}`)
+          if (res.ok && active) {
+            const data = await res.json()
+            if (data.success && data.tags) {
+              const tags = data.tags as Record<string, boolean | null>
+              const values = Object.values(tags)
+              setNetworkStats({
+                healthy: values.filter(v => v === false).length, // ConnectionFaulted=false means healthy
+                faulted: values.filter(v => v === true).length,  // ConnectionFaulted=true means faulted
+                unknown: values.filter(v => v === null || v === undefined).length,
+              })
+            }
+          }
+        } catch {}
+      }
+      poll()
+      const interval = setInterval(poll, 3000)
+      return () => { active = false; clearInterval(interval) }
+    } else if (activeTab === 'estop') {
+      let active = true
+      const poll = async () => {
+        try {
+          const res = await authFetch(`/api/estop/status?subsystemId=${plcConfig.subsystemId}`)
+          if (res.ok && active) {
+            const data = await res.json()
+            if (data.zones) {
+              let ok = 0, failed = 0, noData = 0
+              for (const zone of data.zones) {
+                for (const epc of zone.epcs || []) {
+                  const checkVal = epc.checkTagValue
+                  if (checkVal === null || checkVal === undefined) noData++
+                  else if (checkVal === false) ok++ // not faulted = ok
+                  else failed++ // faulted
+                }
+              }
+              setEstopStats({ ok, failed, noData })
+            }
+          }
+        } catch {}
+      }
+      poll()
+      const interval = setInterval(poll, 3000)
+      return () => { active = false; clearInterval(interval) }
+    }
+  }, [activeTab, plcConfig.subsystemId])
   const [showFireOutputDialog, setShowFireOutputDialog] = useState(false)
   const [showValueChangeDialog, setShowValueChangeDialog] = useState(false)
   const [showFailCommentDialog, setShowFailCommentDialog] = useState(false)
@@ -1346,6 +1400,8 @@ export default function CommissioningPage() {
           onStartTour={() => setShowTour(true)}
           subsystemId={plcConfig.subsystemId}
           activeTab={activeTab}
+          networkStats={networkStats}
+          estopStats={estopStats}
         />
       </div>
 
