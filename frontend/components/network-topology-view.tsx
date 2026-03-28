@@ -1,9 +1,9 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, RefreshCw, PanelRightOpen, PanelRightClose, Search, Copy, Check } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, PanelRightOpen, PanelRightClose, Search, Copy, Check } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -329,65 +329,6 @@ function RingLayout({
   )
 }
 
-// ── Pannable/Zoomable viewport ────────────────────────────────────
-
-function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
-  const zoomRef = useRef(1)
-  const panRef = useRef({ x: 0, y: 0 })
-  const [, forceRender] = useState(0)
-  const dragging = useRef(false)
-  const lastMouse = useRef({ x: 0, y: 0 })
-
-  const update = useCallback(() => forceRender((n) => n + 1), [])
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const handler = (e: WheelEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const rect = el.getBoundingClientRect()
-      const mouseX = e.clientX - rect.left
-      const mouseY = e.clientY - rect.top
-      const oldZoom = zoomRef.current
-      const delta = e.deltaY > 0 ? -0.1 : 0.1
-      const newZoom = Math.min(3, Math.max(0.2, oldZoom + delta))
-      panRef.current = {
-        x: mouseX - (mouseX - panRef.current.x) * (newZoom / oldZoom),
-        y: mouseY - (mouseY - panRef.current.y) * (newZoom / oldZoom),
-      }
-      zoomRef.current = newZoom
-      update()
-    }
-    el.addEventListener('wheel', handler, { passive: false })
-    return () => el.removeEventListener('wheel', handler)
-  }, [containerRef, update])
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return
-    e.preventDefault()
-    dragging.current = true
-    lastMouse.current = { x: e.clientX, y: e.clientY }
-  }, [])
-
-  const onMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!dragging.current) return
-    panRef.current = {
-      x: panRef.current.x + e.clientX - lastMouse.current.x,
-      y: panRef.current.y + e.clientY - lastMouse.current.y,
-    }
-    lastMouse.current = { x: e.clientX, y: e.clientY }
-    update()
-  }, [update])
-
-  const onMouseUp = useCallback(() => { dragging.current = false }, [])
-
-  const zoomIn = useCallback(() => { zoomRef.current = Math.min(3, zoomRef.current + 0.2); update() }, [update])
-  const zoomOut = useCallback(() => { zoomRef.current = Math.max(0.2, zoomRef.current - 0.2); update() }, [update])
-  const resetView = useCallback(() => { zoomRef.current = 1; panRef.current = { x: 0, y: 0 }; update() }, [update])
-
-  return { zoom: zoomRef.current, pan: panRef.current, onMouseDown, onMouseMove, onMouseUp, zoomIn, zoomOut, resetView }
-}
 
 // ── FIOM Sub-diagram ─────────────────────────────────────────────
 
@@ -450,7 +391,6 @@ const DEVICE_HEADER_COLOR = '#3b82f6'
 
 function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagStates: Record<string, boolean | null>; subsystemId?: number }) {
   const viewportRef = useRef<HTMLDivElement>(null)
-  const vp = useViewport(viewportRef)
   const [selectedDevice, setSelectedDevice] = useState<{ name: string; type: string; ip: string; port: number | string; x: number; y: number } | null>(null)
   const [expandedFiom, setExpandedFiom] = useState<NetworkPort | null>(null)
 
@@ -532,40 +472,16 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
         )}
       </div>
 
-      {/* Zoom controls */}
-      <div className="flex items-center justify-end px-1">
-        <div className="flex items-center gap-1">
-          <button onClick={vp.zoomOut} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-            <ZoomOut className="w-4 h-4" />
-          </button>
-          <span className="text-[10px] text-muted-foreground w-10 text-center">{Math.round(vp.zoom * 100)}%</span>
-          <button onClick={vp.zoomIn} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-            <ZoomIn className="w-4 h-4" />
-          </button>
-          <button onClick={vp.resetView} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-            <Maximize2 className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Viewport */}
+      {/* Diagram container — scrolls naturally, no zoom hijack */}
       <div
         ref={viewportRef}
-        className="relative overflow-hidden rounded-lg border bg-card/50 cursor-grab active:cursor-grabbing select-none"
-        style={{ height: 700 }}
-        onMouseDown={(e) => { vp.onMouseDown(e); setSelectedDevice(null) }}
-        onMouseMove={vp.onMouseMove}
-        onMouseUp={vp.onMouseUp}
-        onMouseLeave={vp.onMouseUp}
+        className="relative overflow-auto rounded-lg border bg-card/50"
+        onClick={() => setSelectedDevice(null)}
       >
         <svg
           width={totalW}
           height={totalH}
           viewBox={`0 0 ${totalW} ${totalH}`}
-          style={{
-            transform: `translate(${vp.pan.x}px, ${vp.pan.y}px) scale(${vp.zoom})`,
-            transformOrigin: '0 0',
-          }}
         >
           {/* ── clipPath defs for device cards ── */}
           <defs>
