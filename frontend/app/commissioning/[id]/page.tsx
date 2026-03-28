@@ -135,7 +135,10 @@ export default function CommissioningPage() {
   const [previousStates, setPreviousStates] = useState<Record<number, string>>({})
   const [outputFiringInProgress, setOutputFiringInProgress] = useState<Record<number, boolean>>({})
   const [isOrderMode, setIsOrderMode] = useState(true)
-  
+
+  // Track if testing was active before switching to non-IO tab (so we can resume on return)
+  const wasTestingBeforeTabSwitch = useRef(false)
+
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
@@ -1252,7 +1255,13 @@ export default function CommissioningPage() {
             <div className="h-5 w-px bg-border shrink-0" />
             <div className="flex bg-muted rounded p-0.5 gap-0.5 shrink-0">
               <button
-                onClick={() => { setActiveTab('io'); window.location.hash = '' }}
+                onClick={() => {
+                  // Resuming IO tab — restart testing if it was active before we left
+                  if (activeTab !== 'io' && wasTestingBeforeTabSwitch.current && !plcStatus.isTesting) {
+                    handleToggleTesting()
+                  }
+                  setActiveTab('io'); window.location.hash = ''
+                }}
                 className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                   activeTab === 'io'
                     ? 'bg-background shadow text-foreground'
@@ -1262,7 +1271,14 @@ export default function CommissioningPage() {
                 I/O
               </button>
               <button
-                onClick={() => { setActiveTab('network'); window.location.hash = 'network' }}
+                onClick={() => {
+                  // Leaving IO tab — pause testing to suppress pass/fail prompts
+                  if (plcStatus.isTesting) {
+                    wasTestingBeforeTabSwitch.current = true
+                    handleToggleTesting()
+                  }
+                  setActiveTab('network'); window.location.hash = 'network'
+                }}
                 className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                   activeTab === 'network'
                     ? 'bg-background shadow text-foreground'
@@ -1272,7 +1288,14 @@ export default function CommissioningPage() {
                 Network
               </button>
               <button
-                onClick={() => { setActiveTab('estop'); window.location.hash = 'estop' }}
+                onClick={() => {
+                  // Leaving IO tab — pause testing to suppress pass/fail prompts
+                  if (plcStatus.isTesting) {
+                    wasTestingBeforeTabSwitch.current = true
+                    handleToggleTesting()
+                  }
+                  setActiveTab('estop'); window.location.hash = 'estop'
+                }}
               className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                 activeTab === 'estop'
                   ? 'bg-background shadow text-foreground'
