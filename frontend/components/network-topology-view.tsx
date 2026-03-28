@@ -945,165 +945,178 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
     unknown: allDevices.filter(d => d.status === 'gray').length,
   }
 
+  // Devices for the expanded DPM
+  const expandedNode = rings.flatMap(r => r.nodes).find(n => n.id === expandedNodeId) || null
+  const dpmDevices = expandedNode
+    ? expandedNode.ports
+        .filter(p => p.deviceName)
+        .sort((a, b) => parseInt(a.portNumber) - parseInt(b.portNumber))
+        .map(port => ({
+          portNumber: port.portNumber,
+          deviceName: port.deviceName!,
+          deviceIp: port.deviceIp,
+          deviceType: port.deviceType,
+          statusTag: port.statusTag,
+          status: getStatusColor(port.statusTag, tagStates),
+        }))
+    : []
+
+  const filteredDpmDevices = tableSearch
+    ? dpmDevices.filter(d =>
+        d.deviceName.toLowerCase().includes(tableSearch.toLowerCase()) ||
+        (d.deviceType || '').toLowerCase().includes(tableSearch.toLowerCase()) ||
+        (d.deviceIp || '').includes(tableSearch) ||
+        (d.statusTag || '').toLowerCase().includes(tableSearch.toLowerCase())
+      )
+    : dpmDevices
+
   return (
-    <div className="flex gap-0 h-full">
-      {/* Left: Topology diagrams */}
-      <div className="flex-1 min-w-0 space-y-6 pt-4 overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 text-sm text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
-              {statusCounts.healthy} healthy
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
-              {statusCounts.faulted} faulted
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-gray-500" />
-              {statusCounts.unknown} unknown
-            </span>
-          </div>
-          <button
-            onClick={() => fetchTopology(true)}
-            disabled={refreshing}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
-            {refreshing ? "Refreshing..." : "Refresh from Cloud"}
-          </button>
+    <div className="space-y-4 pt-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+            {statusCounts.healthy} healthy
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500" />
+            {statusCounts.faulted} faulted
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-gray-500" />
+            {statusCounts.unknown} unknown
+          </span>
         </div>
-        {rings.map((ring) => {
-          const expandedNode = ring.nodes.find((n) => n.id === expandedNodeId) || null
-
-          return (
-            <Card key={ring.id} className="bg-card border">
-              <CardHeader className="pb-2">
-                <CardTitle className="flex items-center gap-2 text-lg text-foreground">
-                  <Network className="w-5 h-5 text-blue-400" />
-                  {ring.name}
-                  <Badge variant="outline" className="ml-2 text-xs text-muted-foreground border-border">
-                    {ring.nodes.length} DPMs
-                  </Badge>
-                  <Badge variant="outline" className="text-xs text-muted-foreground border-border">
-                    {ring.nodes.reduce((sum, n) => sum + n.ports.filter((p) => p.deviceName).length, 0)} devices
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {/* Ring diagram */}
-                <div className="overflow-x-auto">
-                  <RingLayout
-                    ring={ring}
-                    expandedNodeId={expandedNodeId}
-                    onToggleNode={handleToggleNode}
-                    tagStates={tagStates}
-                  />
-                </div>
-
-                <p className="text-xs text-center text-muted-foreground pt-1">
-                  Click a DPM node to view connected devices
-                </p>
-
-                {/* Expanded device grid */}
-                {expandedNode && (
-                  <div className="border-t pt-3">
-                    <StarDiagram node={expandedNode} tagStates={tagStates} subsystemId={subsystemId} />
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )
-        })}
+        <button
+          onClick={() => fetchTopology(true)}
+          disabled={refreshing}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
+          {refreshing ? "Refreshing..." : "Refresh from Cloud"}
+        </button>
       </div>
 
-      {/* Right: Device table — always visible */}
-      <div className="w-1/2 flex-shrink-0 border-l bg-card/50 flex flex-col h-[calc(100vh-120px)] sticky top-[60px]">
-        <div className="p-3 border-b space-y-2">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm">All Devices ({allDevices.length})</h3>
-          </div>
-            <div className="relative">
-              <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search devices, IO points..."
-                value={tableSearch}
-                onChange={e => setTableSearch(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 text-sm rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+      {/* Ring diagrams — full width */}
+      {rings.map((ring) => (
+        <Card key={ring.id} className="bg-card border">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-lg text-foreground">
+              <Network className="w-5 h-5 text-blue-400" />
+              {ring.name}
+              <Badge variant="outline" className="ml-2 text-xs text-muted-foreground border-border">
+                {ring.nodes.length} DPMs
+              </Badge>
+              <Badge variant="outline" className="text-xs text-muted-foreground border-border">
+                {ring.nodes.reduce((sum, n) => sum + n.ports.filter((p) => p.deviceName).length, 0)} devices
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <RingLayout
+                ring={ring}
+                expandedNodeId={expandedNodeId}
+                onToggleNode={handleToggleNode}
+                tagStates={tagStates}
               />
             </div>
+            <p className="text-xs text-center text-muted-foreground pt-1">
+              Click a DPM node to view connected devices
+            </p>
+          </CardContent>
+        </Card>
+      ))}
+
+      {/* Expanded DPM: Star diagram (left half) + Device table (right half) */}
+      {expandedNode && (
+        <div className="flex gap-4">
+          <div className="flex-1 min-w-0">
+            <StarDiagram node={expandedNode} tagStates={tagStates} subsystemId={subsystemId} />
           </div>
-          <div className="flex-1 overflow-y-auto">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-card border-b">
-                <tr className="text-left text-muted-foreground">
-                  <th className="px-3 py-2 font-medium w-6"></th>
-                  <th className="px-2 py-2 font-medium">Device</th>
-                  <th className="px-2 py-2 font-medium">IO Point</th>
-                  <th className="px-2 py-2 font-medium">Type</th>
-                  <th className="px-2 py-2 font-medium">DPM</th>
-                  <th className="px-2 py-2 font-medium">Port</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredDevices.map((device, i) => (
-                  <tr
-                    key={`${device.dpmName}-${device.portNumber}-${i}`}
-                    className="border-b border-border/50 hover:bg-accent/50 transition-colors"
-                  >
-                    <td className="px-3 py-2">
-                      <span className={cn(
-                        "block w-2.5 h-2.5 rounded-full",
-                        device.status === 'green' && "bg-green-500",
-                        device.status === 'red' && "bg-red-500",
-                        device.status === 'gray' && "bg-gray-500",
-                      )} />
-                    </td>
-                    <td className="px-2 py-2">
-                      <div className="font-medium text-foreground truncate max-w-[120px]" title={device.deviceName}>
-                        {device.deviceName}
-                      </div>
-                      {device.deviceIp && (
-                        <div className="text-muted-foreground text-[10px] font-mono">{device.deviceIp}</div>
-                      )}
-                    </td>
-                    <td className="px-2 py-2">
-                      {device.statusTag ? (
-                        <span className="font-mono text-[10px] text-muted-foreground truncate block max-w-[120px]" title={device.statusTag}>
-                          {device.statusTag}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground/50">—</span>
-                      )}
-                    </td>
-                    <td className="px-2 py-2">
-                      {device.deviceType && (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                          {device.deviceType}
-                        </Badge>
-                      )}
-                    </td>
-                    <td className="px-2 py-2 text-muted-foreground truncate max-w-[80px]" title={device.dpmName}>
-                      {device.dpmName}
-                    </td>
-                    <td className="px-2 py-2 text-muted-foreground text-center">
-                      {device.portNumber}
-                    </td>
+
+          <div className="w-1/2 flex-shrink-0 border rounded-lg bg-card/50 flex flex-col" style={{ maxHeight: 700 }}>
+            <div className="p-3 border-b space-y-2">
+              <h3 className="font-semibold text-sm">{expandedNode.name} — {dpmDevices.length} devices</h3>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
+                <input
+                  type="text"
+                  placeholder="Search devices..."
+                  value={tableSearch}
+                  onChange={e => setTableSearch(e.target.value)}
+                  className="w-full pl-8 pr-3 py-2 text-sm rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-card border-b">
+                  <tr className="text-left text-muted-foreground">
+                    <th className="px-3 py-2 font-medium w-6"></th>
+                    <th className="px-2 py-2 font-medium">Device</th>
+                    <th className="px-2 py-2 font-medium">Status Tag</th>
+                    <th className="px-2 py-2 font-medium">Type</th>
+                    <th className="px-2 py-2 font-medium">Port</th>
                   </tr>
-                ))}
-                {filteredDevices.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">
-                      {tableSearch ? "No devices match your search" : "No devices found"}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {filteredDpmDevices.map((device, i) => (
+                    <tr
+                      key={`${device.portNumber}-${i}`}
+                      className="border-b border-border/50 hover:bg-accent/50 transition-colors"
+                    >
+                      <td className="px-3 py-2">
+                        <span className={cn(
+                          "block w-2.5 h-2.5 rounded-full",
+                          device.status === 'green' && "bg-green-500",
+                          device.status === 'red' && "bg-red-500",
+                          device.status === 'gray' && "bg-gray-500",
+                        )} />
+                      </td>
+                      <td className="px-2 py-2">
+                        <div className="font-medium text-foreground truncate max-w-[140px]" title={device.deviceName}>
+                          {device.deviceName}
+                        </div>
+                        {device.deviceIp && (
+                          <div className="text-muted-foreground text-[10px] font-mono">{device.deviceIp}</div>
+                        )}
+                      </td>
+                      <td className="px-2 py-2">
+                        {device.statusTag ? (
+                          <span className="font-mono text-[10px] text-muted-foreground truncate block max-w-[140px]" title={device.statusTag}>
+                            {device.statusTag}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground/50">—</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-2">
+                        {device.deviceType && (
+                          <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                            {device.deviceType}
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="px-2 py-2 text-muted-foreground text-center">
+                        {device.portNumber}
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredDpmDevices.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-8 text-center text-muted-foreground">
+                        {tableSearch ? "No devices match" : "No devices"}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
