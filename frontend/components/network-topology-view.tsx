@@ -522,6 +522,9 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
 
   return (
     <div className="flex flex-col h-full">
+      <div className="text-center py-1.5 text-sm font-semibold text-foreground border-b flex-shrink-0">
+        {node.name} <span className="text-xs font-normal text-muted-foreground ml-1">{connectedPorts.length} devices{node.ipAddress ? ` · ${node.ipAddress}` : ''}</span>
+      </div>
       {/* Viewport — scroll to zoom, drag to pan */}
       <div
         ref={viewportRef}
