@@ -232,9 +232,23 @@ function RingLayout({
     return () => { clearTimeout(timer); window.removeEventListener('resize', measure) }
   }, [nodes.length, expandedNodeId])
 
+  // DPM status: green only if DPM itself AND all its devices are healthy
+  function getNodeStatus(node: typeof nodes[0]): StatusColor {
+    const dpmStatus = getStatusColor(node.statusTag, tagStates)
+    if (dpmStatus === 'red') return 'red'
+    // Check all connected device ports
+    const devicePorts = node.ports.filter(p => p.deviceName && p.statusTag)
+    if (devicePorts.length === 0) return dpmStatus
+    const anyFaulted = devicePorts.some(p => getStatusColor(p.statusTag, tagStates) === 'red')
+    if (anyFaulted) return 'red'
+    const allGreen = devicePorts.every(p => getStatusColor(p.statusTag, tagStates) === 'green')
+    if (allGreen && dpmStatus === 'green') return 'green'
+    return 'gray' // Some unknown/unread
+  }
+
   const renderNode = (node: typeof nodes[0]) => {
     const isExpanded = expandedNodeId === node.id
-    const status = getStatusColor(node.statusTag, tagStates)
+    const status = getNodeStatus(node)
     const deviceCount = node.ports.filter((p) => p.deviceName).length
     return (
       <button
