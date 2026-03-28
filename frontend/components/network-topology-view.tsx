@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, RefreshCw, PanelRightOpen, PanelRightClose, Search, Copy, Check } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, RefreshCw, Search, Copy, Check } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -794,7 +794,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [error, setError] = useState<string | null>(null)
   const [expandedNodeId, setExpandedNodeId] = useState<number | null>(null)
   const [tagStates, setTagStates] = useState<Record<string, boolean | null>>({})
-  const [showTable, setShowTable] = useState(false)
+  // Device table always visible in right panel
   const [tableSearch, setTableSearch] = useState('')
 
   // Poll PLC for network device status tags every 3 seconds
@@ -947,8 +947,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
   return (
     <div className="flex gap-0 h-full">
-      {/* Main topology view */}
-      <div className={cn("space-y-6 pt-4", showTable ? "flex-1 min-w-0" : "w-full")}>
+      {/* Left: Topology diagrams */}
+      <div className="flex-1 min-w-0 space-y-6 pt-4 overflow-y-auto">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <span className="flex items-center gap-1.5">
@@ -964,23 +964,14 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
               {statusCounts.unknown} unknown
             </span>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => fetchTopology(true)}
-              disabled={refreshing}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
-              {refreshing ? "Refreshing..." : "Refresh from Cloud"}
-            </button>
-            <button
-              onClick={() => setShowTable(!showTable)}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors"
-            >
-              {showTable ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
-              {showTable ? "Hide Table" : "Device Table"}
-            </button>
-          </div>
+          <button
+            onClick={() => fetchTopology(true)}
+            disabled={refreshing}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
+            {refreshing ? "Refreshing..." : "Refresh from Cloud"}
+          </button>
         </div>
         {rings.map((ring) => {
           const expandedNode = ring.nodes.find((n) => n.id === expandedNodeId) || null
@@ -1026,16 +1017,12 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         })}
       </div>
 
-      {/* Device table sidebar */}
-      {showTable && (
-        <div className="w-[480px] flex-shrink-0 border-l bg-card/50 flex flex-col h-[calc(100vh-120px)] sticky top-[60px]">
-          <div className="p-3 border-b space-y-2">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-sm">All Devices ({allDevices.length})</h3>
-              <button onClick={() => setShowTable(false)} className="p-1 rounded hover:bg-accent">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {/* Right: Device table — always visible */}
+      <div className="w-1/2 flex-shrink-0 border-l bg-card/50 flex flex-col h-[calc(100vh-120px)] sticky top-[60px]">
+        <div className="p-3 border-b space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-sm">All Devices ({allDevices.length})</h3>
+          </div>
             <div className="relative">
               <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
               <input
@@ -1116,7 +1103,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
             </table>
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }
