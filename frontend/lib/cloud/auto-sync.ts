@@ -40,10 +40,12 @@ export interface AutoSyncStatus {
 class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
   private networkStatusTimer: NodeJS.Timeout | null = null
+  private estopStatusTimer: NodeJS.Timeout | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
   private isPushingNetworkStatus = false
+  private isPushingEstopStatus = false
   private lastPullVersion: string | null = null
   private _lastPushAt: Date | null = null
   private _lastPullAt: Date | null = null
@@ -76,6 +78,9 @@ class AutoSyncService {
 
     // Push network status to cloud every 5 seconds (lightweight, tag booleans only)
     this.networkStatusTimer = setInterval(() => this.pushNetworkStatus(), 5000)
+
+    // Push estop status to cloud every 5 seconds
+    this.estopStatusTimer = setInterval(() => this.pushEstopStatus(), 5000)
 
     // Start SSE client for real-time cloud updates (after 10s to let config load)
     setTimeout(async () => {
@@ -128,8 +133,10 @@ class AutoSyncService {
     stopCloudSse()
     if (this.pushTimer) clearInterval(this.pushTimer)
     if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
+    if (this.estopStatusTimer) clearInterval(this.estopStatusTimer)
     this.pushTimer = null
     this.networkStatusTimer = null
+    this.estopStatusTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
@@ -244,6 +251,7 @@ class AutoSyncService {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
             body: JSON.stringify({ requests: pendingRequests.map(r => ({
+              localId: r.id, // include local ID so cloud can map it back
               ioId: r.ioId,
               requestType: r.requestType,
               currentValue: r.currentValue,
@@ -257,18 +265,25 @@ class AutoSyncService {
           })
           if (resp.ok) {
             const data = await resp.json()
-            // Update local records with cloud IDs
-            if (data.requests) {
+            // Mark ALL pushed requests as synced regardless of cloud response format
+            // This prevents re-sending old requests forever
+            const ids = pendingRequests.map(r => r.id)
+            await prisma.changeRequest.updateMany({
+              where: { id: { in: ids } },
+              data: { status: 'synced' },
+            })
+            // If cloud returned cloudId mappings, update those too
+            if (data.requests && Array.isArray(data.requests)) {
               for (const cr of data.requests) {
                 if (cr.localId && cr.cloudId) {
                   await prisma.changeRequest.update({
                     where: { id: cr.localId },
-                    data: { cloudId: cr.cloudId, status: 'synced' },
+                    data: { cloudId: cr.cloudId },
                   }).catch(() => {})
                 }
               }
             }
-            console.log(`[AutoSync] Pushed ${pendingRequests.length} change requests to cloud`)
+            console.log(`[AutoSync] Pushed and marked ${ids.length} change requests as synced`)
           }
         }
       } catch { /* ignore change request sync errors */ }
@@ -515,6 +530,75 @@ class AutoSyncService {
       // Network status push is best-effort — don't log noise
     } finally {
       this.isPushingNetworkStatus = false
+    }
+  }
+
+  private async pushEstopStatus(): Promise<void> {
+    if (this.isPushingEstopStatus) return
+    this.isPushingEstopStatus = true
+
+    try {
+      const config = await configService.getConfig()
+      const remoteUrl = config.remoteUrl
+      const apiPassword = config.apiPassword
+      const subsystemId = config.subsystemId
+
+      if (!remoteUrl || !subsystemId) return
+
+      // Read PLC connection + estop tag values
+      let connected = false
+      let tags: Record<string, boolean | null> = {}
+
+      try {
+        const { hasPlcClient, getPlcClient } = await import('@/lib/plc-client-manager')
+        if (hasPlcClient() && getPlcClient().isConnected) {
+          connected = true
+          // Read estop tags from database
+          const zones = await prisma.eStopZone.findMany({
+            include: {
+              epcs: {
+                include: {
+                  ioPoints: true,
+                  vfds: true,
+                },
+              },
+            },
+          })
+
+          for (const zone of zones) {
+            for (const epc of zone.epcs) {
+              if (epc.checkTag) tags[epc.checkTag] = getPlcClient().readTagCached(epc.checkTag)
+              for (const ioPoint of epc.ioPoints) {
+                if (ioPoint.tag) tags[ioPoint.tag] = getPlcClient().readTagCached(ioPoint.tag)
+              }
+              for (const vfd of epc.vfds) {
+                if (vfd.stoTag) tags[vfd.stoTag] = getPlcClient().readTagCached(vfd.stoTag)
+              }
+            }
+          }
+        }
+      } catch {
+        // PLC not available — send disconnected status
+      }
+
+      await fetch(`${remoteUrl}/api/sync/estop-status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword || '',
+        },
+        body: JSON.stringify({
+          subsystemId: parseInt(String(subsystemId), 10),
+          connected,
+          tags,
+          timestamp: new Date().toISOString(),
+        }),
+        signal: AbortSignal.timeout(5000),
+      })
+    } catch {
+      // Estop status push is best-effort — don't log noise
+    } finally {
+      this.isPushingEstopStatus = false
     }
   }
 }

@@ -12,8 +12,9 @@ import * as VisuallyHidden from "@radix-ui/react-visually-hidden"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check } from "lucide-react"
+import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check, Zap, Loader2 } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
+import type { PlcProfile } from "@/lib/config/types"
 
 interface PlcConfig {
   ip: string
@@ -40,7 +41,10 @@ export function PlcConfigDialog({
   onPlcConnect,
   onTestConnection
 }: PlcConfigDialogProps) {
-  const [activeTab, setActiveTab] = useState<'cloud' | 'plc'>('cloud')
+  const [activeTab, setActiveTab] = useState<'subsystem' | 'cloud' | 'plc'>('cloud')
+  const [profiles, setProfiles] = useState<PlcProfile[]>([])
+  const [isSwitching, setIsSwitching] = useState(false)
+  const [switchStatus, setSwitchStatus] = useState<string | null>(null)
   const [localConfig, setLocalConfig] = useState<PlcConfig>({
     ip: "", path: "", subsystemId: "", apiPassword: "", remoteUrl: ""
   })
@@ -156,6 +160,10 @@ export function PlcConfigDialog({
         // If already connected, set success status
         if (status.plcConnected) {
           setPlcStatus({ type: 'success', message: `Connected to ${status.plcIp} (${status.tagCount} tags)` })
+        }
+        // Load PLC profiles (tab stays on 'cloud' by default)
+        if (status.plcProfiles && Array.isArray(status.plcProfiles) && status.plcProfiles.length > 0) {
+          setProfiles(status.plcProfiles)
         }
       }
     } catch (error) {
@@ -412,7 +420,7 @@ export function PlcConfigDialog({
         } else {
           // PLC is reachable but tags don't match
           addPlcLog(`PLC connected at ${localConfig.ip} — but tags do not match.`)
-          addPlcLog(`${connectData.tagsSuccessful || 0} of ${connectData.totalTags || 0} tags OK, ${connectData.tagsFailed || 0} failed.`)
+          addPlcLog(`Tags: ${connectData.tagsSuccessful || 0}/${connectData.totalTags || 0} OK${connectData.tagsFailed > 0 ? `, ${connectData.tagsFailed} failed` : ''}`)
 
           if (failedTags.length > 0) {
             addPlcLog('---')
@@ -600,6 +608,19 @@ export function PlcConfigDialog({
         </VisuallyHidden.Root>
         {/* Tabs */}
         <div className="flex border-b">
+          {profiles.length > 0 && (
+            <button
+              onClick={() => setActiveTab('subsystem')}
+              className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                activeTab === 'subsystem'
+                  ? 'border-b-2 border-orange-500 text-orange-600 bg-orange-50/50 dark:bg-orange-950/20'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              }`}
+            >
+              <Zap className="w-4 h-4" />
+              Subsystem
+            </button>
+          )}
           <button
             onClick={() => setActiveTab('cloud')}
             className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
@@ -632,6 +653,115 @@ export function PlcConfigDialog({
 
         {/* Tab Content */}
         <div className="flex-1 flex flex-col overflow-hidden">
+
+          {/* ═══ SUBSYSTEM TAB ═══ */}
+          {activeTab === 'subsystem' && (
+            <div className="flex-1 flex flex-col p-4 gap-4 overflow-auto">
+              <div>
+                <h3 className="text-sm font-semibold mb-1">Select Subsystem</h3>
+                <p className="text-xs text-muted-foreground">Choose a subsystem to auto-configure PLC connection and pull IOs.</p>
+              </div>
+
+              {switchStatus && (
+                <div className={`text-sm px-3 py-2 rounded-md ${switchStatus.includes('Error') || switchStatus.includes('Failed') ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400' : 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400'}`}>
+                  {switchStatus}
+                </div>
+              )}
+
+              <div className="grid gap-2">
+                {profiles.map((profile) => {
+                  const isActive = localConfig.subsystemId === profile.subsystemId && localConfig.ip === profile.plcIp
+                  return (
+                    <button
+                      key={profile.name}
+                      disabled={isSwitching}
+                      onClick={async () => {
+                        setIsSwitching(true)
+                        setSwitchStatus(null)
+                        try {
+                          // 1. Switch config
+                          setSwitchStatus(`Switching to ${profile.name}...`)
+                          const switchRes = await authFetch('/api/configuration/switch-subsystem', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              profileName: profile.name,
+                              subsystemId: profile.subsystemId,
+                              plcIp: profile.plcIp,
+                              plcPath: profile.plcPath,
+                            }),
+                          })
+                          if (!switchRes.ok) throw new Error('Failed to switch config')
+
+                          // 2. Pull IOs
+                          setSwitchStatus(`Pulling IOs for ${profile.name}...`)
+                          const pullRes = await authFetch(API_ENDPOINTS.cloudPull, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              remoteUrl: localConfig.remoteUrl,
+                              apiPassword: localConfig.apiPassword,
+                              subsystemId: profile.subsystemId,
+                              force: true,
+                            }),
+                          })
+                          const pullData = await pullRes.json()
+                          if (!pullRes.ok) throw new Error(pullData.error || 'Pull failed')
+
+                          // 3. Connect PLC
+                          setSwitchStatus(`Connecting to PLC at ${profile.plcIp}...`)
+                          const connectRes = await authFetch(API_ENDPOINTS.plcConnect, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              ip: profile.plcIp,
+                              path: profile.plcPath,
+                              subsystemId: profile.subsystemId,
+                            }),
+                          })
+                          if (!connectRes.ok) throw new Error('PLC connection failed')
+
+                          // Update local state
+                          setLocalConfig(prev => ({ ...prev, ip: profile.plcIp, path: profile.plcPath, subsystemId: profile.subsystemId }))
+                          setLiveStatus({ plcConnected: true, tagCount: pullData.count || 0, plcIp: profile.plcIp })
+                          setSwitchStatus(`${profile.name} ready — ${pullData.count || 0} IOs loaded, PLC connected`)
+
+                          // Notify parent
+                          onPlcConnect({ ...localConfig, ip: profile.plcIp, path: profile.plcPath, subsystemId: profile.subsystemId })
+                        } catch (error) {
+                          setSwitchStatus(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+                        } finally {
+                          setIsSwitching(false)
+                        }
+                      }}
+                      className={`text-left p-4 rounded-lg border-2 transition-all ${
+                        isActive
+                          ? 'border-green-500 bg-green-50/50 dark:bg-green-950/20'
+                          : 'border-border hover:border-primary/50 hover:bg-muted/50'
+                      } ${isSwitching ? 'opacity-60' : ''}`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-semibold text-sm">{profile.name}</div>
+                          <div className="text-xs text-muted-foreground mt-0.5 font-mono">
+                            PLC: {profile.plcIp} · Path: {profile.plcPath} · Sub: {profile.subsystemId}
+                          </div>
+                        </div>
+                        {isActive && <span className="text-xs font-medium text-green-600 dark:text-green-400 flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" /> Active</span>}
+                        {isSwitching && localConfig.subsystemId !== profile.subsystemId && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              {profiles.length === 0 && (
+                <div className="text-center text-sm text-muted-foreground py-8">
+                  No subsystem profiles configured. Add <code>plcProfiles</code> to <code>config.json</code>.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ═══ CLOUD TAB ═══ */}
           {activeTab === 'cloud' && (

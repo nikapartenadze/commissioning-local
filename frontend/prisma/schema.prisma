@@ -184,16 +184,62 @@ model NetworkNode {
 model NetworkPort {
   id            Int       @id @default(autoincrement())
   nodeId        Int       @map("NodeId")
-  portNumber    Int       @map("PortNumber")     // 1-28
+  portNumber    String    @map("PortNumber")     // "5"-"28" or "X0"-"X7" for FIOM sub-ports
   cableLabel    String?   @map("CableLabel")     // e.g., "CBL05"
   deviceName    String?   @map("DeviceName")     // e.g., "NCP1_3S_VFD1"
   deviceType    String?   @map("DeviceType")     // e.g., "VFD", "SIO", "FIO", "POINT_IO"
   deviceIp      String?   @map("DeviceIp")       // e.g., "11.200.1.20"
   statusTag     String?   @map("StatusTag")      // PLC tag for device connection status
+  parentPortId  Int?      @map("ParentPortId")   // If sub-port, references parent FIOM port
   createdAt     DateTime  @default(now()) @map("CreatedAt")
 
   node          NetworkNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  parentPort    NetworkPort? @relation("SubPorts", fields: [parentPortId], references: [id], onDelete: Cascade)
+  subPorts      NetworkPort[] @relation("SubPorts")
 
   @@index([nodeId])
+  @@index([parentPortId])
   @@map("NetworkPorts")
+}
+
+// EStop (Emergency Pull Cord) check data
+model EStopZone {
+  id        Int      @id @default(autoincrement())
+  name      String   @map("Name")
+  createdAt DateTime @default(now()) @map("CreatedAt")
+  epcs      EStopEpc[]
+  @@map("EStopZones")
+}
+
+model EStopEpc {
+  id           Int      @id @default(autoincrement())
+  zoneId       Int      @map("ZoneId")
+  name         String   @map("Name")
+  checkTag     String   @map("CheckTag")
+  createdAt    DateTime @default(now()) @map("CreatedAt")
+  zone         EStopZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  ioPoints     EStopIoPoint[]
+  vfds         EStopVfd[]
+  @@index([zoneId])
+  @@map("EStopEpcs")
+}
+
+model EStopIoPoint {
+  id     Int    @id @default(autoincrement())
+  epcId  Int    @map("EpcId")
+  tag    String @map("Tag")
+  epc    EStopEpc @relation(fields: [epcId], references: [id], onDelete: Cascade)
+  @@index([epcId])
+  @@map("EStopIoPoints")
+}
+
+model EStopVfd {
+  id       Int     @id @default(autoincrement())
+  epcId    Int     @map("EpcId")
+  tag      String  @map("Tag")
+  stoTag   String  @map("StoTag")
+  mustStop Boolean @map("MustStop")
+  epc      EStopEpc @relation(fields: [epcId], references: [id], onDelete: Cascade)
+  @@index([epcId])
+  @@map("EStopVfds")
 }

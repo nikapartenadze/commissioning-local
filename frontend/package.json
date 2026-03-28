@@ -18,7 +18,8 @@
     "test:plc": "tsx test-plc.ts",
     "test:plc:simple": "tsx test-plc-simple.ts",
     "seed:diagnostics": "tsx prisma/seed-diagnostics.ts",
-    "seed:network": "tsx prisma/seed-network.ts"
+    "seed:network": "tsx prisma/seed-network.ts",
+    "seed:estop": "tsx prisma/seed-estop.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.19.0",
