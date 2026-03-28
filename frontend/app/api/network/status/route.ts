@@ -4,9 +4,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
 
-// Track which tags we've already created handles for
-const createdTags = new Set<string>()
-const failedTags = new Set<string>()
+// Track which tags we've already created handles for — reset on PLC reconnect
+let createdTags = new Set<string>()
+let failedTags = new Set<string>()
+let lastConnectedState = false
 
 /**
  * GET /api/network/status?subsystemId=45
@@ -18,7 +19,16 @@ export async function GET(request: NextRequest) {
     const subsystemId = parseInt(request.nextUrl.searchParams.get('subsystemId') || '')
 
     if (!hasPlcClient() || !getPlcClient().isConnected) {
+      lastConnectedState = false
       return NextResponse.json({ success: true, connected: false, tags: {} })
+    }
+
+    // Reset tag tracking when PLC reconnects (old handles are destroyed)
+    if (!lastConnectedState) {
+      createdTags = new Set<string>()
+      failedTags = new Set<string>()
+      lastConnectedState = true
+      console.log('[NetworkStatus] PLC (re)connected, resetting tag handles')
     }
 
     const where = !isNaN(subsystemId) ? { subsystemId } : {}
@@ -61,18 +71,10 @@ export async function GET(request: NextRequest) {
       console.log(`[NetworkStatus] Creating ${tagsToCreate.length} network tag handles`)
       const tagReader = (client as any).tagReader
       if (tagReader) {
-        for (const tagName of tagsToCreate) {
-          try {
-            const result = await tagReader.createTag(tagName, { elemSize: 1, elemCount: 1, timeout: 3000 })
-            if (result.success) {
-              createdTags.add(tagName)
-            } else {
-              failedTags.add(tagName)
-            }
-          } catch {
-            failedTags.add(tagName)
-          }
-        }
+        const result = await tagReader.createTags(tagsToCreate)
+        for (const name of result.successful) createdTags.add(name)
+        for (const f of result.failed) failedTags.add(f.name)
+        console.log(`[NetworkStatus] ${result.successful.length} success, ${result.failed.length} failed`)
       }
     }
 
