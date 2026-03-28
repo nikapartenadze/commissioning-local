@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, RefreshCw, Search, Copy, Check } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy, Check } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 
@@ -521,35 +521,7 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
   )
 
   return (
-    <div className="flex flex-col h-full space-y-2">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-1 flex-shrink-0">
-        <span className="text-sm font-semibold text-foreground">{node.name}</span>
-        <span className="text-xs text-muted-foreground">
-          {connectedPorts.length} connected / {visiblePortCount} ports (5–{totalPorts})
-        </span>
-        {node.ipAddress && (
-          <span className="ml-auto text-xs font-mono text-muted-foreground">{node.ipAddress}</span>
-        )}
-      </div>
-
-      {/* Zoom controls */}
-      <div className="flex items-center justify-end px-1">
-        <div className="flex items-center gap-1">
-          <button onClick={vp.zoomOut} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-            <ZoomOut className="w-4 h-4" />
-          </button>
-          <span className="text-[10px] text-muted-foreground w-10 text-center">{Math.round(vp.zoom * 100)}%</span>
-          <button onClick={vp.zoomIn} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-            <ZoomIn className="w-4 h-4" />
-          </button>
-          <button onClick={vp.resetView} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-            <Maximize2 className="w-4 h-4" />
-          </button>
-          <span className="text-[9px] text-muted-foreground/50 ml-2">Scroll to zoom, drag to pan</span>
-        </div>
-      </div>
-
+    <div className="flex flex-col h-full">
       {/* Viewport — scroll to zoom, drag to pan */}
       <div
         ref={viewportRef}
@@ -1030,12 +1002,12 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
       {/* Expanded DPM: Star diagram (left half) + Device table (right half) */}
       {expandedNode && (
-        <div className="flex gap-4" style={{ height: 'calc(100vh - 280px)', minHeight: 400 }}>
+        <div className="flex gap-0" style={{ height: 'calc(100vh - 260px)', minHeight: 400 }}>
           <div className="flex-1 min-w-0 flex flex-col">
             <StarDiagram node={expandedNode} tagStates={tagStates} subsystemId={subsystemId} />
           </div>
 
-          <div className="w-1/2 flex-shrink-0 border rounded-lg bg-card/50 flex flex-col overflow-hidden">
+          <div className="w-1/2 flex-shrink-0 border-l bg-card/50 flex flex-col overflow-hidden">
             <div className="p-3 border-b space-y-2">
               <h3 className="font-semibold text-sm">{expandedNode.name} — {dpmDevices.length} devices</h3>
               <div className="relative">
