@@ -10,7 +10,7 @@ import { TestResultsChart } from "@/components/test-results-chart"
 import { AllTestHistoryDialog } from "@/components/all-test-history-dialog"
 import { FireOutputDialog } from "@/components/fire-output-dialog"
 import { NetworkStatusBreadcrumbs } from "@/components/network-status-breadcrumbs"
-import { TagStatusPanel } from "@/components/tag-status-panel"
+// TagStatusPanel removed — data was stale/hardcoded; breadcrumbs show live tag stats
 import { TagStatusDialog, TagStatus } from "@/components/tag-status-dialog"
 import { ValueChangeDialog } from "@/components/value-change-dialog"
 import { FailCommentDialog } from "@/components/fail-comment-dialog"
@@ -1308,8 +1308,6 @@ export default function CommissioningPage() {
       {/* Network Status - Shows PLC path, cloud connection, etc */}
       <NetworkStatusBreadcrumbs className="flex-shrink-0 border-b" />
 
-      {/* Tag Status Panel - Shows PLC tag connection errors */}
-      <TagStatusPanel className="flex-shrink-0" />
 
       {/* Error Log - Collapsible, only shows when errors exist */}
       {errorLog.length > 0 && (

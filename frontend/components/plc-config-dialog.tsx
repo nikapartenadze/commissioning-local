@@ -420,13 +420,7 @@ export function PlcConfigDialog({
         } else {
           // PLC is reachable but tags don't match
           addPlcLog(`PLC connected at ${localConfig.ip} — but tags do not match.`)
-          addPlcLog(`IO Tags: ${connectData.tagsSuccessful || 0}/${connectData.totalTags || 0} OK${connectData.tagsFailed > 0 ? `, ${connectData.tagsFailed} failed` : ''}`)
-          if (connectData.networkTotalTags > 0) {
-            addPlcLog(`Network Tags: ${connectData.networkSuccessful || 0}/${connectData.networkTotalTags || 0} OK${connectData.networkFailed > 0 ? `, ${connectData.networkFailed} failed` : ''}`)
-          }
-          if (connectData.estopTotalTags > 0) {
-            addPlcLog(`EStop Tags: ${connectData.estopSuccessful || 0}/${connectData.estopTotalTags || 0} OK${connectData.estopFailed > 0 ? `, ${connectData.estopFailed} failed` : ''}`)
-          }
+          addPlcLog(`Tags: ${connectData.tagsSuccessful || 0}/${connectData.totalTags || 0} OK${connectData.tagsFailed > 0 ? `, ${connectData.tagsFailed} failed` : ''}`)
 
           if (failedTags.length > 0) {
             addPlcLog('---')
