@@ -345,15 +345,15 @@ function useViewport(containerRef: React.RefObject<HTMLDivElement | null>) {
     const el = containerRef.current
     if (!el) return
     const handler = (e: WheelEvent) => {
-      // Only zoom on Ctrl/Cmd+wheel — normal scroll passes through to page
-      if (!e.ctrlKey && !e.metaKey) return
+      // Capture all scroll inside the viewport for zoom — page doesn't scroll
       e.preventDefault()
+      e.stopPropagation()
       const rect = el.getBoundingClientRect()
       const mouseX = e.clientX - rect.left
       const mouseY = e.clientY - rect.top
       const oldZoom = zoomRef.current
-      const delta = e.deltaY > 0 ? -0.1 : 0.1
-      const newZoom = Math.min(3, Math.max(0.2, oldZoom + delta))
+      const delta = e.deltaY > 0 ? -0.08 : 0.08
+      const newZoom = Math.min(3, Math.max(0.15, oldZoom + delta))
       panRef.current = {
         x: mouseX - (mouseX - panRef.current.x) * (newZoom / oldZoom),
         y: mouseY - (mouseY - panRef.current.y) * (newZoom / oldZoom),
@@ -521,9 +521,9 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
   )
 
   return (
-    <div className="mt-3 space-y-2">
+    <div className="flex flex-col h-full space-y-2">
       {/* Header */}
-      <div className="flex items-center gap-3 px-1">
+      <div className="flex items-center gap-3 px-1 flex-shrink-0">
         <span className="text-sm font-semibold text-foreground">{node.name}</span>
         <span className="text-xs text-muted-foreground">
           {connectedPorts.length} connected / {visiblePortCount} ports (5–{totalPorts})
@@ -546,15 +546,14 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
           <button onClick={vp.resetView} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
             <Maximize2 className="w-4 h-4" />
           </button>
-          <span className="text-[9px] text-muted-foreground/50 ml-2">Ctrl+scroll to zoom</span>
+          <span className="text-[9px] text-muted-foreground/50 ml-2">Scroll to zoom, drag to pan</span>
         </div>
       </div>
 
-      {/* Viewport — Ctrl+wheel zooms, normal scroll passes through to page */}
+      {/* Viewport — scroll to zoom, drag to pan */}
       <div
         ref={viewportRef}
-        className="relative overflow-hidden rounded-lg border bg-card/50 cursor-grab active:cursor-grabbing select-none"
-        style={{ height: 700 }}
+        className="relative overflow-hidden rounded-lg border bg-card/50 cursor-grab active:cursor-grabbing select-none flex-1 min-h-0"
         onMouseDown={(e) => { vp.onMouseDown(e); setSelectedDevice(null) }}
         onMouseMove={vp.onMouseMove}
         onMouseUp={vp.onMouseUp}
@@ -1031,12 +1030,12 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
       {/* Expanded DPM: Star diagram (left half) + Device table (right half) */}
       {expandedNode && (
-        <div className="flex gap-4">
-          <div className="flex-1 min-w-0">
+        <div className="flex gap-4" style={{ height: 'calc(100vh - 280px)', minHeight: 400 }}>
+          <div className="flex-1 min-w-0 flex flex-col">
             <StarDiagram node={expandedNode} tagStates={tagStates} subsystemId={subsystemId} />
           </div>
 
-          <div className="w-1/2 flex-shrink-0 border rounded-lg bg-card/50 flex flex-col" style={{ maxHeight: 700 }}>
+          <div className="w-1/2 flex-shrink-0 border rounded-lg bg-card/50 flex flex-col overflow-hidden">
             <div className="p-3 border-b space-y-2">
               <h3 className="font-semibold text-sm">{expandedNode.name} — {dpmDevices.length} devices</h3>
               <div className="relative">
