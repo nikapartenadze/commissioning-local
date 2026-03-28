@@ -151,9 +151,19 @@ export async function POST(request: NextRequest) {
         console.log('[Connect API] No EStop data to load status tags');
       }
 
-      const allTags = [...tags, ...networkTags, ...estopTags];
+      // Deduplicate estop tags (many EPCs reference the same VFD STO tags)
+      // Also remove estop tags that already exist as IO tags
+      const existingTagNames = new Set([...tags.map(t => t.name), ...networkTags.map(t => t.name)]);
+      const uniqueEstopTags = estopTags.filter(t => {
+        if (existingTagNames.has(t.name)) return false;
+        if (existingTagNames.has(t.name)) return false; // already added
+        existingTagNames.add(t.name);
+        return true;
+      });
+
+      const allTags = [...tags, ...networkTags, ...uniqueEstopTags];
       loadPlcTags(allTags);
-      console.log(`[Connect API] Loaded ${tags.length} IO tags + ${networkTags.length} network tags + ${estopTags.length} estop tags into PLC client`);
+      console.log(`[Connect API] Loaded ${tags.length} IO tags + ${networkTags.length} network tags + ${uniqueEstopTags.length} estop tags (${estopTags.length - uniqueEstopTags.length} duplicates removed) into PLC client`);
       console.log('[Connect API] Sample tag names:', tags.slice(0, 5).map(t => t.name));
     } else {
       console.log('[Connect API] No IOs found in database - pull IOs from cloud first');
@@ -189,11 +199,13 @@ export async function POST(request: NextRequest) {
     // Build tag report — separate IO, network, and estop tags
     const rawFailedTags = connectResult.failedTags || [];
     const networkTagNames = new Set(networkTags.map(t => t.name));
-    const estopTagNames = new Set(estopTags.map(t => t.name));
+    const estopTagNames = new Set(uniqueEstopTags.map(t => t.name));
 
     const ioFailedTags = rawFailedTags.filter(t => !networkTagNames.has(t.name) && !estopTagNames.has(t.name));
     const networkFailedTags = rawFailedTags.filter(t => networkTagNames.has(t.name));
     const estopFailedTags = rawFailedTags.filter(t => estopTagNames.has(t.name));
+
+    console.log(`[Connect API] Tag report: IO ${ioFailedTags.length} failed, Network ${networkFailedTags.length} failed, EStop ${estopFailedTags.length} failed`)
 
     const ioLookup = new Map(ios.map(io => [io.name || '', io.description || '']));
     const failedTags = ioFailedTags.map(t => ({
@@ -219,8 +231,8 @@ export async function POST(request: NextRequest) {
       networkSuccessful: networkTags.length - networkFailedTags.length,
       networkFailed: networkFailedTags.length,
       // EStop stats
-      estopTotalTags: estopTags.length,
-      estopSuccessful: estopTags.length - estopFailedTags.length,
+      estopTotalTags: uniqueEstopTags.length,
+      estopSuccessful: uniqueEstopTags.length - estopFailedTags.length,
       estopFailed: estopFailedTags.length,
     };
 
