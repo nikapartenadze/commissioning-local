@@ -1245,7 +1245,7 @@ export default function CommissioningPage() {
         {/* Top row: title + tabs + actions */}
         <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12">
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-hidden">
-            <h1 className="text-sm sm:text-lg font-bold tracking-tight whitespace-nowrap hidden sm:block">IO CHECKOUT</h1>
+            <h1 className="text-sm sm:text-lg font-bold tracking-tight whitespace-nowrap hidden lg:block">IO CHECKOUT</h1>
             <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
               SUB {plcConfig.subsystemId}
             </span>
