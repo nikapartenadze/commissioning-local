@@ -123,9 +123,37 @@ export async function POST(request: NextRequest) {
         console.log('[Connect API] No network topology data to load status tags');
       }
 
-      const allTags = [...tags, ...networkTags];
+      // Also load EStop tags (checkTag, ioPoint tags, VFD STO tags) so they're polled in the same loop
+      const estopTags: typeof networkTags = [];
+      try {
+        const zones = await (prisma as any).eStopZone.findMany({
+          include: { epcs: { include: { ioPoints: true, vfds: true } } },
+        });
+        let estopId = -10000; // Negative IDs well below network range
+        for (const zone of zones) {
+          for (const epc of zone.epcs) {
+            if (epc.checkTag) {
+              estopTags.push({ id: estopId--, name: epc.checkTag, description: `EPC ${epc.name} check`, tagType: 'estop_status' });
+            }
+            for (const io of epc.ioPoints) {
+              if (io.tag) {
+                estopTags.push({ id: estopId--, name: io.tag, description: `EPC ${epc.name} IO point`, tagType: 'estop_status' });
+              }
+            }
+            for (const vfd of epc.vfds) {
+              if (vfd.stoTag) {
+                estopTags.push({ id: estopId--, name: vfd.stoTag, description: `VFD ${vfd.tag} STO`, tagType: 'estop_status' });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.log('[Connect API] No EStop data to load status tags');
+      }
+
+      const allTags = [...tags, ...networkTags, ...estopTags];
       loadPlcTags(allTags);
-      console.log(`[Connect API] Loaded ${tags.length} IO tags + ${networkTags.length} network status tags into PLC client`);
+      console.log(`[Connect API] Loaded ${tags.length} IO tags + ${networkTags.length} network tags + ${estopTags.length} estop tags into PLC client`);
       console.log('[Connect API] Sample tag names:', tags.slice(0, 5).map(t => t.name));
     } else {
       console.log('[Connect API] No IOs found in database - pull IOs from cloud first');
@@ -158,14 +186,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build tag report — separate IO tags from network status tags
+    // Build tag report — separate IO, network, and estop tags
     const rawFailedTags = connectResult.failedTags || [];
-    const ioNames = new Set(ios.map(io => io.name || ''));
     const networkTagNames = new Set(networkTags.map(t => t.name));
+    const estopTagNames = new Set(estopTags.map(t => t.name));
 
-    // Only show IO tag failures in the report (not network status tags)
-    const ioFailedTags = rawFailedTags.filter(t => !networkTagNames.has(t.name));
+    const ioFailedTags = rawFailedTags.filter(t => !networkTagNames.has(t.name) && !estopTagNames.has(t.name));
     const networkFailedTags = rawFailedTags.filter(t => networkTagNames.has(t.name));
+    const estopFailedTags = rawFailedTags.filter(t => estopTagNames.has(t.name));
 
     const ioLookup = new Map(ios.map(io => [io.name || '', io.description || '']));
     const failedTags = ioFailedTags.map(t => ({
@@ -175,7 +203,8 @@ export async function POST(request: NextRequest) {
     }));
 
     const plcReachable = connectResult.plcReachable ?? false;
-    const ioTagsSuccessful = (connectResult.tagsSuccessful || 0) - (networkTags.length - networkFailedTags.length);
+    const nonIoSuccessful = (networkTags.length - networkFailedTags.length) + (estopTags.length - estopFailedTags.length);
+    const ioTagsSuccessful = (connectResult.tagsSuccessful || 0) - nonIoSuccessful;
     const tagReport = {
       plcIp: body.ip,
       plcPath: body.path,
@@ -185,10 +214,14 @@ export async function POST(request: NextRequest) {
       tagsSuccessful: Math.max(0, ioTagsSuccessful),
       tagsFailed: ioFailedTags.length,
       failedTags: failedTags.slice(0, 100),
-      // Network stats shown separately
+      // Network stats
       networkTotalTags: networkTags.length,
       networkSuccessful: networkTags.length - networkFailedTags.length,
       networkFailed: networkFailedTags.length,
+      // EStop stats
+      estopTotalTags: estopTags.length,
+      estopSuccessful: estopTags.length - estopFailedTags.length,
+      estopFailed: estopFailedTags.length,
     };
 
     if (!connectResult.success) {
