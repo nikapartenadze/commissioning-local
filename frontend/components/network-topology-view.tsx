@@ -525,7 +525,7 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
       {/* Viewport — scroll to zoom, drag to pan */}
       <div
         ref={viewportRef}
-        className="relative overflow-hidden rounded-lg border bg-card/50 cursor-grab active:cursor-grabbing select-none flex-1 min-h-0"
+        className="relative overflow-hidden cursor-grab active:cursor-grabbing select-none flex-1 min-h-0"
         onMouseDown={(e) => { vp.onMouseDown(e); setSelectedDevice(null) }}
         onMouseMove={vp.onMouseMove}
         onMouseUp={vp.onMouseUp}
@@ -1002,12 +1002,14 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
       {/* Expanded DPM: Star diagram (left half) + Device table (right half) */}
       {expandedNode && (
-        <div className="flex gap-0" style={{ height: 'calc(100vh - 260px)', minHeight: 400 }}>
+        <div className="flex border rounded-lg overflow-hidden" style={{ height: 'calc(100vh - 260px)', minHeight: 400 }}>
+          {/* Left: Star diagram */}
           <div className="flex-1 min-w-0 flex flex-col">
             <StarDiagram node={expandedNode} tagStates={tagStates} subsystemId={subsystemId} />
           </div>
 
-          <div className="w-1/2 flex-shrink-0 border-l bg-card/50 flex flex-col overflow-hidden">
+          {/* Right: Device table */}
+          <div className="w-1/2 flex-shrink-0 border-l flex flex-col overflow-hidden">
             <div className="p-3 border-b space-y-2">
               <h3 className="font-semibold text-sm">{expandedNode.name} — {dpmDevices.length} devices</h3>
               <div className="relative">
