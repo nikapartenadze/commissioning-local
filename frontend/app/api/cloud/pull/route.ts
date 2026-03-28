@@ -297,11 +297,52 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       // WebSocket server might not be running
     }
 
+    // Also pull network + estop data alongside IOs (non-blocking, failures don't affect IO pull)
+    let networkPulled = 0
+    let estopPulled = 0
+    try {
+      // Pull network topology
+      const netRes = await fetch(`${remoteUrl}/api/sync/network/${subsystemId}`, {
+        headers: cloudHeaders,
+        signal: AbortSignal.timeout(15000),
+      })
+      if (netRes.ok) {
+        const netData = await netRes.json()
+        // Pull-network logic handled by existing endpoint
+        const pullNetRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/cloud/pull-network`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        })
+        if (pullNetRes.ok) {
+          const pullNetData = await pullNetRes.json()
+          networkPulled = pullNetData.rings || 0
+        }
+      }
+    } catch {
+      console.log('[CloudPull] Network pull skipped or failed (non-critical)')
+    }
+
+    try {
+      // Pull estop data
+      const pullEstopRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/cloud/pull-estop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (pullEstopRes.ok) {
+        const pullEstopData = await pullEstopRes.json()
+        estopPulled = pullEstopData.zones || 0
+      }
+    } catch {
+      console.log('[CloudPull] EStop pull skipped or failed (non-critical)')
+    }
+
     return NextResponse.json({
       success: true,
       message: `Successfully pulled ${result} IOs from cloud`,
       iosCount: result,
       ioCount: result,
+      networkPulled,
+      estopPulled,
       ...(pullWarning ? { warning: pullWarning } : {}),
       debug: {
         cloudIosLength: cloudIos.length,

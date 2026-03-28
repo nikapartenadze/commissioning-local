@@ -65,6 +65,29 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
 
   useEffect(() => {
     fetchNetworkStatus()
+    // Poll every 5 seconds for live updates
+    const interval = setInterval(fetchNetworkStatus, 5000)
+    return () => clearInterval(interval)
+  }, [fetchNetworkStatus])
+
+  // Listen for PLC connection changes via WebSocket to trigger immediate refresh
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(event.data)
+        if (msg.type === 'PlcConnectionChanged' || msg.type === 'NetworkStatusChanged') {
+          fetchNetworkStatus()
+        }
+      } catch { /* ignore non-JSON */ }
+    }
+
+    // Find existing WebSocket connections and listen
+    // The signalr-client manages the WS, but we can also just refetch on visibility change
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') fetchNetworkStatus()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [fetchNetworkStatus])
 
   const getStatusColor = (status: NetworkNodeStatus) => {
