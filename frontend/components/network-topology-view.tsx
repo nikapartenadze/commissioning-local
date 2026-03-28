@@ -399,242 +399,45 @@ interface FiomPort {
 function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates: Record<string, boolean | null> }) {
   const fiomName = fiomPort.deviceName || ''
   const subPorts = fiomPort.subPorts || []
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const vp = useViewport(viewportRef)
-  const [selectedPort, setSelectedPort] = useState<{ port: NetworkPort; x: number; y: number } | null>(null)
 
   if (subPorts.length === 0) return <div className="py-8 text-center text-sm text-muted-foreground">No sub-devices found for {fiomName}</div>
 
-  // Determine how many X-ports we have (extract max port index from "X0","X2","X3"...)
-  const xNumbers = subPorts.map(p => parseInt(p.portNumber.replace('X', ''))).filter(n => !isNaN(n))
-  const TOTAL_PORTS = Math.max(8, ...xNumbers.map(n => n + 1))
-  const connectedPorts = subPorts.filter(p => p.deviceName)
+  const connectedPorts = subPorts.filter(p => p.deviceName).sort((a, b) => {
+    const aNum = parseInt(a.portNumber.replace('X', ''))
+    const bNum = parseInt(b.portNumber.replace('X', ''))
+    return aNum - bNum
+  })
 
-  // Status from the actual Communication_Faulted status tag stored on each sub-port
   function portStatus(port: NetworkPort): 'green' | 'red' | 'gray' {
     return getStatusColor(port.statusTag, tagStates)
   }
-  function portStatusByLabel(label: string): 'green' | 'red' | 'gray' {
-    const p = subPorts.find(sp => sp.portNumber === label)
-    return p ? portStatus(p) : 'gray'
-  }
-
-  // Layout — rectangle device cards with horizontal text
-  const DEVICE_W = 100
-  const DEVICE_H = 56
-  const PORT_SPACING = 110
-  const PORT_RECT_W = 28
-  const PORT_RECT_H = 24
-  const portStripW = (TOTAL_PORTS - 1) * PORT_SPACING + PORT_RECT_W
-
-  // FIOM block — thin vertical: 2 cols × 4 rows
-  const FIOM_PORT_R = 12
-  const FIOM_PORT_ROWS = 4
-  const FIOM_PORT_SPACE_X = 36
-  const FIOM_PORT_SPACE_Y = 36
-  const FIOM_PAD_X = 20
-  const FIOM_PAD_Y = 18
-  const fiomW = FIOM_PAD_X * 2 + FIOM_PORT_SPACE_X + FIOM_PORT_R * 2
-  const fiomH = FIOM_PAD_Y * 2 + (FIOM_PORT_ROWS - 1) * FIOM_PORT_SPACE_Y + FIOM_PORT_R * 2
-
-  const totalW = Math.max(portStripW, fiomW) + 100
-  const portStripStartX = totalW / 2 - portStripW / 2 + PORT_RECT_W / 2
-  const fiomX = totalW / 2 - fiomW / 2
-
-  function portStripCx(portIdx: number) { return portStripStartX + portIdx * PORT_SPACING }
-
-  const DEVICE_Y = 10
-  const PORT_STRIP_Y = DEVICE_Y + DEVICE_H + 20
-  const FIOM_LABEL_H = 30
-  const FIOM_Y = PORT_STRIP_Y + PORT_RECT_H + 16 + FIOM_LABEL_H
-  const totalH = FIOM_Y + fiomH + 20
-
-  function fiomPortPos(portIdx: number) {
-    const col = portIdx < FIOM_PORT_ROWS ? 0 : 1
-    const row = portIdx % FIOM_PORT_ROWS
-    return {
-      x: fiomX + FIOM_PAD_X + FIOM_PORT_R + col * FIOM_PORT_SPACE_X,
-      y: FIOM_Y + FIOM_PAD_Y + FIOM_PORT_R + row * FIOM_PORT_SPACE_Y,
-    }
-  }
-
-  // FIOM-level status: use the parent FIOM's own ConnectionFaulted tag
-  const fiomStatus = getStatusColor(fiomPort.statusTag, tagStates)
-  const fiomStroke = statusToHex(fiomStatus)
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-3 px-1">
-        <span className="text-xs text-muted-foreground">
-          {connectedPorts.length} connected / {TOTAL_PORTS} ports
-        </span>
+    <div className="space-y-3">
+      <div className="text-xs text-muted-foreground px-1">
+        {connectedPorts.length} connected devices
       </div>
-
-      <div className="flex items-center justify-end px-1">
-        <div className="flex items-center gap-1">
-          <button onClick={vp.zoomOut} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"><ZoomOut className="w-4 h-4" /></button>
-          <span className="text-[10px] text-muted-foreground w-10 text-center">{Math.round(vp.zoom * 100)}%</span>
-          <button onClick={vp.zoomIn} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"><ZoomIn className="w-4 h-4" /></button>
-          <button onClick={vp.resetView} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"><Maximize2 className="w-4 h-4" /></button>
-        </div>
-      </div>
-
-      <div
-        ref={viewportRef}
-        className="relative overflow-hidden rounded-lg border bg-card/50 cursor-grab active:cursor-grabbing select-none"
-        style={{ height: 550 }}
-        onMouseDown={(e) => { vp.onMouseDown(e); setSelectedPort(null) }}
-        onMouseMove={vp.onMouseMove}
-        onMouseUp={vp.onMouseUp}
-        onMouseLeave={vp.onMouseUp}
-      >
-        <svg
-          width={totalW} height={totalH}
-          viewBox={`0 0 ${totalW} ${totalH}`}
-          style={{ transform: `translate(${vp.pan.x}px, ${vp.pan.y}px) scale(${vp.zoom})`, transformOrigin: '0 0' }}
-        >
-          <defs>
-            {connectedPorts.map((port) => {
-              const portIdx = parseInt(port.portNumber.replace('X', ''))
-              if (isNaN(portIdx)) return null
-              const cx = portStripCx(portIdx)
-              return (
-                <clipPath key={`clip-f-${port.id}`} id={`clip-f-${port.id}`}>
-                  <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} />
-                </clipPath>
-              )
-            })}
-          </defs>
-
-          {/* Cable lines */}
-          {connectedPorts.map((port) => {
-            const portIdx = parseInt(port.portNumber.replace('X', ''))
-            if (isNaN(portIdx)) return null
-            const cx = portStripCx(portIdx)
-            const s = portStatus(port)
-            return (
-              <line key={`cable-${port.id}`}
-                x1={cx} y1={DEVICE_Y + DEVICE_H} x2={cx} y2={PORT_STRIP_Y}
-                stroke={statusToHex(s)} strokeWidth={1.5} strokeOpacity={0.7}
-              />
-            )
-          })}
-
-          {/* Device cards — placed at actual X-port position */}
-          {connectedPorts.map((port) => {
-            const portIdx = parseInt(port.portNumber.replace('X', ''))
-            if (isNaN(portIdx)) return null
-            const cx = portStripCx(portIdx)
-            const s = portStatus(port)
-            const color = statusToHex(s)
-
-            return (
-              <g key={`dev-${port.id}`} className="cursor-pointer" onClick={(e) => {
-                e.stopPropagation()
-                const rect = viewportRef.current?.getBoundingClientRect()
-                if (rect) setSelectedPort({ port, x: e.clientX - rect.left, y: e.clientY - rect.top })
-              }}>
-                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
-                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4}
-                  fill="none" stroke={color} strokeWidth={1.5} strokeOpacity={0.7}
-                />
-                <path
-                  d={`M ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y} Q ${cx - DEVICE_W / 2} ${DEVICE_Y} ${cx - DEVICE_W / 2} ${DEVICE_Y + 4} L ${cx - DEVICE_W / 2} ${DEVICE_Y + 18} L ${cx + DEVICE_W / 2} ${DEVICE_Y + 18} L ${cx + DEVICE_W / 2} ${DEVICE_Y + 4} Q ${cx + DEVICE_W / 2} ${DEVICE_Y} ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y} Z`}
-                  fill={DEVICE_HEADER_COLOR}
-                />
-                <text x={cx} y={DEVICE_Y + 12} textAnchor="middle" fontSize={8} fontWeight="bold" fill="#fff">
-                  {port.portNumber}
-                </text>
-                <g clipPath={`url(#clip-f-${port.id})`}>
-                  <text x={cx} y={DEVICE_Y + 34} textAnchor="middle" fontSize={8} fontWeight="bold" fill="#ffffff">
-                    {port.deviceName}
-                  </text>
-                  {port.deviceIp && (
-                    <text x={cx} y={DEVICE_Y + 46} textAnchor="middle" fontSize={7} fill="hsl(var(--muted-foreground))">
-                      {port.deviceIp}
-                    </text>
-                  )}
-                </g>
-                <rect x={cx - 3} y={DEVICE_Y + DEVICE_H - 1} width={6} height={3} rx={1} fill={color} fillOpacity={0.6} />
-              </g>
-            )
-          })}
-
-          {/* Port reference strip */}
-          {Array.from({ length: TOTAL_PORTS }, (_, i) => {
-            const cx = portStripCx(i)
-            const label = `X${i}`
-            const matchingPort = connectedPorts.find(p => p.portNumber === label)
-            const isConnected = !!matchingPort
-            const s = isConnected ? portStatus(matchingPort) : 'gray' as const
-            const color = statusToHex(s)
-            return (
-              <g key={`strip-${i}`}>
-                <rect x={cx - PORT_RECT_W / 2} y={PORT_STRIP_Y} width={PORT_RECT_W} height={PORT_RECT_H} rx={3}
-                  fill={isConnected ? color : 'hsl(var(--card))'} fillOpacity={isConnected ? 0.15 : 0.5}
-                  stroke={isConnected ? color : 'hsl(var(--border))'} strokeWidth={isConnected ? 1.5 : 1} strokeOpacity={isConnected ? 0.8 : 0.4}
-                />
-                <text x={cx} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4} textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace"
-                  fill={isConnected ? color : 'hsl(var(--muted-foreground))'}
-                >{label}</text>
-              </g>
-            )
-          })}
-          <text x={portStripCx(0) - PORT_RECT_W / 2 - 8} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
-            textAnchor="end" fontSize={9} className="fill-muted-foreground" fontFamily="monospace">PORTS</text>
-
-          {/* FIOM label */}
-          <text x={fiomX + fiomW / 2} y={FIOM_Y - FIOM_LABEL_H + 14} textAnchor="middle" fontSize={13} fontWeight="bold" fill={fiomStroke}>{fiomName}</text>
-          <text x={fiomX + fiomW / 2} y={FIOM_Y - FIOM_LABEL_H + 28} textAnchor="middle" fontSize={9} fontFamily="monospace" className="fill-muted-foreground">FIBER I/O MODULE</text>
-
-          {/* FIOM block */}
-          <rect x={fiomX} y={FIOM_Y} width={fiomW} height={fiomH} rx={6}
-            fill="hsl(var(--card))" stroke={fiomStroke} strokeWidth={2}
-          />
-
-          {/* Port circles inside FIOM */}
-          {Array.from({ length: Math.min(TOTAL_PORTS, 8) }, (_, i) => {
-            const { x, y } = fiomPortPos(i)
-            const subPort = connectedPorts.find(p => p.portNumber === `X${i}`)
-            const isConnected = !!subPort
-            const s = isConnected ? portStatus(subPort) : 'gray' as const
-            const color = statusToHex(s)
-            return (
-              <g key={`fp-${i}`}>
-                <circle cx={x} cy={y} r={FIOM_PORT_R}
-                  fill={color} fillOpacity={isConnected ? 0.85 : 0.4}
-                  stroke={isConnected ? 'hsl(var(--foreground))' : 'hsl(var(--border))'} strokeWidth={isConnected ? 2 : 1}
-                />
-                {isConnected && <circle cx={x} cy={y} r={FIOM_PORT_R - 4} fill="none" stroke="hsl(var(--card))" strokeWidth={1.5} />}
-                <text x={x} y={y + 4} textAnchor="middle" fontSize={8} fontWeight="bold" fontFamily="monospace"
-                  fill={isConnected ? 'hsl(var(--card))' : 'hsl(var(--muted-foreground))'}>{i}</text>
-              </g>
-            )
-          })}
-        </svg>
-
-        {/* Click popup for port info */}
-        {selectedPort && (
-          <div
-            className="absolute z-10 bg-popover border rounded-lg shadow-lg p-3 min-w-[240px] max-w-[320px]"
-            style={{ left: Math.min(selectedPort.x, 400), top: Math.max(selectedPort.y - 100, 8) }}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-sm text-foreground">{selectedPort.port.deviceName}</span>
-                <CopyBtn text={selectedPort.port.deviceName || ''} />
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+        {connectedPorts.map((port) => {
+          const s = portStatus(port)
+          const color = statusToHex(s)
+          const borderClass = s === 'green' ? 'border-green-500/60' : s === 'red' ? 'border-red-500/60' : 'border-border'
+          return (
+            <div key={port.id} className={cn("rounded-lg border-2 overflow-hidden bg-card", borderClass)}>
+              {/* Header */}
+              <div className="bg-blue-500 px-3 py-1.5 flex items-center justify-between">
+                <span className="text-[10px] font-bold text-white">{port.portNumber}</span>
+                <div className={cn("w-2 h-2 rounded-full", s === 'green' ? 'bg-green-400' : s === 'red' ? 'bg-red-400' : 'bg-gray-400')} />
               </div>
-              <button onClick={() => setSelectedPort(null)} className="text-muted-foreground hover:text-foreground p-0.5">
-                <X className="w-3.5 h-3.5" />
-              </button>
+              {/* Body */}
+              <div className="px-3 py-2">
+                <p className="text-xs font-bold text-foreground truncate" title={port.deviceName || ''}>{port.deviceName}</p>
+                {port.deviceIp && <p className="text-[10px] font-mono text-muted-foreground mt-0.5">{port.deviceIp}</p>}
+                {port.statusTag && <p className="text-[10px] font-mono text-muted-foreground/60 mt-0.5 truncate" title={port.statusTag}>{port.statusTag}</p>}
+              </div>
             </div>
-            <div className="text-xs space-y-1">
-              <p className="text-muted-foreground flex items-center gap-1">Port: <span className="font-mono text-foreground">{selectedPort.port.portNumber}</span> <CopyBtn text={selectedPort.port.portNumber} /></p>
-              {selectedPort.port.deviceIp && <p className="text-muted-foreground flex items-center gap-1">IP: <span className="font-mono text-foreground">{selectedPort.port.deviceIp}</span> <CopyBtn text={selectedPort.port.deviceIp} /></p>}
-              <p className="text-muted-foreground flex items-center gap-1">Status: <span className="font-mono text-foreground">{selectedPort.port.statusTag || 'N/A'}</span> {selectedPort.port.statusTag && <CopyBtn text={selectedPort.port.statusTag} />}</p>
-            </div>
-          </div>
-        )}
+          )
+        })}
       </div>
     </div>
   )
@@ -652,21 +455,34 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
   const [expandedFiom, setExpandedFiom] = useState<NetworkPort | null>(null)
 
   const FIRST_VISIBLE_PORT = 5 // skip ports 1-4 (unreachable)
-  const connectedPorts = node.ports.filter((p) => p.deviceName && !p.parentPortId && parseInt(p.portNumber) >= FIRST_VISIBLE_PORT)
+  const connectedPorts = node.ports
+    .filter((p) => p.deviceName && !p.parentPortId && parseInt(p.portNumber) >= FIRST_VISIBLE_PORT)
+    .sort((a, b) => parseInt(a.portNumber) - parseInt(b.portNumber))
   const totalPorts = node.totalPorts
   const visiblePortCount = totalPorts - FIRST_VISIBLE_PORT + 1
 
-  // ── Device cards: wide enough for horizontal text ──
-  const DEVICE_W = 100
+  // ── Device cards in a grid: max 4 per row ──
+  const COLS = 4
+  const DEVICE_W = 140
   const DEVICE_H = 56
+  const DEVICE_GAP_X = 16
+  const DEVICE_GAP_Y = 32 // extra space for port number box below each card
+  const deviceRows = Math.ceil(connectedPorts.length / COLS)
 
-  // Port strip — spaced wide enough for device cards above
-  const PORT_RECT_W = 28
-  const PORT_RECT_H = 24
-  const PORT_SPACING = 110 // wide enough for DEVICE_W cards
-  const portStripW = (visiblePortCount - 1) * PORT_SPACING + PORT_RECT_W
+  // Device grid position (row, col) → (x, y)
+  function devPos(devIdx: number) {
+    const col = devIdx % COLS
+    const row = Math.floor(devIdx / COLS)
+    return {
+      x: 20 + col * (DEVICE_W + DEVICE_GAP_X) + DEVICE_W / 2,
+      y: 10 + row * (DEVICE_H + DEVICE_GAP_Y) + DEVICE_H / 2,
+    }
+  }
 
-  // DPM block (wide, short) — always 4 rows, columns sized to fit
+  const gridW = Math.min(connectedPorts.length, COLS) * (DEVICE_W + DEVICE_GAP_X) - DEVICE_GAP_X + 40
+  const gridH = deviceRows * (DEVICE_H + DEVICE_GAP_Y) - DEVICE_GAP_Y
+
+  // DPM block below the device grid
   const DPM_PORT_R = 18
   const DPM_PORT_ROWS = 4
   const DPM_PORT_COLS = Math.ceil(visiblePortCount / DPM_PORT_ROWS)
@@ -678,26 +494,16 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
   const dpmW = DPM_PAD_X * 2 + (DPM_PORT_COLS - 1) * DPM_PORT_SPACE_X + DPM_PORT_R * 2
   const dpmH = DPM_PAD_TOP + (DPM_PORT_ROWS - 1) * DPM_PORT_SPACE_Y + DPM_PORT_R * 2 + DPM_PAD_BOT
 
-  const totalW = Math.max(portStripW, dpmW) + 100
-
-  // Port strip is the widest element — center everything off it
-  const portStripStartX = totalW / 2 - portStripW / 2 + PORT_RECT_W / 2
+  const totalW = Math.max(gridW, dpmW) + 60
   const dpmX = totalW / 2 - dpmW / 2
 
-  // Each port gets an X position; remap so port 5 starts at index 0
-  function portStripCx(portNum: number | string) { return portStripStartX + (Number(portNum) - FIRST_VISIBLE_PORT) * PORT_SPACING }
-  // Device X = its port's X (no separate device row — they're above their ports)
-  function devCx(devIdx: number) { return portStripCx(Number(connectedPorts[devIdx].portNumber)) }
-
-  // ── Layout Y positions ──
-  const DEVICE_Y = 10
-  const PORT_STRIP_Y = DEVICE_Y + DEVICE_H + 20
-  const DPM_LABEL_H = 36 // space for name above the card
-  const DPM_Y = PORT_STRIP_Y + PORT_RECT_H + 20 + DPM_LABEL_H
+  // Y positions
+  const DEVICE_Y_START = 10
+  const DPM_LABEL_H = 36
+  const DPM_Y = DEVICE_Y_START + gridH + 40 + DPM_LABEL_H
   const totalH = DPM_Y + dpmH + 20
 
-  // DPM port position — numbered column-by-column (top→bottom, then next column)
-  // portNum is the actual port number (5+), remapped to grid index
+  // DPM port position
   function dpmPortPos(portNum: number) {
     const idx = portNum - FIRST_VISIBLE_PORT
     const col = Math.floor(idx / DPM_PORT_ROWS)
@@ -761,36 +567,23 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
             transformOrigin: '0 0',
           }}
         >
-          {/* ── clipPath defs for DPM device cards ── */}
+          {/* ── clipPath defs for device cards ── */}
           <defs>
             {connectedPorts.map((port, devIdx) => {
-              const cx = devCx(devIdx)
+              const { x: cx, y: cy } = devPos(devIdx)
               return (
                 <clipPath key={`clip-dpm-${port.id}`} id={`clip-dpm-${port.id}`}>
-                  <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} />
+                  <rect x={cx - DEVICE_W / 2} y={cy - DEVICE_H / 2} width={DEVICE_W} height={DEVICE_H} rx={4} />
                 </clipPath>
               )
             })}
           </defs>
 
-          {/* ── Cable lines: green/red based on device status ── */}
-          {connectedPorts.map((port) => {
-            const psx = portStripCx(port.portNumber)
-            const s = getStatusColor(port.statusTag, tagStates)
-            const lineColor = statusToHex(s)
 
-            return (
-              <line key={`cable-${port.id}`}
-                x1={psx} y1={DEVICE_Y + DEVICE_H}
-                x2={psx} y2={PORT_STRIP_Y}
-                stroke={lineColor} strokeWidth={1.5} strokeOpacity={0.7}
-              />
-            )
-          })}
-
-          {/* ── Device cards: blue header, green/red body based on status ── */}
+          {/* ── Device cards in grid layout ── */}
           {connectedPorts.map((port, devIdx) => {
-            const cx = devCx(devIdx)
+            const { x: cx, y: cy } = devPos(devIdx)
+            const DEVICE_Y = cy - DEVICE_H / 2
             const deviceType = getDeviceType(port.deviceName || '')
             const isFiomDevice = deviceType === 'FIOM'
             const headerColor = DEVICE_HEADER_COLOR
@@ -818,31 +611,6 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                   })
                 }
               }}>
-                {/* FIOM indicator — white chevron arrow showing it has sub-devices */}
-                {isFiomDevice && (() => {
-                  const hasSubDevices = node.ports.some(p => p.parentPortId === port.id)
-                  if (!hasSubDevices) return null
-                  const chevronY = DEVICE_Y + DEVICE_H + 4
-                  const isOpen = expandedFiom?.id === port.id
-                  return (
-                    <g>
-                      <path
-                        d={`M ${cx - 6} ${chevronY} L ${cx} ${chevronY + 6} L ${cx + 6} ${chevronY}`}
-                        fill="none" stroke="#ffffff" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
-                        opacity={isOpen ? 1 : 0.9}
-                      />
-                      {!isOpen && (
-                        <path
-                          d={`M ${cx - 6} ${chevronY} L ${cx} ${chevronY + 6} L ${cx + 6} ${chevronY}`}
-                          fill="none" stroke="#ffffff" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
-                        >
-                          <animate attributeName="opacity" values="0.9;0.4;0.9" dur="1.5s" repeatCount="indefinite" />
-                          <animateTransform attributeName="transform" type="translate" values="0,0;0,2;0,0" dur="1.5s" repeatCount="indefinite" />
-                        </path>
-                      )}
-                    </g>
-                  )
-                })()}
                 {/* Full card background */}
                 <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
                 {/* Body border — status color */}
@@ -860,66 +628,63 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                       Z`}
                   fill={headerColor}
                 />
-                <text x={cx} y={DEVICE_Y + 12} textAnchor="middle" fontSize={8} fontWeight="bold" fill="#fff">
+                <text x={cx - DEVICE_W / 2 + 6} y={DEVICE_Y + 12} textAnchor="start" fontSize={8} fontWeight="bold" fill="#fff">
                   {deviceType}
+                </text>
+                <text x={cx + DEVICE_W / 2 - 6} y={DEVICE_Y + 12} textAnchor="end" fontSize={7} fill="rgba(255,255,255,0.7)" fontFamily="monospace">
+                  P{port.portNumber}
                 </text>
                 {/* Device name — horizontal, clipped to card bounds */}
                 <g clipPath={`url(#clip-dpm-${port.id})`}>
                   <text
                     x={cx} y={DEVICE_Y + 34}
                     textAnchor="middle"
-                    fontSize={8} fontWeight="bold" fill="#ffffff"
+                    fontSize={9} fontWeight="bold" fill="#ffffff"
                   >
                     {port.deviceName}
                   </text>
                   {port.deviceIp && (
-                    <text x={cx} y={DEVICE_Y + 46} textAnchor="middle" fontSize={7} fill="hsl(var(--muted-foreground))">
+                    <text x={cx} y={DEVICE_Y + 48} textAnchor="middle" fontSize={7} fill="hsl(var(--muted-foreground))">
                       {port.deviceIp}
                     </text>
                   )}
                 </g>
-                <rect x={cx - 3} y={DEVICE_Y + DEVICE_H - 1} width={6} height={3} rx={1} fill={bodyColor} fillOpacity={0.6} />
-              </g>
-            )
-          })}
-
-          {/* ── Port reference strip: green/red based on status ── */}
-          {allPorts.map((port, i) => {
-            const portNum = i + FIRST_VISIBLE_PORT
-            const cx = portStripCx(portNum)
-            const isConnected = !!port?.deviceName
-            const s = isConnected ? getStatusColor(port!.statusTag, tagStates) : 'gray'
-            const statusColor = statusToHex(s)
-
-            return (
-              <g key={`strip-${i}`}>
-                <rect
-                  x={cx - PORT_RECT_W / 2} y={PORT_STRIP_Y}
-                  width={PORT_RECT_W} height={PORT_RECT_H}
-                  rx={3}
-                  fill={isConnected ? statusColor : 'hsl(var(--card))'}
-                  fillOpacity={isConnected ? 0.15 : 0.5}
-                  stroke={isConnected ? statusColor : 'hsl(var(--border))'}
-                  strokeWidth={isConnected ? 1.5 : 1}
-                  strokeOpacity={isConnected ? 0.8 : 0.4}
+                {/* Port number box below card */}
+                <rect x={cx - 14} y={DEVICE_Y + DEVICE_H + 4} width={28} height={18} rx={3}
+                  fill={bodyColor} fillOpacity={0.8}
                 />
-                <text
-                  x={cx} y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
-                  textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace"
-                  fill={isConnected ? (s === 'gray' ? 'hsl(var(--foreground))' : statusColor) : 'hsl(var(--muted-foreground))'}
-                >
-                  {portNum}
+                <text x={cx} y={DEVICE_Y + DEVICE_H + 16} textAnchor="middle" fontSize={9} fontWeight="bold" fontFamily="monospace" fill="#ffffff">
+                  {port.portNumber}
                 </text>
               </g>
             )
           })}
-          <text
-            x={portStripCx(1) - PORT_RECT_W / 2 - 8}
-            y={PORT_STRIP_Y + PORT_RECT_H / 2 + 4}
-            textAnchor="end" fontSize={9} className="fill-muted-foreground" fontFamily="monospace"
-          >
-            PORTS
-          </text>
+
+          {/* ── FIOM sub-device badges (rendered on top of all cards) ── */}
+          {connectedPorts.map((port, devIdx) => {
+            const deviceType = getDeviceType(port.deviceName || '')
+            if (deviceType !== 'FIOM') return null
+            const subCount = node.ports.filter(p => p.parentPortId === port.id).length
+            if (subCount === 0) return null
+            const { x: cx, y: cy } = devPos(devIdx)
+            const badgeX = cx + DEVICE_W / 2 - 2
+            const badgeY = cy - DEVICE_H / 2 - 2
+            const isOpen = expandedFiom?.id === port.id
+            return (
+              <g key={`fiom-badge-${port.id}`}>
+                <circle cx={badgeX} cy={badgeY} r={9} fill={isOpen ? '#3b82f6' : '#f59e0b'} />
+                <text x={badgeX} y={badgeY + 3.5} textAnchor="middle" fontSize={9} fontWeight="bold" fill="#fff">
+                  {subCount}
+                </text>
+                {!isOpen && (
+                  <circle cx={badgeX} cy={badgeY} r={9} fill="none" stroke="#f59e0b" strokeWidth={2}>
+                    <animate attributeName="r" values="9;13;9" dur="1.5s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="1;0;1" dur="1.5s" repeatCount="indefinite" />
+                  </circle>
+                )}
+              </g>
+            )
+          })}
 
           {/* ── DPM label (outside, above card) ── */}
           {(() => {
