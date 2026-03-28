@@ -28,18 +28,18 @@ export async function GET(request: NextRequest) {
       orderBy: { order: 'asc' },
     })
 
-    const failedIos = ios.filter(io => io.result === 'Fail')
+    const failedIos = ios.filter(io => io.result === 'Failed' || io.result === 'Fail')
 
-    // Get latest test history for failed IOs
-    const failedHistories = failedIos.length > 0
-      ? await prisma.testHistory.findMany({
-          where: {
-            ioId: { in: failedIos.map(io => io.id) },
-            result: 'Fail',
-          },
-          orderBy: { timestamp: 'desc' },
-        })
-      : []
+    // Get latest test history for ALL IOs (to get failure reasons)
+    const allHistories = await prisma.testHistory.findMany({
+      where: {
+        ioId: { in: ios.map(io => io.id) },
+      },
+      orderBy: { timestamp: 'desc' },
+    })
+
+    // Get latest test history for failed IOs specifically
+    const failedHistories = allHistories.filter(h => h.result === 'Failed' || h.result === 'Fail')
 
     // Map ioId -> latest failure info
     const failureMap = new Map<number, { failureMode: string | null; testedBy: string | null }>()
@@ -49,10 +49,18 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Map ioId -> latest test info (for the main table's reason + testedBy columns)
+    const latestTestMap = new Map<number, { failureMode: string | null; testedBy: string | null }>()
+    for (const h of allHistories) {
+      if (!latestTestMap.has(h.ioId)) {
+        latestTestMap.set(h.ioId, { failureMode: h.failureMode, testedBy: h.testedBy })
+      }
+    }
+
     const totalIos = ios.length
-    const passed = ios.filter(io => io.result === 'Pass').length
+    const passed = ios.filter(io => io.result === 'Passed' || io.result === 'Pass').length
     const failed = failedIos.length
-    const notTested = ios.filter(io => !io.result).length
+    const notTested = ios.filter(io => !io.result || io.result === '').length
     const completionPct = totalIos > 0 ? (((passed + failed) / totalIos) * 100).toFixed(1) : '0.0'
 
     const projectName = subsystem?.project?.name || 'Unknown Project'
@@ -82,16 +90,20 @@ export async function GET(request: NextRequest) {
       return 'color: #6b7280;'
     }
 
-    const ioRows = ios.map(io => `
+    const ioRows = ios.map(io => {
+      const testInfo = latestTestMap.get(io.id)
+      return `
       <tr>
         <td>${esc(io.name)}</td>
         <td>${esc(io.description)}</td>
         <td style="${resultColor(io.result)}">${io.result || 'Not Tested'}</td>
+        <td>${esc(testInfo?.failureMode) || ''}</td>
         <td>${esc(io.tagType)}</td>
         <td>${formatTs(io.timestamp)}</td>
+        <td>${esc(testInfo?.testedBy) || ''}</td>
         <td>${esc(io.comments)}</td>
       </tr>
-    `).join('')
+    `}).join('')
 
     const failedRows = failedIos.map(io => {
       const info = failureMap.get(io.id)
@@ -168,7 +180,7 @@ export async function GET(request: NextRequest) {
 <h2>IO Results</h2>
 <table>
   <thead>
-    <tr><th>IO Name</th><th>Description</th><th>Result</th><th>Tag Type</th><th>Timestamp</th><th>Comments</th></tr>
+    <tr><th>IO Name</th><th>Description</th><th>Result</th><th>Failure Reason</th><th>Tag Type</th><th>Timestamp</th><th>Tested By</th><th>Comments</th></tr>
   </thead>
   <tbody>${ioRows}</tbody>
 </table>
