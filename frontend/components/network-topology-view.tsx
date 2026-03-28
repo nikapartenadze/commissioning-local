@@ -419,10 +419,10 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
     return p ? portStatus(p) : 'gray'
   }
 
-  // Layout — same structure as DPM star: device cards on top, port strip, FIOM block
-  const DEVICE_W = 32
-  const DEVICE_H = 120
-  const PORT_SPACING = 48
+  // Layout — rectangle device cards with horizontal text
+  const DEVICE_W = 100
+  const DEVICE_H = 56
+  const PORT_SPACING = 110
   const PORT_RECT_W = 28
   const PORT_RECT_H = 24
   const portStripW = (TOTAL_PORTS - 1) * PORT_SPACING + PORT_RECT_W
@@ -535,22 +535,27 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
                 if (rect) setSelectedPort({ port, x: e.clientX - rect.left, y: e.clientY - rect.top })
               }}>
                 <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
-                <path
-                  d={`M ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + 16} L ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + DEVICE_H - 4} Q ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + DEVICE_H - 1} ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y + DEVICE_H - 1} L ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y + DEVICE_H - 1} Q ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + DEVICE_H - 1} ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + DEVICE_H - 4} L ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + 16}`}
+                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4}
                   fill="none" stroke={color} strokeWidth={1.5} strokeOpacity={0.7}
                 />
                 <path
-                  d={`M ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y} Q ${cx - DEVICE_W / 2} ${DEVICE_Y} ${cx - DEVICE_W / 2} ${DEVICE_Y + 4} L ${cx - DEVICE_W / 2} ${DEVICE_Y + 16} L ${cx + DEVICE_W / 2} ${DEVICE_Y + 16} L ${cx + DEVICE_W / 2} ${DEVICE_Y + 4} Q ${cx + DEVICE_W / 2} ${DEVICE_Y} ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y} Z`}
+                  d={`M ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y} Q ${cx - DEVICE_W / 2} ${DEVICE_Y} ${cx - DEVICE_W / 2} ${DEVICE_Y + 4} L ${cx - DEVICE_W / 2} ${DEVICE_Y + 18} L ${cx + DEVICE_W / 2} ${DEVICE_Y + 18} L ${cx + DEVICE_W / 2} ${DEVICE_Y + 4} Q ${cx + DEVICE_W / 2} ${DEVICE_Y} ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y} Z`}
                   fill={DEVICE_HEADER_COLOR}
                 />
-                <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill="#fff">
+                <text x={cx} y={DEVICE_Y + 12} textAnchor="middle" fontSize={8} fontWeight="bold" fill="#fff">
                   {port.portNumber}
                 </text>
                 <g clipPath={`url(#clip-f-${port.id})`}>
-                  <text x={cx} y={DEVICE_Y + 24} textAnchor="start" fontSize={8} fontWeight="bold" fill={color}
-                    transform={`rotate(90, ${cx}, ${DEVICE_Y + 24})`}>{port.deviceName}</text>
+                  <text x={cx} y={DEVICE_Y + 34} textAnchor="middle" fontSize={8} fontWeight="bold" fill="#ffffff">
+                    {port.deviceName}
+                  </text>
+                  {port.deviceIp && (
+                    <text x={cx} y={DEVICE_Y + 46} textAnchor="middle" fontSize={7} fill="hsl(var(--muted-foreground))">
+                      {port.deviceIp}
+                    </text>
+                  )}
                 </g>
-                <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={color} fillOpacity={0.6} />
+                <rect x={cx - 3} y={DEVICE_Y + DEVICE_H - 1} width={6} height={3} rx={1} fill={color} fillOpacity={0.6} />
               </g>
             )
           })}
@@ -651,14 +656,14 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
   const totalPorts = node.totalPorts
   const visiblePortCount = totalPorts - FIRST_VISIBLE_PORT + 1
 
-  // ── Thin vertical device cards, positioned above their port column ──
-  const DEVICE_W = 32
-  const DEVICE_H = 120
+  // ── Device cards: wide enough for horizontal text ──
+  const DEVICE_W = 100
+  const DEVICE_H = 56
 
-  // Port strip — spaced wide so devices sit directly above their port
+  // Port strip — spaced wide enough for device cards above
   const PORT_RECT_W = 28
   const PORT_RECT_H = 24
-  const PORT_SPACING = 48 // generous spacing between port slots
+  const PORT_SPACING = 110 // wide enough for DEVICE_W cards
   const portStripW = (visiblePortCount - 1) * PORT_SPACING + PORT_RECT_W
 
   // DPM block (wide, short) — always 4 rows, columns sized to fit
@@ -813,7 +818,7 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                   })
                 }
               }}>
-                {/* FIOM indicator — animated chevron arrow showing it has sub-devices */}
+                {/* FIOM indicator — white chevron arrow showing it has sub-devices */}
                 {isFiomDevice && (() => {
                   const hasSubDevices = node.ports.some(p => p.parentPortId === port.id)
                   if (!hasSubDevices) return null
@@ -822,16 +827,16 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                   return (
                     <g>
                       <path
-                        d={`M ${cx - 5} ${chevronY} L ${cx} ${chevronY + 5} L ${cx + 5} ${chevronY}`}
-                        fill="none" stroke={bodyColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
-                        opacity={isOpen ? 1 : 0.8}
+                        d={`M ${cx - 6} ${chevronY} L ${cx} ${chevronY + 6} L ${cx + 6} ${chevronY}`}
+                        fill="none" stroke="#ffffff" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
+                        opacity={isOpen ? 1 : 0.9}
                       />
                       {!isOpen && (
                         <path
-                          d={`M ${cx - 5} ${chevronY} L ${cx} ${chevronY + 5} L ${cx + 5} ${chevronY}`}
-                          fill="none" stroke={bodyColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+                          d={`M ${cx - 6} ${chevronY} L ${cx} ${chevronY + 6} L ${cx + 6} ${chevronY}`}
+                          fill="none" stroke="#ffffff" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
                         >
-                          <animate attributeName="opacity" values="0.8;0.3;0.8" dur="1.5s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.9;0.4;0.9" dur="1.5s" repeatCount="indefinite" />
                           <animateTransform attributeName="transform" type="translate" values="0,0;0,2;0,0" dur="1.5s" repeatCount="indefinite" />
                         </path>
                       )}
@@ -840,42 +845,40 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
                 })()}
                 {/* Full card background */}
                 <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
-                {/* Body border — status color, inset 1px, skips the top */}
-                <path
-                  d={`M ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + 16}
-                      L ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + DEVICE_H - 4}
-                      Q ${cx - DEVICE_W / 2 + 1} ${DEVICE_Y + DEVICE_H - 1} ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y + DEVICE_H - 1}
-                      L ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y + DEVICE_H - 1}
-                      Q ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + DEVICE_H - 1} ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + DEVICE_H - 4}
-                      L ${cx + DEVICE_W / 2 - 1} ${DEVICE_Y + 16}`}
+                {/* Body border — status color */}
+                <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4}
                   fill="none" stroke={bodyColor} strokeWidth={1.5} strokeOpacity={0.7}
                 />
                 {/* Blue header — top with rounded top corners */}
                 <path
                   d={`M ${cx - DEVICE_W / 2 + 4} ${DEVICE_Y}
                       Q ${cx - DEVICE_W / 2} ${DEVICE_Y} ${cx - DEVICE_W / 2} ${DEVICE_Y + 4}
-                      L ${cx - DEVICE_W / 2} ${DEVICE_Y + 16}
-                      L ${cx + DEVICE_W / 2} ${DEVICE_Y + 16}
+                      L ${cx - DEVICE_W / 2} ${DEVICE_Y + 18}
+                      L ${cx + DEVICE_W / 2} ${DEVICE_Y + 18}
                       L ${cx + DEVICE_W / 2} ${DEVICE_Y + 4}
                       Q ${cx + DEVICE_W / 2} ${DEVICE_Y} ${cx + DEVICE_W / 2 - 4} ${DEVICE_Y}
                       Z`}
                   fill={headerColor}
                 />
-                <text x={cx} y={DEVICE_Y + 11} textAnchor="middle" fontSize={7} fontWeight="bold" fill="#fff">
+                <text x={cx} y={DEVICE_Y + 12} textAnchor="middle" fontSize={8} fontWeight="bold" fill="#fff">
                   {deviceType}
                 </text>
-                {/* Device name — rotated, clipped to card bounds */}
+                {/* Device name — horizontal, clipped to card bounds */}
                 <g clipPath={`url(#clip-dpm-${port.id})`}>
                   <text
-                    x={cx} y={DEVICE_Y + 24}
-                    textAnchor="start"
-                    fontSize={8} fontWeight="bold" fill={bodyColor}
-                    transform={`rotate(90, ${cx}, ${DEVICE_Y + 24})`}
+                    x={cx} y={DEVICE_Y + 34}
+                    textAnchor="middle"
+                    fontSize={8} fontWeight="bold" fill="#ffffff"
                   >
                     {port.deviceName}
                   </text>
+                  {port.deviceIp && (
+                    <text x={cx} y={DEVICE_Y + 46} textAnchor="middle" fontSize={7} fill="hsl(var(--muted-foreground))">
+                      {port.deviceIp}
+                    </text>
+                  )}
                 </g>
-                <rect x={cx - 2} y={DEVICE_Y + DEVICE_H - 1} width={4} height={3} rx={1} fill={bodyColor} fillOpacity={0.6} />
+                <rect x={cx - 3} y={DEVICE_Y + DEVICE_H - 1} width={6} height={3} rx={1} fill={bodyColor} fillOpacity={0.6} />
               </g>
             )
           })}
