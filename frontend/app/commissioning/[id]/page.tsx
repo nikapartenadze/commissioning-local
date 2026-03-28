@@ -1345,6 +1345,7 @@ export default function CommissioningPage() {
           onShowChangeRequests={() => setShowChangeRequestsPanel(true)}
           onStartTour={() => setShowTour(true)}
           subsystemId={plcConfig.subsystemId}
+          activeTab={activeTab}
         />
       </div>
 
