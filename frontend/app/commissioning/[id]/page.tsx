@@ -19,6 +19,7 @@ import { ChangeRequestDialog } from "@/components/change-request-dialog"
 import { ChangeRequestsPanel } from "@/components/change-requests-panel"
 import NetworkTopologyView from "@/components/network-topology-view"
 import EStopCheckView from "@/components/estop-check-view"
+import SafetyIoView from "@/components/safety-io-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -123,9 +124,10 @@ export default function CommissioningPage() {
   const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
-  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop'>(() => {
+  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety'>(() => {
     if (typeof window !== 'undefined' && window.location.hash === '#network') return 'network'
     if (typeof window !== 'undefined' && window.location.hash === '#estop') return 'estop'
+    if (typeof window !== 'undefined' && window.location.hash === '#safety') return 'safety'
     return 'io'
   })
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
@@ -1309,6 +1311,23 @@ export default function CommissioningPage() {
             >
               EStop
             </button>
+              <button
+                onClick={() => {
+                  // Leaving IO tab — pause testing to suppress pass/fail prompts
+                  if (plcStatus.isTesting) {
+                    wasTestingBeforeTabSwitch.current = true
+                    handleToggleTesting()
+                  }
+                  setActiveTab('safety'); window.location.hash = 'safety'
+                }}
+                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
+                  activeTab === 'safety'
+                    ? 'bg-background shadow text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                Safety
+              </button>
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
@@ -1354,6 +1373,10 @@ export default function CommissioningPage() {
       ) : activeTab === 'estop' ? (
         <div className="flex-1 min-h-0 overflow-auto">
           <EStopCheckView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
+        </div>
+      ) : activeTab === 'safety' ? (
+        <div className="flex-1 min-h-0 overflow-auto px-4">
+          <SafetyIoView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
         </div>
       ) : (
       <>
