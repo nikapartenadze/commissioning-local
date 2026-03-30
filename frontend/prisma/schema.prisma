@@ -31,6 +31,8 @@ model Subsystem {
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   ios     Io[]
+  safetyZones   SafetyZone[]
+  safetyOutputs SafetyOutput[]
 
   @@index([projectId], name: "idx_subsystems_projectid")
   @@map("Subsystems")
@@ -242,4 +244,40 @@ model EStopVfd {
   epc      EStopEpc @relation(fields: [epcId], references: [id], onDelete: Cascade)
   @@index([epcId])
   @@map("EStopVfds")
+}
+
+model SafetyZone {
+  id          Int      @id @default(autoincrement())
+  subsystemId Int      @map("SubsystemId")
+  name        String   @map("Name")
+  stoSignal   String   @map("StoSignal")
+  bssTag      String   @map("BssTag")
+  createdAt   DateTime @default(now()) @map("CreatedAt")
+  subsystem   Subsystem @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
+  drives      SafetyZoneDrive[]
+
+  @@index([subsystemId])
+  @@map("SafetyZones")
+}
+
+model SafetyZoneDrive {
+  id       Int    @id @default(autoincrement())
+  zoneId   Int    @map("ZoneId")
+  name     String @map("Name")
+  zone     SafetyZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@index([zoneId])
+  @@map("SafetyZoneDrives")
+}
+
+model SafetyOutput {
+  id          Int    @id @default(autoincrement())
+  subsystemId Int    @map("SubsystemId")
+  tag         String @map("Tag")
+  description String @map("Description")
+  outputType  String @map("OutputType")
+  subsystem   Subsystem @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
+
+  @@index([subsystemId])
+  @@map("SafetyOutputs")
 }
