@@ -467,9 +467,11 @@ export default function CommissioningPage() {
         isConnected: connected,
         isReconnecting: !connected && prev.isReconnecting,
       }))
-      // Reload IOs and config when PLC connects
+      // Reload IOs (with PLC states) and config when PLC connects
       if (connected) {
         loadPlcConfig(false)
+        // Small delay to let tag reader complete first read cycle
+        setTimeout(() => loadIos(), 2000)
       }
     }
 
