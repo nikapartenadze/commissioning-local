@@ -14,6 +14,10 @@
 const { spawn } = require('child_process');
 const http = require('http');
 const WebSocket = require('ws');
+const { createStartupBackup } = require('./lib/startup-backup');
+
+// Back up database before anything else
+createStartupBackup();
 
 // Configuration
 const NEXTJS_PORT = parseInt(process.env.PORT || '3000', 10);
