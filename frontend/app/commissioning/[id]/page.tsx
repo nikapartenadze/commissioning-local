@@ -1022,14 +1022,11 @@ export default function CommissioningPage() {
   }
 
   const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string) => {
-    // Prepend failure mode to comment so it syncs to cloud
-    const fullComment = failureMode
-      ? (comment ? `[${failureMode}] ${comment}` : `[${failureMode}]`)
-      : comment
+    // Pass comment and failureMode separately — test route combines them
     if (DEBUG_OTHER) {
-      console.log('🎯 Marking as failed with comment:', io.name, fullComment, 'Failure mode:', failureMode)
+      console.log('🎯 Marking as failed with comment:', io.name, comment, 'Failure mode:', failureMode)
     }
-    handleMarkFailed(io, fullComment, failureMode)
+    handleMarkFailed(io, comment, failureMode)
     setPendingFailIo(null)
     // NOW clear currentDialogIo to advance the queue
     setCurrentDialogIo(null)
