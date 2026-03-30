@@ -236,10 +236,9 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
           <div className="flex flex-col items-center justify-center gap-6 relative z-10">
             <AlertTriangle className="h-20 w-20 text-red-500" />
             <h1 className="text-4xl font-bold text-red-500">SAFETY BYPASSED</h1>
-            <div className="text-center space-y-2 max-w-md">
-              <p className="text-lg font-medium text-foreground">{activeBypass.name}</p>
-              <p className="text-sm text-muted-foreground">STO Signal: {activeBypass.stoSignal}</p>
-              <p className="text-sm text-muted-foreground font-mono">BSS Tag: {activeBypass.bssTag}</p>
+            <div className="text-center space-y-3 max-w-md">
+              <p className="text-2xl font-bold text-foreground">{activeBypass.name}</p>
+              <p className="text-xl font-mono font-semibold text-foreground">{activeBypass.stoSignal}</p>
               <div className="mt-4">
                 <p className="text-sm font-medium text-foreground mb-2">Stopped Drives:</p>
                 <div className="flex flex-wrap justify-center gap-2">
