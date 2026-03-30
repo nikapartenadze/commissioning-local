@@ -12,7 +12,7 @@ Industrial I/O Checkout Tool for commissioning PLC systems. Technicians use this
 1. User opens app → logs in with 6-digit PIN
 2. User clicks "Pull IOs" → fetches I/O definitions from remote PostgreSQL, stores in local SQLite
 3. PLC communication via libplctag (ffi-rs), continuously reads tag states (75ms intervals)
-4. Tag states broadcast via WebSocket (port 3002) to all connected browsers
+4. Tag states broadcast via WebSocket (same port as app, /ws path) to all connected browsers
 5. State transitions (FALSE→TRUE) prompt technician to mark Pass/Fail
 6. Results stored locally; auto-sync pushes to cloud every 30s, pulls every 60s
 
@@ -22,7 +22,7 @@ Industrial I/O Checkout Tool for commissioning PLC systems. Technicians use this
 - **UI**: Tailwind CSS, shadcn/ui (Radix UI), TanStack Virtual
 - **Database**: Prisma ORM + SQLite (local, WAL mode)
 - **PLC**: ffi-rs → libplctag native library (Ethernet/IP)
-- **Real-time**: WebSocket (ws library, port 3002)
+- **Real-time**: WebSocket (ws library, same port as app via upgrade)
 - **Auth**: JWT + bcrypt, PIN-based login (default admin PIN: `111111`)
 - **Deployment**: Portable folder on Windows, Docker on Linux
 
@@ -42,9 +42,9 @@ npm run seed:network              # Optional: seed network topology test data
 ```bash
 cd frontend
 
-npm run dev          # Start dev server (Next.js :3000 + WebSocket :3002)
+npm run dev          # Start dev server (Next.js :3000 + WebSocket on same port)
 npm run dev:next     # Next.js only (port 3000, no real-time PLC updates)
-npm run dev:ws       # WebSocket server only (port 3002)
+npm run dev:ws       # WebSocket server only
 npm run build        # Production build (standalone output)
 npm run lint         # ESLint
 npm run test:plc     # Full PLC connection test (reads tags, monitors 10s)
@@ -54,10 +54,10 @@ npm run test:plc:simple  # Quick PLC connection test
 ### Production (Windows Factory)
 ```
 deploy\BUILD-PORTABLE.bat    # Build portable distribution (bundles Node.js, plctag.dll)
-deploy\SETUP-FIREWALL.bat    # Open ports 3000/3002 (run once as admin)
+deploy\SETUP-FIREWALL.bat    # Open port 3000 (run once as admin)
 
 # In the portable/ folder:
-START.bat                    # Start app (port 3000 + WebSocket 3002)
+START.bat                    # Start app (port 3000, WebSocket on same port)
 STOP.bat                     # Stop app
 STATUS.bat                   # Check if running, show IP addresses
 ```
@@ -125,8 +125,8 @@ npx tsx prisma/assign-tag-types.ts  # Auto-assign tag types from IO descriptions
 
 ### Single Process Architecture
 ```
-Browser → http://SERVER:3000 → Next.js API Routes → SQLite / PLC
-Browser → ws://SERVER:3002   → WebSocket server  ← PLC tag reader broadcasts
+Browser → http://SERVER:3000    → Next.js API Routes → SQLite / PLC
+Browser → ws://SERVER:3000/ws   → WebSocket server   ← PLC tag reader broadcasts
 ```
 
 ### WebSocket Broadcast Flow
@@ -197,16 +197,14 @@ Schema: `frontend/prisma/schema.prisma`. Run `npx prisma generate` after changes
 |----------|---------|-------------|
 | `DATABASE_URL` | `file:./database.db` | SQLite database path |
 | `JWT_SECRET_KEY` | — | Secret for signing auth tokens |
-| `PLC_WS_PORT` | `3002` | WebSocket server port |
 | `NODE_ENV` | `development` | Node environment |
 
 ## Ports
 
 | Port | Context | Purpose |
 |------|---------|---------|
-| 3000 | Both | Next.js server (dev and production) |
-| 3002 | Both | WebSocket server (PLC state broadcasts) |
-| 3102 | Both | Internal HTTP broadcast API (localhost only, WS_PORT+100) |
+| 3000 | Both | Next.js server + WebSocket (/ws path) (dev and production) |
+| 3102 | Both | Internal HTTP broadcast API (localhost only) |
 
 ## Important Caveats
 

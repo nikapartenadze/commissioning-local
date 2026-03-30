@@ -43,14 +43,14 @@ export interface SignalRConnection extends WebSocketConnection {
 export function useSignalR(hubUrl?: string): SignalRConnection {
   // Convert the old hubUrl format to WebSocket options if provided
   // The old hubUrl was like "http://localhost:5000/hub"
-  // The new WebSocket URL should be like "ws://localhost:3002"
+  // The new WebSocket URL should be like "ws://localhost:3000/ws"
   const options: WebSocketConnectionOptions = {}
 
   if (hubUrl) {
     try {
       const url = new URL(hubUrl)
       const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-      options.url = `${wsProtocol}//${url.hostname}:3002`
+      options.url = `${wsProtocol}//${url.host}/ws`
     } catch {
       // If URL parsing fails, use default
     }
