@@ -24,11 +24,15 @@ export async function GET() {
       console.log('[SafetyStatus] PLC (re)connected, resetting tag handles')
     }
 
-    // Collect all BSS tags from safety zones
-    const zones = await prisma.safetyZone.findMany({ select: { bssTag: true } })
+    // Collect all BSS tags + drive STO tags from safety zones
+    const zones = await prisma.safetyZone.findMany({ include: { drives: true } })
     const allTags = new Set<string>()
     for (const zone of zones) {
       if (zone.bssTag) allTags.add(zone.bssTag)
+      // Add STO tag for each drive (convention: {driveName}:SI.STOActive)
+      for (const drive of zone.drives) {
+        allTags.add(`${drive.name}:SI.STOActive`)
+      }
     }
 
     // Also collect STD output tags
