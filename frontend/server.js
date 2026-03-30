@@ -3,12 +3,13 @@
 /**
  * Production Server
  *
- * Starts Next.js standalone server + PLC WebSocket server on a single machine.
+ * Starts Next.js standalone server + PLC WebSocket server on a single port.
  * Used by the portable distribution and Docker.
  *
  * Architecture:
- * Tablets/Laptops → http://SERVER_IP:3000 → Next.js (pages + API routes)
- * Browser JS      → ws://SERVER_IP:3002  → PLC WebSocket (real-time tag states)
+ * Tablets/Laptops → http://SERVER_IP:3000  → Next.js (pages + API routes)
+ * Browser JS      → ws://SERVER_IP:3000/ws → PLC WebSocket (real-time tag states)
+ * Internal only   → http://127.0.0.1:3102  → Broadcast API (API routes push here)
  */
 
 const { createServer } = require('http');
@@ -204,25 +205,15 @@ if (process.env.NODE_ENV === 'production') {
 console.log('');
 console.log('IO Checkout Tool - Production Server');
 console.log('');
-console.log(`  App:       http://${HOSTNAME}:${PORT}`);
-console.log(`  WebSocket: ws://${HOSTNAME}:${WS_PORT}`);
+console.log(`  App + WebSocket: http://${HOSTNAME}:${PORT} (ws upgrades on /ws)`);
 console.log('');
 
 // ============================================================================
-// PLC WebSocket Server (real-time tag state broadcasts)
+// PLC WebSocket Server (noServer mode — attached to main HTTP server)
 // ============================================================================
 
-const plcWss = new WebSocket.Server({ port: WS_PORT, host: HOSTNAME });
+const plcWss = new WebSocket.Server({ noServer: true });
 const plcClients = new Set();
-
-plcWss.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`[WS] ERROR: Port ${WS_PORT} is already in use.`);
-    console.error(`[WS] Another instance may be running. Stop it first (STOP.bat) or check with STATUS.bat.`);
-    process.exit(1);
-  }
-  console.error('[WS] WebSocket server error:', err);
-});
 
 // HTTP server for broadcast API (internal, port WS_PORT + 100)
 const HTTP_PORT = WS_PORT + 100;
@@ -278,7 +269,7 @@ const broadcastHttpServer = createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ clients: plcClients.size, wsPort: WS_PORT }));
+    res.end(JSON.stringify({ clients: plcClients.size, wsPort: PORT }));
     return;
   }
 
@@ -307,51 +298,53 @@ setInterval(() => {
   });
 }, 30000);
 
-console.log(`[WS] PLC WebSocket server on ws://${HOSTNAME}:${WS_PORT}`);
-
 // ============================================================================
-// Next.js Standalone Server
+// Next.js Server + WebSocket Upgrade Handler
 // ============================================================================
 
-// Next.js standalone output includes its own minimal server.
-// In portable/standalone mode, the .next directory is at ./.next (same level as this server.js).
-// We set env vars so the standalone server uses our desired port/hostname.
+// Set env vars for Next.js
 process.env.PORT = String(PORT);
 process.env.HOSTNAME = HOSTNAME;
 
-// In portable builds, the standalone server.js is saved as next-server.js
-const standalonePath = path.join(__dirname, 'next-server.js');
+try {
+  const next = require('next');
+  const app = next({ dev: false, hostname: HOSTNAME, port: PORT });
+  const handle = app.getRequestHandler();
 
-if (fs.existsSync(standalonePath)) {
-  // Standalone server handles its own HTTP listener
-  console.log(`[App] Starting Next.js standalone server...`);
-  require(standalonePath);
-} else {
-  // Dev/full install: use the next package directly
-  try {
-    const next = require('next');
-    const app = next({ dev: false, hostname: HOSTNAME, port: PORT });
-    const handle = app.getRequestHandler();
-    app.prepare().then(() => {
-      const httpServer = createServer(async (req, res) => {
-        try {
-          const parsedUrl = parse(req.url, true);
-          await handle(req, res, parsedUrl);
-        } catch (err) {
-          console.error('Request error:', err);
-          res.writeHead(500);
-          res.end('Internal Server Error');
-        }
-      });
-      httpServer.listen(PORT, HOSTNAME, () => {
-        console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
-      });
+  app.prepare().then(() => {
+    const httpServer = createServer(async (req, res) => {
+      try {
+        const parsedUrl = parse(req.url, true);
+        await handle(req, res, parsedUrl);
+      } catch (err) {
+        console.error('Request error:', err);
+        res.writeHead(500);
+        res.end('Internal Server Error');
+      }
     });
-  } catch (e) {
-    console.error('Failed to start Next.js:', e.message);
-    console.error('Make sure to run "npm run build" first');
-    process.exit(1);
-  }
+
+    // WebSocket upgrade: route /ws to PLC WebSocket server
+    httpServer.on('upgrade', (req, socket, head) => {
+      const { pathname } = parse(req.url);
+      if (pathname === '/ws') {
+        plcWss.handleUpgrade(req, socket, head, (ws) => {
+          plcWss.emit('connection', ws, req);
+        });
+      } else {
+        // Not a recognized WebSocket path — destroy the connection
+        socket.destroy();
+      }
+    });
+
+    httpServer.listen(PORT, HOSTNAME, () => {
+      console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
+      console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
+    });
+  });
+} catch (e) {
+  console.error('Failed to start Next.js:', e.message);
+  console.error('Make sure to run "npm run build" first');
+  process.exit(1);
 }
 
 // ============================================================================

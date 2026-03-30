@@ -128,15 +128,14 @@ export function getApiBaseUrl(): string {
 
 /**
  * Get the WebSocket URL for real-time updates.
+ * WebSocket is served on the same port as the app, at the /ws path.
  */
 export function getWebSocketUrl(): string {
-  const WS_PORT = 3002
   if (typeof window !== 'undefined') {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.hostname
-    return `${wsProtocol}//${host}:${WS_PORT}`
+    return `${wsProtocol}//${window.location.host}/ws`
   }
-  return `ws://localhost:3002`
+  return `ws://localhost:3000/ws`
 }
 
 /**

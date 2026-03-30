@@ -159,7 +159,6 @@ REM ── Create .env ──
 (
 echo DATABASE_URL=file:../database.db
 echo JWT_SECRET_KEY=io-checkout-%RANDOM%%RANDOM%%RANDOM%
-echo PLC_WS_PORT=3002
 echo PORT=3000
 echo HOSTNAME=0.0.0.0
 echo NODE_ENV=production
@@ -197,7 +196,6 @@ echo         echo Requesting administrator access for firewall setup...
 echo         powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%%~dp0SETUP-FIREWALL.bat'" 2^>nul
 echo     ^) else ^(
 echo         netsh advfirewall firewall add rule name="IO Checkout - App" dir=in action=allow protocol=tcp localport=3000 ^>nul
-echo         netsh advfirewall firewall add rule name="IO Checkout - WebSocket" dir=in action=allow protocol=tcp localport=3002 ^>nul
 echo         echo Firewall rules added.
 echo     ^)
 echo ^)
@@ -214,7 +212,6 @@ echo echo  IO Checkout Tool
 echo echo ============================================================
 echo echo.
 echo echo   App:        http://localhost:3000
-echo echo   WebSocket:  ws://localhost:3002
 echo echo   Admin PIN:  111111
 echo echo.
 echo REM Show IP addresses
@@ -244,8 +241,6 @@ echo echo ============================================================
 echo echo.
 echo netstat -an ^| findstr ":3000 " ^| findstr "LISTENING" ^>nul 2^>nul
 echo if %%errorlevel%% equ 0 ^(echo   App ^(port 3000^):       RUNNING^) else ^(echo   App ^(port 3000^):       NOT RUNNING^)
-echo netstat -an ^| findstr ":3002 " ^| findstr "LISTENING" ^>nul 2^>nul
-echo if %%errorlevel%% equ 0 ^(echo   WebSocket ^(port 3002^): RUNNING^) else ^(echo   WebSocket ^(port 3002^): NOT RUNNING^)
 echo echo.
 echo echo Tablet access URLs:
 echo for /f "tokens=2 delims=:" %%%%a in ^('ipconfig ^^^| findstr /i "IPv4"'^) do ^(
@@ -299,8 +294,7 @@ echo   On tablets:  http://THIS_PC_IP:3000  ^(run STATUS.bat to see the IP^)
 echo   Admin PIN:   111111
 echo.
 echo PORTS:
-echo   3000  — Web app ^(HTTP^)
-echo   3002  — WebSocket ^(real-time PLC updates^)
+echo   3000  — Web app + WebSocket ^(HTTP + real-time PLC updates^)
 echo.
 echo TROUBLESHOOTING:
 echo   - If tablets can't connect, run SETUP-FIREWALL.bat as Administrator
