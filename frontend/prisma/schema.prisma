@@ -53,6 +53,9 @@ model Io {
   cloudSyncedAt     DateTime? @map("CloudSyncedAt")
   networkDeviceName String?   @map("NetworkDeviceName")
   assignedTo        String?   @map("AssignedTo")
+  punchlistStatus    String?   @map("PunchlistStatus")
+  trade              String?   @map("Trade")
+  clarificationNote  String?   @map("ClarificationNote")
 
   subsystem     Subsystem     @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
   testHistories TestHistory[]
