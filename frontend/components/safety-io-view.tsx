@@ -137,56 +137,7 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   return (
     <div className="space-y-6 py-4">
       {/* Section A: Safety Outputs */}
-      <div>
-        <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-          <Zap className="h-5 w-5" />
-          Safety Outputs
-        </h2>
-        {loadingOutputs ? (
-          <p className="text-muted-foreground text-sm">Loading outputs...</p>
-        ) : outputs.length === 0 ? (
-          <p className="text-muted-foreground text-sm">No safety outputs configured</p>
-        ) : (
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="text-left px-4 py-2 font-medium">Tag</th>
-                  <th className="text-left px-4 py-2 font-medium">Description</th>
-                  <th className="text-left px-4 py-2 font-medium">State</th>
-                  <th className="text-right px-4 py-2 font-medium">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {outputs.map(output => (
-                  <tr key={output.id} className="border-t">
-                    <td className="px-4 py-2 font-mono text-xs">{output.tag}</td>
-                    <td className="px-4 py-2">{output.description || "-"}</td>
-                    <td className="px-4 py-2">
-                      <Badge variant={output.state ? "default" : "secondary"}>
-                        {output.state == null ? "Unknown" : output.state ? "ON" : "OFF"}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={firingTag === output.tag}
-                        onClick={() => setFireConfirmTag(output.tag)}
-                      >
-                        <Zap className="h-3 w-3 mr-1" />
-                        {firingTag === output.tag ? "Firing..." : "Fire"}
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Section B: STO Bypass Zones */}
+      {/* STO Bypass Zones */}
       <div>
         <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
           <ShieldAlert className="h-5 w-5" />
@@ -203,12 +154,15 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base">{zone.name}</CardTitle>
                 </CardHeader>
-                <CardContent className="flex-1 space-y-2">
-                  <p className="text-xs text-muted-foreground">STO: {zone.stoSignal}</p>
-                  <div className="flex flex-wrap gap-1">
-                    {zone.drives.map(d => (
-                      <Badge key={d.id} variant="outline" className="text-xs">{d.name}</Badge>
-                    ))}
+                <CardContent className="flex-1 space-y-3">
+                  <p className="text-xs text-muted-foreground font-mono">STO: {zone.stoSignal}</p>
+                  <div>
+                    <p className="text-xs font-semibold text-red-500 mb-1.5">Following drives will stop running:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {zone.drives.map(d => (
+                        <Badge key={d.id} variant="outline" className="text-xs border-red-500/30 text-red-400">{d.name}</Badge>
+                      ))}
+                    </div>
                   </div>
                 </CardContent>
                 <div className="px-6 pb-4">
