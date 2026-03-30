@@ -910,10 +910,15 @@ export default function CommissioningPage() {
     const previousComments = io.comments
     const previousTimestamp = io.timestamp
 
-    // Combine failure mode + comment for display (same logic as test route)
+    // Build the comment that gets stored and synced
     let displayComment = ''
-    if (failureMode) displayComment = failureMode
-    if (comments) displayComment = displayComment ? `${displayComment} — ${comments}` : comments
+    if (failureMode && failureMode !== 'Other') {
+      // Named failure reason: use it as comment, append user text if any
+      displayComment = comments ? `${failureMode} — ${comments}` : failureMode
+    } else {
+      // "Other" or no failure mode: just the user's comment
+      displayComment = comments
+    }
 
     try {
       // Optimistically update UI immediately for better UX
