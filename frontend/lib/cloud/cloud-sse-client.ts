@@ -262,9 +262,7 @@ class CloudSseClient {
       // Merge test results if local has none OR cloud version is newer
       const cloudVersion = BigInt(Number(event.version) || 0)
       const localVersion = localIo.version ?? BigInt(0)
-      const shouldMergeResult = event.result !== undefined && (!localIo.result || cloudVersion > localVersion)
-      console.log(`[CloudSSE] IO ${ioId}: cloudResult=${event.result}, localResult=${localIo.result}, cloudVer=${cloudVersion}, localVer=${localVersion}, merge=${shouldMergeResult}`)
-      if (shouldMergeResult) {
+      if (event.result !== undefined && (!localIo.result || cloudVersion > localVersion)) {
         updateData.result = event.result || null
         updateData.timestamp = event.timestamp ?? null
         updateData.comments = event.comments ?? null
