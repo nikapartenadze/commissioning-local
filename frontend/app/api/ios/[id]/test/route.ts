@@ -166,7 +166,7 @@ export async function POST(
           result: normalizedResult,
           state: plcState ?? '',
           timestamp,
-          comments: sanitizedComments ?? '',
+          comments: combinedComment || '',
         }),
       })
     } catch {
