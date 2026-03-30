@@ -62,7 +62,9 @@ export function FailCommentDialog({
         const response = await fetch(`${API_ENDPOINTS.diagnosticFailureModes}?tagType=${encodeURIComponent(io.tagType)}`)
         if (response.ok) {
           const modes = await response.json()
-          setFailureModes([...modes, 'Other'])
+          // Deduplicate — API may already include "Other"
+          const unique = Array.from(new Set([...modes, 'Other']))
+          setFailureModes(unique)
         } else {
           // Fallback to generic modes
           setFailureModes(['No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Other'])
