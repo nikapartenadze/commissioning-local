@@ -229,30 +229,26 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Active Bypass Full-Screen Modal */}
-      <Dialog open={!!activeBypass} onOpenChange={(open) => { if (!open) handleStopBypass() }}>
-        <DialogContent className={cn(
-          "max-w-none w-screen h-screen m-0 rounded-none",
-          "border-4 border-red-500 animate-pulse"
-        )}>
-          <div className="flex flex-col items-center justify-center h-full gap-6">
+      {/* Active Bypass Full-Screen Overlay */}
+      {activeBypass && (
+        <div className="fixed inset-0 z-50 bg-background flex flex-col items-center justify-center">
+          <div className="absolute inset-0 border-8 border-red-500 animate-pulse pointer-events-none" />
+          <div className="flex flex-col items-center justify-center gap-6 relative z-10">
             <AlertTriangle className="h-20 w-20 text-red-500" />
             <h1 className="text-4xl font-bold text-red-500">SAFETY BYPASSED</h1>
-            {activeBypass && (
-              <div className="text-center space-y-2 max-w-md">
-                <p className="text-lg font-medium">{activeBypass.name}</p>
-                <p className="text-sm text-muted-foreground">STO Signal: {activeBypass.stoSignal}</p>
-                <p className="text-sm text-muted-foreground">BSS Tag: {activeBypass.bssTag}</p>
-                <div className="mt-4">
-                  <p className="text-sm font-medium mb-2">Stopped Drives:</p>
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {activeBypass.drives.map(d => (
-                      <Badge key={d.id} variant="destructive">{d.name}</Badge>
-                    ))}
-                  </div>
+            <div className="text-center space-y-2 max-w-md">
+              <p className="text-lg font-medium text-foreground">{activeBypass.name}</p>
+              <p className="text-sm text-muted-foreground">STO Signal: {activeBypass.stoSignal}</p>
+              <p className="text-sm text-muted-foreground font-mono">BSS Tag: {activeBypass.bssTag}</p>
+              <div className="mt-4">
+                <p className="text-sm font-medium text-foreground mb-2">Stopped Drives:</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {activeBypass.drives.map(d => (
+                    <Badge key={d.id} variant="destructive">{d.name}</Badge>
+                  ))}
                 </div>
               </div>
-            )}
+            </div>
             <Button
               size="lg"
               variant="destructive"
@@ -263,8 +259,8 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
               STOP BYPASS
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      )}
     </div>
   )
 }
