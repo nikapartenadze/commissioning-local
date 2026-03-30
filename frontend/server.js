@@ -18,6 +18,14 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
+// Back up database on startup (before any writes)
+try {
+  const { createStartupBackup } = require('./lib/startup-backup');
+  createStartupBackup();
+} catch (e) {
+  console.error('[Backup] Startup backup module failed:', e.message);
+}
+
 // Load .env file manually (standalone mode doesn't have Next.js env loader)
 const envPath = path.join(__dirname, '.env');
 if (fs.existsSync(envPath)) {
