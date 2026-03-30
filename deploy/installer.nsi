@@ -5,7 +5,7 @@
 ;   - Installs app + bundled Node.js + NSSM service
 ;   - Upgrades in-place (preserves database + config)
 ;   - Auto-starts on boot, restarts on crash
-;   - Firewall rules for ports 3000 + 3002
+;   - Firewall rules for port 3000 (WebSocket shares the same port)
 ;   - Clean uninstall (stops service, removes firewall rules)
 
 !include "MUI2.nsh"
@@ -80,7 +80,6 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   FileOpen $0 "$INSTDIR\app\.env" w
   FileWrite $0 "DATABASE_URL=file:$DATA_DIR\database.db$\r$\n"
   FileWrite $0 "JWT_SECRET_KEY=io-checkout-svc-$HWNDPARENT$\r$\n"
-  FileWrite $0 "PLC_WS_PORT=3002$\r$\n"
   FileWrite $0 "PORT=3000$\r$\n"
   FileWrite $0 "HOSTNAME=0.0.0.0$\r$\n"
   FileWrite $0 "NODE_ENV=production$\r$\n"
@@ -127,7 +126,6 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="IO Checkout - App"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="IO Checkout - WebSocket"'
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="IO Checkout - App" dir=in action=allow protocol=tcp localport=3000'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="IO Checkout - WebSocket" dir=in action=allow protocol=tcp localport=3002'
 
   ; ── Start Service ──
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE_NAME}'
