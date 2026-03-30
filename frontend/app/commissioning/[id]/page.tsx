@@ -910,10 +910,15 @@ export default function CommissioningPage() {
     const previousComments = io.comments
     const previousTimestamp = io.timestamp
 
+    // Combine failure mode + comment for display (same logic as test route)
+    let displayComment = ''
+    if (failureMode) displayComment = failureMode
+    if (comments) displayComment = displayComment ? `${displayComment} — ${comments}` : comments
+
     try {
       // Optimistically update UI immediately for better UX
       setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, result: 'Failed', comments, timestamp: new Date().toISOString() } : i
+        i.id === io.id ? { ...i, result: 'Failed', comments: displayComment || null, timestamp: new Date().toISOString() } : i
       ))
 
       if (DEBUG_OTHER) {
