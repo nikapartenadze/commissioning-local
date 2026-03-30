@@ -119,7 +119,7 @@ export async function POST(
           ioId,
           inspectorName: currentUser || null,
           testResult: normalizedResult,
-          comments: sanitizedComments || null,
+          comments: combinedComment || null,
           state: plcState || null,
           timestamp: new Date(),
           version: updatedIo.version - BigInt(1), // Pre-increment version to match cloud
@@ -139,7 +139,7 @@ export async function POST(
         const synced = await syncService.syncIoUpdate({
           id: ioId,
           result: normalizedResult,
-          comments: sanitizedComments || null,
+          comments: combinedComment || null,
           testedBy: currentUser || null,
           state: plcState || null,
           version: Number(updatedIo.version) - 1, // Send pre-increment version to match cloud
