@@ -48,8 +48,7 @@ This runs `server.dev.js` which starts **three services** together:
 
 | Service | Port | Binds to | Purpose |
 |---------|------|----------|---------|
-| Next.js dev server | 3020 | `0.0.0.0` (all interfaces) | UI + API routes + hot reload |
-| WebSocket server | 3002 | `0.0.0.0` (all interfaces) | Real-time PLC tag state broadcasts |
+| Next.js dev server + WebSocket | 3020 | `0.0.0.0` (all interfaces) | UI + API routes + hot reload + real-time PLC state broadcasts (/ws path) |
 | Internal broadcast HTTP | 3102 | `127.0.0.1` (localhost only) | API routes push messages to WebSocket server |
 
 **Important:** The dev server binds to `0.0.0.0`, which means other devices on your network can connect. Open `http://YOUR_IP:3020` on tablets/laptops.
@@ -62,9 +61,9 @@ To find your IP address:
 
 | Command | What it does |
 |---------|-------------|
-| `npm run dev` | Starts all three services (recommended) |
+| `npm run dev` | Starts all services (recommended) |
 | `npm run dev:next` | Starts only Next.js on port 3020 (no real-time PLC updates) |
-| `npm run dev:ws` | Starts only the WebSocket server on port 3002 |
+| `npm run dev:ws` | Starts only the WebSocket server |
 
 ### Environment Variables
 
@@ -74,8 +73,7 @@ Copy `env.example` to `.env.local` and edit as needed:
 |----------|---------|-------------|
 | `DATABASE_URL` | `file:./database.db` | SQLite database path |
 | `JWT_SECRET_KEY` | — | Secret for signing auth tokens (change in production) |
-| `PLC_WS_PORT` | `3002` | WebSocket server port |
-| `WS_BROADCAST_URL` | `http://localhost:3102/broadcast` | Internal HTTP broadcast endpoint (auto-derived from PLC_WS_PORT + 100) |
+| `WS_BROADCAST_URL` | `http://localhost:3102/broadcast` | Internal HTTP broadcast endpoint |
 | `NODE_ENV` | `development` | Node environment |
 
 ### Building for Production
@@ -131,7 +129,7 @@ The script automatically downloads and bundles:
 2. Double-click `START.bat`
 
 That's it. Each technician can run their own copy — no dedicated server needed. On first run, START.bat automatically:
-- Opens firewall ports 3000 + 3002 (prompts for admin permission once)
+- Opens firewall port 3000 (prompts for admin permission once)
 - Starts the app (database, admin user, and diagnostic data are created on first login)
 
 ### Running in Production
@@ -159,11 +157,10 @@ Admins can also create additional admin or technician accounts from the same pan
 
 | Port | Binds to | Purpose | Who connects |
 |------|----------|---------|-------------|
-| 3000 | `0.0.0.0` | Web UI + API | Technicians (tablets/laptops) |
-| 3002 | `0.0.0.0` | WebSocket | Browsers (real-time PLC state updates, auto-connected by the UI) |
+| 3000 | `0.0.0.0` | Web UI + API + WebSocket (/ws path) | Technicians (tablets/laptops) |
 | 3102 | `127.0.0.1` | Internal HTTP broadcast | localhost only — API routes push messages here, WebSocket server fans them out |
 
-**Note:** Port 3102 should NOT be opened in the firewall — it's internal only.
+**Note:** Port 3102 should NOT be opened in the firewall — it's internal only. WebSocket connections are upgraded on port 3000 via the `/ws` path.
 
 ### Docker (Alternative)
 
@@ -262,7 +259,7 @@ Factory Server (Windows PC or Linux, running Node.js)
 │  └── PLC Client (ffi-rs → libplctag → Ethernet/IP)  │
 │         │ reads tags every 75ms                      │
 │         │                                            │
-│  Port 3002: WebSocket Server                         │
+│  Port 3000/ws: WebSocket (upgraded HTTP connections)  │
 │  └── Broadcasts tag state changes to all browsers    │
 │         ▲                                            │
 │         │ HTTP POST                                  │
@@ -290,7 +287,7 @@ Tag Reader (server-side)
   ↓ state change detected
 API Route calls POST http://localhost:3102/broadcast
   ↓
-WebSocket Server (port 3002)
+WebSocket Server (port 3000/ws)
   ↓ fans out to all connected browsers
 Browser A, Browser B, Browser C...
   ↓ React state update
@@ -359,7 +356,7 @@ local-tool/
 A previous server instance is still holding the port. Kill it:
 ```bash
 # Linux
-fuser -k 3020/tcp 3002/tcp
+fuser -k 3020/tcp
 
 # Windows
 netstat -ano | findstr :3020
@@ -368,7 +365,7 @@ taskkill /PID <PID> /F
 
 ### Other devices can't connect
 - Make sure you're using the server's **IP address**, not `localhost`
-- Check firewall: ports 3000 (or 3020 dev) and 3002 must be open
+- Check firewall: port 3000 (or 3020 dev) must be open
 - Run `STATUS.bat` (Windows) or `ip addr` (Linux) to find the server IP
 
 ### PLC tag mismatch errors
@@ -385,6 +382,6 @@ npx tsx prisma/assign-tag-types.ts
 
 ### WebSocket disconnects / "Connection lost" banner
 The browser WebSocket auto-reconnects. If it persists:
-- Check that the WebSocket server is running on port 3002
+- Check that the WebSocket server is running (same port as the app, /ws path)
 - Check browser console for errors
 - Restart the dev server: kill all node processes, then `npm run dev`
