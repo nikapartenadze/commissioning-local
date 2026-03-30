@@ -77,9 +77,13 @@ export async function POST(
     const timestamp = createTimestamp()
 
     // Combine failure mode + comment for the IO record (syncs to cloud)
+    // "Other" means user typed the reason themselves — don't prepend "Other"
     let combinedComment = ''
-    if (failureMode) combinedComment = failureMode
-    if (sanitizedComments) combinedComment = combinedComment ? `${combinedComment} — ${sanitizedComments}` : sanitizedComments
+    if (failureMode && failureMode !== 'Other') {
+      combinedComment = sanitizedComments ? `${failureMode} — ${sanitizedComments}` : failureMode
+    } else {
+      combinedComment = sanitizedComments || ''
+    }
 
     // Store old comment for history before updating
     const oldComment = io.comments
