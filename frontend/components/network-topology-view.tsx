@@ -67,7 +67,7 @@ function getStatusColor(statusTag: string | null, tagStates: Record<string, bool
 function statusToHex(s: StatusColor): string {
   if (s === 'green') return '#22c55e'
   if (s === 'red') return '#ef4444'
-  return 'hsl(var(--muted))'
+  return '#6b7280' // gray-500 — visible on both light and dark
 }
 
 function StatusDot({ status, size = 'sm' }: { status: StatusColor; size?: 'sm' | 'md' }) {
@@ -680,7 +680,7 @@ function StarDiagram({ node, tagStates, subsystemId }: { node: NetworkNode; tagS
           {(() => {
             const dpmStatus = getStatusColor(node.statusTag, tagStates)
             const dpmStroke = statusToHex(dpmStatus)
-            const dpmLabelColor = dpmStatus === 'gray' ? 'hsl(var(--primary))' : statusToHex(dpmStatus)
+            const dpmLabelColor = dpmStatus === 'gray' ? 'hsl(var(--foreground))' : statusToHex(dpmStatus)
             return (
               <>
                 <text x={dpmX + dpmW / 2} y={DPM_Y - DPM_LABEL_H + 14} textAnchor="middle" fontSize={14} fontWeight="bold" fill={dpmLabelColor}>
