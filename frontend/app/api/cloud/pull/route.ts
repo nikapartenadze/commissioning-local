@@ -339,6 +339,39 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log('[CloudPull] EStop pull skipped or failed (non-critical)')
     }
 
+    // Pull safety data
+    try {
+      const safetyRes = await fetch(`${remoteUrl}/api/sync/safety?subsystemId=${subsystemId}&apiKey=${apiPassword}`)
+      if (safetyRes.ok) {
+        const safetyData = await safetyRes.json()
+        if (safetyData.success) {
+          await prisma.safetyZone.deleteMany({ where: { subsystemId } })
+          await prisma.safetyOutput.deleteMany({ where: { subsystemId } })
+          for (const zone of (safetyData.zones || [])) {
+            await prisma.safetyZone.create({
+              data: {
+                subsystemId,
+                name: zone.name,
+                stoSignal: zone.stoSignal,
+                bssTag: zone.bssTag,
+                drives: { create: (zone.drives || []).map((d: any) => ({ name: d.name })) },
+              },
+            })
+          }
+          if (safetyData.outputs?.length > 0) {
+            await prisma.safetyOutput.createMany({
+              data: safetyData.outputs.map((o: any) => ({
+                subsystemId, tag: o.tag, description: o.description, outputType: o.outputType,
+              })),
+            })
+          }
+          console.log(`[Pull] Safety: ${safetyData.zones?.length || 0} zones, ${safetyData.outputs?.length || 0} outputs`)
+        }
+      }
+    } catch (e) {
+      console.log('[Pull] Safety data pull failed (non-blocking)')
+    }
+
     return NextResponse.json({
       success: true,
       message: `Successfully pulled ${result} IOs from cloud`,
