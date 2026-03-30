@@ -199,27 +199,29 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {zones.map(zone => (
-              <Card key={zone.id}>
+              <Card key={zone.id} className="flex flex-col">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base">{zone.name}</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
+                <CardContent className="flex-1 space-y-2">
                   <p className="text-xs text-muted-foreground">STO: {zone.stoSignal}</p>
                   <div className="flex flex-wrap gap-1">
                     {zone.drives.map(d => (
                       <Badge key={d.id} variant="outline" className="text-xs">{d.name}</Badge>
                     ))}
                   </div>
+                </CardContent>
+                <div className="px-6 pb-4">
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="w-full mt-2"
+                    className="w-full"
                     onClick={() => setBypassConfirmZone(zone)}
                   >
                     <AlertTriangle className="h-3 w-3 mr-1" />
                     Bypass
                   </Button>
-                </CardContent>
+                </div>
               </Card>
             ))}
           </div>
