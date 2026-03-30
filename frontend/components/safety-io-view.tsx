@@ -1,0 +1,314 @@
+"use client"
+
+import { useState, useEffect, useRef, useCallback } from "react"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { ShieldAlert, Zap, ZapOff, AlertTriangle, Square } from "lucide-react"
+import { authFetch } from "@/lib/api-config"
+import { cn } from "@/lib/utils"
+
+interface SafetyOutput {
+  id: number
+  tag: string
+  description: string | null
+  outputType: string | null
+  state?: boolean | null
+}
+
+interface SafetyDrive {
+  id: number
+  name: string
+}
+
+interface SafetyZone {
+  id: number
+  name: string
+  stoSignal: string
+  bssTag: string
+  drives: SafetyDrive[]
+}
+
+interface SafetyIoViewProps {
+  subsystemId?: number
+}
+
+export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
+  const [outputs, setOutputs] = useState<SafetyOutput[]>([])
+  const [zones, setZones] = useState<SafetyZone[]>([])
+  const [loadingOutputs, setLoadingOutputs] = useState(true)
+  const [loadingZones, setLoadingZones] = useState(true)
+
+  // Fire output state
+  const [fireConfirmTag, setFireConfirmTag] = useState<string | null>(null)
+  const [firingTag, setFiringTag] = useState<string | null>(null)
+
+  // Bypass state
+  const [bypassConfirmZone, setBypassConfirmZone] = useState<SafetyZone | null>(null)
+  const [activeBypass, setActiveBypass] = useState<SafetyZone | null>(null)
+  const activeBypassRef = useRef<SafetyZone | null>(null)
+
+  // Keep ref in sync for cleanup
+  useEffect(() => {
+    activeBypassRef.current = activeBypass
+  }, [activeBypass])
+
+  // Fetch outputs
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (subsystemId) params.set("subsystemId", String(subsystemId))
+    authFetch(`/api/safety/outputs?${params}`)
+      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(data => setOutputs(data.outputs || []))
+      .catch(() => setOutputs([]))
+      .finally(() => setLoadingOutputs(false))
+  }, [subsystemId])
+
+  // Fetch zones
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (subsystemId) params.set("subsystemId", String(subsystemId))
+    authFetch(`/api/safety/zones?${params}`)
+      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(data => setZones(data.zones || []))
+      .catch(() => setZones([]))
+      .finally(() => setLoadingZones(false))
+  }, [subsystemId])
+
+  // Cleanup: stop bypass on unmount
+  useEffect(() => {
+    return () => {
+      if (activeBypassRef.current) {
+        authFetch("/api/safety/bypass", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bssTag: activeBypassRef.current.bssTag, action: "stop" }),
+        }).catch(() => {})
+      }
+    }
+  }, [])
+
+  const handleFire = async (tag: string) => {
+    setFiringTag(tag)
+    try {
+      await authFetch("/api/safety/fire", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag, action: "toggle" }),
+      })
+    } catch {
+      // ignore
+    } finally {
+      setFiringTag(null)
+      setFireConfirmTag(null)
+    }
+  }
+
+  const handleStartBypass = async (zone: SafetyZone) => {
+    try {
+      await authFetch("/api/safety/bypass", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bssTag: zone.bssTag, action: "start" }),
+      })
+      setBypassConfirmZone(null)
+      setActiveBypass(zone)
+    } catch {
+      // ignore
+    }
+  }
+
+  const handleStopBypass = useCallback(async () => {
+    if (!activeBypassRef.current) return
+    try {
+      await authFetch("/api/safety/bypass", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bssTag: activeBypassRef.current.bssTag, action: "stop" }),
+      })
+    } catch {
+      // ignore
+    } finally {
+      setActiveBypass(null)
+    }
+  }, [])
+
+  return (
+    <div className="space-y-6 py-4">
+      {/* Section A: Safety Outputs */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+          <Zap className="h-5 w-5" />
+          Safety Outputs
+        </h2>
+        {loadingOutputs ? (
+          <p className="text-muted-foreground text-sm">Loading outputs...</p>
+        ) : outputs.length === 0 ? (
+          <p className="text-muted-foreground text-sm">No safety outputs configured</p>
+        ) : (
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="text-left px-4 py-2 font-medium">Tag</th>
+                  <th className="text-left px-4 py-2 font-medium">Description</th>
+                  <th className="text-left px-4 py-2 font-medium">State</th>
+                  <th className="text-right px-4 py-2 font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outputs.map(output => (
+                  <tr key={output.id} className="border-t">
+                    <td className="px-4 py-2 font-mono text-xs">{output.tag}</td>
+                    <td className="px-4 py-2">{output.description || "-"}</td>
+                    <td className="px-4 py-2">
+                      <Badge variant={output.state ? "default" : "secondary"}>
+                        {output.state == null ? "Unknown" : output.state ? "ON" : "OFF"}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={firingTag === output.tag}
+                        onClick={() => setFireConfirmTag(output.tag)}
+                      >
+                        <Zap className="h-3 w-3 mr-1" />
+                        {firingTag === output.tag ? "Firing..." : "Fire"}
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Section B: STO Bypass Zones */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+          <ShieldAlert className="h-5 w-5" />
+          STO Bypass Zones
+        </h2>
+        {loadingZones ? (
+          <p className="text-muted-foreground text-sm">Loading zones...</p>
+        ) : zones.length === 0 ? (
+          <p className="text-muted-foreground text-sm">No STO bypass zones configured</p>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {zones.map(zone => (
+              <Card key={zone.id}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">{zone.name}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <p className="text-xs text-muted-foreground">STO: {zone.stoSignal}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {zone.drives.map(d => (
+                      <Badge key={d.id} variant="outline" className="text-xs">{d.name}</Badge>
+                    ))}
+                  </div>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="w-full mt-2"
+                    onClick={() => setBypassConfirmZone(zone)}
+                  >
+                    <AlertTriangle className="h-3 w-3 mr-1" />
+                    Bypass
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Fire Confirmation Dialog */}
+      <Dialog open={!!fireConfirmTag} onOpenChange={(open) => { if (!open) setFireConfirmTag(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle className="h-5 w-5" />
+              Confirm Fire Output
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm">
+            Safety outputs can cause motion to occur. Verify device is safe to actuate, if applicable.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFireConfirmTag(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => fireConfirmTag && handleFire(fireConfirmTag)}>
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bypass Confirmation Dialog */}
+      <Dialog open={!!bypassConfirmZone} onOpenChange={(open) => { if (!open) setBypassConfirmZone(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              WARNING
+            </DialogTitle>
+          </DialogHeader>
+          {bypassConfirmZone && (
+            <p className="text-sm">
+              Bypassing safety in <strong>{bypassConfirmZone.name}</strong> will STOP{" "}
+              <strong>{bypassConfirmZone.drives.length}</strong> drives:{" "}
+              {bypassConfirmZone.drives.map(d => d.name).join(", ")}.
+              Do you want to proceed?
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBypassConfirmZone(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => bypassConfirmZone && handleStartBypass(bypassConfirmZone)}>
+              Proceed
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Active Bypass Full-Screen Modal */}
+      <Dialog open={!!activeBypass} onOpenChange={(open) => { if (!open) handleStopBypass() }}>
+        <DialogContent className={cn(
+          "max-w-none w-screen h-screen m-0 rounded-none",
+          "border-4 border-red-500 animate-pulse"
+        )}>
+          <div className="flex flex-col items-center justify-center h-full gap-6">
+            <AlertTriangle className="h-20 w-20 text-red-500" />
+            <h1 className="text-4xl font-bold text-red-500">SAFETY BYPASSED</h1>
+            {activeBypass && (
+              <div className="text-center space-y-2 max-w-md">
+                <p className="text-lg font-medium">{activeBypass.name}</p>
+                <p className="text-sm text-muted-foreground">STO Signal: {activeBypass.stoSignal}</p>
+                <p className="text-sm text-muted-foreground">BSS Tag: {activeBypass.bssTag}</p>
+                <div className="mt-4">
+                  <p className="text-sm font-medium mb-2">Stopped Drives:</p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {activeBypass.drives.map(d => (
+                      <Badge key={d.id} variant="destructive">{d.name}</Badge>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            <Button
+              size="lg"
+              variant="destructive"
+              className="mt-8 text-xl px-12 py-6 h-auto"
+              onClick={handleStopBypass}
+            >
+              <Square className="h-6 w-6 mr-2" />
+              STOP BYPASS
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
