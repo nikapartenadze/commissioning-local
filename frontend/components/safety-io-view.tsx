@@ -40,6 +40,9 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   const [loadingOutputs, setLoadingOutputs] = useState(true)
   const [loadingZones, setLoadingZones] = useState(true)
 
+  // Tag values from PLC
+  const [tagValues, setTagValues] = useState<Record<string, boolean | null>>({})
+
   // Fire output state
   const [fireConfirmTag, setFireConfirmTag] = useState<string | null>(null)
   const [firingTag, setFiringTag] = useState<string | null>(null)
@@ -75,6 +78,23 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
       .catch(() => setZones([]))
       .finally(() => setLoadingZones(false))
   }, [subsystemId])
+
+  // Poll tag values every 3 seconds
+  useEffect(() => {
+    let active = true
+    const poll = async () => {
+      try {
+        const res = await authFetch('/api/safety/status')
+        if (res.ok && active) {
+          const data = await res.json()
+          if (data.success && data.tags) setTagValues(data.tags)
+        }
+      } catch {}
+    }
+    poll()
+    const interval = setInterval(poll, 3000)
+    return () => { active = false; clearInterval(interval) }
+  }, [])
 
   // Cleanup: stop bypass on unmount
   useEffect(() => {
@@ -155,7 +175,16 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
                   <CardTitle className="text-base">{zone.name}</CardTitle>
                 </CardHeader>
                 <CardContent className="flex-1 space-y-3">
-                  <p className="text-xs text-muted-foreground font-mono">STO: {zone.stoSignal}</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground font-mono">STO: {zone.stoSignal}</p>
+                    <Badge className={cn("text-[10px]",
+                      tagValues[zone.bssTag] === true ? "bg-red-500 text-white" :
+                      tagValues[zone.bssTag] === false ? "bg-green-500/20 text-green-500 border border-green-500/30" :
+                      "bg-muted text-muted-foreground"
+                    )}>
+                      {tagValues[zone.bssTag] === true ? "ACTIVE" : tagValues[zone.bssTag] === false ? "SAFE" : "—"}
+                    </Badge>
+                  </div>
                   <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
                     <p className="text-sm font-bold text-white mb-2">⚠ Following drives will STOP running:</p>
                     <div className="flex flex-wrap gap-1.5">
