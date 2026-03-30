@@ -157,10 +157,10 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
                 <CardContent className="flex-1 space-y-3">
                   <p className="text-xs text-muted-foreground font-mono">STO: {zone.stoSignal}</p>
                   <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-                    <p className="text-sm font-bold text-red-500 mb-2">⚠ Following drives will STOP running:</p>
+                    <p className="text-sm font-bold text-white mb-2">⚠ Following drives will STOP running:</p>
                     <div className="flex flex-wrap gap-1.5">
                       {zone.drives.map(d => (
-                        <Badge key={d.id} className="text-xs bg-red-500/20 text-red-400 border border-red-500/40 font-mono">{d.name}</Badge>
+                        <Badge key={d.id} className="text-xs bg-red-950 text-white border border-red-500/40 font-mono">{d.name}</Badge>
                       ))}
                     </div>
                   </div>
