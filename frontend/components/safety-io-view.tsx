@@ -231,7 +231,7 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
 
       {/* Active Bypass Full-Screen Overlay */}
       {activeBypass && (
-        <div className="fixed inset-0 z-50 bg-background flex flex-col items-center justify-center">
+        <div className="fixed inset-0 z-[100] bg-background flex flex-col items-center justify-center" style={{ top: 0, left: 0, right: 0, bottom: 0, margin: 0, padding: 0 }}>
           <div className="absolute inset-0 border-8 border-red-500 animate-pulse pointer-events-none" />
           <div className="flex flex-col items-center justify-center gap-6 relative z-10">
             <AlertTriangle className="h-20 w-20 text-red-500" />
