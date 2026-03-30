@@ -76,6 +76,11 @@ export async function POST(
     const sanitizedComments = sanitizeComment(comments)
     const timestamp = createTimestamp()
 
+    // Combine failure mode + comment for the IO record (syncs to cloud)
+    let combinedComment = ''
+    if (failureMode) combinedComment = failureMode
+    if (sanitizedComments) combinedComment = combinedComment ? `${combinedComment} — ${sanitizedComments}` : sanitizedComments
+
     // Store old comment for history before updating
     const oldComment = io.comments
 
@@ -86,7 +91,7 @@ export async function POST(
         data: {
           result: normalizedResult,
           timestamp,
-          comments: sanitizedComments ?? null,
+          comments: combinedComment || null,
           version: { increment: 1 }
         }
       }),
