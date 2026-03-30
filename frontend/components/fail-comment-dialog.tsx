@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AlertCircle } from "lucide-react"
+import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { toast } from "@/hooks/use-toast"
 
@@ -92,8 +93,7 @@ export function FailCommentDialog({
     }
 
     if (failureMode === 'Other' && !comment.trim()) {
-      toast({ title: "Please provide comments when selecting \"Other\"", variant: "destructive" })
-      return
+      return // validation shown inline
     }
     
     onSubmit(io, comment, failureMode)
@@ -171,21 +171,24 @@ export function FailCommentDialog({
             {/* Comment Input */}
             <div className="space-y-2">
               <Label htmlFor="comment">
-                Additional Comments {failureMode === 'Other' && <span className="text-destructive">*</span>}
-                {failureMode && failureMode !== 'Other' && <span className="text-muted-foreground text-xs">(optional)</span>}
+                {failureMode === 'Other' ? (
+                  <span className="text-destructive font-semibold">Comment Required</span>
+                ) : (
+                  <>Additional Comments {failureMode && <span className="text-muted-foreground text-xs">(optional)</span>}</>
+                )}
               </Label>
               <Textarea
                 id="comment"
                 placeholder={
                   failureMode === 'Other'
-                    ? "Required - explain the specific issue..."
+                    ? "Explain the specific issue..."
                     : "Optional - add any additional notes..."
                 }
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 maxLength={500}
                 rows={4}
-                className="resize-none"
+                className={cn("resize-none", failureMode === 'Other' && !comment.trim() && "border-destructive ring-1 ring-destructive")}
               />
               <p className="text-xs text-muted-foreground text-right">{comment.length}/500</p>
             </div>
