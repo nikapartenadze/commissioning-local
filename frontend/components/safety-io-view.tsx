@@ -175,21 +175,40 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
                   <CardTitle className="text-base">{zone.name}</CardTitle>
                 </CardHeader>
                 <CardContent className="flex-1 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground font-mono">STO: {zone.stoSignal}</p>
-                    <Badge className={cn("text-[10px]",
-                      tagValues[zone.bssTag] === true ? "bg-red-500 text-white" :
-                      tagValues[zone.bssTag] === false ? "bg-green-500/20 text-green-500 border border-green-500/30" :
-                      "bg-muted text-muted-foreground"
-                    )}>
-                      {tagValues[zone.bssTag] === true ? "ACTIVE" : tagValues[zone.bssTag] === false ? "SAFE" : "—"}
-                    </Badge>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">STO Signal</span>
+                      <span className="text-xs font-mono font-semibold text-foreground">{zone.stoSignal}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">BSS Tag</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-muted-foreground">{zone.bssTag}</span>
+                        <span className={cn("text-xs font-bold font-mono",
+                          tagValues[zone.bssTag] === true ? "text-red-500" :
+                          tagValues[zone.bssTag] === false ? "text-green-500" :
+                          "text-muted-foreground"
+                        )}>
+                          {tagValues[zone.bssTag] === true ? "TRUE" : tagValues[zone.bssTag] === false ? "FALSE" : "—"}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                   <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
                     <p className="text-sm font-bold text-white mb-2">⚠ Following drives will STOP running:</p>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className="space-y-1">
                       {zone.drives.map(d => (
-                        <Badge key={d.id} className="text-xs bg-red-950 text-white border border-red-500/40 font-mono">{d.name}</Badge>
+                        <div key={d.id} className="flex items-center justify-between">
+                          <span className="text-xs font-mono text-white">{d.name}</span>
+                          <span className={cn("text-xs font-bold font-mono",
+                            tagValues[`${d.name}:SI.STOActive`] === true ? "text-green-400" :
+                            tagValues[`${d.name}:SI.STOActive`] === false ? "text-red-400" :
+                            "text-muted-foreground"
+                          )}>
+                            {tagValues[`${d.name}:SI.STOActive`] === true ? "TRUE" :
+                             tagValues[`${d.name}:SI.STOActive`] === false ? "FALSE" : "—"}
+                          </span>
+                        </div>
                       ))}
                     </div>
                   </div>
