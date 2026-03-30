@@ -124,13 +124,16 @@ export default function CommissioningPage() {
   const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
-  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety'>(() => {
-    if (typeof window !== 'undefined' && window.location.hash === '#network') return 'network'
-    if (typeof window !== 'undefined' && window.location.hash === '#estop') return 'estop'
-    if (typeof window !== 'undefined' && window.location.hash === '#safety') return 'safety'
-    return 'io'
-  })
+  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety'>('io')
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
+
+  // Set tab from URL hash after mount (avoids hydration mismatch)
+  useEffect(() => {
+    const hash = window.location.hash
+    if (hash === '#network') setActiveTab('network')
+    else if (hash === '#estop') setActiveTab('estop')
+    else if (hash === '#safety') setActiveTab('safety')
+  }, [])
   const [networkStats, setNetworkStats] = useState<{ healthy: number; faulted: number; unknown: number }>({ healthy: 0, faulted: 0, unknown: 0 })
   const [estopStats, setEstopStats] = useState<{ ok: number; failed: number; noData: number }>({ ok: 0, failed: 0, noData: 0 })
   const [showFireOutputDialog, setShowFireOutputDialog] = useState(false)
