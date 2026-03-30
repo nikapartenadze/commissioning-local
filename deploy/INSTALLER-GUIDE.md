@@ -5,7 +5,7 @@
 - Installs IO Checkout as a **Windows service** — runs in the background, no CMD window
 - **Auto-starts on boot** — survives reboots, no manual action needed
 - **Auto-restarts on crash** — 5 second delay, then back up
-- **Firewall rules** — ports 3000 + 3002 opened automatically during install
+- **Firewall rules** — port 3000 opened automatically during install (WebSocket shares the same port)
 - **Desktop shortcut** — "IO Checkout" with CIO icon, opens the app in your browser
 
 ---
@@ -90,10 +90,9 @@ The app runs as a Windows service called **"IOCheckout"**. It starts automatical
 
 | Port | Purpose |
 |------|---------|
-| **3000** | Web app (HTTP) — technicians connect here from browsers |
-| **3002** | WebSocket — real-time PLC state updates (auto-connected by the UI) |
+| **3000** | Web app + WebSocket (HTTP + real-time PLC state updates) |
 
-Both ports are opened in Windows Firewall during install.
+WebSocket connections are upgraded on the same port via the `/ws` path. Only port 3000 needs to be opened in the firewall.
 
 ---
 
@@ -116,7 +115,7 @@ Both ports are opened in Windows Firewall during install.
 
 ### Tablets can't connect
 1. Use the server's **IP address**, not `localhost` → run `ipconfig` to find it
-2. Check firewall: ports **3000** and **3002** must be open
+2. Check firewall: port **3000** must be open
 3. Make sure tablets are on the **same network** as the server
 
 ### Service won't start after upgrade

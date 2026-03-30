@@ -100,7 +100,7 @@ export interface WebSocketConnection {
 // Default Configuration
 // ============================================================================
 
-const DEFAULT_WS_URL = 'ws://localhost:3002'
+const DEFAULT_WS_URL = 'ws://localhost:3000/ws'
 const DEFAULT_RECONNECT_INTERVAL = 3000
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 const WS_DEBUG = false // Set to true to enable WebSocket logging
@@ -109,9 +109,9 @@ function getDefaultWebSocketUrl(): string {
   if (typeof window === 'undefined') {
     return DEFAULT_WS_URL
   }
-  // Use the same host as the page but with WebSocket protocol
+  // Use the same host as the page but with WebSocket protocol and /ws path
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.hostname}:3002`
+  return `${protocol}//${window.location.host}/ws`
 }
 
 // ============================================================================
