@@ -143,6 +143,9 @@ export default function CommissioningPage() {
   // Track if testing was active before switching to non-IO tab (so we can resume on return)
   const wasTestingBeforeTabSwitch = useRef(false)
 
+  // SPARE IO triggered — informational modal (no pass/fail)
+  const [spareTriggeredIo, setSpareTriggeredIo] = useState<IoItem | null>(null)
+
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
@@ -672,9 +675,9 @@ export default function CommissioningPage() {
               update.State === 'TRUE'
             )
 
-            // SPARE IO triggered — show info toast, no pass/fail
+            // SPARE IO triggered — show info modal, no pass/fail
             if (isSpare && stateActuallyChanged && update.State === 'TRUE' && currentPlcStatus.isTesting) {
-              toast({ title: `SPARE IO Triggered`, description: io.name + (io.description ? ` — ${io.description}` : '') })
+              setSpareTriggeredIo(updatedIo)
             }
 
             if (shouldShowDialog) {
@@ -1554,6 +1557,24 @@ export default function CommissioningPage() {
           open={showChangeRequestsPanel}
           onOpenChange={setShowChangeRequestsPanel}
         />
+
+        {/* SPARE IO Triggered — Info Only */}
+        <Dialog open={!!spareTriggeredIo} onOpenChange={(open) => { if (!open) setSpareTriggeredIo(null) }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>SPARE IO Triggered</DialogTitle>
+            </DialogHeader>
+            {spareTriggeredIo && (
+              <div className="space-y-2">
+                <p className="font-mono text-sm font-semibold">{spareTriggeredIo.name}</p>
+                {spareTriggeredIo.description && (
+                  <p className="text-sm text-muted-foreground">{spareTriggeredIo.description}</p>
+                )}
+                <p className="text-xs text-muted-foreground">This IO is marked as SPARE and cannot be tested.</p>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
 
         {/* Clear Result Confirmation Dialog */}
         <Dialog open={!!confirmClearIo} onOpenChange={(open) => { if (!open) setConfirmClearIo(null) }}>
