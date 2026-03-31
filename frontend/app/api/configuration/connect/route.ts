@@ -184,6 +184,17 @@ export async function POST(request: NextRequest) {
       // WebSocket server might not be running
     }
 
+    // Trigger network + estop tag creation in background (don't block response)
+    // This ensures cloud push has real values even before those pages are opened
+    setTimeout(async () => {
+      try {
+        const port = process.env.PORT || '3000'
+        await fetch(`http://localhost:${port}/api/network/status?subsystemId=${config?.subsystemId || ''}`)
+        await fetch(`http://localhost:${port}/api/estop/status`)
+        console.log('[Connect API] Network + EStop tag handles created in background')
+      } catch {}
+    }, 5000)
+
     return NextResponse.json({
       success: true,
       message: 'PLC connected',
