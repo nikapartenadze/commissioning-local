@@ -145,6 +145,8 @@ export default function CommissioningPage() {
 
   // SPARE IO triggered — informational modal (no pass/fail)
   const [spareTriggeredIo, setSpareTriggeredIo] = useState<IoItem | null>(null)
+  // Pending SPARE timers — keyed by device prefix (before :), cancel if non-SPARE from same device fires
+  const pendingSpareTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
@@ -670,27 +672,36 @@ export default function CommissioningPage() {
             // Check if we should show the value change dialog
             const stateActuallyChanged = currentPreviousStates[io.id] !== update.State
             const isSpare = io.description?.toUpperCase().includes('SPARE')
-            const shouldShowDialog = !isSpare && currentPlcStatus.isTesting && !io.result && stateActuallyChanged && (
-              // Show dialog on any FALSE→TRUE transition for both inputs and outputs
-              update.State === 'TRUE'
-            )
+            const isTrigger = currentPlcStatus.isTesting && stateActuallyChanged && update.State === 'TRUE'
+            // Device prefix: everything before the first ":"
+            const devicePrefix = io.name?.split(':')[0] || ''
 
-            // SPARE IO triggered — show info modal, no pass/fail
-            if (isSpare && stateActuallyChanged && update.State === 'TRUE' && currentPlcStatus.isTesting) {
-              setSpareTriggeredIo(updatedIo)
-            }
-
-            if (shouldShowDialog) {
-              // Skip dialog if IO is assigned to a different user
+            if (isTrigger && isSpare) {
+              // SPARE triggered — delay 500ms, show info modal UNLESS a non-SPARE from same device fires first
+              const timer = setTimeout(() => {
+                pendingSpareTimers.current.delete(devicePrefix)
+                setSpareTriggeredIo(updatedIo)
+              }, 500)
+              // Cancel any existing SPARE timer for this device
+              if (pendingSpareTimers.current.has(devicePrefix)) {
+                clearTimeout(pendingSpareTimers.current.get(devicePrefix)!)
+              }
+              pendingSpareTimers.current.set(devicePrefix, timer)
+            } else if (isTrigger && !isSpare && !io.result) {
+              // Non-SPARE triggered — cancel any pending SPARE dialog from same device (same port pair)
+              if (pendingSpareTimers.current.has(devicePrefix)) {
+                clearTimeout(pendingSpareTimers.current.get(devicePrefix)!)
+                pendingSpareTimers.current.delete(devicePrefix)
+              }
+              // Show pass/fail dialog
               const user = currentUserRef.current
               if (updatedIo.assignedTo && user?.fullName && updatedIo.assignedTo !== user.fullName) {
-                // IO assigned to someone else — skip dialog for this user
+                // IO assigned to someone else — skip
               } else {
-              if (DEBUG_OTHER) {
-                console.log('💡 Triggering ValueChangeDialog for:', io.name, 'Type:', isOutput(io.name) ? 'OUTPUT' : 'INPUT', 'Current state:', update.State, 'Current result:', io.result)
-              }
-              // Add to queue instead of showing immediately
-              addToDialogQueue(updatedIo)
+                if (DEBUG_OTHER) {
+                  console.log('💡 Triggering ValueChangeDialog for:', io.name)
+                }
+                addToDialogQueue(updatedIo)
               }
             }
 
