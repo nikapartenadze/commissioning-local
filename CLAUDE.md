@@ -180,16 +180,82 @@ File-based `config.json` in `frontend/` directory. ConfigurationService watches 
 
 | Table | Purpose |
 |-------|---------|
-| Io | I/O definitions with Result, Timestamp, Comments, TagType, Version |
+| Io | I/O definitions with Result, Timestamp, Comments, TagType, Version, networkDeviceName, punchlistStatus, trade, clarificationNote |
 | TestHistory | Audit trail (result, testedBy, failureMode, state, timestamp) |
 | PendingSync | Offline queue for cloud sync |
-| User | PIN-based auth (bcrypt hashed), roles (admin/user) |
+| User | Legacy PIN-based auth (no longer used — name prompt via localStorage) |
 | Project / Subsystem | Organization hierarchy |
 | TagTypeDiagnostic | Diagnostic troubleshooting steps per tag type |
 | ChangeRequest | IO change requests (requestType, status, reviewedBy) |
 | NetworkRing / NetworkNode / NetworkPort | DLR ring topology and star connections |
+| EStopZone / EStopEpc / EStopIoPoint / EStopVfd | Emergency stop check data |
+| SafetyZone / SafetyZoneDrive | STO bypass zones with affected drives |
+| SafetyOutput | STD intermediary tags for safety outputs |
 
 Schema: `frontend/prisma/schema.prisma`. Run `npx prisma generate` after changes.
+
+## CSV Data Formats
+
+The system currently imports data from multiple CSV files. Here is how they relate:
+
+### Current CSV Formats
+
+**1. IO Data (OUTPUT CSV)** — columns: `Name,Description,Subsystem`
+- `Name` = PLC tag path (e.g., `NCP1_8_VFD:I.In_0`)
+- `Description` = what the IO is (e.g., `NCP1_8_TPE1 TRACKING PHOTOEYE` or `SPARE`)
+- `Subsystem` = MCM name (e.g., `MCM11`)
+- Contains ALL IOs including SPARE. DB has 662 IOs for MCM09, 3700 for MCM11.
+
+**2. IO Connections (TAGNAME CSV)** — columns: `TAGNAME,IO_PATH,DESC`
+- `TAGNAME` = parent network device (e.g., `NCP1_8_VFD`, `NCP1_2_FIOM1`, `SLOT5_IB16`)
+- `IO_PATH` = same as IO Name (the PLC tag)
+- `DESC` = same as IO Description
+- Only contains NON-SPARE IOs (224 rows vs 662 total for MCM09)
+- **Key insight**: `TAGNAME` IS the `networkDeviceName` — links IO to its parent network device
+
+**3. Network Topology CSV** — columns: `DPM_Name,DPM_IP,DPM_Fault,Device_Name,Device_IP,Device_Fault,Port,Loop_Order`
+- Row with Loop_Order=1 is the MCM controller
+- Other rows: DPM nodes with their connected devices (VFDs, FIOMs, etc.)
+- `Device_Name` matches `TAGNAME` from IO Connections CSV
+- `Device_Fault` = ConnectionFaulted tag for live status
+
+**4. EStop CSV** — columns: `EPC_Check_Tag,Zone,EPC_IO_Points,VFDs_Must_Stop,VFDs_Keep_Running`
+- Semicolon-separated lists within columns
+
+**5. Safety Bypass CSV** — columns: `BSS_Tag,STO_Signal,Zone,Drives`
+- BSS_Tag = tag to write TRUE to bypass safety
+- Drives = semicolon-separated VFD names that stop when bypassing
+
+### Relationships Between Data
+
+```
+Network CSV Device_Name  ←→  IO Connections TAGNAME  ←→  IO Name prefix (before :)
+     ↓                              ↓                           ↓
+NetworkPort.deviceName      Io.networkDeviceName          Io.name
+```
+
+- A VFD like `NCP1_8_VFD` appears in Network Topology as a device on a DPM port
+- The same `NCP1_8_VFD` appears as TAGNAME in IO Connections
+- Its IOs are `NCP1_8_VFD:I.In_0`, `NCP1_8_VFD:I.In_1`, etc. in the IO table
+- The prefix before `:` in the IO name = the network device name
+
+**Devices only in Network (no IOs)**: PMMs, LPEs, controller (SLOT2_EN4TR)
+**Devices only in IOs (no network entry)**: Slot modules (SLOT5_IB16, SLOT6_OB16E, SLOT7_IB16S) — these are local PLC modules, not network devices
+
+### Proposed Normalized CSV (Future)
+
+A single CSV that contains everything needed for both IO and network device relationships:
+
+```
+TAGNAME,IO_PATH,DESC,Subsystem,DPM_Name,Port,Device_IP,Device_Fault
+NCP1_8_VFD,NCP1_8_VFD:I.In_0,NCP1_8_VFD_DISC DISCONNECT AUX,MCM11,NCP1_1_DPM1,5,11.200.1.20,NCP1_8_VFD:I.ConnectionFaulted
+NCP1_8_VFD,NCP1_8_VFD:I.In_1,SPARE,MCM11,NCP1_1_DPM1,5,11.200.1.20,NCP1_8_VFD:I.ConnectionFaulted
+```
+
+This would allow a single import to:
+1. Create/update IO records (IO_PATH → Io.name, DESC → Io.description)
+2. Set networkDeviceName (TAGNAME → Io.networkDeviceName)
+3. Create/update network topology (DPM_Name, Port, Device_IP, Device_Fault)
 
 ## Environment Variables
 
