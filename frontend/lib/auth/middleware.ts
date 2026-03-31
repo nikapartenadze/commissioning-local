@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyToken, extractTokenFromHeader, DecodedToken } from './jwt';
+import { DecodedToken } from './jwt';
 
 export interface AuthenticatedRequest extends NextRequest {
   user?: DecodedToken;
@@ -12,143 +12,62 @@ export interface AuthResult {
   status?: number;
 }
 
+// Default anonymous user for open-access mode
+const ANONYMOUS_USER: DecodedToken = {
+  sub: '0',
+  fullName: 'Anonymous',
+  isAdmin: true,
+};
+
 /**
- * Verify JWT from Authorization header
- * Returns the decoded user if valid, error info otherwise
+ * Auth disabled — open access mode. Always returns success.
  */
-export function verifyAuth(request: NextRequest): AuthResult {
-  const authHeader = request.headers.get('authorization');
-  const token = extractTokenFromHeader(authHeader);
-
-  if (!token) {
-    return {
-      success: false,
-      error: 'Authorization header missing or invalid',
-      status: 401,
-    };
-  }
-
-  const decoded = verifyToken(token);
-
-  if (!decoded) {
-    return {
-      success: false,
-      error: 'Invalid or expired token',
-      status: 401,
-    };
-  }
-
+export function verifyAuth(_request: NextRequest): AuthResult {
   return {
     success: true,
-    user: decoded,
+    user: ANONYMOUS_USER,
   };
 }
 
 /**
- * Middleware helper to protect API routes
- * Returns a response with error if auth fails, undefined if auth succeeds
+ * Auth disabled — always returns null (no error).
  */
-export function requireAuth(request: NextRequest): NextResponse | null {
-  const result = verifyAuth(request);
-
-  if (!result.success) {
-    return NextResponse.json(
-      { message: result.error },
-      { status: result.status || 401 }
-    );
-  }
-
+export function requireAuth(_request: NextRequest): NextResponse | null {
   return null;
 }
 
 /**
- * Middleware helper to require admin access
- * Returns a response with error if auth fails or user is not admin
+ * Auth disabled — always returns null (no error).
  */
-export function requireAdmin(request: NextRequest): NextResponse | null {
-  const result = verifyAuth(request);
-
-  if (!result.success) {
-    return NextResponse.json(
-      { message: result.error },
-      { status: result.status || 401 }
-    );
-  }
-
-  if (!result.user?.isAdmin) {
-    return NextResponse.json(
-      { message: 'Admin access required' },
-      { status: 403 }
-    );
-  }
-
+export function requireAdmin(_request: NextRequest): NextResponse | null {
   return null;
 }
 
 /**
- * Get authenticated user from request
- * Returns the user if auth succeeds, null otherwise
+ * Auth disabled — always returns the anonymous user.
  */
-export function getAuthUser(request: NextRequest): DecodedToken | null {
-  const result = verifyAuth(request);
-  return result.success ? result.user! : null;
+export function getAuthUser(_request: NextRequest): DecodedToken | null {
+  return ANONYMOUS_USER;
 }
 
 /**
- * Higher-order function to wrap route handlers with authentication
- *
- * Usage:
- * export const GET = withAuth(async (request, user) => {
- *   // user is guaranteed to be authenticated
- *   return NextResponse.json({ data: 'protected data' });
- * });
+ * Auth disabled — passes through to handler with anonymous user.
  */
 export function withAuth(
   handler: (request: NextRequest, user: DecodedToken) => Promise<NextResponse>
 ) {
   return async (request: NextRequest): Promise<NextResponse> => {
-    const result = verifyAuth(request);
-
-    if (!result.success) {
-      return NextResponse.json(
-        { message: result.error },
-        { status: result.status || 401 }
-      );
-    }
-
-    return handler(request, result.user!);
+    return handler(request, ANONYMOUS_USER);
   };
 }
 
 /**
- * Higher-order function to wrap route handlers with admin authentication
- *
- * Usage:
- * export const POST = withAdmin(async (request, user) => {
- *   // user is guaranteed to be an admin
- *   return NextResponse.json({ data: 'admin only data' });
- * });
+ * Auth disabled — passes through to handler with anonymous admin user.
  */
 export function withAdmin(
   handler: (request: NextRequest, user: DecodedToken) => Promise<NextResponse>
 ) {
   return async (request: NextRequest): Promise<NextResponse> => {
-    const result = verifyAuth(request);
-
-    if (!result.success) {
-      return NextResponse.json(
-        { message: result.error },
-        { status: result.status || 401 }
-      );
-    }
-
-    if (!result.user?.isAdmin) {
-      return NextResponse.json(
-        { message: 'Admin access required' },
-        { status: 403 }
-      );
-    }
-
-    return handler(request, result.user);
+    return handler(request, ANONYMOUS_USER);
   };
 }
