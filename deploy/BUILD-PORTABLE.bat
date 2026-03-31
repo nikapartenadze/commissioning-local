@@ -146,6 +146,17 @@ xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\@prisma\client" "%OUTPUT_DIR%\app
 REM ws module
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
 
+REM http-proxy module (for standalone WebSocket upgrade proxy)
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\http-proxy" "%OUTPUT_DIR%\app\node_modules\http-proxy"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\eventemitter3" "%OUTPUT_DIR%\app\node_modules\eventemitter3" 2>nul
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\requires-port" "%OUTPUT_DIR%\app\node_modules\requires-port" 2>nul
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\follow-redirects" "%OUTPUT_DIR%\app\node_modules\follow-redirects" 2>nul
+
+REM Startup backup module
+copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\lib\" 2>nul
+if not exist "%OUTPUT_DIR%\app\lib" mkdir "%OUTPUT_DIR%\app\lib"
+copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\lib\" 2>nul
+
 REM Seed scripts
 copy "%FRONTEND_DIR%\prisma\seed-diagnostics.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
 copy "%FRONTEND_DIR%\prisma\seed-network.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
