@@ -189,7 +189,7 @@ export async function POST(request: NextRequest) {
     setTimeout(async () => {
       try {
         const port = process.env.PORT || '3000'
-        await fetch(`http://localhost:${port}/api/network/status?subsystemId=${config?.subsystemId || ''}`)
+        await fetch(`http://localhost:${port}/api/network/status?subsystemId=${body.subsystemId || ''}`)
         await fetch(`http://localhost:${port}/api/estop/status`)
         console.log('[Connect API] Network + EStop tag handles created in background')
       } catch {}
