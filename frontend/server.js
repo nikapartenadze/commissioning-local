@@ -302,49 +302,81 @@ setInterval(() => {
 // Next.js Server + WebSocket Upgrade Handler
 // ============================================================================
 
-// Set env vars for Next.js
 process.env.PORT = String(PORT);
 process.env.HOSTNAME = HOSTNAME;
 
-try {
-  const next = require('next');
-  const app = next({ dev: false, hostname: HOSTNAME, port: PORT });
-  const handle = app.getRequestHandler();
+const standalonePath = path.join(__dirname, 'next-server.js');
 
-  app.prepare().then(() => {
-    const httpServer = createServer(async (req, res) => {
-      try {
-        const parsedUrl = parse(req.url, true);
-        await handle(req, res, parsedUrl);
-      } catch (err) {
-        console.error('Request error:', err);
-        res.writeHead(500);
-        res.end('Internal Server Error');
-      }
-    });
+if (fs.existsSync(standalonePath)) {
+  // Standalone/portable mode: proxy to standalone server + WebSocket upgrade
+  const httpProxy = require('http-proxy');
+  const INTERNAL_PORT = PORT + 1;
+  process.env.PORT = String(INTERNAL_PORT);
+  process.env.HOSTNAME = '127.0.0.1';
 
-    // WebSocket upgrade: route /ws to PLC WebSocket server
-    httpServer.on('upgrade', (req, socket, head) => {
-      const { pathname } = parse(req.url);
-      if (pathname === '/ws') {
-        plcWss.handleUpgrade(req, socket, head, (ws) => {
-          plcWss.emit('connection', ws, req);
-        });
-      } else {
-        // Not a recognized WebSocket path — destroy the connection
-        socket.destroy();
-      }
-    });
+  // Start standalone Next.js on internal port
+  console.log('[App] Starting Next.js standalone server...');
+  require(standalonePath);
 
-    httpServer.listen(PORT, HOSTNAME, () => {
-      console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
-      console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
-    });
+  // Proxy server on the real port
+  const proxy = httpProxy.createProxyServer({ target: `http://127.0.0.1:${INTERNAL_PORT}`, ws: true });
+  proxy.on('error', (err, req, res) => {
+    if (res.writeHead) { res.writeHead(502); res.end('Next.js not ready'); }
   });
-} catch (e) {
-  console.error('Failed to start Next.js:', e.message);
-  console.error('Make sure to run "npm run build" first');
-  process.exit(1);
+
+  const mainServer = createServer((req, res) => {
+    proxy.web(req, res);
+  });
+
+  mainServer.on('upgrade', (req, socket, head) => {
+    const { pathname } = parse(req.url);
+    if (pathname === '/ws') {
+      plcWss.handleUpgrade(req, socket, head, (ws) => plcWss.emit('connection', ws, req));
+    } else {
+      socket.destroy();
+    }
+  });
+
+  mainServer.listen(PORT, HOSTNAME, () => {
+    console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
+    console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
+  });
+} else {
+  // Full install mode: use next package directly
+  try {
+    const next = require('next');
+    const app = next({ dev: false, hostname: HOSTNAME, port: PORT });
+    const handle = app.getRequestHandler();
+
+    app.prepare().then(() => {
+      const httpServer = createServer(async (req, res) => {
+        try {
+          await handle(req, res, parse(req.url, true));
+        } catch (err) {
+          console.error('Request error:', err);
+          res.writeHead(500);
+          res.end('Internal Server Error');
+        }
+      });
+
+      httpServer.on('upgrade', (req, socket, head) => {
+        const { pathname } = parse(req.url);
+        if (pathname === '/ws') {
+          plcWss.handleUpgrade(req, socket, head, (ws) => plcWss.emit('connection', ws, req));
+        } else {
+          socket.destroy();
+        }
+      });
+
+      httpServer.listen(PORT, HOSTNAME, () => {
+        console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
+        console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
+      });
+    });
+  } catch (e) {
+    console.error('Failed to start Next.js:', e.message);
+    process.exit(1);
+  }
 }
 
 // ============================================================================
