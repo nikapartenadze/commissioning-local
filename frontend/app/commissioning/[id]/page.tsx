@@ -666,14 +666,16 @@ export default function CommissioningPage() {
 
             // Check if we should show the value change dialog
             const stateActuallyChanged = currentPreviousStates[io.id] !== update.State
-            // Skip SPARE IOs — they cannot be tested
             const isSpare = io.description?.toUpperCase().includes('SPARE')
             const shouldShowDialog = !isSpare && currentPlcStatus.isTesting && !io.result && stateActuallyChanged && (
               // Show dialog on any FALSE→TRUE transition for both inputs and outputs
-              // Inputs: physical sensor activation
-              // Outputs: PLC program changed value, or user fired from UI
               update.State === 'TRUE'
             )
+
+            // SPARE IO triggered — show info toast, no pass/fail
+            if (isSpare && stateActuallyChanged && update.State === 'TRUE' && currentPlcStatus.isTesting) {
+              toast({ title: `SPARE IO Triggered`, description: io.name + (io.description ? ` — ${io.description}` : '') })
+            }
 
             if (shouldShowDialog) {
               // Skip dialog if IO is assigned to a different user
