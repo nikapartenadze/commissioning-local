@@ -250,16 +250,7 @@ export async function authFetch(
     headers,
   })
 
-  if (response.status === 401) {
-    // Token expired or invalid - clear and redirect to login
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('authToken')
-      localStorage.removeItem('currentUser')
-      localStorage.removeItem('loginTime')
-      document.cookie = 'authToken=; path=/; max-age=0'
-      window.location.href = '/'
-    }
-  }
+  // Auth disabled — no 401 redirect needed
 
   return response
 }
