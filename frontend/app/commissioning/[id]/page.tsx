@@ -37,6 +37,7 @@ import { useSignalR, IOUpdate, CommentUpdate, ErrorEvent } from "@/lib/signalr-c
 import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/lib/api-config"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { GuidedTour } from "@/components/guided-tour"
+import { NamePrompt } from "@/components/name-prompt"
 import { logger } from "@/lib/logger"
 
 // Debug flags - set to true to enable specific logging
@@ -85,17 +86,10 @@ function calculateTestResults(ios: IoItem[]): ChartData {
 export default function CommissioningPage() {
   const params = useParams()
   const router = useRouter()
-  const { currentUser, isLoading: userLoading } = useUser()
+  const { currentUser, setCurrentUser, isLoading: userLoading } = useUser()
   const paramId = params.id as string
   const projectId = paramId === '_' ? 0 : parseInt(paramId)
   const isUnconfigured = paramId === '_' || isNaN(projectId)
-
-  // Redirect to login if not authenticated
-  useEffect(() => {
-    if (!userLoading && !currentUser) {
-      router.push('/')
-    }
-  }, [currentUser, userLoading, router])
 
   // Auto-open config dialog when not configured — only for admins
   // Technicians can't configure PLC/cloud, so don't show them the dialog
@@ -1261,6 +1255,9 @@ export default function CommissioningPage() {
 
   return (
     <ErrorBoundary>
+    {!userLoading && !currentUser && (
+      <NamePrompt onNameSet={(name) => setCurrentUser({ fullName: name, isAdmin: true, loginTime: new Date() })} />
+    )}
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}
       <header className="bg-card border-b flex-shrink-0 z-50">

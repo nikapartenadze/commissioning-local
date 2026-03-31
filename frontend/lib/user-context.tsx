@@ -1,7 +1,6 @@
 "use client"
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { logger } from '@/lib/logger'
 
 interface User {
   fullName: string
@@ -28,98 +27,38 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const [isMounted, setIsMounted] = useState(false)
 
-  // Handle hydration - only run on client
   useEffect(() => {
     setIsMounted(true)
   }, [])
 
-  // Load from localStorage on mount and verify token is still valid
+  // Load tester name from localStorage on mount
   useEffect(() => {
     if (!isMounted) return
 
-    const stored = localStorage.getItem('currentUser')
-    const loginTime = localStorage.getItem('loginTime')
-    const token = localStorage.getItem('authToken')
-
-    if (stored && loginTime && token) {
-      try {
-        const user = JSON.parse(stored)
-        const loginDate = new Date(loginTime)
-
-        // Check if 8 hours have passed (auto-logout)
-        const hoursSinceLogin = (Date.now() - loginDate.getTime()) / (1000 * 60 * 60)
-
-        if (hoursSinceLogin >= 8) {
-          // Auto-logout after 8 hours
-          localStorage.removeItem('currentUser')
-          localStorage.removeItem('loginTime')
-          localStorage.removeItem('authToken')
-          document.cookie = 'authToken=; path=/; max-age=0'
-          setIsLoading(false)
-          return
-        }
-
-        // Verify token is still valid on the server before restoring session
-        fetch('/api/auth/verify', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        })
-          .then(res => {
-            if (res.ok) {
-              // Token is valid — restore session
-              setCurrentUserState({
-                ...user,
-                loginTime: loginDate
-              })
-            } else {
-              // Token is invalid (server restarted, secret changed, etc.)
-              // Clear stale session — user needs to re-login
-              localStorage.removeItem('currentUser')
-              localStorage.removeItem('loginTime')
-              localStorage.removeItem('authToken')
-              document.cookie = 'authToken=; path=/; max-age=0'
-            }
-          })
-          .catch(() => {
-            // Server not reachable — still restore from localStorage
-            // (offline mode: trust local data, will fail on API calls anyway)
-            setCurrentUserState({
-              ...user,
-              loginTime: loginDate
-            })
-          })
-          .finally(() => {
-            setIsLoading(false)
-          })
-        return // Don't setIsLoading here — it's handled in .finally()
-      } catch (error) {
-        console.error('Error loading user from localStorage:', error)
-        localStorage.removeItem('currentUser')
-        localStorage.removeItem('loginTime')
-        localStorage.removeItem('authToken')
-        document.cookie = 'authToken=; path=/; max-age=0'
-      }
+    const name = localStorage.getItem('tester-name')
+    if (name) {
+      setCurrentUserState({
+        fullName: name,
+        isAdmin: true,
+        loginTime: new Date()
+      })
     }
-
     setIsLoading(false)
   }, [isMounted])
 
   const setCurrentUser = (user: User | null) => {
     setCurrentUserState(user)
     if (user) {
-      localStorage.setItem('currentUser', JSON.stringify({
-        fullName: user.fullName,
-        isAdmin: user.isAdmin
-      }))
-      localStorage.setItem('loginTime', new Date().toISOString())
-      logger.log('User logged in:', user.fullName)
+      localStorage.setItem('tester-name', user.fullName)
     } else {
-      localStorage.removeItem('currentUser')
-      localStorage.removeItem('loginTime')
+      localStorage.removeItem('tester-name')
     }
   }
 
   const logout = () => {
     setCurrentUserState(null)
+    localStorage.removeItem('tester-name')
+    // Clean up old auth keys if they exist
     localStorage.removeItem('currentUser')
     localStorage.removeItem('loginTime')
     localStorage.removeItem('authToken')
@@ -139,4 +78,3 @@ export const useUser = () => {
   }
   return context
 }
-
