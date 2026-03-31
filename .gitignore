@@ -59,3 +59,4 @@ frontend/libplctag.so
 io-checkout-*.zip
 IOCheckout-Setup-*.exe
 commissioning-cloud/
+io-checkout-*-portable/
