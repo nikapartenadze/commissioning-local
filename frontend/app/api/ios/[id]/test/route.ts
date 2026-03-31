@@ -68,6 +68,11 @@ export async function POST(
       return NextResponse.json({ error: 'IO not found' }, { status: 404 })
     }
 
+    // Block SPARE IOs from being tested
+    if (io.description?.toUpperCase().includes('SPARE')) {
+      return NextResponse.json({ error: 'SPARE IOs cannot be tested' }, { status: 400 })
+    }
+
     // Get current PLC state
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)
