@@ -54,6 +54,7 @@ interface IoItem {
   state: string | null
   subsystemName: string
   assignedTo?: string | null
+  networkDeviceName?: string | null
 }
 
 interface ChartData {
@@ -129,6 +130,7 @@ export default function CommissioningPage() {
     else if (hash === '#safety') setActiveTab('safety')
   }, [])
   const [networkStats, setNetworkStats] = useState<{ healthy: number; faulted: number; unknown: number }>({ healthy: 0, faulted: 0, unknown: 0 })
+  const [faultedDevices, setFaultedDevices] = useState<Set<string>>(new Set())
   const [estopStats, setEstopStats] = useState<{ ok: number; failed: number; noData: number }>({ ok: 0, failed: 0, noData: 0 })
   const [showFireOutputDialog, setShowFireOutputDialog] = useState(false)
   const [showValueChangeDialog, setShowValueChangeDialog] = useState(false)
@@ -276,9 +278,9 @@ export default function CommissioningPage() {
     remoteUrl: ""
   })
 
-  // Poll network/estop stats when on those tabs
+  // Poll network/estop stats — always poll network for faulted device detection
   useEffect(() => {
-    if (activeTab === 'network') {
+    if (activeTab === 'network' || activeTab === 'ios') {
       let active = true
       const poll = async () => {
         try {
@@ -286,18 +288,28 @@ export default function CommissioningPage() {
           if (res.ok && active) {
             const data = await res.json()
             if (data.success && data.tags) {
-              const values = Object.values(data.tags as Record<string, boolean | null>)
+              const tags = data.tags as Record<string, boolean | null>
+              const values = Object.values(tags)
               setNetworkStats({
                 healthy: values.filter(v => v === false).length,
                 faulted: values.filter(v => v === true).length,
                 unknown: values.filter(v => v === null || v === undefined).length,
               })
+              // Track faulted device names for IO testing warnings
+              const faulted = new Set<string>()
+              for (const [tagName, value] of Object.entries(tags)) {
+                if (value === true) {
+                  const deviceName = tagName.split(':')[0]
+                  if (deviceName) faulted.add(deviceName)
+                }
+              }
+              setFaultedDevices(faulted)
             }
           }
         } catch {}
       }
       poll()
-      const interval = setInterval(poll, 3000)
+      const interval = setInterval(poll, activeTab === 'network' ? 3000 : 10000)
       return () => { active = false; clearInterval(interval) }
     } else if (activeTab === 'estop') {
       let active = true
@@ -1525,6 +1537,11 @@ export default function CommissioningPage() {
           }}
           io={currentDialogIo ? ios.find(i => i.id === currentDialogIo.id) || currentDialogIo : null}
           remainingCount={dialogQueue.length}
+          deviceFaulted={(() => {
+            const io = currentDialogIo ? ios.find(i => i.id === currentDialogIo.id) : null
+            const deviceName = io?.networkDeviceName || io?.name?.split(':')[0]
+            return deviceName ? faultedDevices.has(deviceName) : false
+          })()}
           onYes={handleValueChangeYes}
           onNo={handleValueChangeNo}
           onCancel={handleValueChangeCancel}
