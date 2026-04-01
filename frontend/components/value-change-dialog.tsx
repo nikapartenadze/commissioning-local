@@ -97,9 +97,12 @@ export function ValueChangeDialog({
               </span>
             </div>
             {deviceFaulted && (
-              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg space-y-1">
                 <div className="text-sm font-bold text-center text-red-600 dark:text-red-400">
                   Parent device is FAULTED — connection issue detected
+                </div>
+                <div className="text-xs text-center text-red-500 dark:text-red-400/80">
+                  Cannot mark as Pass while device has a connection fault. Fix the fault or mark as Fail.
                 </div>
               </div>
             )}
@@ -172,7 +175,7 @@ export function ValueChangeDialog({
               <Button variant="destructive" onClick={handleNo}>
                 Fail
               </Button>
-              <Button onClick={handleYes}>
+              <Button onClick={handleYes} disabled={deviceFaulted}>
                 Pass
               </Button>
             </div>
