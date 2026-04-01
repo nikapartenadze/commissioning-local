@@ -20,6 +20,7 @@ interface ValueChangeDialogProps {
   onOpenChange: (open: boolean) => void
   io: IoItem | null
   remainingCount?: number
+  deviceFaulted?: boolean
   onYes: (io: IoItem) => void
   onNo: (io: IoItem) => void
   onCancel: (io: IoItem) => void
@@ -36,7 +37,8 @@ export function ValueChangeDialog({
   onNo,
   onCancel,
   onClearAll,
-  onStopTesting
+  onStopTesting,
+  deviceFaulted = false
 }: ValueChangeDialogProps) {
   if (!io) return null
 
@@ -94,6 +96,13 @@ export function ValueChangeDialog({
                 {io.description || 'No description'}
               </span>
             </div>
+            {deviceFaulted && (
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <div className="text-sm font-bold text-center text-red-600 dark:text-red-400">
+                  Parent device is FAULTED — connection issue detected
+                </div>
+              </div>
+            )}
             <div className="p-3 bg-muted rounded-lg">
               <div className="text-sm font-medium text-center">
                 {isOutputTag ? (
