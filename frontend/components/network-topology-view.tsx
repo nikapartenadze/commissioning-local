@@ -417,7 +417,8 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
 
   if (subPorts.length === 0) return <div className="py-8 text-center text-sm text-muted-foreground">No sub-devices found for {fiomName}</div>
 
-  const connectedPorts = subPorts.filter(p => p.deviceName).sort((a, b) => {
+  // Only show IOLink sub-devices (those with a statusTag for communication monitoring)
+  const connectedPorts = subPorts.filter(p => p.deviceName && p.statusTag).sort((a, b) => {
     const aNum = parseInt(a.portNumber.replace('X', ''))
     const bNum = parseInt(b.portNumber.replace('X', ''))
     return aNum - bNum
