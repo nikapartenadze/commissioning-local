@@ -197,6 +197,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
             result: cloudIo.result ?? null,
             timestamp: cloudIo.timestamp ?? null,
             comments: cloudIo.comments ?? null,
+            networkDeviceName: cloudIo.networkDeviceName ?? null,
           }
 
           if (cloudIo.tagType != null) {
@@ -216,12 +217,25 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
               result: cloudIo.result ?? null,
               timestamp: cloudIo.timestamp ?? null,
               comments: cloudIo.comments ?? null,
+              networkDeviceName: cloudIo.networkDeviceName ?? null,
             },
             update: updateData,
           })
           upsertedCount++
         } catch (error) {
           console.error(`[CloudPull] Failed to upsert IO ${cloudIo.id}:`, error)
+        }
+      }
+
+      // Auto-populate networkDeviceName from tag name prefix for any IOs still missing it
+      const iosWithoutDevice = await tx.io.findMany({
+        where: { networkDeviceName: null, name: { not: null } },
+        select: { id: true, name: true }
+      })
+      for (const io of iosWithoutDevice) {
+        const deviceName = io.name?.split(':')[0]
+        if (deviceName) {
+          await tx.io.update({ where: { id: io.id }, data: { networkDeviceName: deviceName } })
         }
       }
 
