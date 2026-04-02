@@ -1193,10 +1193,13 @@ export default function CommissioningPage() {
     logger.log('PLC connect triggered with config:', newConfig)
     setPlcConfig(newConfig)
 
-    // Connect SignalR for real-time PLC updates (IOs already loaded, no need to refetch)
+    // Connect SignalR for real-time PLC updates
     if (!signalR.isConnected) {
       signalR.connect()
     }
+
+    // Reload IOs with PLC states after tag reader completes first cycle
+    setTimeout(() => loadIos(), 3000)
   }
 
   const handleTestConnection = async (): Promise<boolean> => {
