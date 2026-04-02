@@ -611,6 +611,10 @@ export function getAutoSyncService(): AutoSyncService | null {
 }
 
 export function startAutoSync(config?: Partial<AutoSyncConfig>): AutoSyncService {
+  if (autoSyncInstance && autoSyncInstance.running) {
+    // Already running — don't restart (preserves SSE connection)
+    return autoSyncInstance
+  }
   if (autoSyncInstance) {
     autoSyncInstance.stop()
   }
