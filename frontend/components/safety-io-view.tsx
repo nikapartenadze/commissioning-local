@@ -195,11 +195,11 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
                     </div>
                   </div>
                   <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
-                    <p className="text-sm font-bold text-white mb-2">⚠ Following drives will STOP running:</p>
+                    <p className="text-sm font-bold text-red-700 dark:text-red-300 mb-2">⚠ Following drives will STOP running:</p>
                     <div className="space-y-1">
                       {zone.drives.map(d => (
                         <div key={d.id} className="flex items-center justify-between">
-                          <span className="text-xs font-mono text-white">{d.name}</span>
+                          <span className="text-xs font-mono text-red-700 dark:text-red-300">{d.name}</span>
                           <span className={cn("text-xs font-bold font-mono",
                             tagValues[`${d.name}:SI.STOActive`] === true ? "text-green-400" :
                             tagValues[`${d.name}:SI.STOActive`] === false ? "text-red-400" :
