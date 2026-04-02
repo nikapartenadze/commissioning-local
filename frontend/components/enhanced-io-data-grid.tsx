@@ -605,7 +605,7 @@ export function EnhancedIoDataGrid({
       {/* Keyword Filter Pills */}
       {keywordFilters.length > 0 && (
         <div className="flex items-center gap-1.5 px-2 py-1.5 border-b bg-muted/20 flex-shrink-0 overflow-x-auto">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium shrink-0">Filter:</span>
+          <span className="text-[10px] text-[#C6941A] uppercase tracking-wider font-semibold shrink-0">Filter:</span>
           {keywordFilters.map(({ keyword, count }) => (
             <button
               key={keyword}
@@ -614,7 +614,7 @@ export function EnhancedIoDataGrid({
                 "px-2 py-0.5 rounded-full text-xs font-medium transition-colors shrink-0",
                 activeKeywordFilters.includes(keyword)
                   ? "bg-primary text-primary-foreground"
-                  : "bg-muted hover:bg-accent text-muted-foreground hover:text-foreground"
+                  : "bg-muted border border-[#C6941A]/20 hover:border-[#C6941A]/50 text-muted-foreground hover:text-foreground"
               )}
             >
               {keyword}

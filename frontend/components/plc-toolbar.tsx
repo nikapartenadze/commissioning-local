@@ -91,7 +91,7 @@ export function PlcToolbar({
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
 
   return (
-    <div className="bg-card border-y border-border">
+    <div className="bg-card border-y border-[#C6941A]/20">
       {/* Main Toolbar Row */}
       <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 flex-wrap">
         {/* START/STOP Button */}
