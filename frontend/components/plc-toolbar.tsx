@@ -208,8 +208,8 @@ export function PlcToolbar({
             className={cn(
               "h-11 sm:h-14 px-2 sm:px-4 flex items-center justify-center rounded-md transition-all text-xs sm:text-sm font-medium",
               activeFilter === 'inputs'
-                ? "bg-blue-600 text-white"
-                : "bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400"
+                ? "bg-primary text-white"
+                : "bg-primary/10 hover:bg-primary/20 text-primary dark:text-primary"
             )}
           >
             In
@@ -237,8 +237,8 @@ export function PlcToolbar({
                 className={cn(
                   "h-11 sm:h-14 px-2 sm:px-4 flex items-center justify-center rounded-md transition-all text-xs sm:text-sm font-medium",
                   activeFilter === 'my-ios'
-                    ? "bg-purple-600 text-white"
-                    : "bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400"
+                    ? "bg-primary text-white"
+                    : "bg-primary/10 hover:bg-primary/20 text-primary dark:text-primary"
                 )}
               >
                 My IOs
@@ -349,7 +349,7 @@ export function PlcToolbar({
               size="lg"
               className={cn(
                 "h-10 w-10 sm:h-12 sm:w-auto sm:px-3 p-0 sm:p-auto",
-                isSimulatorEnabled && "bg-purple-600 hover:bg-purple-700 text-white"
+                isSimulatorEnabled && "bg-primary hover:bg-primary/90 text-white"
               )}
               onClick={onToggleSimulator}
               title={isSimulatorEnabled ? "Disable Simulator" : "Enable Simulator"}
@@ -454,7 +454,7 @@ export function PlcToolbar({
               <Button
                 variant="outline"
                 size="lg"
-                className="h-10 sm:h-12 px-3 sm:px-4 bg-blue-500/10 border-blue-500/30 text-blue-500 hover:bg-blue-500/20 hover:text-blue-400 font-bold"
+                className="h-10 sm:h-12 px-3 sm:px-4 bg-primary/10 border-primary/30 text-primary hover:bg-primary/20 hover:text-primary font-bold"
                 title="Start Interactive Tour"
                 onClick={onStartTour}
               >
