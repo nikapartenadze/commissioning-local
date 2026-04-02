@@ -1293,11 +1293,15 @@ export default function CommissioningPage() {
     )}
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}
-      <header className="bg-card border-b flex-shrink-0 z-50">
+      <header className="flex-shrink-0 z-50">
+        {/* Gold accent line */}
+        <div className="h-1 bg-[#C6941A]" />
         {/* Top row: title + tabs + actions */}
-        <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12">
+        <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12 bg-card border-b">
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-hidden">
-            <h1 className="text-sm sm:text-lg font-bold tracking-tight whitespace-nowrap hidden lg:block">IO CHECKOUT</h1>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo_autstand.svg" alt="Autstand" className="h-5 hidden sm:block" />
+            <div className="h-5 w-px bg-border shrink-0 hidden sm:block" />
             <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
               SUB {plcConfig.subsystemId}
             </span>
@@ -1313,7 +1317,7 @@ export default function CommissioningPage() {
                 }}
                 className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                   activeTab === 'io'
-                    ? 'bg-background shadow text-foreground'
+                    ? 'bg-[#C6941A] text-white shadow'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
@@ -1330,7 +1334,7 @@ export default function CommissioningPage() {
                 }}
                 className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                   activeTab === 'network'
-                    ? 'bg-background shadow text-foreground'
+                    ? 'bg-[#C6941A] text-white shadow'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
@@ -1364,7 +1368,7 @@ export default function CommissioningPage() {
                 }}
                 className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
                   activeTab === 'safety'
-                    ? 'bg-background shadow text-foreground'
+                    ? 'bg-[#C6941A] text-white shadow'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >

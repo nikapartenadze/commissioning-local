@@ -92,15 +92,6 @@ export function PlcToolbar({
 
   return (
     <div className="bg-card border-y border-border">
-      {/* Brand Bar */}
-      <div className="bg-[#C6941A] px-3 py-1 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo_autstand.svg" alt="Autstand" className="h-5 brightness-0 invert" />
-          <span className="text-white/60 text-[10px] font-medium tracking-widest uppercase hidden sm:inline">IO Checkout Tool</span>
-        </div>
-        <span className="text-white/50 text-[10px] font-mono">v2.9.15</span>
-      </div>
       {/* Main Toolbar Row */}
       <div className="flex items-center gap-1.5 sm:gap-2 p-1.5 sm:p-2 flex-wrap">
         {/* START/STOP Button */}
