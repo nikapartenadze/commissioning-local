@@ -88,6 +88,7 @@ export function PlcConfigDialog({
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const logSeqRef = useRef<number>(0)
   const pendingConnectConfigRef = useRef<PlcConfig | null>(null)
+  const suppressCloudPullCallback = useRef(false)
 
   const addPullLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString()
@@ -251,7 +252,7 @@ export function PlcConfigDialog({
           setPullStatus({ type: 'error', message: `No IOs found for subsystem ${localConfig.subsystemId}` })
         } else {
           setPullStatus({ type: 'success', message: `Pulled ${result.ioCount} IOs` })
-          onCloudPull(localConfig)
+          if (!suppressCloudPullCallback.current) onCloudPull(localConfig)
         }
       } else if (response.status === 409) {
         // Pending syncs blocking the pull — offer force option
@@ -293,7 +294,7 @@ export function PlcConfigDialog({
               addPullLog(`Pulled ${retryResult.ioCount} IOs`)
 
               setPullStatus({ type: 'success', message: `Synced & pulled ${retryResult.ioCount} IOs` })
-              onCloudPull(localConfig)
+              if (!suppressCloudPullCallback.current) onCloudPull(localConfig)
             } else {
               setPullStatus({ type: 'error', message: 'Pull failed after sync' })
             }
@@ -315,7 +316,7 @@ export function PlcConfigDialog({
               addPullLog(`Force-pulled ${forceResult.ioCount} IOs (backup created)`)
 
               setPullStatus({ type: 'success', message: `Pulled ${forceResult.ioCount} IOs` })
-              onCloudPull(localConfig)
+              if (!suppressCloudPullCallback.current) onCloudPull(localConfig)
             } else {
               setPullStatus({ type: 'error', message: 'Force pull also failed' })
             }
@@ -596,6 +597,11 @@ export function PlcConfigDialog({
     <Dialog open={open} onOpenChange={(v) => {
       if (!busy) {
         if (!v && pendingConnectConfigRef.current) {
+          // Combined mode: notify parent about both pull and connect
+          if (suppressCloudPullCallback.current) {
+            suppressCloudPullCallback.current = false
+            onCloudPull(pendingConnectConfigRef.current)
+          }
           onPlcConnect(pendingConnectConfigRef.current)
           pendingConnectConfigRef.current = null
         }
@@ -642,19 +648,21 @@ export function PlcConfigDialog({
             <div className="flex gap-2">
               <Button
                 onClick={async () => {
-                  // Combined: Pull IOs then Connect PLC (sequential)
+                  // Combined: Pull IOs then Connect PLC (sequential, dialog stays open)
+                  suppressCloudPullCallback.current = true
                   setPullLog([])
                   setPlcLog([])
                   addPullLog('Starting Pull & Connect...')
                   await handlePullIos()
-                  // handlePullIos is fully awaited — check if it succeeded
-                  // by verifying isPulling is false (done) and no error
-                  // Small delay ensures loadIos() from onCloudPull has time to complete
+                  // Connect PLC — dialog stays open until connected
                   if (localConfig.ip) {
-                    addPullLog('Waiting for IO data to sync...')
-                    await new Promise(resolve => setTimeout(resolve, 1500))
                     addPullLog('Connecting to PLC...')
                     handlePlcConnect()
+                    // onCloudPull will be called when dialog closes (via pendingConnectConfigRef)
+                  } else {
+                    // No IP — just notify parent about the pull
+                    suppressCloudPullCallback.current = false
+                    onCloudPull(localConfig)
                   }
                 }}
                 disabled={busy || !localConfig.subsystemId || !localConfig.remoteUrl}
