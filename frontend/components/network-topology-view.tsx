@@ -101,7 +101,7 @@ const DEVICE_TYPE_COLORS: Record<string, string> = {
   VFD: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
   FIOM: 'bg-teal-500/10 text-teal-400 border-teal-500/30',
   PMM: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-  POINT_IO: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+  POINT_IO: 'bg-primary/10 text-primary border-primary/30',
   SIO: 'bg-green-500/10 text-green-400 border-green-500/30',
 }
 
@@ -270,7 +270,7 @@ function RingLayout({
         </Badge>
         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
           {isExpanded ? (
-            <ChevronDown className="w-4 h-4 text-blue-400" />
+            <ChevronDown className="w-4 h-4 text-primary" />
           ) : (
             <ChevronRight className="w-4 h-4 text-muted-foreground rotate-90" />
           )}
@@ -316,13 +316,13 @@ function RingLayout({
           ref={(el) => { nodeRefs.current.set('mcm', el) }}
           style={{ gridRow: 1, gridColumn: 1 }}
         >
-          <div className="relative rounded-lg border-2 border-blue-500/50 bg-blue-500/10 px-4 py-3 text-center">
+          <div className="relative rounded-lg border-2 border-primary/50 bg-primary/10 px-4 py-3 text-center">
             <div className="absolute top-2 right-2">
               <StatusDot status={getStatusColor(ring.mcmTag, tagStates)} size="md" />
             </div>
-            <p className="text-sm font-bold text-blue-500">{ring.mcmName}</p>
-            <p className="text-xs font-mono text-blue-400/70 mt-0.5">{ring.mcmIp || ''}</p>
-            <Badge variant="outline" className="mt-1.5 text-[10px] border-blue-500/30 text-blue-400">
+            <p className="text-sm font-bold text-primary">{ring.mcmName}</p>
+            <p className="text-xs font-mono text-primary/70 mt-0.5">{ring.mcmIp || ''}</p>
+            <Badge variant="outline" className="mt-1.5 text-[10px] border-primary/30 text-primary">
               Controller
             </Badge>
           </div>
@@ -441,7 +441,7 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
           return (
             <div key={port.id} className={cn("rounded-lg border-2 overflow-hidden bg-card", borderClass)}>
               {/* Header */}
-              <div className="bg-blue-500 px-3 py-1.5 flex items-center justify-between">
+              <div className="bg-[#C6941A] px-3 py-1.5 flex items-center justify-between">
                 <span className="text-[10px] font-bold text-white">{port.portNumber}</span>
                 <div className={cn("w-2 h-2 rounded-full", s === 'green' ? 'bg-green-400' : s === 'red' ? 'bg-red-400' : 'bg-gray-400')} />
               </div>
@@ -461,8 +461,8 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
 
 // ── Star Diagram: thin vertical device cards, distance-sorted lanes ─
 
-// All devices use blue for the header strip
-const DEVICE_HEADER_COLOR = '#3b82f6'
+// All devices use gold for the header strip
+const DEVICE_HEADER_COLOR = '#C6941A'
 
 function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: NetworkNode; tagStates: Record<string, boolean | null>; subsystemId?: number; onViewDeviceIos?: (deviceName: string, deviceType: string | null, status: string) => void }) {
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -663,7 +663,7 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
             const isOpen = expandedFiom?.id === port.id
             return (
               <g key={`fiom-badge-${port.id}`}>
-                <circle cx={badgeX} cy={badgeY} r={9} fill={isOpen ? '#3b82f6' : '#f59e0b'} />
+                <circle cx={badgeX} cy={badgeY} r={9} fill={isOpen ? '#C6941A' : '#92700F'} />
                 <text x={badgeX} y={badgeY + 3.5} textAnchor="middle" fontSize={9} fontWeight="bold" fill="#fff">
                   {subCount}
                 </text>
@@ -739,7 +739,7 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
               </button>
             </div>
             <div className="text-xs text-muted-foreground space-y-0.5">
-              <p>Type: <span className="font-medium text-blue-500">{selectedDevice.type}</span></p>
+              <p>Type: <span className="font-medium text-primary">{selectedDevice.type}</span></p>
               <p className="flex items-center gap-1">IP: <span className="font-mono text-foreground">{selectedDevice.ip}</span> {selectedDevice.ip !== 'No IP' && <CopyBtn text={selectedDevice.ip} />}</p>
               <p className="flex items-center gap-1">Port: <span className="font-mono text-foreground">{selectedDevice.port}</span> <CopyBtn text={String(selectedDevice.port)} /></p>
             </div>
@@ -1038,7 +1038,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         <Card key={ring.id} className="bg-card border flex-shrink-0 overflow-hidden">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-lg text-foreground">
-              <Network className="w-5 h-5 text-blue-400" />
+              <Network className="w-5 h-5 text-primary" />
               {ring.name}
               <Badge variant="outline" className="ml-2 text-xs text-muted-foreground border-border">
                 {ring.nodes.length} DPMs
