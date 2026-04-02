@@ -1297,7 +1297,7 @@ export default function CommissioningPage() {
         {/* Gold accent line */}
         <div className="h-1 bg-[#C6941A]" />
         {/* Top row: title + tabs + actions */}
-        <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12 bg-card border-b">
+        <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12 bg-card border-b border-[#C6941A]/20">
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo_autstand.svg" alt="Autstand" className="h-5 hidden sm:block" />
