@@ -51,7 +51,7 @@ if not defined NSSM_PATH (
 echo   NSSM found: %NSSM_PATH%
 
 REM ── Get version ──
-set "APP_VERSION=2.9.15"
+set "APP_VERSION=2.9.16"
 echo   App version: %APP_VERSION%
 
 REM ── Step 1: Build portable distribution first ──
