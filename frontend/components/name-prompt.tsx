@@ -26,6 +26,8 @@ export function NamePrompt({ onNameSet }: NamePromptProps) {
   return (
     <div className="fixed inset-0 z-[9999] bg-background/80 backdrop-blur-sm flex items-center justify-center">
       <div className="bg-card border rounded-lg shadow-lg p-8 w-full max-w-md mx-4">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/logo_autstand.svg" alt="Autstand" className="h-8 mx-auto mb-4" />
         <h2 className="text-2xl font-bold text-center mb-2">Who is testing?</h2>
         <p className="text-muted-foreground text-center mb-6">
           Enter your name to continue. This will be recorded with all test results.
