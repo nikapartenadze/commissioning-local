@@ -602,11 +602,61 @@ export function PlcConfigDialog({
         onOpenChange(v)
       }
     }}>
-      <DialogContent className="max-w-2xl h-[90vh] sm:h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0 w-[95vw] sm:w-auto" aria-describedby={undefined}>
+      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col border-2 border-primary/20 p-0 gap-0 w-[95vw] sm:w-auto" aria-describedby={undefined}>
         <VisuallyHidden.Root>
-          <DialogTitle>PLC Configuration</DialogTitle>
+          <DialogTitle>Configuration</DialogTitle>
         </VisuallyHidden.Root>
-        {/* Tabs */}
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-primary/20 bg-primary/5 shrink-0">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-primary">Configuration</h2>
+        </div>
+        {/* Single scrollable form */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        {/* Quick Setup profiles */}
+        {profiles.length > 0 && (<section>
+          <div className="flex items-center gap-2 mb-3"><Zap className="w-4 h-4 text-primary" /><h3 className="text-sm font-semibold">Quick Setup</h3><span className="text-[10px] text-muted-foreground">One click: switch + pull + connect</span></div>
+          {switchStatus && (<div className={`text-sm px-3 py-2 rounded-md mb-2 ${switchStatus.includes('Error') || switchStatus.includes('Failed') ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400' : 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400'}`}>{switchStatus}</div>)}
+          <div className="grid gap-2">{profiles.map((profile) => { const isActive = localConfig.subsystemId === profile.subsystemId && localConfig.ip === profile.plcIp; return (<button key={profile.name} disabled={isSwitching} onClick={async () => { setIsSwitching(true); setSwitchStatus(null); try { setSwitchStatus(`Switching to ${profile.name}...`); const switchRes = await authFetch('/api/configuration/switch-subsystem', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileName: profile.name, subsystemId: profile.subsystemId, plcIp: profile.plcIp, plcPath: profile.plcPath }) }); if (!switchRes.ok) throw new Error('Failed to switch config'); setSwitchStatus(`Pulling IOs for ${profile.name}...`); const pullRes = await authFetch(API_ENDPOINTS.cloudPull, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ remoteUrl: localConfig.remoteUrl, apiPassword: localConfig.apiPassword, subsystemId: profile.subsystemId, force: true }) }); const pullData = await pullRes.json(); if (!pullRes.ok) throw new Error(pullData.error || 'Pull failed'); setSwitchStatus(`Connecting to PLC at ${profile.plcIp}...`); const connectRes = await authFetch(API_ENDPOINTS.plcConnect, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip: profile.plcIp, path: profile.plcPath, subsystemId: profile.subsystemId }) }); if (!connectRes.ok) throw new Error('PLC connection failed'); setLocalConfig(prev => ({ ...prev, ip: profile.plcIp, path: profile.plcPath, subsystemId: profile.subsystemId })); setLiveStatus({ plcConnected: true, tagCount: pullData.count || 0, plcIp: profile.plcIp }); setSwitchStatus(`${profile.name} ready — ${pullData.count || 0} IOs loaded, PLC connected`); onPlcConnect({ ...localConfig, ip: profile.plcIp, path: profile.plcPath, subsystemId: profile.subsystemId }); } catch (error) { setSwitchStatus(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`); } finally { setIsSwitching(false); } }} className={`text-left p-3 rounded-lg border-2 transition-all ${isActive ? 'border-green-500 bg-green-50/50 dark:bg-green-950/20' : 'border-border hover:border-primary/50 hover:bg-muted/50'} ${isSwitching ? 'opacity-60' : ''}`}><div className="flex items-center justify-between"><div><div className="font-semibold text-sm">{profile.name}</div><div className="text-xs text-muted-foreground mt-0.5 font-mono">PLC: {profile.plcIp} · Path: {profile.plcPath} · Sub: {profile.subsystemId}</div></div>{isActive && <span className="text-xs font-medium text-green-600 dark:text-green-400 flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" /> Active</span>}{isSwitching && localConfig.subsystemId !== profile.subsystemId && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}</div></button>) })}</div>
+          <div className="border-b border-border mt-5" />
+        </section>)}
+
+        {/* Cloud Data section */}
+        <section>
+          <div className="flex items-center gap-2 mb-3"><CloudDownload className="w-4 h-4 text-primary" /><h3 className="text-sm font-semibold">Cloud Data</h3>{pullStatus.type === 'success' && <span className="w-2 h-2 rounded-full bg-green-500" />}{pullStatus.type === 'error' && <span className="w-2 h-2 rounded-full bg-red-500" />}</div>
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1"><Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label><Input id="subsystemId" value={localConfig.subsystemId} onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })} placeholder="16" disabled={busy} className="h-8 text-sm" /></div>
+              <div className="sm:col-span-2 space-y-1"><Label htmlFor="remoteUrl" className="text-xs">Remote URL</Label><Input id="remoteUrl" value={localConfig.remoteUrl || ""} onChange={(e) => setLocalConfig({ ...localConfig, remoteUrl: e.target.value })} placeholder="https://your-cloud-service.com" disabled={busy} className="h-8 text-sm" /></div>
+            </div>
+            <div className="space-y-1"><Label htmlFor="apiPassword" className="text-xs">API Password</Label><Input id="apiPassword" type="text" value={localConfig.apiPassword || ""} onChange={(e) => setLocalConfig({ ...localConfig, apiPassword: e.target.value })} placeholder="Project API password" disabled={busy} className="h-8 text-sm" /></div>
+            <Button onClick={handlePullIos} disabled={busy || !localConfig.subsystemId || !localConfig.remoteUrl} className="w-full bg-primary hover:bg-primary/90 text-white h-10"><CloudDownload className="w-4 h-4 mr-2" />{isPulling ? `Pulling... (${pullElapsed}s)` : "Pull IOs from Cloud"}</Button>
+            {pullStatus.type && (<div className={`px-3 py-2 rounded-md text-sm font-medium ${pullStatus.type === 'loading' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200' : pullStatus.type === 'success' ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200'}`}><div className="flex items-center gap-2">{pullStatus.type === 'loading' && <div className="animate-spin h-3.5 w-3.5 border-2 border-current border-t-transparent rounded-full" />}<span>{pullStatus.message}</span></div></div>)}
+            {pullLog.length > 0 && (<div className="rounded border bg-black/95 dark:bg-black overflow-hidden max-h-32"><div className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-medium text-green-400 uppercase tracking-wider border-b border-gray-800"><Terminal className="w-3 h-3" /> Log</div><div className="overflow-y-auto p-2 font-mono text-xs space-y-0.5 max-h-24">{pullLog.map((log, i) => (<div key={i} className={log.includes('ERROR') || log.includes('failed') ? 'text-red-400' : log.includes('retrieved') || log.includes('Success') || log.includes('Pulled') ? 'text-green-400' : 'text-gray-400'}>{log}</div>))}<div ref={pullLogEndRef} /></div></div>)}
+          </div>
+          <div className="border-b border-border mt-5" />
+        </section>
+
+        {/* PLC Connection section */}
+        <section>
+          <div className="flex items-center gap-2 mb-3"><Cpu className="w-4 h-4 text-primary" /><h3 className="text-sm font-semibold">PLC Connection</h3>{plcStatus.type === 'success' && <span className="w-2 h-2 rounded-full bg-green-500" />}{plcStatus.type === 'error' && <span className="w-2 h-2 rounded-full bg-red-500" />}</div>
+          <div className="space-y-3">
+            {liveStatus && (<div className={`px-3 py-2 rounded-lg border-2 ${liveStatus.plcConnected ? 'bg-green-50 dark:bg-green-950/30 border-green-500/50' : 'bg-muted/50 border-border'}`}><div className="flex items-center justify-between"><div className="flex items-center gap-2"><div className={`w-2.5 h-2.5 rounded-full ${liveStatus.plcConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} /><span className={`text-sm font-medium ${liveStatus.plcConnected ? 'text-green-700 dark:text-green-400' : 'text-muted-foreground'}`}>{liveStatus.plcConnected ? `Connected to ${liveStatus.plcIp}` : 'Not connected'}</span></div>{liveStatus.plcConnected && <span className="text-xs text-green-600 dark:text-green-500 font-mono">{liveStatus.tagCount} tags</span>}</div></div>)}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1"><Label htmlFor="ip" className="text-xs">PLC IP Address</Label><Input id="ip" value={localConfig.ip} onChange={(e) => setLocalConfig({ ...localConfig, ip: e.target.value })} placeholder="192.168.1.100" disabled={busy} className="h-8 text-sm" /></div>
+              <div className="space-y-1"><Label htmlFor="path" className="text-xs">Communication Path</Label><Input id="path" value={localConfig.path} onChange={(e) => setLocalConfig({ ...localConfig, path: e.target.value })} placeholder="1,0" disabled={busy} className="h-8 text-sm" /></div>
+            </div>
+            <div className="space-y-1"><Label htmlFor="excludePatterns" className="text-xs">Skip Tags (comma-separated)</Label><Input id="excludePatterns" value={excludePatterns} onChange={(e) => setExcludePatterns(e.target.value)} placeholder="NCP1_4A_VFD, Spare_, Offline_" disabled={busy} className="h-8 text-sm font-mono" /><p className="text-[10px] text-muted-foreground">Tags matching these patterns will be skipped during validation</p></div>
+            <div className="flex gap-2">
+              <Button onClick={handlePlcConnect} disabled={busy || !localConfig.ip} className={`flex-1 h-10 ${liveStatus?.plcConnected ? 'bg-primary hover:bg-primary/90 text-white' : 'bg-green-600 hover:bg-green-700 text-white'}`}><Wifi className="w-4 h-4 mr-2" />{isConnecting ? `Connecting... (${plcElapsed}s)` : liveStatus?.plcConnected ? "Reconnect" : "Connect to PLC"}</Button>
+              <Button variant="destructive" onClick={isConnecting ? handleCancelConnect : handleDisconnect} disabled={isDisconnecting || isPulling || (!liveStatus?.plcConnected && !isConnecting)} className="min-w-[100px] h-10"><WifiOff className="w-4 h-4 mr-2" />{isDisconnecting ? "..." : isConnecting ? "Cancel" : "Disconnect"}</Button>
+            </div>
+            {plcStatus.type && (<div className={`px-3 py-2 rounded-md text-sm font-medium ${plcStatus.type === 'loading' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200' : plcStatus.type === 'success' ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200'}`}><div className="flex items-center gap-2">{plcStatus.type === 'loading' && <div className="animate-spin h-3.5 w-3.5 border-2 border-current border-t-transparent rounded-full" />}<span>{plcStatus.message}</span></div></div>)}
+            {(plcLog.length > 0 || connectionReport) && (<div className="rounded border bg-black/95 dark:bg-black overflow-hidden max-h-40"><div className="flex items-center justify-between px-3 py-1 border-b border-gray-800"><div className="flex items-center gap-1.5 text-[10px] font-medium text-green-400 uppercase tracking-wider"><Terminal className="w-3 h-3" /> PLC Log</div>{connectionReport && connectionReport.tagsFailed > 0 && (<button onClick={() => { const report = [`PLC Tag Mismatch Report`, `========================`, `PLC IP: ${connectionReport.plcIp}`, `PLC Path: ${connectionReport.plcPath}`, `Date: ${new Date(connectionReport.timestamp).toLocaleString()}`, ``, `Total Tags: ${connectionReport.totalTags}`, `Successful: ${connectionReport.tagsSuccessful}`, `Failed: ${connectionReport.tagsFailed}`, ``, `Failed Tags:`, ...connectionReport.failedTags.map(t => `  ✗ ${t.name}${t.description ? ` (${t.description})` : ''}  →  ${t.error}`)].join('\n'); navigator.clipboard.writeText(report); setCopied(true); setTimeout(() => setCopied(false), 2000) }} className="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors">{copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}{copied ? 'Copied!' : 'Copy Report'}</button>)}</div><div className="overflow-y-auto p-2 font-mono text-xs space-y-0.5 max-h-32">{plcLog.length === 0 ? (<div className="text-gray-600">Waiting for connection...</div>) : plcLog.map((log, i) => (<div key={i} className={log.includes('✗') ? 'text-yellow-400 pl-2' : log.includes('MISMATCH') || log.includes('do not match') ? 'text-red-400 font-semibold' : log.includes('ERROR') || log.includes('failed') || log.includes('timed out') || log.includes('not reachable') ? 'text-red-400' : log.includes('Connected') || log.includes('saved') || log.includes('loaded') || log.includes('Disconnected') ? 'text-green-400' : log.startsWith('[') ? 'text-gray-400' : 'text-gray-500'}>{log}</div>))}<div ref={plcLogEndRef} /></div></div>)}
+          </div>
+        </section>
+        </div>
+        {/* REMOVED: old tab-based layout replaced with single scrollable form */}
+        <div className="hidden">
         <div className="flex border-b">
           {profiles.length > 0 && (
             <button
@@ -1020,6 +1070,7 @@ export function PlcConfigDialog({
             </div>
           )}
 
+        </div>
         </div>
       </DialogContent>
     </Dialog>
