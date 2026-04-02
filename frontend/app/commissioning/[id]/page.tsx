@@ -1402,7 +1402,7 @@ export default function CommissioningPage() {
       <NetworkStatusBreadcrumbs className="flex-shrink-0 border-b" />
 
 
-      {/* Error Log - Collapsible, only shows when errors exist */}
+      {/* Error Log — disabled, breadcrumbs already show connection status
       {errorLog.length > 0 && (
         <ErrorLogPanel
           errors={errorLog}
@@ -1410,6 +1410,7 @@ export default function CommissioningPage() {
           className="flex-shrink-0"
         />
       )}
+      */}
 
       {/* Tab Content */}
       {activeTab === 'network' ? (
