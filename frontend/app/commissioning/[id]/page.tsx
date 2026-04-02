@@ -92,11 +92,22 @@ export default function CommissioningPage() {
   const projectId = paramId === '_' ? 0 : parseInt(paramId)
   const isUnconfigured = paramId === '_' || isNaN(projectId)
 
-  // Auto-open config dialog when not configured — only for admins
-  // Technicians can't configure PLC/cloud, so don't show them the dialog
+  // Auto-redirect to configured subsystem, or open config dialog if truly unconfigured
   useEffect(() => {
-    if (isUnconfigured && currentUser?.isAdmin) {
-      setShowConfigDialog(true)
+    if (isUnconfigured && currentUser) {
+      // Check if there's already a configured subsystem
+      fetch('/api/configuration/runtime')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data?.subsystemId && data.subsystemId !== '' && data.subsystemId !== '0') {
+            // Already configured — redirect instead of showing dialog
+            window.location.href = `/commissioning/${data.subsystemId}`
+          } else {
+            // Truly unconfigured — show dialog
+            setShowConfigDialog(true)
+          }
+        })
+        .catch(() => setShowConfigDialog(true))
     }
   }, [isUnconfigured, currentUser])
 
