@@ -149,7 +149,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       }
     }
 
-    // Upsert IOs instead of delete+create to preserve test data
+    // Upsert IOs — timeout increased for large subsystems (3700+ IOs)
     const result = await prisma.$transaction(async (tx) => {
       // Ensure default project exists
       await tx.project.upsert({
@@ -242,7 +242,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       // Don't delete PendingSyncs — they should persist until actually synced
 
       return upsertedCount
-    })
+    }, { timeout: 60000 })
 
     console.log(`[CloudPull] Successfully upserted ${result} IOs to local database`)
 
