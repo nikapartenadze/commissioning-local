@@ -177,9 +177,9 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return
         setError(err instanceof Error ? err.message : 'Failed to fetch')
-      } finally {
-        setLoading(false)
       }
+      // Clear loading only after cloud pull attempt (if needed) is done
+      setLoading(false)
     }
 
     fetchStatus()
