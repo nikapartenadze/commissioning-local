@@ -228,6 +228,7 @@ export function PlcToolbar({
           </button>
           </>}
 
+          {/* My IOs filter — disabled for now
           {currentUser?.fullName && activeTab === 'io' && (
             <>
               <div className="w-px h-8 bg-border mx-0.5 sm:mx-1 hidden sm:block" />
@@ -244,6 +245,7 @@ export function PlcToolbar({
               </button>
             </>
           )}
+          */}
         </div>
 
         {/* Progress Bar - Flex grow to fill space */}
