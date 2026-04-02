@@ -259,11 +259,16 @@ class CloudSseClient {
       if (event.tagType !== undefined) updateData.tagType = event.tagType
       if (event.version !== undefined) updateData.version = BigInt(Number(event.version) || 0)
 
-      // Merge test results if local has none OR cloud version is newer
+      // Merge test results if cloud version is newer (includes clears)
       const cloudVersion = BigInt(Number(event.version) || 0)
       const localVersion = localIo.version ?? BigInt(0)
-      if (event.result !== undefined && (!localIo.result || cloudVersion > localVersion)) {
-        updateData.result = event.result || null
+      if (cloudVersion > localVersion) {
+        if (event.result !== undefined) updateData.result = event.result ?? null
+        if (event.timestamp !== undefined) updateData.timestamp = event.timestamp ?? null
+        if (event.comments !== undefined) updateData.comments = event.comments ?? null
+      } else if (!localIo.result && event.result) {
+        // Local has no result, cloud does — accept regardless of version
+        updateData.result = event.result
         updateData.timestamp = event.timestamp ?? null
         updateData.comments = event.comments ?? null
       }
