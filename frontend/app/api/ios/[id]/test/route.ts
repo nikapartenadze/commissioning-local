@@ -141,20 +141,24 @@ export async function POST(
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
         const syncService = getCloudSyncService()
+        console.log(`[Test] Attempting instant sync for IO ${ioId}`)
         const synced = await syncService.syncIoUpdate({
           id: ioId,
           result: normalizedResult,
           comments: combinedComment || null,
           testedBy: currentUser || null,
           state: plcState || null,
-          version: Number(updatedIo.version) - 1, // Send pre-increment version to match cloud
+          version: Number(updatedIo.version) - 1,
           timestamp: new Date().toISOString(),
         })
         if (synced) {
           await prisma.pendingSync.delete({ where: { id: pendingSync.id } }).catch(() => {})
+          console.log(`[Test] Instant sync succeeded for IO ${ioId}`)
+        } else {
+          console.log(`[Test] Instant sync returned false for IO ${ioId} — queued for retry`)
         }
-      } catch {
-        // Immediate sync failed — PendingSync stays in queue for auto-sync retry
+      } catch (syncErr) {
+        console.warn(`[Test] Instant sync error for IO ${ioId}:`, syncErr instanceof Error ? syncErr.message : syncErr)
       }
     } catch (syncError) {
       console.error('[Test] Failed to create PendingSync:', syncError)
