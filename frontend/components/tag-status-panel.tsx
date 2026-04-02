@@ -150,7 +150,7 @@ export function TagStatusPanel({ className }: { className?: string }) {
           {/* Unknown Errors */}
           {status.unknownErrorTags.length > 0 && (
             <div>
-              <h4 className="font-semibold text-blue-600 flex items-center gap-2 mb-2">
+              <h4 className="font-semibold text-primary flex items-center gap-2 mb-2">
                 <AlertTriangle className="w-4 h-4" />
                 Other Errors ({status.unknownErrorTags.length})
               </h4>
@@ -158,7 +158,7 @@ export function TagStatusPanel({ className }: { className?: string }) {
                 {status.unknownErrorTags.map((tag, i) => (
                   <code
                     key={i}
-                    className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded text-xs font-mono"
+                    className="px-2 py-0.5 bg-primary/10 dark:bg-primary/20 text-primary dark:text-primary rounded text-xs font-mono"
                   >
                     {tag}
                   </code>

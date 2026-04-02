@@ -625,13 +625,13 @@ export function PlcConfigDialog({
             onClick={() => setActiveTab('cloud')}
             className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
               activeTab === 'cloud'
-                ? 'border-b-2 border-blue-500 text-blue-600 bg-blue-50/50 dark:bg-blue-950/20'
+                ? 'border-b-2 border-primary text-primary bg-primary/5 dark:bg-primary/10'
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
             }`}
           >
             <CloudDownload className="w-4 h-4" />
             Cloud Data
-            {pullStatus.type === 'loading' && <div className="animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full" />}
+            {pullStatus.type === 'loading' && <div className="animate-spin h-3 w-3 border-2 border-primary border-t-transparent rounded-full" />}
             {pullStatus.type === 'success' && <span className="w-2 h-2 rounded-full bg-green-500" />}
             {pullStatus.type === 'error' && <span className="w-2 h-2 rounded-full bg-red-500" />}
           </button>
@@ -807,7 +807,7 @@ export function PlcConfigDialog({
                 <Button
                   onClick={handlePullIos}
                   disabled={busy || !localConfig.subsystemId || !localConfig.remoteUrl}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white h-10"
+                  className="w-full bg-primary hover:bg-primary/90 text-white h-10"
                 >
                   <CloudDownload className="w-4 h-4 mr-2" />
                   {isPulling ? `Pulling... (${pullElapsed}s)` : "Pull IOs from Cloud"}
@@ -927,7 +927,7 @@ export function PlcConfigDialog({
                     disabled={busy || !localConfig.ip}
                     className={`flex-1 h-10 ${
                       liveStatus?.plcConnected
-                        ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                        ? 'bg-primary hover:bg-primary/90 text-white'
                         : 'bg-green-600 hover:bg-green-700 text-white'
                     }`}
                   >
