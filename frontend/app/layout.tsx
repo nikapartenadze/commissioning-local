@@ -12,6 +12,9 @@ import { ErrorBoundary } from "@/components/error-boundary"
 export const metadata: Metadata = {
   title: "IO Checkout Tool - Commissioning",
   description: "Modern IO Checkout and Testing Platform",
+  icons: {
+    icon: '/favicon.ico',
+  },
 }
 
 export default function RootLayout({
