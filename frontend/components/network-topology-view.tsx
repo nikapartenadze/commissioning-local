@@ -316,13 +316,17 @@ function RingLayout({
           ref={(el) => { nodeRefs.current.set('mcm', el) }}
           style={{ gridRow: 1, gridColumn: 1 }}
         >
-          <div className="relative rounded-lg border-2 border-primary/50 bg-primary/10 px-4 py-3 text-center">
+          <div className={cn("relative rounded-lg border-2 px-4 py-3 text-center",
+            getStatusColor(ring.mcmTag, tagStates) === 'green' ? 'border-green-500/50 bg-green-500/10' :
+            getStatusColor(ring.mcmTag, tagStates) === 'red' ? 'border-red-500/50 bg-red-500/10' :
+            'border-gray-500/50 bg-gray-500/10'
+          )}>
             <div className="absolute top-2 right-2">
               <StatusDot status={getStatusColor(ring.mcmTag, tagStates)} size="md" />
             </div>
-            <p className="text-sm font-bold text-primary">{ring.mcmName}</p>
-            <p className="text-xs font-mono text-primary/70 mt-0.5">{ring.mcmIp || ''}</p>
-            <Badge variant="outline" className="mt-1.5 text-[10px] border-primary/30 text-primary">
+            <p className="text-sm font-bold text-foreground">{ring.mcmName}</p>
+            <p className="text-xs font-mono text-muted-foreground mt-0.5">{ring.mcmIp || ''}</p>
+            <Badge variant="outline" className="mt-1.5 text-[10px]">
               Controller
             </Badge>
           </div>
@@ -441,7 +445,7 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
           return (
             <div key={port.id} className={cn("rounded-lg border-2 overflow-hidden bg-card", borderClass)}>
               {/* Header */}
-              <div className="bg-[#C6941A] px-3 py-1.5 flex items-center justify-between">
+              <div className={cn("px-3 py-1.5 flex items-center justify-between", s === 'green' ? 'bg-green-600' : s === 'red' ? 'bg-red-600' : 'bg-gray-500')}>
                 <span className="text-[10px] font-bold text-white">{port.portNumber}</span>
                 <div className={cn("w-2 h-2 rounded-full", s === 'green' ? 'bg-green-400' : s === 'red' ? 'bg-red-400' : 'bg-gray-400')} />
               </div>
@@ -461,8 +465,12 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
 
 // ── Star Diagram: thin vertical device cards, distance-sorted lanes ─
 
-// All devices use gold for the header strip
-const DEVICE_HEADER_COLOR = '#C6941A'
+// Device header color matches connection status
+function deviceHeaderColor(s: StatusColor): string {
+  if (s === 'green') return '#16a34a' // green-600
+  if (s === 'red') return '#dc2626'   // red-600
+  return '#6b7280'                     // gray-500
+}
 
 function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: NetworkNode; tagStates: Record<string, boolean | null>; subsystemId?: number; onViewDeviceIos?: (deviceName: string, deviceType: string | null, status: string) => void }) {
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -577,7 +585,7 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
             const DEVICE_Y = cy - DEVICE_H / 2
             const deviceType = getDeviceType(port.deviceName || '')
             const isFiomDevice = deviceType === 'FIOM'
-            const headerColor = DEVICE_HEADER_COLOR
+            const headerColor = deviceHeaderColor(s)
             const s = getStatusColor(port.statusTag, tagStates)
             const bodyColor = statusToHex(s)
 
