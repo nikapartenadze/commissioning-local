@@ -647,7 +647,7 @@ export function EnhancedIoDataGrid({
       >
         <div style={{ minWidth: `${totalWidth}px` }}>
           {/* Header - Sticky, bold, industrial */}
-          <div className="bg-muted sticky top-0 z-10 flex border-b-2 border-border">
+          <div className="bg-muted sticky top-0 z-10 flex border-b-2 border-[#C6941A]/40">
             <div
               className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.description}px` }}

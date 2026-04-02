@@ -242,8 +242,8 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
 
   return (
     <div className={cn("relative", className)}>
-      <div className="flex items-center gap-1 py-2 px-3 bg-muted/50 rounded-lg overflow-x-auto">
-        <span className="text-xs text-muted-foreground mr-2 whitespace-nowrap">Network:</span>
+      <div className="flex items-center gap-1 py-2 px-3 bg-muted/50 border-l-2 border-[#C6941A]/50 rounded-r-lg overflow-x-auto">
+        <span className="text-xs text-[#C6941A] font-semibold mr-2 whitespace-nowrap">Network:</span>
         {nodes.map((node, index) => (
           <div key={node.name} className="flex items-center">
             <div
