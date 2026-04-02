@@ -585,8 +585,8 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
             const DEVICE_Y = cy - DEVICE_H / 2
             const deviceType = getDeviceType(port.deviceName || '')
             const isFiomDevice = deviceType === 'FIOM'
-            const headerColor = deviceHeaderColor(s)
             const s = getStatusColor(port.statusTag, tagStates)
+            const headerColor = deviceHeaderColor(s)
             const bodyColor = statusToHex(s)
 
             return (
