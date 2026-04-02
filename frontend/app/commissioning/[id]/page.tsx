@@ -109,6 +109,7 @@ export default function CommissioningPage() {
   const [ios, setIos] = useState<IoItem[]>([])
   const [filteredIos, setFilteredIos] = useState<IoItem[]>([])
   const [loading, setLoading] = useState(false)
+  const hasLoadedOnce = useRef(false)
   const [signalRWasConnected, setSignalRWasConnected] = useState(false)
   const [plcStatus, setPlcStatus] = useState<PlcConnectionStatus>({
     isConnected: false,
@@ -280,7 +281,7 @@ export default function CommissioningPage() {
 
   // Poll network/estop stats — always poll network for faulted device detection
   useEffect(() => {
-    if (activeTab === 'network' || activeTab === 'ios') {
+    if (activeTab === 'network' || activeTab === 'io') {
       let active = true
       const poll = async () => {
         try {
@@ -739,8 +740,8 @@ export default function CommissioningPage() {
 
   const loadIos = async () => {
     try {
-      // Only show full-page loading spinner on initial load (no IOs yet)
-      if (ios.length === 0) setLoading(true)
+      // Only show full-page loading spinner on very first load, never on pull/refresh
+      if (!hasLoadedOnce.current && ios.length === 0) setLoading(true)
       // Load IOs from backend (real PLC data) - retry on failure
       const response = await fetchWithRetry(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
       if (response.ok) {
@@ -782,6 +783,7 @@ export default function CommissioningPage() {
           }
           return initialStates
         })
+        hasLoadedOnce.current = true
         // Note: Don't auto-connect WebSocket here - only connect when PLC is connected
         // WebSocket is for real-time PLC tag updates, not needed for just viewing IOs
 
@@ -1167,6 +1169,7 @@ export default function CommissioningPage() {
 
     // Refetch IOs from backend (data should already be synced)
     await loadIos()
+    toast({ title: "IOs pulled successfully", description: `Data loaded for subsystem ${newConfig.subsystemId}` })
 
     // Update URL without navigation/remount (just for bookmarking)
     if (newConfig.subsystemId && newConfig.subsystemId !== params.id) {
