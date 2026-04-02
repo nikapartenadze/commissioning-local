@@ -205,7 +205,23 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   }
 
   if (loading || pulling) {
-    return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />{pulling && <span className="ml-2 text-sm text-muted-foreground">Pulling EStop data from cloud...</span>}</div>
+    return (
+      <div className="p-4 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-5 h-5 rounded bg-muted animate-pulse" />
+          <div className="h-6 w-64 rounded bg-muted animate-pulse" />
+        </div>
+        <div className="h-10 rounded bg-muted animate-pulse" />
+        <div className="flex gap-4">
+          <div className="w-[480px] space-y-3">
+            {[1,2,3].map(i => (
+              <div key={i} className="h-24 rounded-lg bg-muted animate-pulse" />
+            ))}
+          </div>
+          <div className="flex-1 h-64 rounded-lg bg-muted animate-pulse" />
+        </div>
+      </div>
+    )
   }
   if (error && !data) {
     return <div className="flex flex-col items-center justify-center h-64 gap-3"><ShieldAlert className="w-10 h-10 text-red-500" /><p className="text-sm text-muted-foreground">{error}</p></div>
@@ -295,13 +311,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
               <ShieldAlert className="w-8 h-8 mb-2 opacity-50" />
               <p className="text-sm">{search ? 'No matches' : 'No EStop zones configured'}</p>
               {!search && (
-                <button
-                  onClick={handleManualPull}
-                  disabled={pulling}
-                  className="mt-3 text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  Pull from Cloud
-                </button>
+                <p className="text-xs text-muted-foreground/60 mt-1">Pull IOs from the config dialog to load EStop data</p>
               )}
             </div>
           ) : (

@@ -928,9 +928,14 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground mr-2" />
-        <span className="text-muted-foreground">Loading network topology...</span>
+      <div className="space-y-4 pt-4">
+        <div className="flex items-center justify-between">
+          <div className="flex gap-3">
+            {[1,2,3].map(i => <div key={i} className="h-5 w-24 rounded bg-muted animate-pulse" />)}
+          </div>
+          <div className="h-8 w-40 rounded bg-muted animate-pulse" />
+        </div>
+        <div className="h-64 rounded-lg bg-muted animate-pulse" />
       </div>
     )
   }
