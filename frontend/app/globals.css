@@ -120,7 +120,6 @@
 
 .row-default:hover {
   background-color: hsl(var(--muted)) !important;
-  border-left: 3px solid #C6941A !important;
 }
 
 /* Dark mode row colors */
@@ -148,7 +147,6 @@
 
 .dark .row-default:hover {
   background-color: hsl(var(--muted)) !important;
-  border-left: 3px solid #C6941A !important;
 }
 
 /* Drag-to-scroll */
