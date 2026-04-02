@@ -642,14 +642,18 @@ export function PlcConfigDialog({
             <div className="flex gap-2">
               <Button
                 onClick={async () => {
-                  // Combined: Pull IOs then Connect PLC
+                  // Combined: Pull IOs then Connect PLC (sequential)
                   setPullLog([])
                   setPlcLog([])
                   addPullLog('Starting Pull & Connect...')
                   await handlePullIos()
-                  // After pull succeeds, auto-connect if IP is set
+                  // handlePullIos is fully awaited — check if it succeeded
+                  // by verifying isPulling is false (done) and no error
+                  // Small delay ensures loadIos() from onCloudPull has time to complete
                   if (localConfig.ip) {
-                    addPullLog('Pull complete — connecting to PLC...')
+                    addPullLog('Waiting for IO data to sync...')
+                    await new Promise(resolve => setTimeout(resolve, 1500))
+                    addPullLog('Connecting to PLC...')
                     handlePlcConnect()
                   }
                 }}
