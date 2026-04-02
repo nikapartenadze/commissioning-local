@@ -24,7 +24,7 @@ export function ErrorLogPanel({ errors, onClear, className }: ErrorLogPanelProps
     switch (severity) {
       case 'error': return <XCircle className="h-4 w-4 text-red-500 shrink-0" />
       case 'warning': return <AlertTriangle className="h-4 w-4 text-yellow-500 shrink-0" />
-      case 'info': return <Info className="h-4 w-4 text-blue-500 shrink-0" />
+      case 'info': return <Info className="h-4 w-4 text-primary shrink-0" />
     }
   }
 
@@ -32,7 +32,7 @@ export function ErrorLogPanel({ errors, onClear, className }: ErrorLogPanelProps
     switch (severity) {
       case 'error': return 'bg-red-500/10 border-red-500/30'
       case 'warning': return 'bg-yellow-500/10 border-yellow-500/30'
-      case 'info': return 'bg-blue-500/10 border-blue-500/30'
+      case 'info': return 'bg-primary/10 border-primary/30'
     }
   }
 
