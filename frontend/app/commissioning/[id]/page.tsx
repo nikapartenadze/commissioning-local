@@ -490,11 +490,13 @@ export default function CommissioningPage() {
         isConnected: connected,
         isReconnecting: !connected && prev.isReconnecting,
       }))
-      // Reload IOs (with PLC states) and config when PLC connects
       if (connected) {
+        // Reload IOs with PLC states after tag reader completes first cycle
         loadPlcConfig(false)
-        // Small delay to let tag reader complete first read cycle
         setTimeout(() => loadIos(), 2000)
+      } else {
+        // PLC disconnected — clear all states to null
+        setIos(prev => prev.map(io => ({ ...io, state: null })))
       }
     }
 
