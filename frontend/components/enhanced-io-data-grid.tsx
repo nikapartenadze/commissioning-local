@@ -815,7 +815,7 @@ export function EnhancedIoDataGrid({
                      <div className="truncate">{io.name}</div>
                      {io.assignedTo && (
                        <span
-                         className="ml-1 shrink-0 inline-flex items-center justify-center h-5 min-w-[20px] px-1 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-[10px] font-bold uppercase"
+                         className="ml-1 shrink-0 inline-flex items-center justify-center h-5 min-w-[20px] px-1 rounded-full bg-primary/10 dark:bg-primary/20 text-primary dark:text-primary text-[10px] font-bold uppercase"
                          title={`Assigned to ${io.assignedTo}`}
                        >
                          {io.assignedTo.split(' ').map(w => w[0]).join('').slice(0, 2)}
