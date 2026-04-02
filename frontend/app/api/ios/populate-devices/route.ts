@@ -28,7 +28,7 @@ export async function POST() {
 
     // Batch update each group
     let updatedCount = 0
-    for (const [deviceName, ids] of groups) {
+    for (const [deviceName, ids] of Array.from(groups.entries())) {
       const result = await prisma.io.updateMany({
         where: { id: { in: ids } },
         data: { networkDeviceName: deviceName },
