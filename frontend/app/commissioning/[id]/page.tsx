@@ -842,11 +842,10 @@ export default function CommissioningPage() {
         // Mark that output firing is in progress for this IO
         setOutputFiringInProgress(prev => ({ ...prev, [io.id]: true }))
       } else if (action === 'stop') {
-        // Clear the firing flag after delay to allow SignalR update to arrive
-        // Backend: 250ms delay + network latency. Use 3000ms for robustness.
+        // Clear the firing flag after short delay for WebSocket state update
         setTimeout(() => {
           setOutputFiringInProgress(prev => ({ ...prev, [io.id]: false }))
-        }, 3000)
+        }, 500)
       }
 
       if (DEBUG_FIRE) {
