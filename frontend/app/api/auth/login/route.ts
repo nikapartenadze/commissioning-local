@@ -3,12 +3,11 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { generateToken } from '@/lib/auth/jwt';
 import { verifyPin } from '@/lib/auth/password';
-import { prisma } from '@/lib/prisma';
+import { db } from '@/lib/db-sqlite';
 import userRepository from '@/lib/db/repositories/user-repository';
 import { ensureDiagnosticData } from '@/lib/db/seed-diagnostics';
 
 // In-memory rate limiting store
-// In production, use Redis or similar for distributed rate limiting
 interface RateLimitEntry {
   attempts: number;
   windowStart: number;
@@ -65,6 +64,16 @@ interface LoginRequest {
   pin: string;
 }
 
+interface UserRow {
+  id: number;
+  FullName: string;
+  Pin: string;
+  IsAdmin: number;
+  IsActive: number;
+  CreatedAt: string | null;
+  LastUsedAt: string | null;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
@@ -112,38 +121,36 @@ export async function POST(request: NextRequest) {
     await userRepository.ensureDefaultAdmin();
     await ensureDiagnosticData();
 
-    let user;
+    let user: { id: number; fullName: string; isAdmin: boolean; isActive: boolean; pin: string } | undefined;
 
     if (fullName?.trim()) {
       // Named login: find by fullName and verify PIN
-      user = await prisma.user.findFirst({
-        where: { fullName: fullName.trim() },
-      });
+      const row = db.prepare('SELECT * FROM Users WHERE FullName = ?').get(fullName.trim()) as UserRow | undefined;
 
-      if (!user || !user.isActive) {
+      if (!row || !row.IsActive) {
         return NextResponse.json(
           { message: 'Invalid credentials' },
           { status: 401 }
         );
       }
 
-      const pinValid = await verifyPin(pin, user.pin);
+      const pinValid = await verifyPin(pin, row.Pin);
       if (!pinValid) {
         return NextResponse.json(
           { message: 'Invalid PIN' },
           { status: 401 }
         );
       }
+
+      user = { id: row.id, fullName: row.FullName, isAdmin: !!row.IsAdmin, isActive: !!row.IsActive, pin: row.Pin };
     } else {
       // PIN-only login: iterate users server-side
-      const activeUsers = await prisma.user.findMany({
-        where: { isActive: true },
-      });
+      const activeUsers = db.prepare('SELECT * FROM Users WHERE IsActive = 1').all() as UserRow[];
 
       for (const candidate of activeUsers) {
-        const isMatch = await verifyPin(pin, candidate.pin);
+        const isMatch = await verifyPin(pin, candidate.Pin);
         if (isMatch) {
-          user = candidate;
+          user = { id: candidate.id, fullName: candidate.FullName, isAdmin: !!candidate.IsAdmin, isActive: !!candidate.IsActive, pin: candidate.Pin };
           break;
         }
       }
@@ -157,10 +164,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Update last used timestamp
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastUsedAt: new Date().toISOString().replace('T', ' ').substring(0, 19) },
-    });
+    db.prepare('UPDATE Users SET LastUsedAt = ? WHERE id = ?').run(
+      new Date().toISOString().replace('T', ' ').substring(0, 19),
+      user.id
+    );
 
     const token = generateToken({
       id: user.id,

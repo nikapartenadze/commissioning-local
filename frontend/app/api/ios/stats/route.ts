@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 import { TEST_CONSTANTS } from '@/lib/services/io-test-service'
 
 /**
@@ -17,19 +17,17 @@ export async function GET(request: NextRequest) {
     const subsystemIdParam = searchParams.get('subsystemId')
     const subsystemId = subsystemIdParam ? parseInt(subsystemIdParam) : undefined
 
-    // Build where clause
-    const where = subsystemId ? { subsystemId } : {}
+    let total: number, passed: number, failed: number
 
-    // Get counts in parallel
-    const [total, passed, failed] = await Promise.all([
-      prisma.io.count({ where }),
-      prisma.io.count({
-        where: { ...where, result: TEST_CONSTANTS.RESULT_PASSED }
-      }),
-      prisma.io.count({
-        where: { ...where, result: TEST_CONSTANTS.RESULT_FAILED }
-      })
-    ])
+    if (subsystemId) {
+      total = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE SubsystemId = ?').get(subsystemId) as { count: number }).count
+      passed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE SubsystemId = ? AND Result = ?').get(subsystemId, TEST_CONSTANTS.RESULT_PASSED) as { count: number }).count
+      failed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE SubsystemId = ? AND Result = ?').get(subsystemId, TEST_CONSTANTS.RESULT_FAILED) as { count: number }).count
+    } else {
+      total = (db.prepare('SELECT COUNT(*) as count FROM Ios').get() as { count: number }).count
+      passed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE Result = ?').get(TEST_CONSTANTS.RESULT_PASSED) as { count: number }).count
+      failed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE Result = ?').get(TEST_CONSTANTS.RESULT_FAILED) as { count: number }).count
+    }
 
     const untested = total - passed - failed
 

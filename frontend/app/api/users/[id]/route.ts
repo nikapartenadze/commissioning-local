@@ -1,8 +1,15 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 import { requireAdmin } from '@/lib/auth/middleware'
+
+interface UserRow {
+  id: number;
+  FullName: string;
+  IsAdmin: number;
+  IsActive: number;
+}
 
 // DELETE /api/users/[id] — delete a user (admin only, cannot delete admins)
 export async function DELETE(
@@ -17,16 +24,16 @@ export async function DELETE(
     return NextResponse.json({ message: 'Invalid user ID' }, { status: 400 })
   }
 
-  const target = await prisma.user.findUnique({ where: { id } })
+  const target = db.prepare('SELECT id, FullName, IsAdmin, IsActive FROM Users WHERE id = ?').get(id) as UserRow | undefined
   if (!target) {
     return NextResponse.json({ message: 'User not found' }, { status: 404 })
   }
 
-  if (target.isAdmin) {
+  if (target.IsAdmin) {
     return NextResponse.json({ message: 'Cannot delete admin users' }, { status: 403 })
   }
 
-  await prisma.user.delete({ where: { id } })
+  db.prepare('DELETE FROM Users WHERE id = ?').run(id)
 
   return NextResponse.json({ success: true })
 }

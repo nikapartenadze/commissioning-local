@@ -13,7 +13,14 @@ import { requireAuth } from '@/lib/auth/middleware';
 import { PlcConnectRequest } from '@/lib/config/types';
 import { connectPlc, loadPlcTags, getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { isLibraryLoaded, getLibraryPath } from '@/lib/plc';
-import { prisma } from '@/lib/db';
+import { db } from '@/lib/db-sqlite';
+
+interface IoRow {
+  id: number;
+  Name: string | null;
+  Description: string | null;
+  TagType: string | null;
+}
 
 /**
  * POST /api/configuration/connect
@@ -79,21 +86,16 @@ export async function POST(request: NextRequest) {
     });
 
     // Load IO tags from database into PLC client FIRST (before connecting)
-    const ios = await prisma.io.findMany({
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        tagType: true,
-      }
-    });
+    const ios = db.prepare(
+      'SELECT id, Name, Description, TagType FROM Ios'
+    ).all() as IoRow[];
 
     if (ios.length > 0) {
       const tags = ios.map(io => ({
         id: io.id,
-        name: io.name || '',
-        description: io.description || undefined,
-        tagType: io.tagType || undefined,
+        name: io.Name || '',
+        description: io.Description || undefined,
+        tagType: io.TagType || undefined,
       }));
 
       loadPlcTags(tags);
@@ -132,7 +134,7 @@ export async function POST(request: NextRequest) {
 
     // Build tag report (IO tags only)
     const rawFailedTags = connectResult.failedTags || [];
-    const ioLookup = new Map(ios.map(io => [io.name || '', io.description || '']));
+    const ioLookup = new Map(ios.map(io => [io.Name || '', io.Description || '']));
     const failedTags = rawFailedTags.map(t => ({
       name: t.name,
       description: ioLookup.get(t.name) || '',

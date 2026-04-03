@@ -2,7 +2,8 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
 import { requireAuth } from '@/lib/auth/middleware'
 
 /**
@@ -47,10 +48,7 @@ export async function POST(
     console.log(`[FireOutput] IO ${ioId}: ${action}`)
 
     // Get the IO from database
-    const io = await prisma.io.findUnique({
-      where: { id: ioId },
-      select: { id: true, name: true, tagType: true }
-    })
+    const io = db.prepare('SELECT id, Name, TagType FROM Ios WHERE id = ?').get(ioId) as Pick<Io, 'id' | 'Name' | 'TagType'> | undefined
 
     if (!io) {
       return NextResponse.json(
@@ -59,7 +57,7 @@ export async function POST(
       )
     }
 
-    if (!io.name) {
+    if (!io.Name) {
       return NextResponse.json(
         { success: false, error: 'IO has no tag name' },
         { status: 400 }
@@ -67,7 +65,7 @@ export async function POST(
     }
 
     // Check if this is a safety output - these cannot be written directly
-    if (io.name.includes(':SO.')) {
+    if (io.Name.includes(':SO.')) {
       return NextResponse.json(
         { success: false, error: 'Safety outputs cannot be fired directly - they are controlled by the safety PLC' },
         { status: 400 }
@@ -89,7 +87,7 @@ export async function POST(
 
     // Atomic write — each tag gets its own handle, safe for concurrent multi-user use
     const result = client.writeOutputBit(
-      { id: io.id, name: io.name, tagType: io.tagType ?? undefined },
+      { id: io.id, name: io.Name, tagType: io.TagType ?? undefined },
       bitValue
     )
 

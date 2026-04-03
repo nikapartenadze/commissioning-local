@@ -1,9 +1,16 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 import { requireAdmin } from '@/lib/auth/middleware'
 import { revokeTokensForUser } from '@/lib/auth/jwt'
+
+interface UserRow {
+  id: number;
+  FullName: string;
+  IsAdmin: number;
+  IsActive: number;
+}
 
 // PUT /api/users/[id]/toggle-active — toggle user active status (admin only)
 export async function PUT(
@@ -18,24 +25,23 @@ export async function PUT(
     return NextResponse.json({ message: 'Invalid user ID' }, { status: 400 })
   }
 
-  const target = await prisma.user.findUnique({ where: { id } })
+  const target = db.prepare('SELECT id, FullName, IsAdmin, IsActive FROM Users WHERE id = ?').get(id) as UserRow | undefined
   if (!target) {
     return NextResponse.json({ message: 'User not found' }, { status: 404 })
   }
 
-  if (target.isAdmin) {
+  if (target.IsAdmin) {
     return NextResponse.json({ message: 'Cannot deactivate admin users' }, { status: 403 })
   }
 
-  const updated = await prisma.user.update({
-    where: { id },
-    data: { isActive: !target.isActive },
-    select: {
-      id: true,
-      fullName: true,
-      isActive: true,
-    },
-  })
+  const newIsActive = target.IsActive ? 0 : 1
+  db.prepare('UPDATE Users SET IsActive = ? WHERE id = ?').run(newIsActive, id)
+
+  const updated = {
+    id: target.id,
+    fullName: target.FullName,
+    isActive: !!newIsActive,
+  }
 
   // Revoke active tokens when user is deactivated
   if (!updated.isActive) {

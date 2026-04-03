@@ -6,7 +6,8 @@
  * queuing results for cloud sync, and handling order mode (sequential testing).
  */
 
-import { prisma } from '../prisma'
+import { db } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '../plc-client-manager'
 
 // Test result constants (matching C# TestConstants)
@@ -25,17 +26,17 @@ export const TEST_CONSTANTS = {
 // Types
 export interface IoWithState {
   id: number
-  subsystemId: number
-  name: string | null
-  description: string | null
-  result: string | null
-  timestamp: string | null
-  comments: string | null
-  order: number | null
-  version: bigint
-  tagType?: string | null
-  cloudSyncedAt?: Date | null
-  networkDeviceName?: string | null
+  SubsystemId: number
+  Name: string | null
+  Description: string | null
+  Result: string | null
+  Timestamp: string | null
+  Comments: string | null
+  Order: number | null
+  Version: number
+  TagType?: string | null
+  CloudSyncedAt?: string | null
+  NetworkDeviceName?: string | null
   state?: string
 }
 
@@ -58,7 +59,7 @@ export interface IoUpdateDto {
   comments?: string | null
   testedBy?: string
   state?: string
-  version?: bigint
+  version?: number
 }
 
 /**
@@ -88,16 +89,10 @@ export function getPlcStateForIo(ioId: number): string | undefined {
 /**
  * Get the next untested IO in order mode
  */
-export async function getNextUntestedIoAsync(subsystemId: number): Promise<IoWithState | null> {
-  const io = await prisma.io.findFirst({
-    where: {
-      subsystemId,
-      result: null
-    },
-    orderBy: {
-      order: 'asc'
-    }
-  })
+export function getNextUntestedIo(subsystemId: number): IoWithState | null {
+  const io = db.prepare(
+    'SELECT * FROM Ios WHERE SubsystemId = ? AND Result IS NULL ORDER BY "Order" ASC LIMIT 1'
+  ).get(subsystemId) as Io | undefined
 
   if (!io) return null
 
@@ -107,6 +102,11 @@ export async function getNextUntestedIoAsync(subsystemId: number): Promise<IoWit
   }
 }
 
+// Keep async signature for backward compat
+export async function getNextUntestedIoAsync(subsystemId: number): Promise<IoWithState | null> {
+  return getNextUntestedIo(subsystemId)
+}
+
 /**
  * Mark an IO test as passed
  */
@@ -114,7 +114,7 @@ export async function markTestPassedAsync(
   ioId: number,
   options: TestResultRequest = {}
 ): Promise<{ success: boolean; error?: string }> {
-  return updateTestResultAsync(ioId, TEST_CONSTANTS.RESULT_PASSED, options)
+  return updateTestResult(ioId, TEST_CONSTANTS.RESULT_PASSED, options)
 }
 
 /**
@@ -124,7 +124,7 @@ export async function markTestFailedAsync(
   ioId: number,
   options: TestResultRequest = {}
 ): Promise<{ success: boolean; error?: string }> {
-  return updateTestResultAsync(ioId, TEST_CONSTANTS.RESULT_FAILED, options)
+  return updateTestResult(ioId, TEST_CONSTANTS.RESULT_FAILED, options)
 }
 
 /**
@@ -135,17 +135,15 @@ export async function clearTestResultAsync(
   currentUser: string = 'Unknown'
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const io = await prisma.io.findUnique({
-      where: { id: ioId }
-    })
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return { success: false, error: 'IO not found' }
     }
 
     // Check if already cleared
-    const hadComments = !!io.comments
-    const hadResult = !!io.result
+    const hadComments = !!io.Comments
+    const hadResult = !!io.Result
 
     if (!hadComments && !hadResult) {
       // Already cleared, nothing to do
@@ -155,9 +153,9 @@ export async function clearTestResultAsync(
     // Build history comment
     let historyComment: string | null = null
     if (hadResult && hadComments) {
-      historyComment = io.comments
+      historyComment = io.Comments
     } else if (hadResult) {
-      historyComment = `Cleared ${io.result} result`
+      historyComment = `Cleared ${io.Result} result`
     } else {
       historyComment = 'Cleared comments'
     }
@@ -166,30 +164,17 @@ export async function clearTestResultAsync(
     const timestamp = createTimestamp()
 
     // Use transaction for atomicity
-    await prisma.$transaction(async (tx) => {
-      // Create history record
-      await tx.testHistory.create({
-        data: {
-          ioId,
-          result: TEST_CONSTANTS.RESULT_CLEARED,
-          timestamp,
-          comments: historyComment,
-          state: plcState,
-          testedBy: currentUser
-        }
-      })
+    const clearTransaction = db.transaction(() => {
+      db.prepare(
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(ioId, TEST_CONSTANTS.RESULT_CLEARED, timestamp, historyComment, plcState ?? null, currentUser)
 
-      // Clear the IO
-      await tx.io.update({
-        where: { id: ioId },
-        data: {
-          result: null,
-          timestamp: null,
-          comments: null,
-          version: { increment: 1 }
-        }
-      })
+      db.prepare(
+        'UPDATE Ios SET Result = NULL, Timestamp = NULL, Comments = NULL, Version = Version + 1 WHERE id = ?'
+      ).run(ioId)
     })
+
+    clearTransaction()
 
     return { success: true }
   } catch (error) {
@@ -210,15 +195,13 @@ export async function updateCommentAsync(
   currentUser: string = 'Unknown'
 ): Promise<CommentUpdateResult> {
   try {
-    const io = await prisma.io.findUnique({
-      where: { id: ioId }
-    })
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return { success: false, changesWereMade: false, errorMessage: 'IO not found' }
     }
 
-    const oldComment = io.comments ?? ''
+    const oldComment = io.Comments ?? ''
     const normalizedNew = newComment ?? ''
 
     // No change needed
@@ -231,29 +214,17 @@ export async function updateCommentAsync(
     const { historyResult, historyComment } = determineCommentChange(oldComment, normalizedNew)
 
     // Use transaction for atomicity
-    await prisma.$transaction(async (tx) => {
-      // Update the IO
-      await tx.io.update({
-        where: { id: ioId },
-        data: {
-          comments: normalizedNew,
-          timestamp,
-          version: { increment: 1 }
-        }
-      })
+    const commentTransaction = db.transaction(() => {
+      db.prepare(
+        'UPDATE Ios SET Comments = ?, Timestamp = ?, Version = Version + 1 WHERE id = ?'
+      ).run(normalizedNew, timestamp, ioId)
 
-      // Create history record
-      await tx.testHistory.create({
-        data: {
-          ioId,
-          result: historyResult,
-          timestamp,
-          comments: historyComment,
-          state: plcState,
-          testedBy: currentUser
-        }
-      })
+      db.prepare(
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(ioId, historyResult, timestamp, historyComment, plcState ?? null, currentUser)
     })
+
+    commentTransaction()
 
     return { success: true, changesWereMade: true }
   } catch (error) {
@@ -269,10 +240,8 @@ export async function updateCommentAsync(
 /**
  * Get IO by ID with current PLC state
  */
-export async function getIoByIdAsync(ioId: number): Promise<IoWithState | null> {
-  const io = await prisma.io.findUnique({
-    where: { id: ioId }
-  })
+export function getIoById(ioId: number): IoWithState | null {
+  const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
   if (!io) return null
 
@@ -282,14 +251,18 @@ export async function getIoByIdAsync(ioId: number): Promise<IoWithState | null> 
   }
 }
 
+// Keep async signature for backward compat
+export async function getIoByIdAsync(ioId: number): Promise<IoWithState | null> {
+  return getIoById(ioId)
+}
+
 /**
  * Get all IOs for a subsystem with current PLC states
  */
-export async function getIosBySubsystemAsync(subsystemId: number): Promise<IoWithState[]> {
-  const ios = await prisma.io.findMany({
-    where: { subsystemId },
-    orderBy: { order: 'asc' }
-  })
+export function getIosBySubsystem(subsystemId: number): IoWithState[] {
+  const ios = db.prepare(
+    'SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC'
+  ).all(subsystemId) as Io[]
 
   const { tags } = getPlcTags()
   const stateMap = new Map(tags.map(t => [t.id, t.state]))
@@ -300,53 +273,66 @@ export async function getIosBySubsystemAsync(subsystemId: number): Promise<IoWit
   }))
 }
 
+// Keep async signature for backward compat
+export async function getIosBySubsystemAsync(subsystemId: number): Promise<IoWithState[]> {
+  return getIosBySubsystem(subsystemId)
+}
+
 /**
  * Get test statistics for a subsystem
  */
+export function getTestStats(subsystemId?: number): {
+  total: number
+  passed: number
+  failed: number
+  untested: number
+} {
+  if (subsystemId) {
+    const total = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE SubsystemId = ?').get(subsystemId) as any).count
+    const passed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE SubsystemId = ? AND Result = ?').get(subsystemId, TEST_CONSTANTS.RESULT_PASSED) as any).count
+    const failed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE SubsystemId = ? AND Result = ?').get(subsystemId, TEST_CONSTANTS.RESULT_FAILED) as any).count
+    return { total, passed, failed, untested: total - passed - failed }
+  }
+
+  const total = (db.prepare('SELECT COUNT(*) as count FROM Ios').get() as any).count
+  const passed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE Result = ?').get(TEST_CONSTANTS.RESULT_PASSED) as any).count
+  const failed = (db.prepare('SELECT COUNT(*) as count FROM Ios WHERE Result = ?').get(TEST_CONSTANTS.RESULT_FAILED) as any).count
+  return { total, passed, failed, untested: total - passed - failed }
+}
+
+// Keep async signature for backward compat
 export async function getTestStatsAsync(subsystemId?: number): Promise<{
   total: number
   passed: number
   failed: number
   untested: number
 }> {
-  const where = subsystemId ? { subsystemId } : {}
-
-  const [total, passed, failed] = await Promise.all([
-    prisma.io.count({ where }),
-    prisma.io.count({ where: { ...where, result: TEST_CONSTANTS.RESULT_PASSED } }),
-    prisma.io.count({ where: { ...where, result: TEST_CONSTANTS.RESULT_FAILED } })
-  ])
-
-  return {
-    total,
-    passed,
-    failed,
-    untested: total - passed - failed
-  }
+  return getTestStats(subsystemId)
 }
 
 /**
  * Get test history for an IO
  */
+export function getTestHistory(ioId: number, limit: number = 100) {
+  return db.prepare(
+    'SELECT * FROM TestHistories WHERE IoId = ? ORDER BY Timestamp DESC LIMIT ?'
+  ).all(ioId, limit)
+}
+
+// Keep async signature for backward compat
 export async function getTestHistoryAsync(ioId: number, limit: number = 100) {
-  return prisma.testHistory.findMany({
-    where: { ioId },
-    orderBy: { timestamp: 'desc' },
-    take: limit
-  })
+  return getTestHistory(ioId, limit)
 }
 
 // Private helper functions
 
-async function updateTestResultAsync(
+function updateTestResult(
   ioId: number,
   result: string,
   options: TestResultRequest = {}
-): Promise<{ success: boolean; error?: string }> {
+): { success: boolean; error?: string } {
   try {
-    const io = await prisma.io.findUnique({
-      where: { id: ioId }
-    })
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return { success: false, error: 'IO not found' }
@@ -357,30 +343,17 @@ async function updateTestResultAsync(
     const timestamp = createTimestamp()
 
     // Use transaction for atomicity
-    await prisma.$transaction(async (tx) => {
-      // Update the IO
-      await tx.io.update({
-        where: { id: ioId },
-        data: {
-          result,
-          timestamp,
-          comments: sanitizedComments,
-          version: { increment: 1 }
-        }
-      })
+    const testTransaction = db.transaction(() => {
+      db.prepare(
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = Version + 1 WHERE id = ?'
+      ).run(result, timestamp, sanitizedComments, ioId)
 
-      await tx.testHistory.create({
-        data: {
-          ioId,
-          result,
-          timestamp,
-          comments: io.comments,
-          state: plcState,
-          testedBy: options.currentUser ?? 'Unknown',
-          failureMode: options.failureMode || null,
-        }
-      })
+      db.prepare(
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(ioId, result, timestamp, io.Comments, plcState ?? null, options.currentUser ?? 'Unknown', options.failureMode || null)
     })
+
+    testTransaction()
 
     return { success: true }
   } catch (error) {
