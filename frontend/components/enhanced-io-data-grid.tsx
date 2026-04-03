@@ -583,16 +583,7 @@ export function EnhancedIoDataGrid({
           )}
         </div>
 
-        {/* Sort Dropdown */}
-        <select
-          value={sortMode}
-          onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
-          className="h-[44px] px-3 text-sm bg-background border rounded font-medium focus:outline-none focus:ring-2 focus:ring-primary"
-        >
-          <option value="default">Default</option>
-          <option value="failed-first">Failed First</option>
-          <option value="not-tested-first">Untested First</option>
-        </select>
+        {/* Sort dropdown removed — Pass/Fail filters in toolbar serve the same purpose */}
 
         {/* Count Badge */}
         <div className="h-[44px] px-4 flex items-center bg-muted rounded font-mono text-sm whitespace-nowrap">
