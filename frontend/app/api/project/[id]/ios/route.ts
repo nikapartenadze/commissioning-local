@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 
 export async function GET(
   request: NextRequest,
@@ -9,7 +9,7 @@ export async function GET(
 ) {
   try {
     const projectId = parseInt(params.id)
-    
+
     if (isNaN(projectId)) {
       return NextResponse.json(
         { error: 'Invalid project ID' },
@@ -18,37 +18,24 @@ export async function GET(
     }
 
     // Get all IOs for the project with subsystem information
-    const ios = await prisma.io.findMany({
-      where: {
-        subsystem: {
-          projectId: projectId
-        }
-      },
-      include: {
-        subsystem: {
-          select: {
-            name: true
-          }
-        }
-      },
-      orderBy: [
-        { subsystem: { name: 'asc' } },
-        { name: 'asc' }
-      ]
-    })
+    const ios = db.prepare(`
+      SELECT i.*, s.Name as SubsystemName
+      FROM Ios i
+      JOIN Subsystems s ON i.SubsystemId = s.id
+      WHERE s.ProjectId = ?
+      ORDER BY s.Name ASC, i.Name ASC
+    `).all(projectId) as any[]
 
     // Transform the data to match the expected format
-    // Note: state is a runtime PLC value, not stored in database
-    // Real-time state values come from SignalR/PLC connections
-    const transformedIos = ios.map(io => ({
+    const transformedIos = ios.map((io: any) => ({
       id: io.id,
-      name: io.name,
-      description: io.description,
-      result: io.result,
-      timestamp: io.timestamp,
-      comments: io.comments,
+      name: io.Name,
+      description: io.Description,
+      result: io.Result,
+      timestamp: io.Timestamp,
+      comments: io.Comments,
       state: null, // State is runtime value from PLC, not in database
-      subsystemName: io.subsystem.name
+      subsystemName: io.SubsystemName
     }))
 
     return NextResponse.json(transformedIos)

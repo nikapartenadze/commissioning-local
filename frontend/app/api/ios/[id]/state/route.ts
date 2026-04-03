@@ -2,7 +2,8 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
 import { requireAuth } from '@/lib/auth/middleware'
 
 /**
@@ -28,12 +29,9 @@ export async function GET(
     }
 
     // Get the IO from database
-    const io = await prisma.io.findUnique({
-      where: { id: ioId },
-      select: { id: true, name: true, tagType: true }
-    })
+    const io = db.prepare('SELECT id, Name, TagType FROM Ios WHERE id = ?').get(ioId) as Pick<Io, 'id' | 'Name' | 'TagType'> | undefined
 
-    if (!io || !io.name) {
+    if (!io || !io.Name) {
       return NextResponse.json(
         { success: false, error: 'IO not found' },
         { status: 404 }
@@ -53,8 +51,8 @@ export async function GET(
     // Read current tag value (per-tag handle, multi-user safe)
     const readResult = client.readOutputBit({
       id: io.id,
-      name: io.name,
-      tagType: io.tagType ?? undefined
+      name: io.Name,
+      tagType: io.TagType ?? undefined
     })
 
     if (!readResult.success) {

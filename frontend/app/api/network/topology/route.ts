@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 // GET — full network topology for a subsystem
 export async function GET(request: NextRequest) {
@@ -12,21 +12,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, rings: [] })
     }
 
-    const where = { subsystemId: parseInt(subsystemId, 10) }
+    const rings = db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(parseInt(subsystemId, 10)) as any[]
 
-    const rings = await prisma.networkRing.findMany({
-      where,
-      include: {
-        nodes: {
-          orderBy: { position: 'asc' as const },
-          include: {
-            ports: {
-              orderBy: { portNumber: 'asc' as const },
-            }
-          }
-        }
+    for (const ring of rings) {
+      ring.nodes = db.prepare('SELECT * FROM NetworkNodes WHERE RingId = ? ORDER BY Position').all(ring.id) as any[]
+      for (const node of ring.nodes) {
+        node.ports = db.prepare('SELECT * FROM NetworkPorts WHERE NodeId = ? ORDER BY PortNumber').all(node.id) as any[]
       }
-    })
+    }
 
     return NextResponse.json({ success: true, rings })
   } catch (error) {

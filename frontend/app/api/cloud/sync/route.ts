@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { ioRepository } from '@/lib/db/repositories/io-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
@@ -105,15 +105,15 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
         if (!io) return null
         return {
           id: io.id,
-          subsystemId: io.subsystemId,
-          name: io.name ?? '',
-          description: io.description,
-          result: io.result,
-          timestamp: io.timestamp,
-          comments: io.comments,
-          order: io.order,
-          version: io.version,
-          tagType: io.tagType,
+          subsystemId: (io as any).SubsystemId ?? (io as any).subsystemId,
+          name: (io as any).Name ?? (io as any).name ?? '',
+          description: (io as any).Description ?? (io as any).description,
+          result: (io as any).Result ?? (io as any).result,
+          timestamp: (io as any).Timestamp ?? (io as any).timestamp,
+          comments: (io as any).Comments ?? (io as any).comments,
+          order: (io as any).Order ?? (io as any).order,
+          version: (io as any).Version ?? (io as any).version,
+          tagType: (io as any).TagType ?? (io as any).tagType,
         }
       }
     )
@@ -127,30 +127,32 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
       ...result.rejectedIds,
     ])
 
-    const unprocessed = remainingPending.filter((p) => !processedIds.has(p.ioId))
+    const unprocessed = remainingPending.filter((p: any) => !processedIds.has(p.IoId ?? p.ioId))
 
     if (unprocessed.length > 0) {
       console.log(`[CloudSync] Processing ${unprocessed.length} unprocessed pending syncs from database`)
 
       for (const pending of unprocessed) {
+        const p = pending as any
+        const ioId = p.IoId ?? p.ioId
         const update: IoUpdateDto = {
-          id: pending.ioId,
-          testedBy: pending.inspectorName,
-          result: pending.testResult,
-          comments: pending.comments,
-          state: pending.state,
-          version: Number(pending.version),
-          timestamp: pending.timestamp?.toISOString(),
+          id: ioId,
+          testedBy: p.InspectorName ?? p.inspectorName,
+          result: p.TestResult ?? p.testResult,
+          comments: p.Comments ?? p.comments,
+          state: p.State ?? p.state,
+          version: Number(p.Version ?? p.version),
+          timestamp: p.Timestamp ? (typeof p.Timestamp === 'string' ? p.Timestamp : p.Timestamp.toISOString()) : undefined,
         }
 
         const synced = await cloudSyncService.syncIoUpdate(update)
 
         if (synced) {
-          result.successfulIds.push(pending.ioId)
+          result.successfulIds.push(ioId)
           // Remove from database
           await pendingSyncRepository.delete(pending.id)
         } else {
-          result.failedIds.push(pending.ioId)
+          result.failedIds.push(ioId)
           // Increment retry count
           await pendingSyncRepository.recordFailure(pending.id, 'Sync failed')
         }
@@ -159,20 +161,22 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
 
     // Remove synced items from database
     if (result.successfulIds.length > 0) {
-      const pendingToDelete = await prisma.pendingSync.findMany({
-        where: { ioId: { in: result.successfulIds } },
-        select: { id: true },
-      })
-      await pendingSyncRepository.deleteMany(pendingToDelete.map((p) => p.id))
+      const rows = db.prepare(
+        `SELECT id FROM PendingSyncs WHERE IoId IN (${result.successfulIds.map(() => '?').join(',')})`
+      ).all(...result.successfulIds) as { id: number }[]
+      if (rows.length > 0) {
+        await pendingSyncRepository.deleteMany(rows.map((p) => p.id))
+      }
     }
 
     // Remove rejected items from database
     if (result.rejectedIds.length > 0) {
-      const pendingToDelete = await prisma.pendingSync.findMany({
-        where: { ioId: { in: result.rejectedIds } },
-        select: { id: true },
-      })
-      await pendingSyncRepository.deleteMany(pendingToDelete.map((p) => p.id))
+      const rows = db.prepare(
+        `SELECT id FROM PendingSyncs WHERE IoId IN (${result.rejectedIds.map(() => '?').join(',')})`
+      ).all(...result.rejectedIds) as { id: number }[]
+      if (rows.length > 0) {
+        await pendingSyncRepository.deleteMany(rows.map((p) => p.id))
+      }
     }
 
     console.log(
@@ -222,7 +226,7 @@ export async function GET(): Promise<NextResponse> {
       pendingCount: stats.total,
       failedCount: stats.failed,
       maxRetries: stats.maxRetries,
-      oldestPending: stats.oldestTimestamp?.toISOString() ?? null,
+      oldestPending: stats.oldestTimestamp ?? null,
       connectionState: cloudSyncService.connectionState,
       isConnected: cloudSyncService.isConnected,
     })

@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getPlcStatus, getPlcPerformanceStats } from '@/lib/plc-client-manager';
 import { configService } from '@/lib/config';
-import { prisma } from '@/lib/db';
+import { db } from '@/lib/db-sqlite';
 
 // Get testing state from shared global
 const globalForTesting = globalThis as unknown as {
@@ -32,7 +32,7 @@ export async function GET() {
     const status = getPlcStatus();
     const performanceStats = getPlcPerformanceStats();
     const config = await configService.getConfig();
-    const ioCount = await prisma.io.count();
+    const ioCount = (db.prepare('SELECT COUNT(*) as count FROM Ios').get() as { count: number }).count;
     const libraryStatus = await getLibraryStatus();
 
     return NextResponse.json({
