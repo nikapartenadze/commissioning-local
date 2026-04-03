@@ -33,10 +33,7 @@ export function FireOutputDialog({
 }: FireOutputDialogProps) {
   const [isHolding, setIsHolding] = useState(false)
   const ioRef = useRef(io)
-  const holdTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const isHoldModeRef = useRef(false)
   const isPressedRef = useRef(false)
-  const HOLD_DELAY_MS = 80 // Reduced from 200ms — faster hold detection
 
   useEffect(() => { ioRef.current = io }, [io])
 
@@ -58,12 +55,7 @@ export function FireOutputDialog({
   useEffect(() => {
     if (!open) {
       isPressedRef.current = false
-      isHoldModeRef.current = false
       setIsHolding(false)
-      if (holdTimerRef.current) {
-        clearTimeout(holdTimerRef.current)
-        holdTimerRef.current = null
-      }
     }
   }, [open])
 
@@ -71,82 +63,45 @@ export function FireOutputDialog({
     onOpenChange(false)
   }, [onOpenChange])
 
-  // Press down: start timer to detect hold vs click
+  // Press down: fire immediately
   const handlePressStart = useCallback(() => {
     if (!ioRef.current || isPressedRef.current) return
 
     isPressedRef.current = true
-    isHoldModeRef.current = false
-
-    // Start timer — if still pressed after delay, it's a hold: turn ON
-    holdTimerRef.current = setTimeout(() => {
-      if (isPressedRef.current && ioRef.current) {
-        isHoldModeRef.current = true
-        setIsHolding(true)
-        onFireOutput(ioRef.current, 'start') // Turn ON
-      }
-    }, HOLD_DELAY_MS)
+    setIsHolding(true)
+    onFireOutput(ioRef.current, 'start') // Turn ON instantly
   }, [onFireOutput])
 
-  // Release: if click → pulse (ON then OFF), if hold → turn OFF, then auto-close
+  // Release: turn OFF
   const handlePressEnd = useCallback(() => {
     if (!isPressedRef.current || !ioRef.current) return
-
-    // Clear hold timer
-    if (holdTimerRef.current) {
-      clearTimeout(holdTimerRef.current)
-      holdTimerRef.current = null
-    }
 
     const currentIo = ioRef.current
     isPressedRef.current = false
     setIsHolding(false)
-
-    if (isHoldModeRef.current) {
-      // Was holding — turn OFF on release
-      onFireOutput(currentIo, 'stop')
-    } else {
-      // Quick click — single toggle (1 HTTP request instead of 2)
-      onFireOutput(currentIo, 'toggle')
-    }
-    isHoldModeRef.current = false
+    onFireOutput(currentIo, 'stop') // Turn OFF on release
   }, [onFireOutput, closeDialog])
 
-  // Handle pointer leaving button while pressed
+  // Handle pointer leaving button while pressed — turn OFF
   const handlePressCancel = useCallback(() => {
     if (!isPressedRef.current) return
 
-    if (holdTimerRef.current) {
-      clearTimeout(holdTimerRef.current)
-      holdTimerRef.current = null
-    }
-
-    if (isHoldModeRef.current && ioRef.current) {
-      // Was holding — turn OFF
+    if (ioRef.current) {
       onFireOutput(ioRef.current, 'stop')
     }
 
     isPressedRef.current = false
-    isHoldModeRef.current = false
     setIsHolding(false)
-
-    // Auto-close if we were in hold mode
-    setTimeout(closeDialog, 300)
-  }, [onFireOutput, closeDialog])
+  }, [onFireOutput])
 
   // Also close on dialog dismiss (clicking outside / ESC)
   const handleOpenChange = useCallback((isOpen: boolean) => {
     if (!isOpen) {
-      if (isPressedRef.current && isHoldModeRef.current && ioRef.current) {
+      if (isPressedRef.current && ioRef.current) {
         onFireOutput(ioRef.current, 'stop')
       }
       isPressedRef.current = false
-      isHoldModeRef.current = false
       setIsHolding(false)
-      if (holdTimerRef.current) {
-        clearTimeout(holdTimerRef.current)
-        holdTimerRef.current = null
-      }
       onOpenChange(false)
     } else {
       onOpenChange(true)
