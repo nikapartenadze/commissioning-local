@@ -374,6 +374,35 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log('[Pull] Safety data pull failed (non-blocking)')
     }
 
+    // Pull punchlists (non-blocking)
+    let punchlistsPulled = 0
+    try {
+      const plRes = await fetch(`${remoteUrl}/api/sync/punchlists?subsystemId=${subsystemId}`, {
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+        signal: AbortSignal.timeout(10000),
+      })
+      if (plRes.ok) {
+        const plData = await plRes.json()
+        if (plData.punchlists && plData.punchlists.length > 0) {
+          db.prepare('DELETE FROM Punchlists WHERE SubsystemId = ?').run(subsystemId)
+          // Also clean up orphaned PunchlistItems for deleted punchlists
+          db.prepare('DELETE FROM PunchlistItems WHERE PunchlistId NOT IN (SELECT id FROM Punchlists)').run()
+          const insertPl = db.prepare('INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)')
+          const insertItem = db.prepare('INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)')
+          for (const pl of plData.punchlists) {
+            insertPl.run(pl.id, pl.name, subsystemId)
+            for (const ioId of pl.ioIds) {
+              insertItem.run(pl.id, ioId)
+            }
+            punchlistsPulled++
+          }
+          console.log(`[CloudPull] Pulled ${punchlistsPulled} punchlists`)
+        }
+      }
+    } catch {
+      console.log('[CloudPull] Punchlist pull skipped or failed (non-blocking)')
+    }
+
     return NextResponse.json({
       success: true,
       message: `Successfully pulled ${result} IOs from cloud`,
@@ -381,6 +410,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       ioCount: result,
       networkPulled,
       estopPulled,
+      punchlistsPulled,
       ...(pullWarning ? { warning: pullWarning } : {}),
       debug: {
         cloudIosLength: cloudIos.length,

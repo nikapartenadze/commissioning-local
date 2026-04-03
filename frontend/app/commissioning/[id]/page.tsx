@@ -166,6 +166,8 @@ export default function CommissioningPage() {
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
   const [currentDialogIo, setCurrentDialogIo] = useState<IoItem | null>(null)
 
+  const [punchlists, setPunchlists] = useState<Array<{ id: number; name: string; ioIds: number[] }>>([])
+  const [activePunchlistId, setActivePunchlistId] = useState<number | null>(null)
   const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null>(null)
   const [showChangeRequestDialog, setShowChangeRequestDialog] = useState(false)
   const [showChangeRequestsPanel, setShowChangeRequestsPanel] = useState(false)
@@ -289,6 +291,15 @@ export default function CommissioningPage() {
     apiPassword: "",
     remoteUrl: ""
   })
+
+  // Fetch punchlists on load
+  useEffect(() => {
+    if (!plcConfig.subsystemId || plcConfig.subsystemId === '0') return
+    authFetch(`/api/punchlists?subsystemId=${plcConfig.subsystemId}`)
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setPunchlists(data))
+      .catch(() => {})
+  }, [plcConfig.subsystemId])
 
   // Poll network/estop stats — always poll network for faulted device detection
   useEffect(() => {
@@ -1462,6 +1473,9 @@ export default function CommissioningPage() {
           currentUser={currentUser}
           activeFilter={quickFilter}
           onFilterChange={setQuickFilter}
+          punchlists={punchlists}
+          activePunchlistId={activePunchlistId}
+          onPunchlistChange={setActivePunchlistId}
           tagStatus={tagStatus ? {
             totalTags: tagStatus.totalTags,
             successfulTags: tagStatus.successfulTags,
@@ -1497,6 +1511,8 @@ export default function CommissioningPage() {
             onShowFireOutputDialog={handleShowFireOutputDialog}
             onCommentChange={handleCommentChange}
             activeQuickFilter={quickFilter}
+            punchlists={punchlists}
+            activePunchlistId={activePunchlistId}
             onRequestChange={(io: IoItem) => {
               setChangeRequestIo(io)
               setShowChangeRequestDialog(true)
