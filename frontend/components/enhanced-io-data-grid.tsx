@@ -49,6 +49,8 @@ interface EnhancedIoDataGridProps {
   onShowFireOutputDialog?: (io: IoItem) => void
   onCommentChange?: (io: IoItem, comment: string) => void
   activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null
+  punchlists?: Array<{ id: number; name: string; ioIds: number[] }>
+  activePunchlistId?: number | null
   onRequestChange?: (io: IoItem) => void
   currentUser?: { fullName: string; isAdmin: boolean } | null
 }
@@ -107,6 +109,8 @@ export function EnhancedIoDataGrid({
   onShowFireOutputDialog,
   onCommentChange,
   activeQuickFilter = null,
+  punchlists,
+  activePunchlistId,
   onRequestChange,
   currentUser
 }: EnhancedIoDataGridProps) {
@@ -342,8 +346,18 @@ export function EnhancedIoDataGrid({
     )
   }
 
+  // Pre-compute punchlist IO set for fast lookup
+  const punchlistIoSet = useMemo(() => {
+    if (!activePunchlistId || !punchlists) return null
+    const punchlist = punchlists.find(p => p.id === activePunchlistId)
+    return punchlist ? new Set(punchlist.ioIds) : null
+  }, [activePunchlistId, punchlists])
+
   const filteredIos = useMemo(() => {
     const filtered = ios.filter(io => {
+      // Punchlist filter — if active, only show IOs in this punchlist
+      if (punchlistIoSet && !punchlistIoSet.has(io.id)) return false
+
       // Apply quick filter first
       if (activeQuickFilter === 'failed' && io.result !== 'Failed') return false
       if (activeQuickFilter === 'not-tested' && io.result) return false
@@ -400,7 +414,7 @@ export function EnhancedIoDataGrid({
     }
 
     return [...filtered].sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
-  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, sortMode])
+  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, sortMode, punchlistIoSet])
 
   useEffect(() => {
     if (onFilteredDataChange) {
