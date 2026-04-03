@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 import { requireAdmin } from '@/lib/auth/middleware'
 
 /**
@@ -18,12 +18,12 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'ioIds must be a non-empty array' }, { status: 400 })
     }
 
-    const result = await prisma.io.updateMany({
-      where: { id: { in: ioIds } },
-      data: { assignedTo: assignedTo || null },
-    })
+    const placeholders = ioIds.map(() => '?').join(', ')
+    const result = db.prepare(
+      `UPDATE Ios SET AssignedTo = ? WHERE id IN (${placeholders})`
+    ).run(assignedTo || null, ...ioIds)
 
-    return NextResponse.json({ updated: result.count })
+    return NextResponse.json({ updated: result.changes })
   } catch (error) {
     console.error('Error assigning IOs:', error)
     return NextResponse.json({ error: 'Failed to assign IOs' }, { status: 500 })

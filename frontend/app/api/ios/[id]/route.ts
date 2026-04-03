@@ -1,7 +1,8 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { sanitizeComment, createTimestamp } from '@/lib/services/io-test-service'
 
@@ -25,9 +26,7 @@ export async function GET(
       return NextResponse.json({ error: 'Invalid IO ID' }, { status: 400 })
     }
 
-    const io = await prisma.io.findUnique({
-      where: { id: ioId }
-    })
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return NextResponse.json({ error: 'IO not found' }, { status: 404 })
@@ -39,20 +38,20 @@ export async function GET(
 
     const ioWithState = {
       id: io.id,
-      subsystemId: io.subsystemId,
-      name: io.name,
-      description: io.description,
-      result: io.result,
-      timestamp: io.timestamp,
-      comments: io.comments,
-      order: io.order,
-      version: io.version.toString(),
+      subsystemId: io.SubsystemId,
+      name: io.Name,
+      description: io.Description,
+      result: io.Result,
+      timestamp: io.Timestamp,
+      comments: io.Comments,
+      order: io.Order,
+      version: (io.Version ?? 0).toString(),
       state: tag?.state ?? null,
-      networkDeviceName: io.networkDeviceName ?? null,
-      isOutput: io.name?.includes(':O.') || io.name?.includes(':SO.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO') || io.name?.endsWith('_DO'),
-      hasResult: !!io.result,
-      isPassed: io.result === 'Passed',
-      isFailed: io.result === 'Failed'
+      networkDeviceName: io.NetworkDeviceName ?? null,
+      isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO'),
+      hasResult: !!io.Result,
+      isPassed: io.Result === 'Passed',
+      isFailed: io.Result === 'Failed'
     }
 
     return NextResponse.json(ioWithState)
@@ -92,9 +91,7 @@ export async function PUT(
       )
     }
 
-    const io = await prisma.io.findUnique({
-      where: { id: ioId }
-    })
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return NextResponse.json({ error: 'IO not found' }, { status: 404 })
@@ -109,41 +106,37 @@ export async function PUT(
     const timestamp = createTimestamp()
 
     // Update IO and create history in transaction
-    const [updatedIo] = await prisma.$transaction([
-      prisma.io.update({
-        where: { id: ioId },
-        data: {
-          result: result !== undefined ? result : io.result,
-          comments: sanitizedComments !== undefined ? sanitizedComments : io.comments,
-          timestamp,
-          version: { increment: 1 }
-        }
-      }),
-      prisma.testHistory.create({
-        data: {
-          ioId,
-          result: result ?? io.result ?? 'Updated',
-          timestamp,
-          comments: io.comments, // Store old comment
-          state: plcState,
-          testedBy: currentUser ?? 'Unknown'
-        }
-      })
-    ])
+    const newVersion = (io.Version ?? 0) + 1
+    const updatedResult = result !== undefined ? result : io.Result
+    const updatedComments = sanitizedComments !== undefined ? sanitizedComments : io.Comments
+
+    const txn = db.transaction(() => {
+      db.prepare(
+        'UPDATE Ios SET Result = ?, Comments = ?, Timestamp = ?, Version = ? WHERE id = ?'
+      ).run(updatedResult, updatedComments, timestamp, newVersion, ioId)
+
+      db.prepare(
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(ioId, result ?? io.Result ?? 'Updated', timestamp, io.Comments, plcState ?? null, currentUser ?? 'Unknown')
+    })
+    txn()
+
+    const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
     // Queue for cloud sync + attempt immediate sync
     try {
-      const pendingSync = await prisma.pendingSync.create({
-        data: {
-          ioId,
-          inspectorName: currentUser || null,
-          testResult: updatedIo.result || null,
-          comments: (sanitizedComments !== undefined ? sanitizedComments : io.comments) || null,
-          state: plcState || null,
-          timestamp: new Date(),
-          version: updatedIo.version - BigInt(1), // Pre-increment version to match cloud
-        },
-      })
+      const syncResult = db.prepare(
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(
+        ioId,
+        currentUser || null,
+        updatedIo.Result || null,
+        (sanitizedComments !== undefined ? sanitizedComments : io.Comments) || null,
+        plcState ?? null,
+        new Date().toISOString(),
+        newVersion - 1 // Pre-increment version to match cloud
+      )
+      const pendingSyncId = syncResult.lastInsertRowid
 
       // Track this IO so SSE doesn't echo it back
       try {
@@ -156,15 +149,15 @@ export async function PUT(
         const syncService = getCloudSyncService()
         const synced = await syncService.syncIoUpdate({
           id: ioId,
-          result: updatedIo.result || null,
-          comments: (sanitizedComments !== undefined ? sanitizedComments : io.comments) || null,
+          result: updatedIo.Result || null,
+          comments: (sanitizedComments !== undefined ? sanitizedComments : io.Comments) || null,
           testedBy: currentUser || null,
-          state: plcState || null,
-          version: Number(updatedIo.version) - 1, // Send pre-increment version to match cloud
+          state: plcState ?? null,
+          version: newVersion - 1, // Send pre-increment version to match cloud
           timestamp: new Date().toISOString(),
         })
         if (synced) {
-          await prisma.pendingSync.delete({ where: { id: pendingSync.id } }).catch(() => {})
+          try { db.prepare('DELETE FROM PendingSyncs WHERE id = ?').run(Number(pendingSyncId)) } catch {}
         }
       } catch {
         // Immediate sync failed — PendingSync stays in queue
@@ -181,10 +174,10 @@ export async function PUT(
         body: JSON.stringify({
           type: 'UpdateIO',
           id: ioId,
-          result: updatedIo.result ?? 'Not Tested',
+          result: updatedIo.Result ?? 'Not Tested',
           state: plcState ?? '',
-          timestamp: updatedIo.timestamp ?? '',
-          comments: updatedIo.comments ?? '',
+          timestamp: updatedIo.Timestamp ?? '',
+          comments: updatedIo.Comments ?? '',
         }),
       })
     } catch {
@@ -195,14 +188,14 @@ export async function PUT(
       success: true,
       io: {
         id: updatedIo.id,
-        subsystemId: updatedIo.subsystemId,
-        name: updatedIo.name,
-        description: updatedIo.description,
-        result: updatedIo.result,
-        timestamp: updatedIo.timestamp,
-        comments: updatedIo.comments,
-        order: updatedIo.order,
-        version: updatedIo.version.toString(),
+        subsystemId: updatedIo.SubsystemId,
+        name: updatedIo.Name,
+        description: updatedIo.Description,
+        result: updatedIo.Result,
+        timestamp: updatedIo.Timestamp,
+        comments: updatedIo.Comments,
+        order: updatedIo.Order,
+        version: (updatedIo.Version ?? 0).toString(),
         state: plcState ?? null
       }
     })

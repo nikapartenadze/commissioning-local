@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 
 /**
@@ -50,41 +50,42 @@ export async function GET() {
     // Compare with local and update changed IOs
     const changedIos: any[] = []
 
+    const selectVersionStmt = db.prepare('SELECT Version FROM Ios WHERE id = ?')
+    const updateIoStmt = db.prepare(`
+      UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, Name = ?, Description = ?
+      WHERE id = ?
+    `)
+
     for (const cloudIo of cloudIos) {
       if (!cloudIo.id || cloudIo.id <= 0) continue
 
-      const localIo = await prisma.io.findUnique({
-        where: { id: cloudIo.id },
-        select: { version: true },
-      })
+      const localIo = selectVersionStmt.get(cloudIo.id) as { Version: number } | undefined
 
       if (!localIo) continue
 
-      const cloudVersion = BigInt(Number(cloudIo.version) || 0)
-      const localVersion = localIo.version ?? BigInt(0)
+      const cloudVersion = Number(cloudIo.version) || 0
+      const localVersion = localIo.Version ?? 0
 
       if (cloudVersion > localVersion) {
-        const updated = await prisma.io.update({
-          where: { id: cloudIo.id },
-          data: {
-            result: cloudIo.result ?? null,
-            timestamp: cloudIo.timestamp ?? null,
-            comments: cloudIo.comments ?? null,
-            version: cloudVersion,
-            name: cloudIo.name,
-            description: cloudIo.description ?? null,
-          },
-        })
+        updateIoStmt.run(
+          cloudIo.result ?? null,
+          cloudIo.timestamp ?? null,
+          cloudIo.comments ?? null,
+          cloudVersion,
+          cloudIo.name,
+          cloudIo.description ?? null,
+          cloudIo.id,
+        )
 
         // Return full IO data so browser can merge directly
         changedIos.push({
-          id: updated.id,
-          name: updated.name,
-          description: updated.description,
-          result: updated.result,
-          timestamp: updated.timestamp,
-          comments: updated.comments,
-          version: updated.version.toString(),
+          id: cloudIo.id,
+          name: cloudIo.name,
+          description: cloudIo.description ?? null,
+          result: cloudIo.result ?? null,
+          timestamp: cloudIo.timestamp ?? null,
+          comments: cloudIo.comments ?? null,
+          version: cloudVersion.toString(),
         })
       }
     }

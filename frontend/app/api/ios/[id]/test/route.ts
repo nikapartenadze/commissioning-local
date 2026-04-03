@@ -1,7 +1,8 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import {
   sanitizeComment,
@@ -60,16 +61,14 @@ export async function POST(
       )
     }
 
-    const io = await prisma.io.findUnique({
-      where: { id: ioId }
-    })
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return NextResponse.json({ error: 'IO not found' }, { status: 404 })
     }
 
     // Block SPARE IOs from being tested
-    if (io.description?.toUpperCase().includes('SPARE')) {
+    if (io.Description?.toUpperCase().includes('SPARE')) {
       return NextResponse.json({ error: 'SPARE IOs cannot be tested' }, { status: 400 })
     }
 
@@ -91,45 +90,39 @@ export async function POST(
     }
 
     // Store old comment for history before updating
-    const oldComment = io.comments
+    const oldComment = io.Comments
+    const newVersion = (io.Version ?? 0) + 1
 
     // Update IO and create history in transaction
-    const [updatedIo, testHistory] = await prisma.$transaction([
-      prisma.io.update({
-        where: { id: ioId },
-        data: {
-          result: normalizedResult,
-          timestamp,
-          comments: combinedComment || null,
-          version: { increment: 1 }
-        }
-      }),
-      prisma.testHistory.create({
-        data: {
-          ioId,
-          result: normalizedResult,
-          timestamp,
-          comments: oldComment,
-          state: plcState,
-          testedBy: currentUser ?? 'Unknown',
-          failureMode: failureMode || null,
-        }
-      })
-    ])
+    let testHistoryId: number | bigint = 0
+    const txn = db.transaction(() => {
+      db.prepare(
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ? WHERE id = ?'
+      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, ioId)
+
+      const histResult = db.prepare(
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(ioId, normalizedResult, timestamp, oldComment, plcState ?? null, currentUser ?? 'Unknown', failureMode || null)
+      testHistoryId = histResult.lastInsertRowid
+    })
+    txn()
+
+    const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
     // Create PendingSync entry as fallback, then attempt immediate cloud sync
     try {
-      const pendingSync = await prisma.pendingSync.create({
-        data: {
-          ioId,
-          inspectorName: currentUser || null,
-          testResult: normalizedResult,
-          comments: combinedComment || null,
-          state: plcState || null,
-          timestamp: new Date(),
-          version: updatedIo.version - BigInt(1), // Pre-increment version to match cloud
-        },
-      })
+      const syncResult = db.prepare(
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(
+        ioId,
+        currentUser || null,
+        normalizedResult,
+        combinedComment || null,
+        plcState ?? null,
+        new Date().toISOString(),
+        newVersion - 1 // Pre-increment version to match cloud
+      )
+      const pendingSyncId = syncResult.lastInsertRowid
 
       // Track this IO so SSE doesn't echo it back
       try {
@@ -147,12 +140,12 @@ export async function POST(
           result: normalizedResult,
           comments: combinedComment || null,
           testedBy: currentUser || null,
-          state: plcState || null,
-          version: Number(updatedIo.version) - 1,
+          state: plcState ?? null,
+          version: newVersion - 1,
           timestamp: new Date().toISOString(),
         })
         if (synced) {
-          await prisma.pendingSync.delete({ where: { id: pendingSync.id } }).catch(() => {})
+          try { db.prepare('DELETE FROM PendingSyncs WHERE id = ?').run(Number(pendingSyncId)) } catch {}
           console.log(`[Test] Instant sync succeeded for IO ${ioId}`)
         } else {
           console.log(`[Test] Instant sync returned false for IO ${ioId} — queued for retry`)
@@ -189,22 +182,22 @@ export async function POST(
       message: `IO marked as ${normalizedResult.toLowerCase()}`,
       io: {
         id: updatedIo.id,
-        subsystemId: updatedIo.subsystemId,
-        name: updatedIo.name,
-        description: updatedIo.description,
-        result: updatedIo.result,
-        timestamp: updatedIo.timestamp,
-        comments: updatedIo.comments,
-        order: updatedIo.order,
-        version: updatedIo.version.toString(),
+        subsystemId: updatedIo.SubsystemId,
+        name: updatedIo.Name,
+        description: updatedIo.Description,
+        result: updatedIo.Result,
+        timestamp: updatedIo.Timestamp,
+        comments: updatedIo.Comments,
+        order: updatedIo.Order,
+        version: (updatedIo.Version ?? 0).toString(),
         state: plcState ?? null
       },
       testHistory: {
-        id: testHistory.id,
-        ioId: testHistory.ioId,
-        result: testHistory.result,
-        timestamp: testHistory.timestamp,
-        testedBy: testHistory.testedBy
+        id: Number(testHistoryId),
+        ioId,
+        result: normalizedResult,
+        timestamp,
+        testedBy: currentUser ?? 'Unknown'
       }
     })
   } catch (error) {
