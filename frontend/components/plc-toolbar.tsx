@@ -241,11 +241,11 @@ export function PlcToolbar({
                 value={activePunchlistId ?? ''}
                 onChange={(e) => onPunchlistChange?.(e.target.value ? Number(e.target.value) : null)}
                 className={cn(
-                  "h-11 sm:h-14 px-2 sm:px-3 rounded-md transition-all text-xs sm:text-sm font-medium border-0 cursor-pointer appearance-none bg-no-repeat",
+                  "h-11 sm:h-14 px-2 sm:px-3 rounded-md transition-all text-xs sm:text-sm font-medium border cursor-pointer appearance-none bg-no-repeat",
                   "pr-6 sm:pr-8",
                   activePunchlistId
-                    ? "bg-primary text-white"
-                    : "bg-primary/10 hover:bg-primary/20 text-primary dark:text-primary"
+                    ? "bg-primary text-white border-primary"
+                    : "bg-card border-primary/30 hover:border-primary/60 text-foreground"
                 )}
                 style={{
                   backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,
