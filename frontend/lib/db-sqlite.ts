@@ -14,13 +14,21 @@ function createDb(): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = ON')
+
   return db
 }
 
 export const db = globalForDb.db ?? createDb()
 if (process.env.NODE_ENV !== 'production') globalForDb.db = db
 
-// ── Schema initialization ────────────────────────────────────────
+// ── Schema initialization (runs on every startup) ────────────────
+
+// Auto-run on import — ensures tables exist even on old Prisma databases
+try {
+  initializeSchema()
+} catch (e) {
+  console.warn('[DB] Schema init warning:', (e as Error).message)
+}
 
 export function initializeSchema() {
   db.exec(`
