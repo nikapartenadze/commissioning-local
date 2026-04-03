@@ -1,19 +1,45 @@
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 export const dynamic = 'force-dynamic'
 
+interface HistoryRow {
+  id: number;
+  IoId: number;
+  Result: string | null;
+  TestedBy: string | null;
+  Timestamp: string | null;
+  FailureMode: string | null;
+  State: string | null;
+  Comments: string | null;
+  IoName: string | null;
+  IoDescription: string | null;
+}
+
 export async function GET() {
   try {
-    const history = await prisma.testHistory.findMany({
-      orderBy: { timestamp: 'desc' },
-      take: 500,
-      include: {
-        io: {
-          select: { name: true, description: true },
-        },
+    const rows = db.prepare(`
+      SELECT th.*, i.Name as IoName, i.Description as IoDescription
+      FROM TestHistories th
+      LEFT JOIN Ios i ON th.IoId = i.id
+      ORDER BY th.Timestamp DESC
+      LIMIT 500
+    `).all() as HistoryRow[]
+
+    const history = rows.map(r => ({
+      id: r.id,
+      ioId: r.IoId,
+      result: r.Result,
+      testedBy: r.TestedBy,
+      timestamp: r.Timestamp,
+      failureMode: r.FailureMode,
+      state: r.State,
+      comments: r.Comments,
+      io: {
+        name: r.IoName,
+        description: r.IoDescription,
       },
-    })
+    }))
 
     return NextResponse.json(history)
   } catch (error) {

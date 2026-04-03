@@ -1,233 +1,203 @@
-import { prisma, TagTypeDiagnostic } from '../index';
+import { db } from '@/lib/db-sqlite'
+import type { TagTypeDiagnostic } from '../index'
 
 export interface CreateDiagnosticParams {
-  tagType: string;
-  failureMode: string;
-  diagnosticSteps: string;
+  tagType: string
+  failureMode: string
+  diagnosticSteps: string
 }
 
 export interface UpdateDiagnosticParams {
-  diagnosticSteps?: string;
+  diagnosticSteps?: string
 }
 
 /**
- * Repository for TagTypeDiagnostic operations
+ * Repository for TagTypeDiagnostic operations (better-sqlite3)
  */
 export const tagTypeDiagnosticRepository = {
   /**
    * Create a new diagnostic entry
    */
-  async create(params: CreateDiagnosticParams): Promise<TagTypeDiagnostic> {
-    return prisma.tagTypeDiagnostic.create({
-      data: {
-        tagType: params.tagType,
-        failureMode: params.failureMode,
-        diagnosticSteps: params.diagnosticSteps,
-        createdAt: new Date(),
-      },
-    });
+  create(params: CreateDiagnosticParams): TagTypeDiagnostic {
+    db.prepare(
+      'INSERT INTO TagTypeDiagnostics (TagType, FailureMode, DiagnosticSteps, CreatedAt) VALUES (?, ?, ?, ?)'
+    ).run(params.tagType, params.failureMode, params.diagnosticSteps, new Date().toISOString())
+
+    return db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+    ).get(params.tagType, params.failureMode) as TagTypeDiagnostic
   },
 
   /**
    * Get diagnostic by composite key (tagType + failureMode)
    */
-  async getByKey(tagType: string, failureMode: string): Promise<TagTypeDiagnostic | null> {
-    return prisma.tagTypeDiagnostic.findUnique({
-      where: {
-        tagType_failureMode: { tagType, failureMode },
-      },
-    });
+  getByKey(tagType: string, failureMode: string): TagTypeDiagnostic | null {
+    return (db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+    ).get(tagType, failureMode) as TagTypeDiagnostic | undefined) ?? null
   },
 
   /**
    * Get all diagnostics for a tag type
    */
-  async getByTagType(tagType: string): Promise<TagTypeDiagnostic[]> {
-    return prisma.tagTypeDiagnostic.findMany({
-      where: { tagType },
-      orderBy: { failureMode: 'asc' },
-    });
+  getByTagType(tagType: string): TagTypeDiagnostic[] {
+    return db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? ORDER BY FailureMode ASC'
+    ).all(tagType) as TagTypeDiagnostic[]
   },
 
   /**
    * Get all diagnostics for a failure mode
    */
-  async getByFailureMode(failureMode: string): Promise<TagTypeDiagnostic[]> {
-    return prisma.tagTypeDiagnostic.findMany({
-      where: { failureMode },
-      orderBy: { tagType: 'asc' },
-    });
+  getByFailureMode(failureMode: string): TagTypeDiagnostic[] {
+    return db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE FailureMode = ? ORDER BY TagType ASC'
+    ).all(failureMode) as TagTypeDiagnostic[]
   },
 
   /**
    * Get all diagnostics
    */
-  async getAll(): Promise<TagTypeDiagnostic[]> {
-    return prisma.tagTypeDiagnostic.findMany({
-      orderBy: [{ tagType: 'asc' }, { failureMode: 'asc' }],
-    });
+  getAll(): TagTypeDiagnostic[] {
+    return db.prepare(
+      'SELECT * FROM TagTypeDiagnostics ORDER BY TagType ASC, FailureMode ASC'
+    ).all() as TagTypeDiagnostic[]
   },
 
   /**
    * Update diagnostic steps
    */
-  async update(
-    tagType: string,
-    failureMode: string,
-    params: UpdateDiagnosticParams
-  ): Promise<TagTypeDiagnostic> {
-    return prisma.tagTypeDiagnostic.update({
-      where: {
-        tagType_failureMode: { tagType, failureMode },
-      },
-      data: {
-        diagnosticSteps: params.diagnosticSteps,
-        updatedAt: new Date(),
-      },
-    });
+  update(tagType: string, failureMode: string, params: UpdateDiagnosticParams): TagTypeDiagnostic {
+    db.prepare(
+      'UPDATE TagTypeDiagnostics SET DiagnosticSteps = ?, UpdatedAt = ? WHERE TagType = ? AND FailureMode = ?'
+    ).run(params.diagnosticSteps, new Date().toISOString(), tagType, failureMode)
+
+    return db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+    ).get(tagType, failureMode) as TagTypeDiagnostic
   },
 
   /**
    * Create or update diagnostic (upsert)
    */
-  async upsert(params: CreateDiagnosticParams): Promise<TagTypeDiagnostic> {
-    return prisma.tagTypeDiagnostic.upsert({
-      where: {
-        tagType_failureMode: {
-          tagType: params.tagType,
-          failureMode: params.failureMode,
-        },
-      },
-      create: {
-        tagType: params.tagType,
-        failureMode: params.failureMode,
-        diagnosticSteps: params.diagnosticSteps,
-        createdAt: new Date(),
-      },
-      update: {
-        diagnosticSteps: params.diagnosticSteps,
-        updatedAt: new Date(),
-      },
-    });
+  upsert(params: CreateDiagnosticParams): TagTypeDiagnostic {
+    const existing = db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+    ).get(params.tagType, params.failureMode)
+
+    if (existing) {
+      db.prepare(
+        'UPDATE TagTypeDiagnostics SET DiagnosticSteps = ?, UpdatedAt = ? WHERE TagType = ? AND FailureMode = ?'
+      ).run(params.diagnosticSteps, new Date().toISOString(), params.tagType, params.failureMode)
+    } else {
+      db.prepare(
+        'INSERT INTO TagTypeDiagnostics (TagType, FailureMode, DiagnosticSteps, CreatedAt) VALUES (?, ?, ?, ?)'
+      ).run(params.tagType, params.failureMode, params.diagnosticSteps, new Date().toISOString())
+    }
+
+    return db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+    ).get(params.tagType, params.failureMode) as TagTypeDiagnostic
   },
 
   /**
    * Delete diagnostic by composite key
    */
-  async delete(tagType: string, failureMode: string): Promise<void> {
-    await prisma.tagTypeDiagnostic.delete({
-      where: {
-        tagType_failureMode: { tagType, failureMode },
-      },
-    });
+  delete(tagType: string, failureMode: string): void {
+    db.prepare(
+      'DELETE FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+    ).run(tagType, failureMode)
   },
 
   /**
    * Delete all diagnostics for a tag type
    */
-  async deleteByTagType(tagType: string): Promise<number> {
-    const result = await prisma.tagTypeDiagnostic.deleteMany({
-      where: { tagType },
-    });
-    return result.count;
+  deleteByTagType(tagType: string): number {
+    const result = db.prepare('DELETE FROM TagTypeDiagnostics WHERE TagType = ?').run(tagType)
+    return result.changes
   },
 
   /**
    * Delete all diagnostics
    */
-  async deleteAll(): Promise<number> {
-    const result = await prisma.tagTypeDiagnostic.deleteMany();
-    return result.count;
+  deleteAll(): number {
+    const result = db.prepare('DELETE FROM TagTypeDiagnostics').run()
+    return result.changes
   },
 
   /**
    * Get distinct tag types
    */
-  async getDistinctTagTypes(): Promise<string[]> {
-    const result = await prisma.tagTypeDiagnostic.findMany({
-      select: { tagType: true },
-      distinct: ['tagType'],
-      orderBy: { tagType: 'asc' },
-    });
-    return result.map((r) => r.tagType);
+  getDistinctTagTypes(): string[] {
+    const rows = db.prepare(
+      'SELECT DISTINCT TagType FROM TagTypeDiagnostics ORDER BY TagType ASC'
+    ).all() as { TagType: string }[]
+    return rows.map(r => r.TagType)
   },
 
   /**
    * Get distinct failure modes
    */
-  async getDistinctFailureModes(): Promise<string[]> {
-    const result = await prisma.tagTypeDiagnostic.findMany({
-      select: { failureMode: true },
-      distinct: ['failureMode'],
-      orderBy: { failureMode: 'asc' },
-    });
-    return result.map((r) => r.failureMode);
+  getDistinctFailureModes(): string[] {
+    const rows = db.prepare(
+      'SELECT DISTINCT FailureMode FROM TagTypeDiagnostics ORDER BY FailureMode ASC'
+    ).all() as { FailureMode: string }[]
+    return rows.map(r => r.FailureMode)
   },
 
   /**
    * Search diagnostics by text
    */
-  async search(query: string): Promise<TagTypeDiagnostic[]> {
-    return prisma.tagTypeDiagnostic.findMany({
-      where: {
-        OR: [
-          { tagType: { contains: query } },
-          { failureMode: { contains: query } },
-          { diagnosticSteps: { contains: query } },
-        ],
-      },
-      orderBy: [{ tagType: 'asc' }, { failureMode: 'asc' }],
-    });
+  search(query: string): TagTypeDiagnostic[] {
+    const pattern = `%${query}%`
+    return db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType LIKE ? OR FailureMode LIKE ? OR DiagnosticSteps LIKE ? ORDER BY TagType ASC, FailureMode ASC'
+    ).all(pattern, pattern, pattern) as TagTypeDiagnostic[]
   },
 
   /**
    * Get count of diagnostics
    */
-  async count(): Promise<number> {
-    return prisma.tagTypeDiagnostic.count();
+  count(): number {
+    return (db.prepare('SELECT COUNT(*) as count FROM TagTypeDiagnostics').get() as any).count
   },
 
   /**
    * Check if diagnostic exists
    */
-  async exists(tagType: string, failureMode: string): Promise<boolean> {
-    const count = await prisma.tagTypeDiagnostic.count({
-      where: {
-        tagType,
-        failureMode,
-      },
-    });
-    return count > 0;
+  exists(tagType: string, failureMode: string): boolean {
+    return (db.prepare(
+      'SELECT COUNT(*) as count FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+    ).get(tagType, failureMode) as any).count > 0
   },
 
   /**
-   * Bulk create or update diagnostics (uses individual upserts since SQLite doesn't support skipDuplicates with composite keys)
+   * Bulk create or update diagnostics
    */
-  async bulkUpsert(diagnostics: CreateDiagnosticParams[]): Promise<number> {
-    let count = 0;
-    for (const d of diagnostics) {
-      await prisma.tagTypeDiagnostic.upsert({
-        where: {
-          tagType_failureMode: {
-            tagType: d.tagType,
-            failureMode: d.failureMode,
-          },
-        },
-        create: {
-          tagType: d.tagType,
-          failureMode: d.failureMode,
-          diagnosticSteps: d.diagnosticSteps,
-          createdAt: new Date(),
-        },
-        update: {
-          diagnosticSteps: d.diagnosticSteps,
-          updatedAt: new Date(),
-        },
-      });
-      count++;
-    }
-    return count;
-  },
-};
+  bulkUpsert(diagnostics: CreateDiagnosticParams[]): number {
+    const upsertTransaction = db.transaction(() => {
+      let count = 0
+      for (const d of diagnostics) {
+        const existing = db.prepare(
+          'SELECT 1 FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+        ).get(d.tagType, d.failureMode)
 
-export default tagTypeDiagnosticRepository;
+        if (existing) {
+          db.prepare(
+            'UPDATE TagTypeDiagnostics SET DiagnosticSteps = ?, UpdatedAt = ? WHERE TagType = ? AND FailureMode = ?'
+          ).run(d.diagnosticSteps, new Date().toISOString(), d.tagType, d.failureMode)
+        } else {
+          db.prepare(
+            'INSERT INTO TagTypeDiagnostics (TagType, FailureMode, DiagnosticSteps, CreatedAt) VALUES (?, ?, ?, ?)'
+          ).run(d.tagType, d.failureMode, d.diagnosticSteps, new Date().toISOString())
+        }
+        count++
+      }
+      return count
+    })
+
+    return upsertTransaction()
+  },
+}
+
+export default tagTypeDiagnosticRepository

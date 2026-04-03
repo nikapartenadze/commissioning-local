@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,21 +14,17 @@ export async function GET(request: Request) {
     const tagType = searchParams.get('tagType')
 
     if (tagType) {
-      const diagnostics = await prisma.tagTypeDiagnostic.findMany({
-        where: { tagType },
-        select: { failureMode: true },
-        orderBy: { failureMode: 'asc' },
-      })
-      return NextResponse.json(diagnostics.map(d => d.failureMode))
+      const rows = db.prepare(
+        'SELECT FailureMode FROM TagTypeDiagnostics WHERE TagType = ? ORDER BY FailureMode ASC'
+      ).all(tagType) as { FailureMode: string }[]
+      return NextResponse.json(rows.map(d => d.FailureMode))
     }
 
     // No tagType — return all distinct failure modes
-    const diagnostics = await prisma.tagTypeDiagnostic.findMany({
-      select: { failureMode: true },
-      distinct: ['failureMode'],
-      orderBy: { failureMode: 'asc' },
-    })
-    return NextResponse.json(diagnostics.map(d => d.failureMode))
+    const rows = db.prepare(
+      'SELECT DISTINCT FailureMode FROM TagTypeDiagnostics ORDER BY FailureMode ASC'
+    ).all() as { FailureMode: string }[]
+    return NextResponse.json(rows.map(d => d.FailureMode))
   } catch (error) {
     console.error('Failed to fetch failure modes:', error)
     return NextResponse.json(

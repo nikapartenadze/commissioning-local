@@ -1,311 +1,307 @@
-import { prisma, Io, enrichIo, IoWithComputed, TestConstants } from '../index';
+import { db } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
+import { enrichIo, IoWithComputed, TestConstants } from '../index'
 
 export interface UpdateResultParams {
-  id: number;
-  result: string;
-  comments?: string | null;
-  timestamp?: string;
+  id: number
+  result: string
+  comments?: string | null
+  timestamp?: string
 }
 
 export interface CreateIoParams {
-  subsystemId: number;
-  name: string;
-  description?: string | null;
-  order?: number | null;
-  tagType?: string | null;
-  networkDeviceName?: string | null;
+  subsystemId: number
+  name: string
+  description?: string | null
+  order?: number | null
+  tagType?: string | null
+  networkDeviceName?: string | null
 }
 
 export interface IoFilters {
-  subsystemId?: number;
-  result?: string | null;
-  hasResult?: boolean;
-  tagType?: string;
-  search?: string;
+  subsystemId?: number
+  result?: string | null
+  hasResult?: boolean
+  tagType?: string
+  search?: string
 }
 
 /**
- * Repository for Io CRUD operations
+ * Repository for Io CRUD operations (better-sqlite3)
  */
 export const ioRepository = {
   /**
    * Get all IOs with optional filtering
    */
-  async getAll(filters?: IoFilters): Promise<IoWithComputed[]> {
-    const where: NonNullable<Parameters<typeof prisma.io.findMany>[0]>['where'] = {};
+  getAll(filters?: IoFilters): IoWithComputed[] {
+    const conditions: string[] = []
+    const params: any[] = []
 
     if (filters?.subsystemId) {
-      where.subsystemId = filters.subsystemId;
+      conditions.push('SubsystemId = ?')
+      params.push(filters.subsystemId)
     }
 
     if (filters?.result !== undefined) {
-      where.result = filters.result;
+      if (filters.result === null) {
+        conditions.push('Result IS NULL')
+      } else {
+        conditions.push('Result = ?')
+        params.push(filters.result)
+      }
     }
 
     if (filters?.hasResult !== undefined) {
-      where.result = filters.hasResult ? { not: null } : null;
+      conditions.push(filters.hasResult ? 'Result IS NOT NULL' : 'Result IS NULL')
     }
 
     if (filters?.tagType) {
-      where.tagType = filters.tagType;
+      conditions.push('TagType = ?')
+      params.push(filters.tagType)
     }
 
     if (filters?.search) {
-      where.OR = [
-        { name: { contains: filters.search } },
-        { description: { contains: filters.search } },
-      ];
+      conditions.push('(Name LIKE ? OR Description LIKE ?)')
+      params.push(`%${filters.search}%`, `%${filters.search}%`)
     }
 
-    const ios = await prisma.io.findMany({
-      where,
-      orderBy: [{ order: 'asc' }, { id: 'asc' }],
-    });
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const ios = db.prepare(`SELECT * FROM Ios ${where} ORDER BY "Order" ASC, id ASC`).all(...params) as Io[]
 
-    return ios.map(enrichIo);
+    return ios.map(enrichIo)
   },
 
   /**
    * Get IO by ID
    */
-  async getById(id: number): Promise<IoWithComputed | null> {
-    const io = await prisma.io.findUnique({ where: { id } });
-    return io ? enrichIo(io) : null;
+  getById(id: number): IoWithComputed | null {
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as Io | undefined
+    return io ? enrichIo(io) : null
   },
 
   /**
    * Get IO by ID with test history
    */
-  async getByIdWithHistory(id: number) {
-    const io = await prisma.io.findUnique({
-      where: { id },
-      include: { testHistories: { orderBy: { timestamp: 'desc' } } },
-    });
-    if (!io) return null;
-    return { ...enrichIo(io), testHistories: io.testHistories };
+  getByIdWithHistory(id: number) {
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as Io | undefined
+    if (!io) return null
+    const testHistories = db.prepare(
+      'SELECT * FROM TestHistories WHERE IoId = ? ORDER BY Timestamp DESC'
+    ).all(id)
+    return { ...enrichIo(io), testHistories }
   },
 
   /**
    * Get IOs by subsystem ID
    */
-  async getBySubsystemId(subsystemId: number): Promise<IoWithComputed[]> {
-    return this.getAll({ subsystemId });
+  getBySubsystemId(subsystemId: number): IoWithComputed[] {
+    return this.getAll({ subsystemId })
   },
 
   /**
    * Get untested IOs
    */
-  async getUntested(subsystemId?: number): Promise<IoWithComputed[]> {
-    return this.getAll({ subsystemId, result: null });
+  getUntested(subsystemId?: number): IoWithComputed[] {
+    return this.getAll({ subsystemId, result: null })
   },
 
   /**
    * Get passed IOs
    */
-  async getPassed(subsystemId?: number): Promise<IoWithComputed[]> {
-    return this.getAll({ subsystemId, result: TestConstants.RESULT_PASSED });
+  getPassed(subsystemId?: number): IoWithComputed[] {
+    return this.getAll({ subsystemId, result: TestConstants.RESULT_PASSED })
   },
 
   /**
    * Get failed IOs
    */
-  async getFailed(subsystemId?: number): Promise<IoWithComputed[]> {
-    return this.getAll({ subsystemId, result: TestConstants.RESULT_FAILED });
+  getFailed(subsystemId?: number): IoWithComputed[] {
+    return this.getAll({ subsystemId, result: TestConstants.RESULT_FAILED })
   },
 
   /**
    * Update IO test result
    */
-  async updateResult(params: UpdateResultParams): Promise<IoWithComputed> {
-    const { id, result, comments, timestamp = new Date().toISOString() } = params;
+  updateResult(params: UpdateResultParams): IoWithComputed {
+    const { id, result, comments, timestamp = new Date().toISOString() } = params
 
-    const io = await prisma.io.update({
-      where: { id },
-      data: {
-        result,
-        comments,
-        timestamp,
-        version: { increment: 1 },
-      },
-    });
+    db.prepare(
+      'UPDATE Ios SET Result = ?, Comments = ?, Timestamp = ?, Version = Version + 1 WHERE id = ?'
+    ).run(result, comments ?? null, timestamp, id)
 
-    return enrichIo(io);
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as Io
+    return enrichIo(io)
   },
 
   /**
    * Clear test result for an IO
    */
-  async clearResult(id: number): Promise<IoWithComputed> {
-    const io = await prisma.io.update({
-      where: { id },
-      data: {
-        result: null,
-        comments: null,
-        timestamp: null,
-        version: { increment: 1 },
-      },
-    });
+  clearResult(id: number): IoWithComputed {
+    db.prepare(
+      'UPDATE Ios SET Result = NULL, Comments = NULL, Timestamp = NULL, Version = Version + 1 WHERE id = ?'
+    ).run(id)
 
-    return enrichIo(io);
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as Io
+    return enrichIo(io)
   },
 
   /**
    * Update IO tag type
    */
-  async updateTagType(id: number, tagType: string | null): Promise<IoWithComputed> {
-    const io = await prisma.io.update({
-      where: { id },
-      data: { tagType },
-    });
+  updateTagType(id: number, tagType: string | null): IoWithComputed {
+    db.prepare('UPDATE Ios SET TagType = ? WHERE id = ?').run(tagType, id)
 
-    return enrichIo(io);
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as Io
+    return enrichIo(io)
   },
 
   /**
    * Update cloud sync timestamp
    */
-  async updateCloudSyncedAt(id: number, syncedAt: Date = new Date()): Promise<Io> {
-    return prisma.io.update({
-      where: { id },
-      data: { cloudSyncedAt: syncedAt },
-    });
+  updateCloudSyncedAt(id: number, syncedAt: Date = new Date()): Io {
+    db.prepare('UPDATE Ios SET CloudSyncedAt = ? WHERE id = ?').run(syncedAt.toISOString(), id)
+    return db.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as Io
   },
 
   /**
    * Bulk update cloud sync timestamps
    */
-  async bulkUpdateCloudSyncedAt(ids: number[], syncedAt: Date = new Date()): Promise<void> {
-    await prisma.io.updateMany({
-      where: { id: { in: ids } },
-      data: { cloudSyncedAt: syncedAt },
-    });
+  bulkUpdateCloudSyncedAt(ids: number[], syncedAt: Date = new Date()): void {
+    if (ids.length === 0) return
+    const placeholders = ids.map(() => '?').join(',')
+    db.prepare(
+      `UPDATE Ios SET CloudSyncedAt = ? WHERE id IN (${placeholders})`
+    ).run(syncedAt.toISOString(), ...ids)
   },
 
   /**
    * Get IOs that need syncing (updated after last cloud sync)
    */
-  async getUnsynced(): Promise<IoWithComputed[]> {
-    const ios = await prisma.io.findMany({
-      where: {
-        result: { not: null },
-        OR: [
-          { cloudSyncedAt: null },
-          // For IOs where timestamp > cloudSyncedAt, we need raw query or app-level filtering
-        ],
-      },
-      orderBy: { timestamp: 'asc' },
-    });
+  getUnsynced(): IoWithComputed[] {
+    const ios = db.prepare(
+      'SELECT * FROM Ios WHERE Result IS NOT NULL AND (CloudSyncedAt IS NULL) ORDER BY Timestamp ASC'
+    ).all() as Io[]
 
-    return ios.map(enrichIo);
+    return ios.map(enrichIo)
   },
 
   /**
    * Create a new IO
    */
-  async create(params: CreateIoParams): Promise<IoWithComputed> {
-    const io = await prisma.io.create({
-      data: {
-        subsystemId: params.subsystemId,
-        name: params.name,
-        description: params.description,
-        order: params.order,
-        tagType: params.tagType,
-        networkDeviceName: params.networkDeviceName,
-        version: BigInt(0),
-      },
-    });
+  create(params: CreateIoParams): IoWithComputed {
+    const result = db.prepare(
+      'INSERT INTO Ios (SubsystemId, Name, Description, "Order", TagType, NetworkDeviceName, Version) VALUES (?, ?, ?, ?, ?, ?, 0)'
+    ).run(
+      params.subsystemId,
+      params.name,
+      params.description ?? null,
+      params.order ?? null,
+      params.tagType ?? null,
+      params.networkDeviceName ?? null,
+    )
 
-    return enrichIo(io);
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(result.lastInsertRowid) as Io
+    return enrichIo(io)
   },
 
   /**
    * Bulk create IOs
    */
-  async bulkCreate(ios: CreateIoParams[]): Promise<number> {
-    const result = await prisma.io.createMany({
-      data: ios.map((io) => ({
-        subsystemId: io.subsystemId,
-        name: io.name,
-        description: io.description,
-        order: io.order,
-        tagType: io.tagType,
-        networkDeviceName: io.networkDeviceName,
-        version: BigInt(0),
-      })),
-    });
+  bulkCreate(ios: CreateIoParams[]): number {
+    const stmt = db.prepare(
+      'INSERT INTO Ios (SubsystemId, Name, Description, "Order", TagType, NetworkDeviceName, Version) VALUES (?, ?, ?, ?, ?, ?, 0)'
+    )
 
-    return result.count;
+    const insertAll = db.transaction(() => {
+      let count = 0
+      for (const io of ios) {
+        stmt.run(
+          io.subsystemId,
+          io.name,
+          io.description ?? null,
+          io.order ?? null,
+          io.tagType ?? null,
+          io.networkDeviceName ?? null,
+        )
+        count++
+      }
+      return count
+    })
+
+    return insertAll()
   },
 
   /**
    * Delete IO by ID
    */
-  async delete(id: number): Promise<void> {
-    await prisma.io.delete({ where: { id } });
+  delete(id: number): void {
+    db.prepare('DELETE FROM Ios WHERE id = ?').run(id)
   },
 
   /**
    * Delete all IOs for a subsystem
    */
-  async deleteBySubsystemId(subsystemId: number): Promise<number> {
-    const result = await prisma.io.deleteMany({ where: { subsystemId } });
-    return result.count;
+  deleteBySubsystemId(subsystemId: number): number {
+    const result = db.prepare('DELETE FROM Ios WHERE SubsystemId = ?').run(subsystemId)
+    return result.changes
   },
 
   /**
    * Delete all IOs
    */
-  async deleteAll(): Promise<number> {
-    const result = await prisma.io.deleteMany();
-    return result.count;
+  deleteAll(): number {
+    const result = db.prepare('DELETE FROM Ios').run()
+    return result.changes
   },
 
   /**
    * Get distinct tag types
    */
-  async getDistinctTagTypes(): Promise<string[]> {
-    const result = await prisma.io.findMany({
-      where: { tagType: { not: null } },
-      select: { tagType: true },
-      distinct: ['tagType'],
-    });
-
-    return result.map((r) => r.tagType).filter((t): t is string => t !== null);
+  getDistinctTagTypes(): string[] {
+    const rows = db.prepare(
+      'SELECT DISTINCT TagType FROM Ios WHERE TagType IS NOT NULL'
+    ).all() as { TagType: string }[]
+    return rows.map(r => r.TagType)
   },
 
   /**
    * Get distinct network device names
    */
-  async getDistinctNetworkDevices(): Promise<string[]> {
-    const result = await prisma.io.findMany({
-      where: { networkDeviceName: { not: null } },
-      select: { networkDeviceName: true },
-      distinct: ['networkDeviceName'],
-    });
-
-    return result.map((r) => r.networkDeviceName).filter((n): n is string => n !== null);
+  getDistinctNetworkDevices(): string[] {
+    const rows = db.prepare(
+      'SELECT DISTINCT NetworkDeviceName FROM Ios WHERE NetworkDeviceName IS NOT NULL'
+    ).all() as { NetworkDeviceName: string }[]
+    return rows.map(r => r.NetworkDeviceName)
   },
 
   /**
    * Get IO count
    */
-  async count(filters?: IoFilters): Promise<number> {
-    const where: NonNullable<Parameters<typeof prisma.io.count>[0]>['where'] = {};
+  count(filters?: IoFilters): number {
+    const conditions: string[] = []
+    const params: any[] = []
 
     if (filters?.subsystemId) {
-      where.subsystemId = filters.subsystemId;
+      conditions.push('SubsystemId = ?')
+      params.push(filters.subsystemId)
     }
 
     if (filters?.result !== undefined) {
-      where.result = filters.result;
+      if (filters.result === null) {
+        conditions.push('Result IS NULL')
+      } else {
+        conditions.push('Result = ?')
+        params.push(filters.result)
+      }
     }
 
     if (filters?.hasResult !== undefined) {
-      where.result = filters.hasResult ? { not: null } : null;
+      conditions.push(filters.hasResult ? 'Result IS NOT NULL' : 'Result IS NULL')
     }
 
-    return prisma.io.count({ where });
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    return (db.prepare(`SELECT COUNT(*) as count FROM Ios ${where}`).get(...params) as any).count
   },
-};
+}
 
-export default ioRepository;
+export default ioRepository

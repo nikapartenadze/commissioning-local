@@ -11,7 +11,8 @@
  * - Site owns test results (result, timestamp, comments, testedBy)
  */
 
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
+import type { PendingSync } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 
@@ -141,10 +142,10 @@ class AutoSyncService {
     console.log('[AutoSync] Stopped')
   }
 
-  async getStatus(): Promise<AutoSyncStatus> {
+  getStatus(): AutoSyncStatus {
     let pendingCount: number | null = null
     try {
-      pendingCount = await prisma.pendingSync.count()
+      pendingCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs').get() as any).count
     } catch { /* db might not be ready */ }
 
     return {
@@ -163,10 +164,9 @@ class AutoSyncService {
     this.isPushing = true
 
     try {
-      const pendingSyncs = await prisma.pendingSync.findMany({
-        orderBy: { createdAt: 'asc' },
-        take: 50,
-      })
+      const pendingSyncs = db.prepare(
+        'SELECT * FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+      ).all() as PendingSync[]
 
       if (pendingSyncs.length === 0) {
         this._lastPushAt = new Date()
@@ -186,13 +186,13 @@ class AutoSyncService {
       console.log(`[AutoSync] Pushing ${pendingSyncs.length} pending results to cloud...`)
 
       const updates = pendingSyncs.map(ps => ({
-        id: ps.ioId,
-        testedBy: ps.inspectorName,
-        result: ps.testResult,
-        comments: ps.comments,
-        state: ps.state,
-        version: Number(ps.version),
-        timestamp: ps.timestamp?.toISOString(),
+        id: ps.IoId,
+        testedBy: ps.InspectorName,
+        result: ps.TestResult,
+        comments: ps.Comments,
+        state: ps.State,
+        version: Number(ps.Version),
+        timestamp: ps.Timestamp,
       }))
 
       const response = await fetch(`${remoteUrl}/api/sync/update`, {
@@ -207,9 +207,9 @@ class AutoSyncService {
 
       if (response.ok) {
         const syncedIds = pendingSyncs.map(ps => ps.id)
-        await prisma.pendingSync.deleteMany({
-          where: { id: { in: syncedIds } },
-        })
+        const deletePlaceholders = syncedIds.map(() => '?').join(',')
+        db.prepare(`DELETE FROM PendingSyncs WHERE id IN (${deletePlaceholders})`).run(...syncedIds)
+
         this._lastPushAt = new Date()
         this._lastPushResult = `pushed ${syncedIds.length} results`
         console.log(`[AutoSync] Pushed ${syncedIds.length} results to cloud`)
@@ -221,65 +221,59 @@ class AutoSyncService {
       } else {
         this._lastPushResult = `HTTP ${response.status}`
         console.warn(`[AutoSync] Push failed: ${response.status}`)
+
+        const updateStmt = db.prepare(
+          'UPDATE PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
+        )
         for (const ps of pendingSyncs) {
-          await prisma.pendingSync.update({
-            where: { id: ps.id },
-            data: {
-              retryCount: { increment: 1 },
-              lastError: `HTTP ${response.status}`,
-            },
-          }).catch(() => {})
+          try { updateStmt.run(`HTTP ${response.status}`, ps.id) } catch {}
         }
       }
+
       // Clean up permanently failed PendingSync entries (retryCount > 100)
       try {
-        const staleDeleted = await prisma.pendingSync.deleteMany({
-          where: { retryCount: { gt: 100 } },
-        })
-        if (staleDeleted.count > 0) {
-          console.warn(`[AutoSync] Cleaned up ${staleDeleted.count} permanently failed PendingSync entries (retryCount > 100)`)
+        const staleResult = db.prepare('DELETE FROM PendingSyncs WHERE RetryCount > 100').run()
+        if (staleResult.changes > 0) {
+          console.warn(`[AutoSync] Cleaned up ${staleResult.changes} permanently failed PendingSync entries (retryCount > 100)`)
         }
       } catch { /* ignore cleanup errors */ }
 
       // Also push pending change requests to cloud
       try {
-        const pendingRequests = await prisma.changeRequest.findMany({
-          where: { status: 'pending', cloudId: null },
-        })
+        const pendingRequests = db.prepare(
+          'SELECT * FROM ChangeRequests WHERE Status = ? AND CloudId IS NULL'
+        ).all('pending') as any[]
+
         if (pendingRequests.length > 0 && remoteUrl) {
           const resp = await fetch(`${remoteUrl}/api/sync/change-requests`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
             body: JSON.stringify({ requests: pendingRequests.map(r => ({
-              localId: r.id, // include local ID so cloud can map it back
-              ioId: r.ioId,
-              requestType: r.requestType,
-              currentValue: r.currentValue,
-              requestedValue: r.requestedValue,
-              structuredChanges: r.structuredChanges ? JSON.parse(r.structuredChanges) : null,
-              reason: r.reason,
-              requestedBy: r.requestedBy,
-              createdAt: r.createdAt.toISOString(),
+              localId: r.id,
+              ioId: r.IoId,
+              requestType: r.RequestType,
+              currentValue: r.CurrentValue,
+              requestedValue: r.RequestedValue,
+              structuredChanges: r.StructuredChanges ? JSON.parse(r.StructuredChanges) : null,
+              reason: r.Reason,
+              requestedBy: r.RequestedBy,
+              createdAt: r.CreatedAt,
             })) }),
             signal: AbortSignal.timeout(10000),
           })
           if (resp.ok) {
             const data = await resp.json()
-            // Mark ALL pushed requests as synced regardless of cloud response format
-            // This prevents re-sending old requests forever
+            // Mark ALL pushed requests as synced
             const ids = pendingRequests.map(r => r.id)
-            await prisma.changeRequest.updateMany({
-              where: { id: { in: ids } },
-              data: { status: 'synced' },
-            })
+            const crPlaceholders = ids.map(() => '?').join(',')
+            db.prepare(`UPDATE ChangeRequests SET Status = 'synced' WHERE id IN (${crPlaceholders})`).run(...ids)
+
             // If cloud returned cloudId mappings, update those too
             if (data.requests && Array.isArray(data.requests)) {
+              const updateCrStmt = db.prepare('UPDATE ChangeRequests SET CloudId = ? WHERE id = ?')
               for (const cr of data.requests) {
                 if (cr.localId && cr.cloudId) {
-                  await prisma.changeRequest.update({
-                    where: { id: cr.localId },
-                    data: { cloudId: cr.cloudId },
-                  }).catch(() => {})
+                  try { updateCrStmt.run(cr.cloudId, cr.localId) } catch {}
                 }
               }
             }
@@ -351,58 +345,80 @@ class AutoSyncService {
       let mergedResults = 0
       const subsystemIdNum = parseInt(subsystemId, 10)
 
-      for (const cloudIo of cloudIos) {
-        if (!cloudIo.name || cloudIo.id <= 0) continue
+      const selectStmt = db.prepare('SELECT Result, Version FROM Ios WHERE id = ?')
+      const insertStmt = db.prepare(`
+        INSERT OR IGNORE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      const updateDefStmt = db.prepare(`
+        UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType)
+        WHERE id = ?
+      `)
+      const updateWithResultStmt = db.prepare(`
+        UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType),
+        Result = ?, Timestamp = ?, Comments = ?
+        WHERE id = ?
+      `)
 
-        try {
-          const localIo = await prisma.io.findUnique({
-            where: { id: cloudIo.id },
-            select: { result: true, version: true },
-          })
+      const pullTransaction = db.transaction(() => {
+        for (const cloudIo of cloudIos) {
+          if (!cloudIo.name || cloudIo.id <= 0) continue
 
-          const cloudVersion = BigInt(Number(cloudIo.version) || 0)
-          const localVersion = localIo?.version ?? BigInt(0)
+          try {
+            const localIo = selectStmt.get(cloudIo.id) as { Result: string | null, Version: number } | undefined
 
-          const updateData: Record<string, unknown> = {
-            name: cloudIo.name,
-            description: cloudIo.description ?? null,
-            order: cloudIo.order ?? null,
-            version: cloudVersion,
+            const cloudVersion = Number(cloudIo.version) || 0
+            const localVersion = localIo?.Version ?? 0
+
+            // Determine if we should merge results
+            const shouldMergeResult = cloudIo.result !== undefined &&
+              (!localIo?.Result || cloudVersion > localVersion)
+
+            if (!localIo) {
+              // Insert new IO
+              insertStmt.run(
+                cloudIo.id,
+                subsystemIdNum,
+                cloudIo.name,
+                cloudIo.description ?? null,
+                cloudIo.order ?? null,
+                cloudVersion,
+                cloudIo.tagType ?? null,
+                cloudIo.result ?? null,
+                cloudIo.timestamp ?? null,
+                cloudIo.comments ?? null,
+              )
+            } else if (shouldMergeResult) {
+              updateWithResultStmt.run(
+                cloudIo.name,
+                cloudIo.description ?? null,
+                cloudIo.order ?? null,
+                cloudVersion,
+                cloudIo.tagType ?? null,
+                cloudIo.result || null,
+                cloudIo.timestamp ?? null,
+                cloudIo.comments ?? null,
+                cloudIo.id,
+              )
+              mergedResults++
+            } else {
+              updateDefStmt.run(
+                cloudIo.name,
+                cloudIo.description ?? null,
+                cloudIo.order ?? null,
+                cloudVersion,
+                cloudIo.tagType ?? null,
+                cloudIo.id,
+              )
+            }
+            updatedCount++
+          } catch {
+            // Skip individual IO errors
           }
-          if (cloudIo.tagType != null) {
-            updateData.tagType = cloudIo.tagType
-          }
-
-          // Merge test results when local has none OR cloud version is newer
-          if (cloudIo.result !== undefined && (!localIo?.result || cloudVersion > localVersion)) {
-            updateData.result = cloudIo.result || null
-            updateData.timestamp = cloudIo.timestamp ?? null
-            updateData.comments = cloudIo.comments ?? null
-            mergedResults++
-          }
-
-          await prisma.io.upsert({
-            where: { id: cloudIo.id },
-            create: {
-              id: cloudIo.id,
-              subsystemId: subsystemIdNum,
-              name: cloudIo.name,
-              description: cloudIo.description ?? null,
-              order: cloudIo.order ?? null,
-              version: BigInt(Number(cloudIo.version) || 0),
-              tagType: cloudIo.tagType ?? null,
-              // Include cloud test results for new IOs (from other users)
-              result: cloudIo.result ?? null,
-              timestamp: cloudIo.timestamp ?? null,
-              comments: cloudIo.comments ?? null,
-            },
-            update: updateData,
-          })
-          updatedCount++
-        } catch {
-          // Skip individual IO errors
         }
-      }
+      })
+
+      pullTransaction()
 
       this.lastPullVersion = versionHash
       this._lastPullAt = new Date()
@@ -424,11 +440,12 @@ class AutoSyncService {
 
       // Pull back change request status updates from cloud
       try {
-        const syncedRequests = await prisma.changeRequest.findMany({
-          where: { cloudId: { not: null }, status: 'synced' },
-        })
+        const syncedRequests = db.prepare(
+          "SELECT * FROM ChangeRequests WHERE CloudId IS NOT NULL AND Status = 'synced'"
+        ).all() as any[]
+
         if (syncedRequests.length > 0 && remoteUrl) {
-          const cloudIds = syncedRequests.map(r => r.cloudId).filter(Boolean)
+          const cloudIds = syncedRequests.map(r => r.CloudId).filter(Boolean)
           const crResp = await fetch(`${remoteUrl}/api/sync/change-requests/status?ids=${cloudIds.join(',')}`, {
             method: 'GET',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
@@ -437,17 +454,20 @@ class AutoSyncService {
           if (crResp.ok) {
             const crData = await crResp.json()
             if (Array.isArray(crData.requests)) {
+              const updateCrStatusStmt = db.prepare(
+                'UPDATE ChangeRequests SET Status = ?, ReviewedBy = ?, ReviewNote = ?, UpdatedAt = ? WHERE CloudId = ?'
+              )
               for (const cr of crData.requests) {
                 if (cr.cloudId && cr.status && cr.status !== 'synced') {
-                  await prisma.changeRequest.updateMany({
-                    where: { cloudId: cr.cloudId },
-                    data: {
-                      status: cr.status,
-                      reviewedBy: cr.reviewedBy || undefined,
-                      reviewNote: cr.reviewNote || undefined,
-                      updatedAt: new Date(),
-                    },
-                  }).catch(() => {})
+                  try {
+                    updateCrStatusStmt.run(
+                      cr.status,
+                      cr.reviewedBy || null,
+                      cr.reviewNote || null,
+                      new Date().toISOString(),
+                      cr.cloudId,
+                    )
+                  } catch {}
                 }
               }
               console.log(`[AutoSync] Pulled ${crData.requests.length} change request status updates`)
@@ -493,17 +513,19 @@ class AutoSyncService {
         if (hasPlcClient() && getPlcClient().isConnected) {
           connected = true
           // Read network tags from database
-          const rings = await prisma.networkRing.findMany({
-            where: { subsystemId: parseInt(String(subsystemId), 10) },
-            include: { nodes: { include: { ports: true } } },
-          })
+          const subsystemIdNum = parseInt(String(subsystemId), 10)
+          const rings = db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(subsystemIdNum) as any[]
 
           for (const ring of rings) {
-            if (ring.mcmTag) tags[ring.mcmTag] = getPlcClient().readTagCached(ring.mcmTag)
-            for (const node of ring.nodes) {
-              if (node.statusTag) tags[node.statusTag] = getPlcClient().readTagCached(node.statusTag)
-              for (const port of node.ports) {
-                if (port.statusTag) tags[port.statusTag] = getPlcClient().readTagCached(port.statusTag)
+            if (ring.McmTag) tags[ring.McmTag] = getPlcClient().readTagCached(ring.McmTag)
+
+            const nodes = db.prepare('SELECT * FROM NetworkNodes WHERE RingId = ?').all(ring.id) as any[]
+            for (const node of nodes) {
+              if (node.StatusTag) tags[node.StatusTag] = getPlcClient().readTagCached(node.StatusTag)
+
+              const ports = db.prepare('SELECT * FROM NetworkPorts WHERE NodeId = ?').all(node.id) as any[]
+              for (const port of ports) {
+                if (port.StatusTag) tags[port.StatusTag] = getPlcClient().readTagCached(port.StatusTag)
               }
             }
           }
@@ -554,25 +576,21 @@ class AutoSyncService {
         if (hasPlcClient() && getPlcClient().isConnected) {
           connected = true
           // Read estop tags from database
-          const zones = await prisma.eStopZone.findMany({
-            include: {
-              epcs: {
-                include: {
-                  ioPoints: true,
-                  vfds: true,
-                },
-              },
-            },
-          })
+          const zones = db.prepare('SELECT * FROM EStopZones').all() as any[]
 
           for (const zone of zones) {
-            for (const epc of zone.epcs) {
-              if (epc.checkTag) tags[epc.checkTag] = getPlcClient().readTagCached(epc.checkTag)
-              for (const ioPoint of epc.ioPoints) {
-                if (ioPoint.tag) tags[ioPoint.tag] = getPlcClient().readTagCached(ioPoint.tag)
+            const epcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?').all(zone.id) as any[]
+            for (const epc of epcs) {
+              if (epc.CheckTag) tags[epc.CheckTag] = getPlcClient().readTagCached(epc.CheckTag)
+
+              const ioPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?').all(epc.id) as any[]
+              for (const ioPoint of ioPoints) {
+                if (ioPoint.Tag) tags[ioPoint.Tag] = getPlcClient().readTagCached(ioPoint.Tag)
               }
-              for (const vfd of epc.vfds) {
-                if (vfd.stoTag) tags[vfd.stoTag] = getPlcClient().readTagCached(vfd.stoTag)
+
+              const vfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?').all(epc.id) as any[]
+              for (const vfd of vfds) {
+                if (vfd.StoTag) tags[vfd.StoTag] = getPlcClient().readTagCached(vfd.StoTag)
               }
             }
           }

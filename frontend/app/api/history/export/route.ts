@@ -1,7 +1,23 @@
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 export const dynamic = 'force-dynamic'
+
+interface HistoryExportRow {
+  id: number;
+  IoId: number;
+  Result: string | null;
+  TestedBy: string | null;
+  Timestamp: string | null;
+  FailureMode: string | null;
+  State: string | null;
+  Comments: string | null;
+  IoName: string | null;
+  IoDescription: string | null;
+  TagType: string | null;
+  NetworkDeviceName: string | null;
+  SubsystemName: string | null;
+}
 
 /**
  * GET /api/history/export?format=csv&from=<date>&to=<date>&subsystemId=<id>&result=<result>
@@ -16,40 +32,46 @@ export async function GET(request: Request) {
     const result = searchParams.get('result')
     const testedBy = searchParams.get('testedBy')
 
-    // Build where clause
-    const where: Record<string, unknown> = {}
+    // Build WHERE clause dynamically
+    const conditions: string[] = []
+    const params: unknown[] = []
 
-    if (from || to) {
-      where.timestamp = {}
-      if (from) (where.timestamp as Record<string, string>).gte = new Date(from).toISOString()
-      if (to) (where.timestamp as Record<string, string>).lte = new Date(to).toISOString()
+    if (from) {
+      conditions.push('th.Timestamp >= ?')
+      params.push(new Date(from).toISOString())
     }
-
-    if (result) where.result = result
-    if (testedBy) where.testedBy = testedBy
-
-    // Subsystem filter goes through the IO relation
+    if (to) {
+      conditions.push('th.Timestamp <= ?')
+      params.push(new Date(to).toISOString())
+    }
+    if (result) {
+      conditions.push('th.Result = ?')
+      params.push(result)
+    }
+    if (testedBy) {
+      conditions.push('th.TestedBy = ?')
+      params.push(testedBy)
+    }
     if (subsystemId) {
-      where.io = { subsystemId: parseInt(subsystemId, 10) }
+      conditions.push('i.SubsystemId = ?')
+      params.push(parseInt(subsystemId, 10))
     }
 
-    const history = await prisma.testHistory.findMany({
-      where,
-      orderBy: { timestamp: 'desc' },
-      include: {
-        io: {
-          select: {
-            name: true,
-            description: true,
-            tagType: true,
-            networkDeviceName: true,
-            subsystem: {
-              select: { name: true },
-            },
-          },
-        },
-      },
-    })
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const rows = db.prepare(`
+      SELECT th.*,
+             i.Name as IoName,
+             i.Description as IoDescription,
+             i.TagType,
+             i.NetworkDeviceName,
+             s.Name as SubsystemName
+      FROM TestHistories th
+      LEFT JOIN Ios i ON th.IoId = i.id
+      LEFT JOIN Subsystems s ON i.SubsystemId = s.id
+      ${whereClause}
+      ORDER BY th.Timestamp DESC
+    `).all(...params) as HistoryExportRow[]
 
     // Build CSV
     const headers = [
@@ -75,21 +97,21 @@ export async function GET(request: Request) {
       return str
     }
 
-    const rows = history.map(h => [
-      h.timestamp ? new Date(h.timestamp).toLocaleString() : '',
-      h.io?.name ?? '',
-      h.io?.description ?? '',
-      h.io?.tagType ?? '',
-      h.io?.networkDeviceName ?? '',
-      h.io?.subsystem?.name ?? '',
-      h.result ?? '',
-      h.failureMode ?? '',
-      h.state ?? '',
-      h.comments ?? '',
-      h.testedBy ?? '',
+    const csvRows = rows.map(h => [
+      h.Timestamp ? new Date(h.Timestamp).toLocaleString() : '',
+      h.IoName ?? '',
+      h.IoDescription ?? '',
+      h.TagType ?? '',
+      h.NetworkDeviceName ?? '',
+      h.SubsystemName ?? '',
+      h.Result ?? '',
+      h.FailureMode ?? '',
+      h.State ?? '',
+      h.Comments ?? '',
+      h.TestedBy ?? '',
     ].map(escapeCSV).join(','))
 
-    const csv = [headers.join(','), ...rows].join('\n')
+    const csv = [headers.join(','), ...csvRows].join('\n')
 
     return new NextResponse(csv, {
       headers: {

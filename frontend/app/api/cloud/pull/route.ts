@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
 import type { CloudPullResponse } from '@/lib/cloud/types'
@@ -66,7 +66,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
     // Check for un-synced data
-    const pendingCount = await prisma.pendingSync.count()
+    const pendingRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }
+    const pendingCount = pendingRow.cnt
     const forceFlag = body.force === true
     if (pendingCount > 0 && !forceFlag) {
       return NextResponse.json(
@@ -139,7 +140,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
 
     // Safety check: warn if cloud has significantly fewer IOs than local
-    const localIoCount = await prisma.io.count()
+    const localCountRow = db.prepare('SELECT COUNT(*) as cnt FROM Ios').get() as { cnt: number }
+    const localIoCount = localCountRow.cnt
     let pullWarning: string | undefined
     if (localIoCount > 0 && cloudIos.length < localIoCount) {
       const reduction = ((localIoCount - cloudIos.length) / localIoCount) * 100
@@ -149,35 +151,35 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       }
     }
 
-    // Upsert IOs — timeout increased for large subsystems (3700+ IOs)
-    const result = await prisma.$transaction(async (tx) => {
+    // Upsert IOs in a transaction
+    const result = db.transaction(() => {
       // Ensure default project exists
-      await tx.project.upsert({
-        where: { id: 1 },
-        create: { id: 1, name: 'Default Project' },
-        update: {},
-      })
+      const existingProject = db.prepare('SELECT id FROM Projects WHERE id = ?').get(1)
+      if (!existingProject) {
+        db.prepare('INSERT INTO Projects (id, Name) VALUES (?, ?)').run(1, 'Default Project')
+      }
 
       // Ensure subsystem exists
-      await tx.subsystem.upsert({
-        where: { id: subsystemId },
-        create: {
-          id: subsystemId,
-          name: `Subsystem ${subsystemId}`,
-          projectId: 1,
-        },
-        update: {},
-      })
+      const existingSubsystem = db.prepare('SELECT id FROM Subsystems WHERE id = ?').get(subsystemId)
+      if (!existingSubsystem) {
+        db.prepare('INSERT INTO Subsystems (id, ProjectId, Name) VALUES (?, ?, ?)').run(
+          subsystemId, 1, `Subsystem ${subsystemId}`
+        )
+      }
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
       // Clear ALL existing IOs before pulling fresh data
-      const deletedCount = await tx.io.deleteMany({})
-      if (deletedCount.count > 0) {
-        console.log(`[CloudPull] Cleared ${deletedCount.count} existing IOs`)
+      const deleteResult = db.prepare('DELETE FROM Ios').run()
+      if (deleteResult.changes > 0) {
+        console.log(`[CloudPull] Cleared ${deleteResult.changes} existing IOs`)
       }
 
-      // Insert IOs from cloud
-      const cloudIoIds: number[] = []
+      // Prepare the upsert statement
+      const upsertStmt = db.prepare(`
+        INSERT OR REPLACE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments, NetworkDeviceName)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+
       let upsertedCount = 0
 
       for (const cloudIo of cloudIos) {
@@ -186,41 +188,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
           continue
         }
 
-        cloudIoIds.push(cloudIo.id)
-
         try {
-          const updateData: Record<string, unknown> = {
-            name: cloudIo.name,
-            description: cloudIo.description ?? null,
-            order: cloudIo.order ?? null,
-            version: BigInt(Number(cloudIo.version) || 0),
-            result: cloudIo.result ?? null,
-            timestamp: cloudIo.timestamp ?? null,
-            comments: cloudIo.comments ?? null,
-            networkDeviceName: cloudIo.networkDeviceName ?? null,
-          }
-
-          if (cloudIo.tagType != null) {
-            updateData.tagType = cloudIo.tagType
-          }
-
-          await tx.io.upsert({
-            where: { id: cloudIo.id },
-            create: {
-              id: cloudIo.id,
-              subsystemId: subsystemId,
-              name: cloudIo.name,
-              description: cloudIo.description ?? null,
-              order: cloudIo.order ?? null,
-              version: BigInt(Number(cloudIo.version) || 0),
-              tagType: cloudIo.tagType ?? null,
-              result: cloudIo.result ?? null,
-              timestamp: cloudIo.timestamp ?? null,
-              comments: cloudIo.comments ?? null,
-              networkDeviceName: cloudIo.networkDeviceName ?? null,
-            },
-            update: updateData,
-          })
+          upsertStmt.run(
+            cloudIo.id,
+            subsystemId,
+            cloudIo.name,
+            cloudIo.description ?? null,
+            cloudIo.order ?? null,
+            Number(cloudIo.version) || 0,
+            cloudIo.tagType ?? null,
+            cloudIo.result ?? null,
+            cloudIo.timestamp ?? null,
+            cloudIo.comments ?? null,
+            cloudIo.networkDeviceName ?? null,
+          )
           upsertedCount++
         } catch (error) {
           console.error(`[CloudPull] Failed to upsert IO ${cloudIo.id}:`, error)
@@ -228,35 +209,37 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       }
 
       // Auto-populate networkDeviceName from tag name prefix for any IOs still missing it
-      const iosWithoutDevice = await tx.io.findMany({
-        where: { networkDeviceName: null, name: { not: null } },
-        select: { id: true, name: true }
-      })
+      const iosWithoutDevice = db.prepare(
+        'SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL AND Name IS NOT NULL'
+      ).all() as { id: number; Name: string }[]
+
+      const updateDeviceStmt = db.prepare('UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?')
       for (const io of iosWithoutDevice) {
-        const deviceName = io.name?.split(':')[0]
+        const deviceName = io.Name?.split(':')[0]
         if (deviceName) {
-          await tx.io.update({ where: { id: io.id }, data: { networkDeviceName: deviceName } })
+          updateDeviceStmt.run(deviceName, io.id)
         }
       }
 
       // Don't delete PendingSyncs — they should persist until actually synced
 
       return upsertedCount
-    }, { timeout: 60000 })
+    })()
 
     console.log(`[CloudPull] Successfully upserted ${result} IOs to local database`)
 
     // Auto-assign tagType from descriptions for IOs that don't have one
     try {
-      const untyped = await prisma.io.findMany({
-        where: { tagType: null },
-        select: { id: true, description: true }
-      })
+      const untyped = db.prepare(
+        'SELECT id, Description FROM Ios WHERE TagType IS NULL'
+      ).all() as { id: number; Description: string | null }[]
+
       let assigned = 0
+      const updateTagTypeStmt = db.prepare('UPDATE Ios SET TagType = ? WHERE id = ?')
       for (const io of untyped) {
-        const tagType = classifyDescription(io.description)
+        const tagType = classifyDescription(io.Description)
         if (tagType) {
-          await prisma.io.update({ where: { id: io.id }, data: { tagType } })
+          updateTagTypeStmt.run(tagType, io.id)
           assigned++
         }
       }
@@ -359,25 +342,30 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (safetyRes.ok) {
         const safetyData = await safetyRes.json()
         if (safetyData.success) {
-          await prisma.safetyZone.deleteMany({ where: { subsystemId } })
-          await prisma.safetyOutput.deleteMany({ where: { subsystemId } })
+          db.prepare('DELETE FROM SafetyZones WHERE SubsystemId = ?').run(subsystemId)
+          db.prepare('DELETE FROM SafetyOutputs WHERE SubsystemId = ?').run(subsystemId)
+
+          const insertZoneStmt = db.prepare(
+            'INSERT INTO SafetyZones (SubsystemId, Name, StoSignal, BssTag) VALUES (?, ?, ?, ?)'
+          )
+          const insertDriveStmt = db.prepare(
+            'INSERT INTO SafetyZoneDrives (ZoneId, Name) VALUES (?, ?)'
+          )
           for (const zone of (safetyData.zones || [])) {
-            await prisma.safetyZone.create({
-              data: {
-                subsystemId,
-                name: zone.name,
-                stoSignal: zone.stoSignal,
-                bssTag: zone.bssTag,
-                drives: { create: (zone.drives || []).map((d: any) => ({ name: d.name })) },
-              },
-            })
+            const zoneResult = insertZoneStmt.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
+            const zoneId = zoneResult.lastInsertRowid
+            for (const d of (zone.drives || [])) {
+              insertDriveStmt.run(zoneId, d.name)
+            }
           }
+
           if (safetyData.outputs?.length > 0) {
-            await prisma.safetyOutput.createMany({
-              data: safetyData.outputs.map((o: any) => ({
-                subsystemId, tag: o.tag, description: o.description, outputType: o.outputType,
-              })),
-            })
+            const insertOutputStmt = db.prepare(
+              'INSERT INTO SafetyOutputs (SubsystemId, Tag, Description, OutputType) VALUES (?, ?, ?, ?)'
+            )
+            for (const o of safetyData.outputs) {
+              insertOutputStmt.run(subsystemId, o.tag, o.description, o.outputType)
+            }
           }
           console.log(`[Pull] Safety: ${safetyData.zones?.length || 0} zones, ${safetyData.outputs?.length || 0} outputs`)
         }

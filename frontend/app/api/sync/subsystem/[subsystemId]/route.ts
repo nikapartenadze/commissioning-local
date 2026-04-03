@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 
 export async function GET(
   request: NextRequest,
@@ -9,37 +9,30 @@ export async function GET(
 ) {
   try {
     const subsystemId = parseInt(params.subsystemId)
-    
+
     if (isNaN(subsystemId)) {
       return NextResponse.json({ error: 'Invalid subsystem ID' }, { status: 400 })
     }
 
     // Get IOs for the specified subsystem
-    // Note: Prisma uses camelCase (subsystemId) even though DB column is lowercase (subsystemid)
-    const ios = await prisma.io.findMany({
-      where: {
-        subsystemId: subsystemId
-      },
-      orderBy: [
-        { order: 'asc' },  // Prisma field is 'order', DB column is 'Order'
-        { name: 'asc' }
-      ]
-    })
+    const ios = db.prepare(
+      'SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC, Name ASC'
+    ).all(subsystemId) as any[]
 
     // Transform to match C# expected format
     // Note: state is a runtime PLC value, not stored in database
     // Real-time state values come from SignalR/PLC connections
     const transformedIos = ios.map(io => ({
       Id: io.id,
-      Name: io.name,
-      Description: io.description,
+      Name: io.Name,
+      Description: io.Description,
       State: null, // State is runtime value from PLC, not in database
-      Result: io.result,
-      Timestamp: io.timestamp,
-      Comments: io.comments,
-      Order: io.order,  // Prisma field is 'order' (lowercase)
-      Version: io.version,
-      SubsystemId: io.subsystemId  // Prisma field is 'subsystemId' (camelCase)
+      Result: io.Result,
+      Timestamp: io.Timestamp,
+      Comments: io.Comments,
+      Order: io.Order,
+      Version: io.Version,
+      SubsystemId: io.SubsystemId
     }))
 
     return NextResponse.json({

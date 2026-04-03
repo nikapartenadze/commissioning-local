@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
 
 // Track created/failed tags — reset on PLC reconnect
@@ -25,20 +25,20 @@ export async function GET() {
     }
 
     // Collect all BSS tags + drive STO tags from safety zones
-    const zones = await prisma.safetyZone.findMany({ include: { drives: true } })
+    const zones = db.prepare('SELECT * FROM SafetyZones').all() as any[]
     const allTags = new Set<string>()
     for (const zone of zones) {
-      if (zone.bssTag) allTags.add(zone.bssTag)
-      // Add STO tag for each drive (convention: {driveName}:SI.STOActive)
-      for (const drive of zone.drives) {
-        allTags.add(`${drive.name}:SI.STOActive`)
+      if (zone.BssTag) allTags.add(zone.BssTag)
+      const drives = db.prepare('SELECT * FROM SafetyZoneDrives WHERE ZoneId = ?').all(zone.id) as any[]
+      for (const drive of drives) {
+        allTags.add(`${drive.Name}:SI.STOActive`)
       }
     }
 
     // Also collect STD output tags
-    const outputs = await prisma.safetyOutput.findMany({ select: { tag: true } })
+    const outputs = db.prepare('SELECT Tag FROM SafetyOutputs').all() as { Tag: string }[]
     for (const output of outputs) {
-      if (output.tag) allTags.add(output.tag)
+      if (output.Tag) allTags.add(output.Tag)
     }
 
     if (allTags.size === 0) {

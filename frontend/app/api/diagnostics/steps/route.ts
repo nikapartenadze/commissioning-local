@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 export const dynamic = 'force-dynamic'
+
+interface DiagnosticRow {
+  TagType: string;
+  FailureMode: string;
+  DiagnosticSteps: string;
+}
 
 /**
  * GET /api/diagnostics/steps?tagType=<tagType>&failureMode=<failureMode>
@@ -23,11 +29,9 @@ export async function GET(request: Request) {
 
     // Specific diagnostic for tagType + failureMode
     if (failureMode) {
-      const diagnostic = await prisma.tagTypeDiagnostic.findUnique({
-        where: {
-          tagType_failureMode: { tagType, failureMode },
-        },
-      })
+      const diagnostic = db.prepare(
+        'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?'
+      ).get(tagType, failureMode) as DiagnosticRow | undefined
 
       if (!diagnostic) {
         return NextResponse.json(
@@ -36,14 +40,13 @@ export async function GET(request: Request) {
         )
       }
 
-      return NextResponse.json({ steps: diagnostic.diagnosticSteps })
+      return NextResponse.json({ steps: diagnostic.DiagnosticSteps })
     }
 
     // All diagnostics for this tag type
-    const diagnostics = await prisma.tagTypeDiagnostic.findMany({
-      where: { tagType },
-      orderBy: { failureMode: 'asc' },
-    })
+    const diagnostics = db.prepare(
+      'SELECT * FROM TagTypeDiagnostics WHERE TagType = ? ORDER BY FailureMode ASC'
+    ).all(tagType) as DiagnosticRow[]
 
     if (diagnostics.length === 0) {
       return NextResponse.json(
@@ -55,8 +58,8 @@ export async function GET(request: Request) {
     return NextResponse.json({
       tagType,
       diagnostics: diagnostics.map(d => ({
-        failureMode: d.failureMode,
-        steps: d.diagnosticSteps,
+        failureMode: d.FailureMode,
+        steps: d.DiagnosticSteps,
       })),
     })
   } catch (error) {
