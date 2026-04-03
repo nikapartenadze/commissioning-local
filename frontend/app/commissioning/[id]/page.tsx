@@ -1178,6 +1178,7 @@ export default function CommissioningPage() {
   const handleCloudPull = async (newConfig: PlcConfig) => {
     logger.log('Cloud pull completed with config:', newConfig)
     setPlcConfig(newConfig)
+    setShowConfigDialog(false)
 
     // Refetch IOs from backend (data should already be synced)
     await loadIos()
