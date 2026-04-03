@@ -27,9 +27,10 @@ All source code lives in the `frontend/` directory. There is no separate backend
 ```bash
 cd frontend
 cp env.example .env.local   # Create local environment config
-npm install                  # Install deps + generate Prisma client
-npx prisma db push           # Create SQLite database from schema
+npm install                  # Install dependencies
 ```
+
+The SQLite database is created automatically on first run (no manual setup needed). Tables are initialized by `lib/db-sqlite.ts` on startup.
 
 Optional — seed data for testing specific features:
 ```bash
@@ -44,26 +45,28 @@ cd frontend
 npm run dev
 ```
 
-This runs `server.dev.js` which starts **three services** together:
+This runs `server.dev.js` which starts everything in one process:
 
 | Service | Port | Binds to | Purpose |
 |---------|------|----------|---------|
-| Next.js dev server + WebSocket | 3020 | `0.0.0.0` (all interfaces) | UI + API routes + hot reload + real-time PLC state broadcasts (/ws path) |
-| Internal broadcast HTTP | 3102 | `127.0.0.1` (localhost only) | API routes push messages to WebSocket server |
+| Next.js + WebSocket | 3000 | `0.0.0.0` (all interfaces) | App + API + real-time PLC broadcasts on `/ws` path |
+| Internal broadcast HTTP | 3102 | `127.0.0.1` (localhost only) | API routes push messages → WebSocket fans out |
 
-**Important:** The dev server binds to `0.0.0.0`, which means other devices on your network can connect. Open `http://YOUR_IP:3020` on tablets/laptops.
+**Common issues:**
+- **"EADDRINUSE" on port 3000** — a previous instance is still running. Kill it:
+  ```bash
+  # Windows
+  taskkill /F /IM node.exe
+  # Linux
+  fuser -k 3000/tcp
+  ```
+  Then run `npm run dev` again.
 
-To find your IP address:
-- **Linux:** `ip addr` or `hostname -I`
-- **Windows:** `ipconfig`
+- **WebSocket errors in browser console** — this is normal during dev hot-reloads. The WebSocket auto-reconnects within seconds. If it persists, restart the dev server.
 
-#### Alternative dev commands
+- **"Cannot find module better-sqlite3"** — run `npm install` again. The native module needs to be built for your platform.
 
-| Command | What it does |
-|---------|-------------|
-| `npm run dev` | Starts all services (recommended) |
-| `npm run dev:next` | Starts only Next.js on port 3020 (no real-time PLC updates) |
-| `npm run dev:ws` | Starts only the WebSocket server |
+**Tablet access:** The dev server binds to `0.0.0.0`, so other devices on your network can connect at `http://YOUR_IP:3000`. Run `ipconfig` (Windows) or `hostname -I` (Linux) to find your IP.
 
 ### Environment Variables
 
@@ -71,9 +74,8 @@ Copy `env.example` to `.env.local` and edit as needed:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `file:./database.db` | SQLite database path |
+| `DATABASE_URL` | `file:./database.db` | SQLite database path (relative to `frontend/`) |
 | `JWT_SECRET_KEY` | — | Secret for signing auth tokens (change in production) |
-| `WS_BROADCAST_URL` | `http://localhost:3102/broadcast` | Internal HTTP broadcast endpoint |
 | `NODE_ENV` | `development` | Node environment |
 
 ### Building for Production
@@ -83,7 +85,7 @@ cd frontend
 npm run build
 ```
 
-This creates a **standalone** Next.js build in `frontend/.next/standalone/` — a self-contained Node.js app that doesn't need `node_modules` at runtime (except native modules like `prisma`, `ws`, `ffi-rs`).
+This creates a **standalone** Next.js build in `frontend/.next/standalone/` — a self-contained Node.js app that doesn't need `node_modules` at runtime (except native modules like `better-sqlite3`, `ws`, `ffi-rs`).
 
 ### Linting
 
@@ -174,7 +176,7 @@ Runs the app on port 3000 inside a container.
 
 ### Admin Setup (one-time, from one device)
 
-1. Open `http://SERVER_IP:3000` (production) or `http://SERVER_IP:3020` (dev) → log in with PIN `111111`
+1. Open `http://SERVER_IP:3000` (production) or `http://SERVER_IP:3000` (dev) → log in with PIN `111111`
 2. **Change the admin PIN** — open user menu (top-right) → Manage Users → Reset PIN on the Admin account
 3. Click the **PLC** button (top-right) → enter Cloud URL, Subsystem ID, API Password
 4. Click **Pull IOs** to fetch I/O definitions from the cloud database
@@ -252,10 +254,10 @@ Default admin PIN: `111111` (change it on first login via Manage Users → Reset
 Factory Server (Windows PC or Linux, running Node.js)
 ┌──────────────────────────────────────────────────────┐
 │                                                      │
-│  Port 3000 (prod) / 3020 (dev): Next.js App          │
+│  Port 3000 (prod) / 3000 (dev): Next.js App          │
 │  ├── React UI (Tailwind, shadcn/ui)                  │
 │  ├── API Routes (all backend logic)                  │
-│  ├── SQLite Database (Prisma ORM)                    │
+│  ├── SQLite Database (better-sqlite3)                 │
 │  └── PLC Client (ffi-rs → libplctag → Ethernet/IP)  │
 │         │ reads tags every 75ms                      │
 │         │                                            │
@@ -325,13 +327,14 @@ local-tool/
 │   │   │   ├── websocket-client.ts  # Browser-side WebSocket hook
 │   │   │   └── types.ts         # PLC types + WebSocket message types
 │   │   ├── plc-client-manager.ts  # Singleton PLC client + WS broadcast helper
-│   │   ├── db/                  # Prisma singleton + repositories
+│   │   ├── db/                  # SQLite database + repositories
 │   │   ├── auth/                # JWT, bcrypt, middleware helpers
 │   │   ├── cloud/               # Cloud sync service
 │   │   ├── config/              # Config service (file-based, hot-reload)
 │   │   └── services/            # IO test service, PLC simulator
+│   │   ├── db-sqlite.ts         # SQLite database singleton + schema
 │   ├── prisma/
-│   │   ├── schema.prisma        # Database schema (SQLite)
+│   │   ├── schema.prisma        # Legacy schema reference (not used at runtime)
 │   │   ├── seed-diagnostics.ts  # Seed diagnostic troubleshooting data
 │   │   └── assign-tag-types.ts  # Classify IOs by description → tagType
 │   ├── scripts/
@@ -353,19 +356,19 @@ local-tool/
 ## Troubleshooting
 
 ### Dev server won't start — "EADDRINUSE"
-A previous server instance is still holding the port. Kill it:
+A previous server instance is still holding port 3000. Kill it:
 ```bash
-# Linux
-fuser -k 3020/tcp
-
 # Windows
-netstat -ano | findstr :3020
-taskkill /PID <PID> /F
+taskkill /F /IM node.exe
+
+# Linux
+fuser -k 3000/tcp
 ```
+Then run `npm run dev` again.
 
 ### Other devices can't connect
 - Make sure you're using the server's **IP address**, not `localhost`
-- Check firewall: port 3000 (or 3020 dev) must be open
+- Check firewall: port 3000 (or 3000 dev) must be open
 - Run `STATUS.bat` (Windows) or `ip addr` (Linux) to find the server IP
 
 ### PLC tag mismatch errors
@@ -380,8 +383,21 @@ cd frontend
 npx tsx prisma/assign-tag-types.ts
 ```
 
-### WebSocket disconnects / "Connection lost" banner
-The browser WebSocket auto-reconnects. If it persists:
-- Check that the WebSocket server is running (same port as the app, /ws path)
-- Check browser console for errors
-- Restart the dev server: kill all node processes, then `npm run dev`
+### WebSocket errors in browser console
+WebSocket connection errors during development are normal — they happen on hot-reloads and auto-reconnect within seconds. If persistent:
+1. Kill all node processes: `taskkill /F /IM node.exe` (Windows) or `killall node` (Linux)
+2. Restart: `npm run dev`
+3. Hard refresh the browser (Ctrl+Shift+R)
+
+The WebSocket runs on the same port as the app (`ws://SERVER:3000/ws`) — no separate WebSocket server or port needed.
+
+### "Cannot find module better-sqlite3" or native module errors
+The `better-sqlite3` package includes a native C++ addon that must be built for your OS/architecture:
+```bash
+cd frontend
+npm install        # This triggers the native build
+```
+If it fails, ensure you have build tools installed:
+- **Windows:** `npm install -g windows-build-tools` or install Visual Studio Build Tools
+- **Linux:** `sudo apt install build-essential python3`
+- **macOS:** `xcode-select --install`
