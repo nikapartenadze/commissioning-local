@@ -51,6 +51,9 @@ interface PlcToolbarProps {
   tagStatus?: TagStatus | null
   onShowTagStatus?: () => void
   onShowChangeRequests?: () => void
+  punchlists?: Array<{ id: number; name: string }>
+  activePunchlistId?: number | null
+  onPunchlistChange?: (id: number | null) => void
   onStartTour?: () => void
   subsystemId?: string
   activeTab?: 'io' | 'network' | 'estop'
@@ -83,6 +86,9 @@ export function PlcToolbar({
   activeTab = 'io',
   networkStats,
   estopStats,
+  punchlists = [],
+  activePunchlistId = null,
+  onPunchlistChange,
   onShowChangeRequests,
   onStartTour,
   subsystemId
@@ -226,6 +232,34 @@ export function PlcToolbar({
           >
             Out
           </button>
+
+          {/* Punchlist dropdown */}
+          {punchlists.length > 0 && (
+            <>
+              <div className="w-px h-8 bg-border mx-0.5 sm:mx-1 hidden sm:block" />
+              <select
+                value={activePunchlistId ?? ''}
+                onChange={(e) => onPunchlistChange?.(e.target.value ? Number(e.target.value) : null)}
+                className={cn(
+                  "h-11 sm:h-14 px-2 sm:px-3 rounded-md transition-all text-xs sm:text-sm font-medium border-0 cursor-pointer appearance-none bg-no-repeat",
+                  "pr-6 sm:pr-8",
+                  activePunchlistId
+                    ? "bg-primary text-white"
+                    : "bg-primary/10 hover:bg-primary/20 text-primary dark:text-primary"
+                )}
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,
+                  backgroundPosition: 'right 6px center',
+                }}
+                title="Filter by punchlist"
+              >
+                <option value="">All IOs</option>
+                {punchlists.map(pl => (
+                  <option key={pl.id} value={pl.id}>{pl.name}</option>
+                ))}
+              </select>
+            </>
+          )}
           </>}
 
           {/* My IOs filter — disabled for now
