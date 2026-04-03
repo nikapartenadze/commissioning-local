@@ -36,7 +36,7 @@ export function FireOutputDialog({
   const holdTimerRef = useRef<NodeJS.Timeout | null>(null)
   const isHoldModeRef = useRef(false)
   const isPressedRef = useRef(false)
-  const HOLD_DELAY_MS = 200
+  const HOLD_DELAY_MS = 80 // Reduced from 200ms — faster hold detection
 
   useEffect(() => { ioRef.current = io }, [io])
 
@@ -106,17 +106,10 @@ export function FireOutputDialog({
       // Was holding — turn OFF on release
       onFireOutput(currentIo, 'stop')
     } else {
-      // Quick click — pulse: ON then OFF
-      onFireOutput(currentIo, 'start')
-      // Small delay then turn OFF
-      setTimeout(() => {
-        onFireOutput(currentIo, 'stop')
-      }, 150)
+      // Quick click — single toggle (1 HTTP request instead of 2)
+      onFireOutput(currentIo, 'toggle')
     }
     isHoldModeRef.current = false
-
-    // Auto-close dialog after action
-    setTimeout(closeDialog, 300)
   }, [onFireOutput, closeDialog])
 
   // Handle pointer leaving button while pressed
