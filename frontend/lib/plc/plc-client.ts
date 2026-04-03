@@ -94,6 +94,7 @@ export declare interface PlcClient {
  */
 export class PlcClient extends EventEmitter {
   private tagReader: TagReaderService;
+  private tagReader2: TagReaderService | null = null; // Second reader for dual-connection mode
   private config: PlcClientConfig;
   private connectionConfig: PlcConnectionConfig | null = null;
   private connectionStatus: ConnectionStatus = 'disconnected';
@@ -110,6 +111,9 @@ export class PlcClient extends EventEmitter {
   private boundConnectionStatusChange: (isConnected: boolean) => void;
   private boundError: (error: Error) => void;
   private boundReadCycleComplete: (cycleTimeMs: number, successCount: number, failCount: number) => void;
+
+  // Dual reader threshold — use 2 readers when tag count exceeds this
+  private static DUAL_READER_THRESHOLD = 500;
 
   constructor(config: PlcClientConfig = {}) {
     super();
@@ -128,6 +132,15 @@ export class PlcClient extends EventEmitter {
     this.tagReader.on('connectionStatusChanged', this.boundConnectionStatusChange);
     this.tagReader.on('error', this.boundError);
     this.tagReader.on('readCycleComplete', this.boundReadCycleComplete);
+  }
+
+  /**
+   * Attach event listeners to a secondary tag reader
+   */
+  private attachReader2Events(reader: TagReaderService): void {
+    reader.on('tagValueChanged', this.boundTagValueChange);
+    reader.on('error', this.boundError);
+    // Don't forward connectionStatusChanged from reader2 — reader1 is authoritative
   }
 
   /**
@@ -155,6 +168,87 @@ export class PlcClient extends EventEmitter {
       // If we have IO tags loaded, initialize them
       if (this.ioTags.size > 0) {
         const tagNames = Array.from(this.ioTags.keys());
+
+        // Decide whether to use dual readers based on tag count
+        const useDualReaders = tagNames.length > PlcClient.DUAL_READER_THRESHOLD;
+
+        if (useDualReaders) {
+          // Split tags into two halves for parallel reading
+          const midpoint = Math.ceil(tagNames.length / 2);
+          const tags1 = tagNames.slice(0, midpoint);
+          const tags2 = tagNames.slice(midpoint);
+
+          console.log(`[PlcClient] Dual-reader mode: ${tags1.length} + ${tags2.length} tags across 2 CIP sessions`);
+
+          // Create second reader if needed
+          if (!this.tagReader2) {
+            this.tagReader2 = createTagReader(this.config);
+            this.attachReader2Events(this.tagReader2);
+          }
+          this.tagReader2.setConnection(config.ip, config.path);
+
+          // Create tags on both readers in parallel
+          const [result1, result2] = await Promise.all([
+            this.tagReader.createTags(tags1),
+            this.tagReader2.createTags(tags2),
+          ]);
+
+          const totalSuccessful = result1.successful.length + result2.successful.length;
+          const totalFailed = [...result1.failed, ...result2.failed];
+          const plcReachable = result1.plcReachable || result2.plcReachable;
+
+          if (totalSuccessful === 0) {
+            this.setConnectionStatus('error');
+            const errorMsg = plcReachable
+              ? `PLC connected but none of the ${totalFailed.length} tags exist on the PLC. Tag names may not match the PLC program.`
+              : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
+            this.emit('error', new Error(errorMsg));
+            this.scheduleReconnect();
+            return {
+              success: false,
+              plcReachable,
+              tagsSuccessful: 0,
+              tagsFailed: totalFailed.length,
+              failedTags: totalFailed,
+              error: errorMsg,
+            };
+          }
+
+          // Start both readers concurrently
+          await Promise.all([
+            this.tagReader.startReading(),
+            this.tagReader2.startReading(),
+          ]);
+
+          // Update initial states from both readers
+          for (const name of [...result1.successful, ...result2.successful]) {
+            const reader = result1.successful.includes(name) ? this.tagReader : this.tagReader2!;
+            const value = reader.getTagState(name);
+            if (value !== undefined) {
+              const state = value ? 'TRUE' : 'FALSE';
+              this.stateCache.set(name, state);
+              const io = this.ioTags.get(name);
+              if (io) io.state = state;
+            }
+          }
+
+          this.setConnectionStatus('connected');
+          this.emit('initialized');
+
+          if (totalFailed.length > 0) {
+            console.warn(`[PlcClient] Connected with ${totalFailed.length} failed tags:`, totalFailed.slice(0, 10).map(f => f.name));
+          }
+
+          return {
+            success: true,
+            plcReachable: true,
+            tagsSuccessful: totalSuccessful,
+            tagsFailed: totalFailed.length,
+            failedTags: totalFailed,
+          };
+        }
+
+        // Single reader mode (tag count <= threshold)
         const result = await this.tagReader.createTags(tagNames);
 
         if (result.successful.length === 0) {
@@ -163,7 +257,6 @@ export class PlcClient extends EventEmitter {
             ? `PLC connected but none of the ${result.failed.length} tags exist on the PLC. Tag names may not match the PLC program.`
             : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
           this.emit('error', new Error(errorMsg));
-          // Schedule reconnect — PLC may come back or program may be reloaded
           this.scheduleReconnect();
           return {
             success: false,
@@ -224,7 +317,9 @@ export class PlcClient extends EventEmitter {
   async disconnect(): Promise<void> {
     this.cancelReconnect();
     this.tagReader.stopReading();
+    if (this.tagReader2) this.tagReader2.stopReading();
     await this.tagReader.resetForReconnection();
+    if (this.tagReader2) await this.tagReader2.resetForReconnection();
 
     this.destroyAllWriteHandles();
     this.setConnectionStatus('disconnected');
@@ -280,14 +375,19 @@ export class PlcClient extends EventEmitter {
    */
   readTagCached(name: string): boolean | null {
     const value = this.tagReader.getCachedValue(name);
-    return value !== null ? Boolean(value) : null;
+    if (value !== null) return Boolean(value);
+    if (this.tagReader2) {
+      const value2 = this.tagReader2.getCachedValue(name);
+      if (value2 !== null) return Boolean(value2);
+    }
+    return null;
   }
 
   /**
-   * Check if a tag handle exists in the reader
+   * Check if a tag handle exists in either reader
    */
   hasTag(name: string): boolean {
-    return this.tagReader.hasTag(name);
+    return this.tagReader.hasTag(name) || (this.tagReader2?.hasTag(name) ?? false);
   }
 
   /**
@@ -489,7 +589,16 @@ export class PlcClient extends EventEmitter {
    * Get performance statistics
    */
   getPerformanceStats() {
-    return this.tagReader.getPerformanceStats();
+    const stats1 = this.tagReader.getPerformanceStats();
+    if (this.tagReader2) {
+      const stats2 = this.tagReader2.getPerformanceStats();
+      return {
+        totalCycles: Math.max(stats1.totalCycles, stats2.totalCycles),
+        avgCycleTimeMs: (stats1.avgCycleTimeMs + stats2.avgCycleTimeMs) / 2,
+        readers: 2,
+      };
+    }
+    return { ...stats1, readers: 1 };
   }
 
   /**
@@ -508,6 +617,12 @@ export class PlcClient extends EventEmitter {
     this.tagReader.off('readCycleComplete', this.boundReadCycleComplete);
 
     this.tagReader.dispose();
+    if (this.tagReader2) {
+      this.tagReader2.off('tagValueChanged', this.boundTagValueChange);
+      this.tagReader2.off('error', this.boundError);
+      this.tagReader2.dispose();
+      this.tagReader2 = null;
+    }
 
     this.destroyAllWriteHandles();
     this.ioTags.clear();
