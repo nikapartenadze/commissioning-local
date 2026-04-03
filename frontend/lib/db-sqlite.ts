@@ -6,9 +6,24 @@ import path from 'path'
 const globalForDb = globalThis as unknown as { db: Database.Database | undefined }
 
 function createDb(): Database.Database {
-  const dbPath = process.env.DATABASE_URL?.replace('file:', '').replace('./', '') || 'database.db'
-  const fullPath = path.isAbsolute(dbPath) ? dbPath : path.join(process.cwd(), dbPath)
+  const fs = require('fs')
+  const dbUrl = process.env.DATABASE_URL?.replace('file:', '').replace('./', '') || 'database.db'
 
+  // Resolve DB path — check multiple locations for backward compat with Prisma
+  let fullPath: string
+  if (path.isAbsolute(dbUrl)) {
+    fullPath = dbUrl
+  } else {
+    const cwd = process.cwd()
+    const candidates = [
+      path.join(cwd, dbUrl),                    // frontend/database.db
+      path.join(cwd, 'prisma', dbUrl),           // frontend/prisma/database.db (Prisma default)
+      path.join(cwd, '..', dbUrl),               // parent/database.db (portable mode)
+    ]
+    fullPath = candidates.find(p => fs.existsSync(p)) || candidates[0]
+  }
+
+  console.log(`[DB] Opening database at: ${fullPath}`)
   const db = new Database(fullPath)
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
