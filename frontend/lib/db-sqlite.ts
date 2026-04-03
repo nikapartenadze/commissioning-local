@@ -225,6 +225,20 @@ export function initializeSchema() {
       OutputType TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_safetyoutputs_subsystemid ON SafetyOutputs(SubsystemId);
+
+    CREATE TABLE IF NOT EXISTS Punchlists (
+      id INTEGER PRIMARY KEY,
+      Name TEXT NOT NULL,
+      SubsystemId INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS PunchlistItems (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      PunchlistId INTEGER NOT NULL REFERENCES Punchlists(id) ON DELETE CASCADE,
+      IoId INTEGER NOT NULL,
+      UNIQUE(PunchlistId, IoId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_punchlistitems_punchlistid ON PunchlistItems(PunchlistId);
   `)
 }
 
