@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 import { requireAdmin } from '@/lib/auth/middleware'
 
 /**
@@ -19,17 +19,12 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'keyword is required' }, { status: 400 })
     }
 
-    const result = await prisma.io.updateMany({
-      where: {
-        OR: [
-          { name: { contains: keyword } },
-          { description: { contains: keyword } },
-        ],
-      },
-      data: { assignedTo: assignedTo || null },
-    })
+    const pattern = `%${keyword}%`
+    const result = db.prepare(
+      'UPDATE Ios SET AssignedTo = ? WHERE Name LIKE ? OR Description LIKE ?'
+    ).run(assignedTo || null, pattern, pattern)
 
-    return NextResponse.json({ updated: result.count, keyword })
+    return NextResponse.json({ updated: result.changes, keyword })
   } catch (error) {
     console.error('Error assigning IOs by keyword:', error)
     return NextResponse.json({ error: 'Failed to assign IOs by keyword' }, { status: 500 })

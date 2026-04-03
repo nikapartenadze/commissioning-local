@@ -1,7 +1,8 @@
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db, ioToApi } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '@/lib/plc-client-manager'
 
 /**
@@ -13,14 +14,13 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
     const subsystemId = searchParams.get('subsystemId')
 
-    // Build query
-    const where = subsystemId ? { subsystemId: parseInt(subsystemId) } : {}
-
     // Fetch IOs from database
-    const ios = await prisma.io.findMany({
-      where,
-      orderBy: { order: 'asc' }
-    })
+    let ios: Io[]
+    if (subsystemId) {
+      ios = db.prepare('SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC').all(parseInt(subsystemId)) as Io[]
+    } else {
+      ios = db.prepare('SELECT * FROM Ios ORDER BY "Order" ASC').all() as Io[]
+    }
 
     // Get current PLC states
     const { tags, count } = getPlcTags()
@@ -29,23 +29,12 @@ export async function GET(request: Request) {
 
     // Merge PLC states with IO data
     const iosWithState = ios.map(io => ({
-      id: io.id,
-      subsystemId: io.subsystemId,
-      name: io.name,
-      description: io.description,
-      result: io.result,
-      timestamp: io.timestamp,
-      comments: io.comments,
-      order: io.order,
-      version: io.version.toString(), // BigInt to string for JSON serialization
-      tagType: io.tagType,
-      assignedTo: io.assignedTo,
+      ...ioToApi(io),
       state: stateMap.get(io.id) ?? null,
-      networkDeviceName: io.networkDeviceName ?? null,
-      isOutput: io.name?.includes(':O.') || io.name?.includes(':SO.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO') || io.name?.endsWith('_DO'),
-      hasResult: !!io.result,
-      isPassed: io.result === 'Passed',
-      isFailed: io.result === 'Failed'
+      isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO'),
+      hasResult: !!io.Result,
+      isPassed: io.Result === 'Passed',
+      isFailed: io.Result === 'Failed'
     }))
 
     return NextResponse.json(iosWithState)

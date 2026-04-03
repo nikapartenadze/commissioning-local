@@ -8,7 +8,7 @@
  * Also provides live cloud connection status (replaces health check polling).
  */
 
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 // SSE connection states
 export type SseConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
@@ -167,7 +167,7 @@ class CloudSseClient {
           if (dataLines.length > 0) {
             const data = dataLines.join('\n')
             try {
-              await this.handleEvent(JSON.parse(data))
+              this.handleEvent(JSON.parse(data))
             } catch {
               // Skip malformed events
             }
@@ -200,7 +200,7 @@ class CloudSseClient {
     this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, this.maxReconnectDelay)
   }
 
-  private async handleEvent(event: any): Promise<void> {
+  private handleEvent(event: any): void {
     this._lastEventAt = new Date()
 
     switch (event.type) {
@@ -213,7 +213,7 @@ class CloudSseClient {
       case 'io-updated':
       case 'io_updated': {
         const ioData = event.data || event
-        await this.handleIoUpdated(ioData)
+        this.handleIoUpdated(ioData)
         break
       }
 
@@ -223,7 +223,7 @@ class CloudSseClient {
         const batchData = event.data || event.updates || event
         if (Array.isArray(batchData)) {
           for (const update of batchData) {
-            await this.handleIoUpdated(update)
+            this.handleIoUpdated(update)
           }
         }
         break
@@ -235,7 +235,7 @@ class CloudSseClient {
     }
   }
 
-  private async handleIoUpdated(event: any): Promise<void> {
+  private handleIoUpdated(event: any): void {
     const ioId = event.id
     if (!ioId) return
 
@@ -243,58 +243,56 @@ class CloudSseClient {
     if (this.recentPushedIds.has(ioId)) return
 
     try {
-      const localIo = await prisma.io.findUnique({
-        where: { id: ioId },
-        select: { result: true, version: true },
-      })
+      const localIo = db.prepare('SELECT Result, Version FROM Ios WHERE id = ?').get(ioId) as
+        { Result: string | null, Version: number } | undefined
 
       if (!localIo) return // IO doesn't exist locally
 
-      const updateData: Record<string, unknown> = {}
+      const setClauses: string[] = []
+      const params: any[] = []
 
       // Always update definitions if provided
-      if (event.name !== undefined) updateData.name = event.name
-      if (event.description !== undefined) updateData.description = event.description
-      if (event.order !== undefined) updateData.order = event.order
-      if (event.tagType !== undefined) updateData.tagType = event.tagType
-      if (event.version !== undefined) updateData.version = BigInt(Number(event.version) || 0)
+      if (event.name !== undefined) { setClauses.push('Name = ?'); params.push(event.name) }
+      if (event.description !== undefined) { setClauses.push('Description = ?'); params.push(event.description) }
+      if (event.order !== undefined) { setClauses.push('"Order" = ?'); params.push(event.order) }
+      if (event.tagType !== undefined) { setClauses.push('TagType = ?'); params.push(event.tagType) }
+      if (event.version !== undefined) { setClauses.push('Version = ?'); params.push(Number(event.version) || 0) }
 
       // Merge test results if cloud version is newer (includes clears)
-      const cloudVersion = BigInt(Number(event.version) || 0)
-      const localVersion = localIo.version ?? BigInt(0)
-      console.log(`[SSE] IO ${ioId}: cloud v${cloudVersion} vs local v${localVersion}, result=${event.result}, localResult=${localIo.result}`)
+      const cloudVersion = Number(event.version) || 0
+      const localVersion = localIo.Version ?? 0
+      console.log(`[SSE] IO ${ioId}: cloud v${cloudVersion} vs local v${localVersion}, result=${event.result}, localResult=${localIo.Result}`)
+
       if (cloudVersion > localVersion) {
-        if (event.result !== undefined) updateData.result = event.result ?? null
-        if (event.timestamp !== undefined) updateData.timestamp = event.timestamp ?? null
-        if (event.comments !== undefined) updateData.comments = event.comments ?? null
-      } else if (!localIo.result && event.result) {
+        if (event.result !== undefined) { setClauses.push('Result = ?'); params.push(event.result ?? null) }
+        if (event.timestamp !== undefined) { setClauses.push('Timestamp = ?'); params.push(event.timestamp ?? null) }
+        if (event.comments !== undefined) { setClauses.push('Comments = ?'); params.push(event.comments ?? null) }
+      } else if (!localIo.Result && event.result) {
         // Local has no result, cloud does — accept regardless of version
-        updateData.result = event.result
-        updateData.timestamp = event.timestamp ?? null
-        updateData.comments = event.comments ?? null
+        setClauses.push('Result = ?'); params.push(event.result)
+        setClauses.push('Timestamp = ?'); params.push(event.timestamp ?? null)
+        setClauses.push('Comments = ?'); params.push(event.comments ?? null)
       }
 
-      if (Object.keys(updateData).length === 0) return
+      if (setClauses.length === 0) return
 
-      await prisma.io.update({
-        where: { id: ioId },
-        data: updateData,
-      })
+      params.push(ioId)
+      db.prepare(`UPDATE Ios SET ${setClauses.join(', ')} WHERE id = ?`).run(...params)
 
       // Broadcast to browser tabs
       try {
-        await fetch(WS_BROADCAST_URL, {
+        fetch(WS_BROADCAST_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             type: 'UpdateIO',
             id: ioId,
-            result: event.result !== undefined ? (event.result || 'Not Tested') : (localIo.result || 'Not Tested'),
+            result: event.result !== undefined ? (event.result || 'Not Tested') : (localIo.Result || 'Not Tested'),
             state: '',
             timestamp: event.timestamp ?? '',
             comments: event.comments ?? '',
           }),
-        })
+        }).catch(() => {})
       } catch {}
 
     } catch (error) {

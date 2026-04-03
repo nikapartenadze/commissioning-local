@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
 
 // Track which tags we've already created handles for — reset on PLC reconnect
@@ -31,23 +31,26 @@ export async function GET(request: NextRequest) {
       console.log('[NetworkStatus] PLC (re)connected, resetting tag handles')
     }
 
-    const where = !isNaN(subsystemId) ? { subsystemId } : {}
+    // Query rings, nodes, ports
+    const rings = !isNaN(subsystemId)
+      ? db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(subsystemId) as any[]
+      : db.prepare('SELECT * FROM NetworkRings').all() as any[]
 
-    const rings = await prisma.networkRing.findMany({
-      where,
-      include: {
-        nodes: { include: { ports: true } },
-      },
-    })
+    for (const ring of rings) {
+      ring.nodes = db.prepare('SELECT * FROM NetworkNodes WHERE RingId = ?').all(ring.id) as any[]
+      for (const node of ring.nodes) {
+        node.ports = db.prepare('SELECT * FROM NetworkPorts WHERE NodeId = ?').all(node.id) as any[]
+      }
+    }
 
     // Collect all unique status tags
     const statusTags = new Set<string>()
     for (const ring of rings) {
-      if (ring.mcmTag) statusTags.add(ring.mcmTag)
+      if (ring.McmTag) statusTags.add(ring.McmTag)
       for (const node of ring.nodes) {
-        if (node.statusTag) statusTags.add(node.statusTag)
+        if (node.StatusTag) statusTags.add(node.StatusTag)
         for (const port of node.ports) {
-          if (port.statusTag) statusTags.add(port.statusTag)
+          if (port.StatusTag) statusTags.add(port.StatusTag)
         }
       }
     }

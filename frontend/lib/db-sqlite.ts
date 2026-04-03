@@ -1,0 +1,324 @@
+import Database from 'better-sqlite3'
+import path from 'path'
+
+// ── Singleton database instance ──────────────────────────────────
+
+const globalForDb = globalThis as unknown as { db: Database.Database | undefined }
+
+function createDb(): Database.Database {
+  const dbPath = process.env.DATABASE_URL?.replace('file:', '').replace('./', '') || 'database.db'
+  const fullPath = path.isAbsolute(dbPath) ? dbPath : path.join(process.cwd(), dbPath)
+
+  const db = new Database(fullPath)
+  db.pragma('journal_mode = WAL')
+  db.pragma('busy_timeout = 5000')
+  db.pragma('foreign_keys = ON')
+  return db
+}
+
+export const db = globalForDb.db ?? createDb()
+if (process.env.NODE_ENV !== 'production') globalForDb.db = db
+
+// ── Schema initialization ────────────────────────────────────────
+
+export function initializeSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS Projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      Name TEXT NOT NULL,
+      Description TEXT,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      UpdatedAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS Subsystems (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ProjectId INTEGER NOT NULL REFERENCES Projects(id) ON DELETE CASCADE,
+      Name TEXT,
+      CreatedAt TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_subsystems_projectid ON Subsystems(ProjectId);
+
+    CREATE TABLE IF NOT EXISTS Ios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL REFERENCES Subsystems(id) ON DELETE CASCADE,
+      Name TEXT,
+      Description TEXT,
+      Result TEXT,
+      Timestamp TEXT,
+      Comments TEXT,
+      "Order" INTEGER,
+      Version INTEGER DEFAULT 0,
+      TagType TEXT,
+      CloudSyncedAt TEXT,
+      NetworkDeviceName TEXT,
+      AssignedTo TEXT,
+      PunchlistStatus TEXT,
+      Trade TEXT,
+      ClarificationNote TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ios_subsystemid ON Ios(SubsystemId);
+    CREATE INDEX IF NOT EXISTS idx_ios_result ON Ios(Result);
+
+    CREATE TABLE IF NOT EXISTS TestHistories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      IoId INTEGER NOT NULL REFERENCES Ios(id) ON DELETE CASCADE,
+      Result TEXT,
+      Timestamp TEXT NOT NULL,
+      Comments TEXT,
+      TestedBy TEXT,
+      State TEXT,
+      FailureMode TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_testhistories_ioid ON TestHistories(IoId);
+    CREATE INDEX IF NOT EXISTS idx_testhistories_timestamp ON TestHistories(Timestamp);
+
+    CREATE TABLE IF NOT EXISTS Users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      FullName TEXT UNIQUE NOT NULL,
+      Pin TEXT NOT NULL,
+      IsAdmin INTEGER DEFAULT 0,
+      IsActive INTEGER DEFAULT 1,
+      CreatedAt TEXT NOT NULL,
+      LastUsedAt TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS PendingSyncs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      IoId INTEGER NOT NULL,
+      InspectorName TEXT,
+      TestResult TEXT,
+      Comments TEXT,
+      State TEXT,
+      Timestamp TEXT,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      RetryCount INTEGER DEFAULT 0,
+      LastError TEXT,
+      Version INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_pendingsyncs_ioid ON PendingSyncs(IoId);
+    CREATE INDEX IF NOT EXISTS idx_pendingsyncs_createdat ON PendingSyncs(CreatedAt);
+
+    CREATE TABLE IF NOT EXISTS TagTypeDiagnostics (
+      TagType TEXT NOT NULL,
+      FailureMode TEXT NOT NULL,
+      DiagnosticSteps TEXT NOT NULL,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      UpdatedAt TEXT,
+      PRIMARY KEY (TagType, FailureMode)
+    );
+
+    CREATE TABLE IF NOT EXISTS ChangeRequests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      IoId INTEGER,
+      RequestType TEXT NOT NULL,
+      CurrentValue TEXT,
+      RequestedValue TEXT,
+      StructuredChanges TEXT,
+      Reason TEXT NOT NULL,
+      RequestedBy TEXT NOT NULL,
+      Status TEXT DEFAULT 'pending',
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      UpdatedAt TEXT,
+      ReviewedBy TEXT,
+      ReviewNote TEXT,
+      CloudId INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_changerequests_ioid ON ChangeRequests(IoId);
+    CREATE INDEX IF NOT EXISTS idx_changerequests_status ON ChangeRequests(Status);
+
+    CREATE TABLE IF NOT EXISTS NetworkRings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      Name TEXT NOT NULL,
+      McmName TEXT NOT NULL,
+      McmIp TEXT,
+      McmTag TEXT,
+      CreatedAt TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_networkrings_subsystemid ON NetworkRings(SubsystemId);
+
+    CREATE TABLE IF NOT EXISTS NetworkNodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      RingId INTEGER NOT NULL REFERENCES NetworkRings(id) ON DELETE CASCADE,
+      Name TEXT NOT NULL,
+      Position INTEGER NOT NULL,
+      IpAddress TEXT,
+      CableIn TEXT,
+      CableOut TEXT,
+      StatusTag TEXT,
+      TotalPorts INTEGER DEFAULT 28,
+      CreatedAt TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_networknodes_ringid ON NetworkNodes(RingId);
+
+    CREATE TABLE IF NOT EXISTS NetworkPorts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      NodeId INTEGER NOT NULL REFERENCES NetworkNodes(id) ON DELETE CASCADE,
+      PortNumber TEXT NOT NULL,
+      CableLabel TEXT,
+      DeviceName TEXT,
+      DeviceType TEXT,
+      DeviceIp TEXT,
+      StatusTag TEXT,
+      ParentPortId INTEGER REFERENCES NetworkPorts(id) ON DELETE CASCADE,
+      CreatedAt TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_networkports_nodeid ON NetworkPorts(NodeId);
+    CREATE INDEX IF NOT EXISTS idx_networkports_parentportid ON NetworkPorts(ParentPortId);
+
+    CREATE TABLE IF NOT EXISTS EStopZones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER,
+      Name TEXT NOT NULL,
+      CreatedAt TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS EStopEpcs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ZoneId INTEGER NOT NULL REFERENCES EStopZones(id) ON DELETE CASCADE,
+      Name TEXT NOT NULL,
+      CheckTag TEXT NOT NULL,
+      CreatedAt TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_estopepcs_zoneid ON EStopEpcs(ZoneId);
+
+    CREATE TABLE IF NOT EXISTS EStopIoPoints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      EpcId INTEGER NOT NULL REFERENCES EStopEpcs(id) ON DELETE CASCADE,
+      Tag TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_estopiopoints_epcid ON EStopIoPoints(EpcId);
+
+    CREATE TABLE IF NOT EXISTS EStopVfds (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      EpcId INTEGER NOT NULL REFERENCES EStopEpcs(id) ON DELETE CASCADE,
+      Tag TEXT NOT NULL,
+      StoTag TEXT NOT NULL,
+      MustStop INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_estopvfds_epcid ON EStopVfds(EpcId);
+
+    CREATE TABLE IF NOT EXISTS SafetyZones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL REFERENCES Subsystems(id) ON DELETE CASCADE,
+      Name TEXT NOT NULL,
+      StoSignal TEXT NOT NULL,
+      BssTag TEXT NOT NULL,
+      CreatedAt TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_safetyzones_subsystemid ON SafetyZones(SubsystemId);
+
+    CREATE TABLE IF NOT EXISTS SafetyZoneDrives (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ZoneId INTEGER NOT NULL REFERENCES SafetyZones(id) ON DELETE CASCADE,
+      Name TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_safetyzonedrives_zoneid ON SafetyZoneDrives(ZoneId);
+
+    CREATE TABLE IF NOT EXISTS SafetyOutputs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL REFERENCES Subsystems(id) ON DELETE CASCADE,
+      Tag TEXT NOT NULL,
+      Description TEXT NOT NULL,
+      OutputType TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_safetyoutputs_subsystemid ON SafetyOutputs(SubsystemId);
+  `)
+}
+
+// ── Type definitions ─────────────────────────────────────────────
+
+export interface Io {
+  id: number
+  SubsystemId: number
+  Name: string | null
+  Description: string | null
+  Result: string | null
+  Timestamp: string | null
+  Comments: string | null
+  Order: number | null
+  Version: number
+  TagType: string | null
+  CloudSyncedAt: string | null
+  NetworkDeviceName: string | null
+  AssignedTo: string | null
+  PunchlistStatus: string | null
+  Trade: string | null
+  ClarificationNote: string | null
+}
+
+export interface TestHistory {
+  id: number
+  IoId: number
+  Result: string | null
+  Timestamp: string
+  Comments: string | null
+  TestedBy: string | null
+  State: string | null
+  FailureMode: string | null
+}
+
+export interface User {
+  id: number
+  FullName: string
+  Pin: string
+  IsAdmin: number
+  IsActive: number
+  CreatedAt: string
+  LastUsedAt: string | null
+}
+
+export interface PendingSync {
+  id: number
+  IoId: number
+  InspectorName: string | null
+  TestResult: string | null
+  Comments: string | null
+  State: string | null
+  Timestamp: string | null
+  CreatedAt: string
+  RetryCount: number
+  LastError: string | null
+  Version: number
+}
+
+// ── Helper constants ─────────────────────────────────────────────
+
+export const TestConstants = {
+  RESULT_PASSED: 'Passed',
+  RESULT_FAILED: 'Failed',
+} as const
+
+// ── Compatibility layer (camelCase accessors for Prisma-style code) ──
+
+/** Convert a raw DB row (PascalCase columns) to camelCase for API responses */
+export function ioToApi(row: Io) {
+  return {
+    id: row.id,
+    subsystemId: row.SubsystemId,
+    name: row.Name,
+    description: row.Description,
+    result: row.Result,
+    timestamp: row.Timestamp,
+    comments: row.Comments,
+    order: row.Order,
+    version: (row.Version ?? 0).toString(),
+    tagType: row.TagType,
+    networkDeviceName: row.NetworkDeviceName,
+    assignedTo: row.AssignedTo,
+    punchlistStatus: row.PunchlistStatus,
+    trade: row.Trade,
+    clarificationNote: row.ClarificationNote,
+  }
+}
+
+/** Check database health */
+export function checkDatabaseHealth(): boolean {
+  try {
+    db.prepare('SELECT 1').get()
+    return true
+  } catch {
+    return false
+  }
+}

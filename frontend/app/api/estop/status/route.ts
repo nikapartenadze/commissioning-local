@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
 
 // Track which tags we've already created handles for — reset on PLC reconnect
@@ -31,16 +31,18 @@ export async function GET() {
     // Query all zones with nested data
     let zones: any[]
     try {
-      zones = await (prisma as any).eStopZone.findMany({
-        include: {
-          epcs: {
-            include: {
-              ioPoints: true,
-              vfds: true,
-            },
-          },
-        },
-      })
+      zones = db.prepare('SELECT * FROM EStopZones').all() as any[]
+      for (const zone of zones) {
+        zone.epcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?').all(zone.id) as any[]
+        for (const epc of zone.epcs) {
+          epc.ioPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?').all(epc.id) as any[]
+          epc.vfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?').all(epc.id) as any[]
+          // Convert MustStop from 0/1 integer to boolean
+          for (const vfd of epc.vfds) {
+            vfd.mustStop = !!vfd.MustStop
+          }
+        }
+      }
     } catch {
       return NextResponse.json({ success: true, connected, zones: [] })
     }
@@ -53,12 +55,12 @@ export async function GET() {
     const allTags = new Set<string>()
     for (const zone of zones) {
       for (const epc of zone.epcs) {
-        allTags.add(epc.checkTag)
+        allTags.add(epc.CheckTag)
         for (const io of epc.ioPoints) {
-          allTags.add(io.tag)
+          allTags.add(io.Tag)
         }
         for (const vfd of epc.vfds) {
-          allTags.add(vfd.stoTag)
+          allTags.add(vfd.StoTag)
         }
       }
     }
@@ -105,7 +107,6 @@ export async function GET() {
 
       // Log first time or when values seem off
       if (readCount > 0 || nullCount > 0) {
-        // Sample a few values for debug
         const sample = Array.from(allTags).slice(0, 5).map(t => `${t}=${tagValues[t]}`).join(', ')
         console.log(`[EStopStatus] Read ${readCount} values, ${nullCount} null. Sample: ${sample}`)
       }
@@ -114,32 +115,32 @@ export async function GET() {
     // Build structured response
     const result = zones.map((zone: any) => ({
       id: zone.id,
-      name: zone.name,
+      name: zone.Name,
       epcs: zone.epcs.map((epc: any) => {
         const mustStopVfds = epc.vfds.filter((v: any) => v.mustStop)
         const keepRunningVfds = epc.vfds.filter((v: any) => !v.mustStop)
 
         return {
           id: epc.id,
-          name: epc.name,
-          checkTag: epc.checkTag,
-          checkTagValue: connected ? (tagValues[epc.checkTag] ?? null) : null,
+          name: epc.Name,
+          checkTag: epc.CheckTag,
+          checkTagValue: connected ? (tagValues[epc.CheckTag] ?? null) : null,
           ioPoints: epc.ioPoints.map((io: any) => ({
             id: io.id,
-            tag: io.tag,
-            value: connected ? (tagValues[io.tag] ?? null) : null,
+            tag: io.Tag,
+            value: connected ? (tagValues[io.Tag] ?? null) : null,
           })),
           mustStopVfds: mustStopVfds.map((vfd: any) => ({
             id: vfd.id,
-            tag: vfd.tag,
-            stoTag: vfd.stoTag,
-            stoActive: connected ? (tagValues[vfd.stoTag] ?? null) : null,
+            tag: vfd.Tag,
+            stoTag: vfd.StoTag,
+            stoActive: connected ? (tagValues[vfd.StoTag] ?? null) : null,
           })),
           keepRunningVfds: keepRunningVfds.map((vfd: any) => ({
             id: vfd.id,
-            tag: vfd.tag,
-            stoTag: vfd.stoTag,
-            stoActive: connected ? (tagValues[vfd.stoTag] ?? null) : null,
+            tag: vfd.Tag,
+            stoTag: vfd.StoTag,
+            stoActive: connected ? (tagValues[vfd.StoTag] ?? null) : null,
           })),
         }
       }),

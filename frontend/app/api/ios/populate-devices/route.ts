@@ -1,24 +1,20 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 
 export async function POST() {
   try {
-    // Fetch all IOs where networkDeviceName is null and name contains ':'
-    const ios = await prisma.io.findMany({
-      where: {
-        networkDeviceName: null,
-        name: { contains: ':' },
-      },
-      select: { id: true, name: true },
-    })
+    // Fetch all IOs where NetworkDeviceName is null and Name contains ':'
+    const ios = db.prepare(
+      "SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL AND Name LIKE '%:%'"
+    ).all() as { id: number; Name: string }[]
 
     // Group IOs by their device prefix for efficient batch updates
     const groups = new Map<string, number[]>()
     for (const io of ios) {
-      const colonIndex = io.name!.indexOf(':')
-      const deviceName = io.name!.substring(0, colonIndex)
+      const colonIndex = io.Name.indexOf(':')
+      const deviceName = io.Name.substring(0, colonIndex)
       if (!deviceName) continue
 
       const ids = groups.get(deviceName) ?? []
@@ -28,13 +24,18 @@ export async function POST() {
 
     // Batch update each group
     let updatedCount = 0
-    for (const [deviceName, ids] of Array.from(groups.entries())) {
-      const result = await prisma.io.updateMany({
-        where: { id: { in: ids } },
-        data: { networkDeviceName: deviceName },
-      })
-      updatedCount += result.count
-    }
+    const updateStmt = db.prepare(
+      'UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?'
+    )
+    const txn = db.transaction(() => {
+      for (const [deviceName, ids] of Array.from(groups.entries())) {
+        for (const id of ids) {
+          updateStmt.run(deviceName, id)
+          updatedCount++
+        }
+      }
+    })
+    txn()
 
     return NextResponse.json({
       success: true,

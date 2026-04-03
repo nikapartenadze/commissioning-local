@@ -1,7 +1,8 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
+import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
 import { requireAuth } from '@/lib/auth/middleware'
@@ -44,17 +45,15 @@ export async function POST(
       // Empty body is OK
     }
 
-    const io = await prisma.io.findUnique({
-      where: { id: ioId }
-    })
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return NextResponse.json({ error: 'IO not found' }, { status: 404 })
     }
 
     // Check if already cleared
-    const hadComments = !!io.comments
-    const hadResult = !!io.result
+    const hadComments = !!io.Comments
+    const hadResult = !!io.Result
 
     if (!hadComments && !hadResult) {
       // Already cleared, nothing to do
@@ -63,14 +62,14 @@ export async function POST(
         message: 'IO already cleared',
         io: {
           id: io.id,
-          subsystemId: io.subsystemId,
-          name: io.name,
-          description: io.description,
-          result: io.result,
-          timestamp: io.timestamp,
-          comments: io.comments,
-          order: io.order,
-          version: io.version.toString(),
+          subsystemId: io.SubsystemId,
+          name: io.Name,
+          description: io.Description,
+          result: io.Result,
+          timestamp: io.Timestamp,
+          comments: io.Comments,
+          order: io.Order,
+          version: (io.Version ?? 0).toString(),
           state: null
         }
       })
@@ -84,51 +83,44 @@ export async function POST(
     // Build history comment
     let historyComment: string | null = null
     if (hadResult && hadComments) {
-      historyComment = io.comments
+      historyComment = io.Comments
     } else if (hadResult) {
-      historyComment = `Cleared ${io.result} result`
+      historyComment = `Cleared ${io.Result} result`
     } else {
       historyComment = 'Cleared comments'
     }
 
     const timestamp = createTimestamp()
+    const newVersion = (io.Version ?? 0) + 1
 
     // Clear IO and create history in transaction
-    const [updatedIo, testHistory] = await prisma.$transaction([
-      prisma.io.update({
-        where: { id: ioId },
-        data: {
-          result: null,
-          timestamp: null,
-          comments: null,
-          version: { increment: 1 }
-        }
-      }),
-      prisma.testHistory.create({
-        data: {
-          ioId,
-          result: TEST_CONSTANTS.RESULT_CLEARED,
-          timestamp,
-          comments: historyComment,
-          state: plcState,
-          testedBy: currentUser
-        }
-      })
-    ])
+    let testHistoryId: number | bigint = 0
+    const txn = db.transaction(() => {
+      db.prepare(
+        'UPDATE Ios SET Result = NULL, Timestamp = NULL, Comments = NULL, Version = ? WHERE id = ?'
+      ).run(newVersion, ioId)
+
+      const histResult = db.prepare(
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(ioId, TEST_CONSTANTS.RESULT_CLEARED, timestamp, historyComment, plcState ?? null, currentUser)
+      testHistoryId = histResult.lastInsertRowid
+    })
+    txn()
 
     // Create PendingSync entry as fallback, then attempt immediate cloud sync
     try {
-      const pendingSync = await prisma.pendingSync.create({
-        data: {
-          ioId,
-          inspectorName: currentUser || null,
-          testResult: TEST_CONSTANTS.RESULT_CLEARED,
-          comments: historyComment || null,
-          state: plcState || null,
-          timestamp: new Date(),
-          version: updatedIo.version - BigInt(1), // Pre-increment version to match cloud
-        },
-      })
+      const syncResult = db.prepare(
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(
+        ioId,
+        currentUser || null,
+        TEST_CONSTANTS.RESULT_CLEARED,
+        historyComment || null,
+        plcState ?? null,
+        new Date().toISOString(),
+        newVersion - 1 // Pre-increment version to match cloud
+      )
+      const pendingSyncId = syncResult.lastInsertRowid
 
       // Track this IO so SSE doesn't echo it back
       try {
@@ -146,12 +138,12 @@ export async function POST(
           result: TEST_CONSTANTS.RESULT_CLEARED,
           comments: historyComment || null,
           testedBy: currentUser || null,
-          state: plcState || null,
-          version: Number(updatedIo.version) - 1,
+          state: plcState ?? null,
+          version: newVersion - 1,
           timestamp: new Date().toISOString(),
         })
         if (synced) {
-          await prisma.pendingSync.delete({ where: { id: pendingSync.id } }).catch(() => {})
+          try { db.prepare('DELETE FROM PendingSyncs WHERE id = ?').run(Number(pendingSyncId)) } catch {}
           console.log(`[Reset] Instant sync succeeded for IO ${ioId}`)
         } else {
           console.log(`[Reset] Instant sync returned false for IO ${ioId} — queued for retry`)
@@ -187,23 +179,23 @@ export async function POST(
       success: true,
       message: 'IO result cleared',
       io: {
-        id: updatedIo.id,
-        subsystemId: updatedIo.subsystemId,
-        name: updatedIo.name,
-        description: updatedIo.description,
-        result: updatedIo.result,
-        timestamp: updatedIo.timestamp,
-        comments: updatedIo.comments,
-        order: updatedIo.order,
-        version: updatedIo.version.toString(),
+        id: io.id,
+        subsystemId: io.SubsystemId,
+        name: io.Name,
+        description: io.Description,
+        result: null,
+        timestamp: null,
+        comments: null,
+        order: io.Order,
+        version: newVersion.toString(),
         state: plcState ?? null
       },
       testHistory: {
-        id: testHistory.id,
-        ioId: testHistory.ioId,
-        result: testHistory.result,
-        timestamp: testHistory.timestamp,
-        testedBy: testHistory.testedBy
+        id: Number(testHistoryId),
+        ioId,
+        result: TEST_CONSTANTS.RESULT_CLEARED,
+        timestamp,
+        testedBy: currentUser
       }
     })
   } catch (error) {

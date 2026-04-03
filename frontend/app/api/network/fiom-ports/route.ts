@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 // GET /api/network/fiom-ports?fiomName=NCP1_17_FIOM1&subsystemId=47
 // Returns FIOM port data derived from IO tag names matching {fiomName}_X{n}.PIN{n}_{type}
@@ -14,25 +14,25 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'fiomName required' }, { status: 400 })
     }
 
-    const where: any = {
-      name: { startsWith: `${fiomName}_X` },
-    }
-    if (subsystemId) {
-      where.subsystemId = parseInt(subsystemId, 10)
-    }
+    const prefix = `${fiomName}_X%`
+    let ios: { Name: string; Description: string | null }[]
 
-    const ios = await prisma.io.findMany({
-      where,
-      select: { name: true, description: true },
-      orderBy: { name: 'asc' },
-    })
+    if (subsystemId) {
+      ios = db.prepare(
+        'SELECT Name, Description FROM Ios WHERE Name LIKE ? AND SubsystemId = ? ORDER BY Name ASC'
+      ).all(prefix, parseInt(subsystemId, 10)) as any[]
+    } else {
+      ios = db.prepare(
+        'SELECT Name, Description FROM Ios WHERE Name LIKE ? ORDER BY Name ASC'
+      ).all(prefix) as any[]
+    }
 
     // Parse IO names into port structure
     // Pattern: {fiomName}_X{portNum}.PIN{pinNum}_{DI/DO}
     const portMap = new Map<number, { portNum: number; pins: { pin: number; type: string; ioName: string; description: string }[] }>()
 
     for (const io of ios) {
-      const match = (io.name ?? '').match(/_X(\d+)\.PIN(\d+)_(D[IO])$/)
+      const match = (io.Name ?? '').match(/_X(\d+)\.PIN(\d+)_(D[IO])$/)
       if (!match) continue
 
       const portNum = parseInt(match[1])
@@ -45,8 +45,8 @@ export async function GET(request: NextRequest) {
       portMap.get(portNum)!.pins.push({
         pin: pinNum,
         type: pinType,
-        ioName: io.name ?? '',
-        description: io.description || 'SPARE',
+        ioName: io.Name ?? '',
+        description: io.Description || 'SPARE',
       })
     }
 

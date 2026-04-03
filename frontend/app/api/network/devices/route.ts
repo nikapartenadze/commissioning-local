@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,40 +11,25 @@ export const dynamic = 'force-dynamic'
 export async function GET() {
   try {
     // Get distinct network device names from IOs
-    const ios = await prisma.io.findMany({
-      where: {
-        networkDeviceName: { not: null },
-      },
-      select: {
-        networkDeviceName: true,
-      },
-      distinct: ['networkDeviceName'],
-      orderBy: { networkDeviceName: 'asc' },
-    })
-
-    const devices = ios
-      .filter(io => io.networkDeviceName)
-      .map(io => ({
-        name: io.networkDeviceName!,
-      }))
+    const devices = db.prepare(
+      'SELECT DISTINCT NetworkDeviceName FROM Ios WHERE NetworkDeviceName IS NOT NULL ORDER BY NetworkDeviceName ASC'
+    ).all() as { NetworkDeviceName: string }[]
 
     // Enrich with IO counts per device
-    const enriched = await Promise.all(
-      devices.map(async (device) => {
-        const [total, passed, failed] = await Promise.all([
-          prisma.io.count({ where: { networkDeviceName: device.name } }),
-          prisma.io.count({ where: { networkDeviceName: device.name, result: 'Passed' } }),
-          prisma.io.count({ where: { networkDeviceName: device.name, result: 'Failed' } }),
-        ])
-        return {
-          ...device,
-          totalTags: total,
-          passedTags: passed,
-          failedTags: failed,
-          untestedTags: total - passed - failed,
-        }
-      })
+    const countStmt = db.prepare(
+      'SELECT COUNT(*) as total, SUM(CASE WHEN Result = ? THEN 1 ELSE 0 END) as passed, SUM(CASE WHEN Result = ? THEN 1 ELSE 0 END) as failed FROM Ios WHERE NetworkDeviceName = ?'
     )
+
+    const enriched = devices.map(device => {
+      const counts = countStmt.get('Passed', 'Failed', device.NetworkDeviceName) as { total: number; passed: number; failed: number }
+      return {
+        name: device.NetworkDeviceName,
+        totalTags: counts.total,
+        passedTags: counts.passed,
+        failedTags: counts.failed,
+        untestedTags: counts.total - counts.passed - counts.failed,
+      }
+    })
 
     return NextResponse.json(enriched)
   } catch (error) {

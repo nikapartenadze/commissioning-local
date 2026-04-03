@@ -1,4 +1,4 @@
-import { prisma } from './index';
+import { db } from '@/lib/db-sqlite';
 
 // Static diagnostic data — auto-seeded on first login if table is empty
 const DIAGNOSTICS = [
@@ -46,17 +46,16 @@ let seeded = false;
 export async function ensureDiagnosticData(): Promise<void> {
   if (seeded) return;
   try {
-    const count = await prisma.tagTypeDiagnostic.count();
-    if (count > 0) {
+    const row = db.prepare('SELECT COUNT(*) as count FROM TagTypeDiagnostics').get() as { count: number };
+    if (row.count > 0) {
       seeded = true;
       return;
     }
+    const stmt = db.prepare(
+      'INSERT OR IGNORE INTO TagTypeDiagnostics (TagType, FailureMode, DiagnosticSteps) VALUES (?, ?, ?)'
+    );
     for (const d of DIAGNOSTICS) {
-      await prisma.tagTypeDiagnostic.upsert({
-        where: { tagType_failureMode: { tagType: d.tagType, failureMode: d.failureMode } },
-        create: { tagType: d.tagType, failureMode: d.failureMode, diagnosticSteps: d.diagnosticSteps, createdAt: new Date() },
-        update: {},
-      });
+      stmt.run(d.tagType, d.failureMode, d.diagnosticSteps);
     }
     seeded = true;
     console.log(`[DB] Auto-seeded ${DIAGNOSTICS.length} diagnostic entries`);
