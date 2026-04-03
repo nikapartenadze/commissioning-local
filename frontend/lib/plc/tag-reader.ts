@@ -63,10 +63,10 @@ export interface TagReaderConfig {
 
 // Default configuration (mirrors C# PlcConstants)
 const DEFAULT_CONFIG: TagReaderConfig = {
-  pollIntervalMs: 75,      // 75ms polling interval (from C# code)
-  readTimeoutMs: 2000,     // 2 second timeout per read
-  batchSize: 25,           // Tags per batch (from C# OptimizedBatchSize concept)
-  maxConcurrentReaders: 6, // Concurrent reader tasks
+  pollIntervalMs: 75,       // 75ms polling interval
+  readTimeoutMs: 2000,      // 2 second timeout per read
+  batchSize: 100,           // Tags per batch — libplctag handles concurrency well
+  maxConcurrentReaders: 6,  // Concurrent reader tasks
 };
 
 // Type-safe event emitter
@@ -690,41 +690,39 @@ export class TagReaderService extends EventEmitter {
       let failCount = 0;
 
       try {
-        // --- Read grouped parent words first (one read → many bits) ---
-        for (const word of Array.from(this.groupedWords.values())) {
-          if (signal?.aborted) break;
-          const ok = await this.readAndProcessGroupedWord(word);
-          if (ok) {
-            successCount += word.bits.size;
-          } else {
-            failCount += word.bits.size;
+        // --- Read grouped words AND individual tags concurrently ---
+        const groupedPromise = (async () => {
+          let s = 0, f = 0;
+          for (const word of Array.from(this.groupedWords.values())) {
+            if (signal?.aborted) break;
+            const ok = await this.readAndProcessGroupedWord(word);
+            if (ok) s += word.bits.size; else f += word.bits.size;
           }
-        }
+          return { s, f };
+        })();
 
-        // --- Read individual tags (those without a grouped parent) ---
-        const tagArray = Array.from(this.tags.values()).filter(t => t.handle !== -1);
-        const batches: TagState[][] = [];
+        const individualPromise = (async () => {
+          let s = 0, f = 0;
+          const tagArray = Array.from(this.tags.values()).filter(t => t.handle !== -1);
 
-        for (let i = 0; i < tagArray.length; i += this.config.batchSize) {
-          batches.push(tagArray.slice(i, i + this.config.batchSize));
-        }
-
-        // Process batches with limited concurrency
-        for (const batch of batches) {
-          if (signal?.aborted) break;
-
-          const results = await Promise.allSettled(
-            batch.map((tagState) => this.readAndProcessTag(tagState))
-          );
-
-          for (const result of results) {
-            if (result.status === 'fulfilled' && result.value) {
-              successCount++;
-            } else {
-              failCount++;
+          // Process all tags in large batches concurrently
+          for (let i = 0; i < tagArray.length; i += this.config.batchSize) {
+            if (signal?.aborted) break;
+            const batch = tagArray.slice(i, i + this.config.batchSize);
+            const results = await Promise.allSettled(
+              batch.map((tagState) => this.readAndProcessTag(tagState))
+            );
+            for (const result of results) {
+              if (result.status === 'fulfilled' && result.value) s++; else f++;
             }
           }
-        }
+          return { s, f };
+        })();
+
+        // Wait for both to complete
+        const [grouped, individual] = await Promise.all([groupedPromise, individualPromise]);
+        successCount = grouped.s + individual.s;
+        failCount = grouped.f + individual.f;
 
         // Update connection status based on results
         const cycleSuccessful = failCount === 0 || successCount > failCount;
