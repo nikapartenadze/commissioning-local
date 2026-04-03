@@ -1,248 +1,246 @@
-import { prisma, TestHistory, enrichTestHistory, TestHistoryWithComputed, TestConstants } from '../index';
+import { db } from '@/lib/db-sqlite'
+import type { TestHistory } from '@/lib/db-sqlite'
+import { enrichTestHistory, TestHistoryWithComputed, TestConstants } from '../index'
 
 export interface CreateTestHistoryParams {
-  ioId: number;
-  result: string;
-  state?: string | null;
-  comments?: string | null;
-  testedBy?: string | null;
-  failureMode?: string | null;
-  timestamp?: string;
+  ioId: number
+  result: string
+  state?: string | null
+  comments?: string | null
+  testedBy?: string | null
+  failureMode?: string | null
+  timestamp?: string
 }
 
 export interface TestHistoryFilters {
-  ioId?: number;
-  result?: string;
-  testedBy?: string;
-  failureMode?: string;
-  fromDate?: Date;
-  toDate?: Date;
+  ioId?: number
+  result?: string
+  testedBy?: string
+  failureMode?: string
+  fromDate?: Date
+  toDate?: Date
 }
 
 /**
- * Repository for TestHistory CRUD operations
+ * Repository for TestHistory CRUD operations (better-sqlite3)
  */
 export const testHistoryRepository = {
   /**
    * Create a test history record
    */
-  async create(params: CreateTestHistoryParams): Promise<TestHistoryWithComputed> {
-    const history = await prisma.testHistory.create({
-      data: {
-        ioId: params.ioId,
-        result: params.result,
-        state: params.state,
-        comments: params.comments,
-        testedBy: params.testedBy,
-        failureMode: params.failureMode,
-        timestamp: params.timestamp ?? new Date().toISOString(),
-      },
-    });
+  create(params: CreateTestHistoryParams): TestHistoryWithComputed {
+    const timestamp = params.timestamp ?? new Date().toISOString()
 
-    return enrichTestHistory(history);
+    const result = db.prepare(
+      'INSERT INTO TestHistories (IoId, Result, State, Comments, TestedBy, FailureMode, Timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      params.ioId,
+      params.result,
+      params.state ?? null,
+      params.comments ?? null,
+      params.testedBy ?? null,
+      params.failureMode ?? null,
+      timestamp,
+    )
+
+    const history = db.prepare('SELECT * FROM TestHistories WHERE id = ?').get(result.lastInsertRowid) as TestHistory
+    return enrichTestHistory(history)
   },
 
   /**
    * Get test history by ID
    */
-  async getById(id: number): Promise<TestHistoryWithComputed | null> {
-    const history = await prisma.testHistory.findUnique({ where: { id } });
-    return history ? enrichTestHistory(history) : null;
+  getById(id: number): TestHistoryWithComputed | null {
+    const history = db.prepare('SELECT * FROM TestHistories WHERE id = ?').get(id) as TestHistory | undefined
+    return history ? enrichTestHistory(history) : null
   },
 
   /**
    * Get all history for an IO
    */
-  async getByIoId(ioId: number): Promise<TestHistoryWithComputed[]> {
-    const histories = await prisma.testHistory.findMany({
-      where: { ioId },
-      orderBy: { timestamp: 'desc' },
-    });
+  getByIoId(ioId: number): TestHistoryWithComputed[] {
+    const histories = db.prepare(
+      'SELECT * FROM TestHistories WHERE IoId = ? ORDER BY Timestamp DESC'
+    ).all(ioId) as TestHistory[]
 
-    return histories.map(enrichTestHistory);
+    return histories.map(enrichTestHistory)
   },
 
   /**
    * Get latest history entry for an IO
    */
-  async getLatestForIo(ioId: number): Promise<TestHistoryWithComputed | null> {
-    const history = await prisma.testHistory.findFirst({
-      where: { ioId },
-      orderBy: { timestamp: 'desc' },
-    });
+  getLatestForIo(ioId: number): TestHistoryWithComputed | null {
+    const history = db.prepare(
+      'SELECT * FROM TestHistories WHERE IoId = ? ORDER BY Timestamp DESC LIMIT 1'
+    ).get(ioId) as TestHistory | undefined
 
-    return history ? enrichTestHistory(history) : null;
+    return history ? enrichTestHistory(history) : null
   },
 
   /**
    * Get all test history with optional filtering
    */
-  async getAll(filters?: TestHistoryFilters, limit?: number): Promise<TestHistoryWithComputed[]> {
-    const where: NonNullable<Parameters<typeof prisma.testHistory.findMany>[0]>['where'] = {};
+  getAll(filters?: TestHistoryFilters, limit?: number): TestHistoryWithComputed[] {
+    const conditions: string[] = []
+    const params: any[] = []
 
     if (filters?.ioId) {
-      where.ioId = filters.ioId;
+      conditions.push('IoId = ?')
+      params.push(filters.ioId)
     }
 
     if (filters?.result) {
-      where.result = filters.result;
+      conditions.push('Result = ?')
+      params.push(filters.result)
     }
 
     if (filters?.testedBy) {
-      where.testedBy = { contains: filters.testedBy };
+      conditions.push('TestedBy LIKE ?')
+      params.push(`%${filters.testedBy}%`)
     }
 
     if (filters?.failureMode) {
-      where.failureMode = filters.failureMode;
+      conditions.push('FailureMode = ?')
+      params.push(filters.failureMode)
     }
 
-    // Date filtering requires string comparison for SQLite
-    if (filters?.fromDate || filters?.toDate) {
-      const timestampFilters: { gte?: string; lte?: string } = {};
-      if (filters.fromDate) {
-        timestampFilters.gte = filters.fromDate.toISOString();
-      }
-      if (filters.toDate) {
-        timestampFilters.lte = filters.toDate.toISOString();
-      }
-      where.timestamp = timestampFilters;
+    if (filters?.fromDate) {
+      conditions.push('Timestamp >= ?')
+      params.push(filters.fromDate.toISOString())
     }
 
-    const histories = await prisma.testHistory.findMany({
-      where,
-      orderBy: { timestamp: 'desc' },
-      take: limit,
-    });
+    if (filters?.toDate) {
+      conditions.push('Timestamp <= ?')
+      params.push(filters.toDate.toISOString())
+    }
 
-    return histories.map(enrichTestHistory);
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const limitClause = limit ? `LIMIT ${limit}` : ''
+
+    const histories = db.prepare(
+      `SELECT * FROM TestHistories ${where} ORDER BY Timestamp DESC ${limitClause}`
+    ).all(...params) as TestHistory[]
+
+    return histories.map(enrichTestHistory)
   },
 
   /**
    * Get history with IO details
    */
-  async getWithIo(id: number) {
-    const history = await prisma.testHistory.findUnique({
-      where: { id },
-      include: { io: true },
-    });
+  getWithIo(id: number) {
+    const history = db.prepare('SELECT * FROM TestHistories WHERE id = ?').get(id) as TestHistory | undefined
+    if (!history) return null
 
-    if (!history) return null;
-
+    const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(history.IoId)
     return {
       ...enrichTestHistory(history),
-      io: history.io,
-    };
+      io,
+    }
   },
 
   /**
    * Get recent test history
    */
-  async getRecent(limit: number = 50): Promise<TestHistoryWithComputed[]> {
-    const histories = await prisma.testHistory.findMany({
-      orderBy: { timestamp: 'desc' },
-      take: limit,
-    });
+  getRecent(limit: number = 50): TestHistoryWithComputed[] {
+    const histories = db.prepare(
+      'SELECT * FROM TestHistories ORDER BY Timestamp DESC LIMIT ?'
+    ).all(limit) as TestHistory[]
 
-    return histories.map(enrichTestHistory);
+    return histories.map(enrichTestHistory)
   },
 
   /**
    * Get test history grouped by tester
    */
-  async getCountByTester(): Promise<{ testedBy: string; count: number }[]> {
-    const result = await prisma.testHistory.groupBy({
-      by: ['testedBy'],
-      _count: { id: true },
-      where: { testedBy: { not: null } },
-    });
+  getCountByTester(): { testedBy: string; count: number }[] {
+    const rows = db.prepare(
+      'SELECT TestedBy, COUNT(*) as count FROM TestHistories WHERE TestedBy IS NOT NULL GROUP BY TestedBy'
+    ).all() as { TestedBy: string; count: number }[]
 
-    return result.map((r) => ({
-      testedBy: r.testedBy ?? 'Unknown',
-      count: r._count.id,
-    }));
+    return rows.map(r => ({
+      testedBy: r.TestedBy ?? 'Unknown',
+      count: r.count,
+    }))
   },
 
   /**
    * Get test history counts by result
    */
-  async getCountByResult(): Promise<{ result: string; count: number }[]> {
-    const result = await prisma.testHistory.groupBy({
-      by: ['result'],
-      _count: { id: true },
-    });
+  getCountByResult(): { result: string; count: number }[] {
+    const rows = db.prepare(
+      'SELECT Result, COUNT(*) as count FROM TestHistories GROUP BY Result'
+    ).all() as { Result: string; count: number }[]
 
-    return result.map((r) => ({
-      result: r.result ?? 'Unknown',
-      count: r._count.id,
-    }));
+    return rows.map(r => ({
+      result: r.Result ?? 'Unknown',
+      count: r.count,
+    }))
   },
 
   /**
    * Get failure modes distribution
    */
-  async getFailureModeDistribution(): Promise<{ failureMode: string; count: number }[]> {
-    const result = await prisma.testHistory.groupBy({
-      by: ['failureMode'],
-      _count: { id: true },
-      where: {
-        failureMode: { not: null },
-        result: TestConstants.RESULT_FAILED,
-      },
-    });
+  getFailureModeDistribution(): { failureMode: string; count: number }[] {
+    const rows = db.prepare(
+      'SELECT FailureMode, COUNT(*) as count FROM TestHistories WHERE FailureMode IS NOT NULL AND Result = ? GROUP BY FailureMode'
+    ).all(TestConstants.RESULT_FAILED) as { FailureMode: string; count: number }[]
 
-    return result.map((r) => ({
-      failureMode: r.failureMode ?? 'Unknown',
-      count: r._count.id,
-    }));
+    return rows.map(r => ({
+      failureMode: r.FailureMode ?? 'Unknown',
+      count: r.count,
+    }))
   },
 
   /**
    * Delete history by ID
    */
-  async delete(id: number): Promise<void> {
-    await prisma.testHistory.delete({ where: { id } });
+  delete(id: number): void {
+    db.prepare('DELETE FROM TestHistories WHERE id = ?').run(id)
   },
 
   /**
    * Delete all history for an IO
    */
-  async deleteByIoId(ioId: number): Promise<number> {
-    const result = await prisma.testHistory.deleteMany({ where: { ioId } });
-    return result.count;
+  deleteByIoId(ioId: number): number {
+    const result = db.prepare('DELETE FROM TestHistories WHERE IoId = ?').run(ioId)
+    return result.changes
   },
 
   /**
    * Delete all test history
    */
-  async deleteAll(): Promise<number> {
-    const result = await prisma.testHistory.deleteMany();
-    return result.count;
+  deleteAll(): number {
+    const result = db.prepare('DELETE FROM TestHistories').run()
+    return result.changes
   },
 
   /**
    * Get total count
    */
-  async count(filters?: TestHistoryFilters): Promise<number> {
-    const where: NonNullable<Parameters<typeof prisma.testHistory.count>[0]>['where'] = {};
+  count(filters?: TestHistoryFilters): number {
+    const conditions: string[] = []
+    const params: any[] = []
 
     if (filters?.ioId) {
-      where.ioId = filters.ioId;
+      conditions.push('IoId = ?')
+      params.push(filters.ioId)
     }
 
     if (filters?.result) {
-      where.result = filters.result;
+      conditions.push('Result = ?')
+      params.push(filters.result)
     }
 
-    return prisma.testHistory.count({ where });
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    return (db.prepare(`SELECT COUNT(*) as count FROM TestHistories ${where}`).get(...params) as any).count
   },
 
   /**
    * Check if IO has any test history
    */
-  async hasHistory(ioId: number): Promise<boolean> {
-    const count = await prisma.testHistory.count({ where: { ioId } });
-    return count > 0;
+  hasHistory(ioId: number): boolean {
+    return (db.prepare('SELECT COUNT(*) as count FROM TestHistories WHERE IoId = ?').get(ioId) as any).count > 0
   },
-};
+}
 
-export default testHistoryRepository;
+export default testHistoryRepository

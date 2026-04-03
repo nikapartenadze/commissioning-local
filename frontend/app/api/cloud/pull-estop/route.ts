@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 
 /**
@@ -51,45 +51,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, zones: 0, message: 'No EStop data on cloud' })
     }
 
-    // Delete existing local EStop data
-    await prisma.eStopZone.deleteMany({})
+    // Delete existing local EStop data (cascade deletes EPCs, IO points, VFDs)
+    db.prepare('DELETE FROM EStopZones').run()
 
-    // Insert zones, EPCs, IO points, VFDs from cloud data
+    // Prepared statements
+    const insertZoneStmt = db.prepare(
+      'INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)'
+    )
+    const insertEpcStmt = db.prepare(
+      'INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)'
+    )
+    const insertIoPointStmt = db.prepare(
+      'INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)'
+    )
+    const insertVfdStmt = db.prepare(
+      'INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)'
+    )
+
     let totalEpcs = 0
     let totalIoPoints = 0
     let totalVfds = 0
 
     for (const zone of data.zones) {
-      await prisma.eStopZone.create({
-        data: {
-          name: zone.name,
-          epcs: {
-            create: (zone.epcs || []).map((epc: any) => {
-              totalEpcs++
-              return {
-                name: epc.name,
-                checkTag: epc.checkTag,
-                ioPoints: {
-                  create: (epc.ioPoints || []).map((io: any) => {
-                    totalIoPoints++
-                    return { tag: io.tag }
-                  }),
-                },
-                vfds: {
-                  create: (epc.vfds || []).map((vfd: any) => {
-                    totalVfds++
-                    return {
-                      tag: vfd.tag,
-                      stoTag: vfd.stoTag,
-                      mustStop: vfd.mustStop,
-                    }
-                  }),
-                },
-              }
-            }),
-          },
-        },
-      })
+      const zoneResult = insertZoneStmt.run(subsystemId, zone.name)
+      const zoneId = zoneResult.lastInsertRowid
+
+      for (const epc of (zone.epcs || [])) {
+        totalEpcs++
+        const epcResult = insertEpcStmt.run(zoneId, epc.name, epc.checkTag)
+        const epcId = epcResult.lastInsertRowid
+
+        for (const io of (epc.ioPoints || [])) {
+          totalIoPoints++
+          insertIoPointStmt.run(epcId, io.tag)
+        }
+
+        for (const vfd of (epc.vfds || [])) {
+          totalVfds++
+          insertVfdStmt.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
+        }
+      }
     }
 
     console.log(`[PullEStop] Imported ${data.zones.length} zones, ${totalEpcs} EPCs, ${totalIoPoints} IO points, ${totalVfds} VFDs`)

@@ -1,57 +1,48 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    
+
     // Handle single IO update
     if (body.Id) {
       const { Id, Result, State, Timestamp, Comments } = body
-      
-      const updatedIo = await prisma.io.update({
-        where: { id: Id },
-        data: {
-          result: Result,
-          // Note: State is a runtime PLC value, not stored in Io model
-          // State changes are tracked in TestHistory if needed
-          timestamp: Timestamp,
-          comments: Comments
-        }
-      })
+
+      const stmt = db.prepare(
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ? WHERE id = ?'
+      )
+      stmt.run(Result, Timestamp, Comments, Id)
+
+      const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(Id)
 
       return NextResponse.json({ success: true, io: updatedIo })
     }
-    
+
     // Handle batch IO updates
     if (body.Ios && Array.isArray(body.Ios)) {
-      const updates = body.Ios.map((io: any) => ({
-        where: { id: io.Id },
-        data: {
-          result: io.Result,
-          // Note: State is a runtime PLC value, not stored in Io model
-          timestamp: io.Timestamp,
-          comments: io.Comments
-        }
-      }))
+      const stmt = db.prepare(
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ? WHERE id = ?'
+      )
 
-      // Process updates in batches
-      const results = []
-      for (const update of updates) {
+      let updatedCount = 0
+      const totalCount = body.Ios.length
+
+      for (const io of body.Ios) {
         try {
-          const result = await prisma.io.update(update)
-          results.push(result)
+          const result = stmt.run(io.Result, io.Timestamp, io.Comments, io.Id)
+          if (result.changes > 0) updatedCount++
         } catch (error) {
-          console.error(`Failed to update IO ${update.where.id}:`, error)
+          console.error(`Failed to update IO ${io.Id}:`, error)
         }
       }
 
-      return NextResponse.json({ 
-        success: true, 
-        updatedCount: results.length,
-        totalCount: updates.length
+      return NextResponse.json({
+        success: true,
+        updatedCount,
+        totalCount
       })
     }
 

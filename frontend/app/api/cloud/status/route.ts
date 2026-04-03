@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server'
-import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
+import { db } from '@/lib/db-sqlite'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
@@ -23,7 +23,8 @@ import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 export async function GET(): Promise<NextResponse<CloudSyncStatusResponse>> {
   try {
     // Get pending sync count from database
-    const pendingSyncCount = await pendingSyncRepository.count()
+    const countRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }
+    const pendingSyncCount = countRow.cnt
 
     // Cloud sync service reads config from configService on demand
     const cloudSyncService = getCloudSyncService()
@@ -54,12 +55,13 @@ export async function GET(): Promise<NextResponse<CloudSyncStatusResponse>> {
     }
 
     // Get stats for additional info
-    const stats = await pendingSyncRepository.getStats()
+    const failedRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE RetryCount > 0').get() as { cnt: number }
+    const oldestRow = db.prepare('SELECT CreatedAt FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT 1').get() as { CreatedAt: string } | undefined
 
     return NextResponse.json({
       connected,
       pendingSyncCount,
-      lastSyncAttempt: stats.oldestTimestamp?.toISOString(),
+      lastSyncAttempt: oldestRow?.CreatedAt ?? undefined,
       error,
     })
   } catch (error) {
@@ -131,7 +133,8 @@ export async function POST(request: Request): Promise<NextResponse<CloudSyncStat
     }
 
     // Get pending sync count
-    const pendingSyncCount = await pendingSyncRepository.count()
+    const countRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }
+    const pendingSyncCount = countRow.cnt
 
     return NextResponse.json({
       connected,

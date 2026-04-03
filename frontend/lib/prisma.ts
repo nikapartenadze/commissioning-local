@@ -1,2 +1,2 @@
-// Re-export the canonical Prisma singleton from @/lib/db
-export { prisma } from './db'
+// Re-export db from db-sqlite as prisma for backward compatibility
+export { db as prisma } from './db-sqlite'

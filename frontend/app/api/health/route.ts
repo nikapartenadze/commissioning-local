@@ -1,13 +1,13 @@
 import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
     // Check database connectivity
-    await prisma.$queryRaw`SELECT 1`
-    
+    db.prepare('SELECT 1').get()
+
     return NextResponse.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
@@ -26,4 +26,3 @@ export async function GET() {
     )
   }
 }
-

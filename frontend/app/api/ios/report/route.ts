@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
+import type { Io, TestHistory } from '@/lib/db-sqlite'
 import { requireAuth } from '@/lib/auth/middleware'
 
 export const dynamic = 'force-dynamic'
@@ -18,53 +19,53 @@ export async function GET(request: NextRequest) {
 
     const subId = parseInt(subsystemId, 10)
 
-    const subsystem = await prisma.subsystem.findUnique({
-      where: { id: subId },
-      include: { project: { select: { name: true } } },
-    })
+    const subsystem = db.prepare(
+      'SELECT s.id, s.Name, p.Name as ProjectName FROM Subsystems s LEFT JOIN Projects p ON s.ProjectId = p.id WHERE s.id = ?'
+    ).get(subId) as { id: number; Name: string | null; ProjectName: string | null } | undefined
 
-    const ios = await prisma.io.findMany({
-      where: { subsystemId: subId },
-      orderBy: { order: 'asc' },
-    })
+    const ios = db.prepare(
+      'SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC'
+    ).all(subId) as Io[]
 
-    const failedIos = ios.filter(io => io.result === 'Failed' || io.result === 'Fail')
+    const failedIos = ios.filter(io => io.Result === 'Failed' || io.Result === 'Fail')
 
     // Get latest test history for ALL IOs (to get failure reasons)
-    const allHistories = await prisma.testHistory.findMany({
-      where: {
-        ioId: { in: ios.map(io => io.id) },
-      },
-      orderBy: { timestamp: 'desc' },
-    })
+    const ioIds = ios.map(io => io.id)
+    let allHistories: TestHistory[] = []
+    if (ioIds.length > 0) {
+      const placeholders = ioIds.map(() => '?').join(', ')
+      allHistories = db.prepare(
+        `SELECT * FROM TestHistories WHERE IoId IN (${placeholders}) ORDER BY Timestamp DESC`
+      ).all(...ioIds) as TestHistory[]
+    }
 
     // Get latest test history for failed IOs specifically
-    const failedHistories = allHistories.filter(h => h.result === 'Failed' || h.result === 'Fail')
+    const failedHistories = allHistories.filter(h => h.Result === 'Failed' || h.Result === 'Fail')
 
     // Map ioId -> latest failure info
     const failureMap = new Map<number, { failureMode: string | null; testedBy: string | null }>()
     for (const h of failedHistories) {
-      if (!failureMap.has(h.ioId)) {
-        failureMap.set(h.ioId, { failureMode: h.failureMode, testedBy: h.testedBy })
+      if (!failureMap.has(h.IoId)) {
+        failureMap.set(h.IoId, { failureMode: h.FailureMode, testedBy: h.TestedBy })
       }
     }
 
     // Map ioId -> latest test info (for the main table's reason + testedBy columns)
     const latestTestMap = new Map<number, { failureMode: string | null; testedBy: string | null }>()
     for (const h of allHistories) {
-      if (!latestTestMap.has(h.ioId)) {
-        latestTestMap.set(h.ioId, { failureMode: h.failureMode, testedBy: h.testedBy })
+      if (!latestTestMap.has(h.IoId)) {
+        latestTestMap.set(h.IoId, { failureMode: h.FailureMode, testedBy: h.TestedBy })
       }
     }
 
     const totalIos = ios.length
-    const passed = ios.filter(io => io.result === 'Passed' || io.result === 'Pass').length
+    const passed = ios.filter(io => io.Result === 'Passed' || io.Result === 'Pass').length
     const failed = failedIos.length
-    const notTested = ios.filter(io => !io.result || io.result === '').length
+    const notTested = ios.filter(io => !io.Result || io.Result === '').length
     const completionPct = totalIos > 0 ? (((passed + failed) / totalIos) * 100).toFixed(1) : '0.0'
 
-    const projectName = subsystem?.project?.name || 'Unknown Project'
-    const subsystemName = subsystem?.name || `Subsystem ${subId}`
+    const projectName = subsystem?.ProjectName || 'Unknown Project'
+    const subsystemName = subsystem?.Name || `Subsystem ${subId}`
     const reportDate = new Date().toLocaleDateString('en-US', {
       year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
     })
@@ -94,14 +95,14 @@ export async function GET(request: NextRequest) {
       const testInfo = latestTestMap.get(io.id)
       return `
       <tr>
-        <td>${esc(io.name)}</td>
-        <td>${esc(io.description)}</td>
-        <td style="${resultColor(io.result)}">${io.result || 'Not Tested'}</td>
+        <td>${esc(io.Name)}</td>
+        <td>${esc(io.Description)}</td>
+        <td style="${resultColor(io.Result)}">${io.Result || 'Not Tested'}</td>
         <td>${esc(testInfo?.failureMode) || ''}</td>
-        <td>${esc(io.tagType)}</td>
-        <td>${formatTs(io.timestamp)}</td>
+        <td>${esc(io.TagType)}</td>
+        <td>${formatTs(io.Timestamp)}</td>
         <td>${esc(testInfo?.testedBy) || ''}</td>
-        <td>${esc(io.comments)}</td>
+        <td>${esc(io.Comments)}</td>
       </tr>
     `}).join('')
 
@@ -109,11 +110,11 @@ export async function GET(request: NextRequest) {
       const info = failureMap.get(io.id)
       return `
         <tr>
-          <td>${esc(io.name)}</td>
-          <td>${esc(io.description)}</td>
+          <td>${esc(io.Name)}</td>
+          <td>${esc(io.Description)}</td>
           <td>${esc(info?.failureMode) || '—'}</td>
           <td>${esc(info?.testedBy) || '—'}</td>
-          <td>${esc(io.comments)}</td>
+          <td>${esc(io.Comments)}</td>
         </tr>
       `
     }).join('')

@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { db } from '@/lib/db-sqlite'
 import { requireAdmin } from '@/lib/auth/middleware'
 import { hashPin } from '@/lib/auth/password'
 import { revokeTokensForUser } from '@/lib/auth/jwt'
@@ -26,17 +26,14 @@ export async function PUT(
     return NextResponse.json({ message: 'New PIN must be exactly 6 digits' }, { status: 400 })
   }
 
-  const target = await prisma.user.findUnique({ where: { id } })
+  const target = db.prepare('SELECT id FROM Users WHERE id = ?').get(id)
   if (!target) {
     return NextResponse.json({ message: 'User not found' }, { status: 404 })
   }
 
   const hashedPin = await hashPin(newPin)
 
-  await prisma.user.update({
-    where: { id },
-    data: { pin: hashedPin },
-  })
+  db.prepare('UPDATE Users SET Pin = ? WHERE id = ?').run(hashedPin, id)
 
   // Revoke active tokens to force re-login with new PIN
   revokeTokensForUser(id.toString())

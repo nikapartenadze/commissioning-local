@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/db'
+import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 
 /**
@@ -53,64 +53,68 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, rings: 0, message: 'No network data on cloud' })
     }
 
-    // Delete existing local network data for this subsystem
-    // Find local subsystem — the subsystemId in config refers to the CLOUD subsystem ID.
-    // Locally we store it by the same subsystemId.
-    await prisma.networkRing.deleteMany({ where: { subsystemId } })
+    // Delete existing local network data for this subsystem (cascade deletes nodes/ports)
+    db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?').run(subsystemId)
 
-    // Insert rings, nodes, ports from cloud data
+    // Prepared statements
+    const insertRingStmt = db.prepare(
+      'INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)'
+    )
+    const insertNodeStmt = db.prepare(
+      'INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+    const insertPortStmt = db.prepare(
+      'INSERT INTO NetworkPorts (NodeId, PortNumber, DeviceName, DeviceIp, DeviceType, StatusTag) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+    const updatePortParentStmt = db.prepare(
+      'UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?'
+    )
+
     // Two-pass: first create all ports without parentPortId, then link sub-ports
     let totalNodes = 0
     let totalDevices = 0
-    const cloudIdToLocalId = new Map<number, number>() // cloud port ID → local port ID
+    const cloudIdToLocalId = new Map<number, number>() // cloud port ID -> local port ID
     const pendingParentLinks: { localPortId: number; cloudParentId: number }[] = []
 
     for (const ring of data.rings) {
-      const createdRing = await prisma.networkRing.create({
-        data: {
-          subsystemId,
-          name: ring.name,
-          mcmName: ring.mcmName,
-          mcmIp: ring.mcmIp || null,
-          mcmTag: ring.mcmTag || null,
-          nodes: {
-            create: (ring.nodes || []).map((node: any) => {
-              totalNodes++
-              return {
-                name: node.name,
-                position: node.position,
-                ipAddress: node.ipAddress || null,
-                statusTag: node.statusTag || null,
-                totalPorts: node.totalPorts || 28,
-                ports: {
-                  create: (node.ports || []).map((port: any) => {
-                    if (port.deviceName) totalDevices++
-                    return {
-                      portNumber: port.portNumber,
-                      deviceName: port.deviceName || null,
-                      deviceIp: port.deviceIp || null,
-                      deviceType: port.deviceType || null,
-                      statusTag: port.statusTag || null,
-                    }
-                  }),
-                },
-              }
-            }),
-          },
-        },
-        include: { nodes: { include: { ports: true } } },
-      })
+      const ringResult = insertRingStmt.run(
+        subsystemId,
+        ring.name,
+        ring.mcmName,
+        ring.mcmIp || null,
+        ring.mcmTag || null,
+      )
+      const ringId = ringResult.lastInsertRowid
 
-      // Build cloud ID → local ID mapping for parentPortId linking
-      for (const node of createdRing.nodes) {
-        const cloudNode = (ring.nodes || []).find((n: any) => n.name === node.name)
-        if (!cloudNode) continue
-        for (const localPort of node.ports) {
-          const cloudPort = (cloudNode.ports || []).find((p: any) => p.portNumber === localPort.portNumber)
-          if (cloudPort?.id) {
-            cloudIdToLocalId.set(cloudPort.id, localPort.id)
-            if (cloudPort.parentPortId) {
-              pendingParentLinks.push({ localPortId: localPort.id, cloudParentId: cloudPort.parentPortId })
+      for (const node of (ring.nodes || [])) {
+        totalNodes++
+        const nodeResult = insertNodeStmt.run(
+          ringId,
+          node.name,
+          node.position,
+          node.ipAddress || null,
+          node.statusTag || null,
+          node.totalPorts || 28,
+        )
+        const nodeId = nodeResult.lastInsertRowid
+
+        for (const port of (node.ports || [])) {
+          if (port.deviceName) totalDevices++
+          const portResult = insertPortStmt.run(
+            nodeId,
+            port.portNumber,
+            port.deviceName || null,
+            port.deviceIp || null,
+            port.deviceType || null,
+            port.statusTag || null,
+          )
+          const localPortId = Number(portResult.lastInsertRowid)
+
+          // Build cloud ID -> local ID mapping for parentPortId linking
+          if (port.id) {
+            cloudIdToLocalId.set(port.id, localPortId)
+            if (port.parentPortId) {
+              pendingParentLinks.push({ localPortId, cloudParentId: port.parentPortId })
             }
           }
         }
@@ -121,10 +125,7 @@ export async function POST(request: NextRequest) {
     for (const link of pendingParentLinks) {
       const localParentId = cloudIdToLocalId.get(link.cloudParentId)
       if (localParentId) {
-        await prisma.networkPort.update({
-          where: { id: link.localPortId },
-          data: { parentPortId: localParentId },
-        })
+        updatePortParentStmt.run(localParentId, link.localPortId)
       }
     }
 
