@@ -586,7 +586,7 @@ export function EnhancedIoDataGrid({
           <span className="text-muted-foreground ml-1">/ {ios.length}</span>
         </div>
 
-        {/* Assign Mode Toggle (admin only) */}
+        {/* Assign Mode Toggle — disabled for now
         {currentUser?.isAdmin && (
           <button
             onClick={() => setAssignMode(!assignMode)}
@@ -600,6 +600,7 @@ export function EnhancedIoDataGrid({
             {assignMode ? 'Exit Assign' : 'Assign'}
           </button>
         )}
+        */}
       </div>
 
       {/* Keyword Filter Pills */}
