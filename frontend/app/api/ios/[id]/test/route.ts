@@ -72,8 +72,8 @@ export async function POST(
       return NextResponse.json({ error: 'SPARE IOs cannot be tested' }, { status: 400 })
     }
 
-    // Block PASS if parent device is faulted (ConnectionFaulted = true)
-    if (normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
+    // Block testing if parent device is faulted (ConnectionFaulted = true)
+    {
       const { extractDeviceName } = await import('@/lib/db-sqlite')
       const deviceName = io.NetworkDeviceName || extractDeviceName(io.Name || '')
       if (deviceName) {
@@ -82,7 +82,7 @@ export async function POST(
         const faultState = client.tags.find(t => t.name === faultTag)
         if (faultState && faultState.state === 'TRUE') {
           return NextResponse.json(
-            { error: `Cannot pass — parent device ${deviceName} has a connection fault` },
+            { error: `Cannot test — parent device ${deviceName} has a connection fault. Fix the fault first.` },
             { status: 400 }
           )
         }
