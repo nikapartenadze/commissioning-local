@@ -155,6 +155,7 @@ export default function CommissioningPage() {
   }, [])
   const [networkStats, setNetworkStats] = useState<{ healthy: number; faulted: number; unknown: number }>({ healthy: 0, faulted: 0, unknown: 0 })
   const [faultedDevices, setFaultedDevices] = useState<Set<string>>(new Set())
+  const [deviceStatuses, setDeviceStatuses] = useState<Map<string, 'green' | 'red' | 'gray'>>(new Map())
   const [estopStats, setEstopStats] = useState<{ ok: number; failed: number; noData: number }>({ ok: 0, failed: 0, noData: 0 })
   const [showFireOutputDialog, setShowFireOutputDialog] = useState(false)
   const [showValueChangeDialog, setShowValueChangeDialog] = useState(false)
@@ -330,24 +331,36 @@ export default function CommissioningPage() {
                 faulted: values.filter(v => v === true).length,
                 unknown: values.filter(v => v === null || v === undefined).length,
               })
-              // Track faulted device names for IO testing warnings
+              // Track device statuses for IO grid column + faulted blocking
               const faulted = new Set<string>()
+              const statuses = new Map<string, 'green' | 'red' | 'gray'>()
               for (const [tagName, value] of Object.entries(tags)) {
-                if (value === true) {
-                  // Fault tag: "PDP04_FIOM1:I.ConnectionFaulted" → "PDP04_FIOM1"
-                  // Sub-port:  "PDP04_FIOM1_X4.Communication_Faulted" → "PDP04_FIOM1"
-                  const colonIdx = tagName.indexOf(':')
-                  let deviceName: string | null = null
-                  if (colonIdx > 0) {
-                    deviceName = tagName.substring(0, colonIdx)
+                const colonIdx = tagName.indexOf(':')
+                let deviceName: string | null = null
+                if (colonIdx > 0) {
+                  deviceName = tagName.substring(0, colonIdx)
+                } else {
+                  const fiomMatch = tagName.match(/^(.+?)_X\d/)
+                  deviceName = fiomMatch ? fiomMatch[1] : tagName.split('.')[0]
+                }
+                if (deviceName) {
+                  if (value === true) {
+                    faulted.add(deviceName)
+                    statuses.set(deviceName, 'red')
+                  } else if (value === false) {
+                    // Only set green if not already red (a device might have multiple tags)
+                    if (!statuses.has(deviceName) || statuses.get(deviceName) !== 'red') {
+                      statuses.set(deviceName, 'green')
+                    }
                   } else {
-                    const fiomMatch = tagName.match(/^(.+?)_X\d/)
-                    deviceName = fiomMatch ? fiomMatch[1] : tagName.split('.')[0]
+                    if (!statuses.has(deviceName)) {
+                      statuses.set(deviceName, 'gray')
+                    }
                   }
-                  if (deviceName) faulted.add(deviceName)
                 }
               }
               setFaultedDevices(faulted)
+              setDeviceStatuses(statuses)
             }
           }
         } catch {}
@@ -1570,6 +1583,7 @@ export default function CommissioningPage() {
             }}
             currentUser={currentUser ? { fullName: currentUser.fullName, isAdmin: currentUser.isAdmin } : null}
             faultedDevices={faultedDevices}
+            deviceStatuses={deviceStatuses}
           />
       </div>
       </>
