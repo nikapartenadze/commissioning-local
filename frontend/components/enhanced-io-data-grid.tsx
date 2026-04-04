@@ -727,7 +727,7 @@ export function EnhancedIoDataGrid({
               className="px-2 py-3 text-center text-xs font-bold text-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
             >
-              Device
+              Net Device
             </div>
             {showResultColumn && (
               <div
@@ -794,8 +794,11 @@ export function EnhancedIoDataGrid({
           >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const io = filteredIos[virtualRow.index]
-              const rowDeviceName = io.networkDeviceName || extractDeviceName(io.name)
-              const isDeviceFaulted = rowDeviceName ? faultedDevices.has(rowDeviceName) : false
+              // Only use networkDeviceName (set from cloud pull) — not extracted fallback
+              // IOs without a network device parent are always testable
+              const rowDeviceName = io.networkDeviceName || null
+              const deviceStatus = rowDeviceName ? deviceStatuses.get(rowDeviceName) : undefined
+              const isDeviceFaulted = deviceStatus === 'red'
               return (
                 <div
                   key={io.id}
@@ -894,15 +897,14 @@ export function EnhancedIoDataGrid({
                       {getStateDisplay(io.state)}
                     </div>
                   )}
-                  {/* Device Status — same style as State column */}
+                  {/* Network Device Status — same style as State column */}
                   <div
                     className="px-2 py-3 text-center flex-shrink-0 flex items-center justify-center"
                     style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
                   >
-                    {rowDeviceName ? (() => {
-                      const status = deviceStatuses.get(rowDeviceName)
-                      if (status === 'red') return <div className="w-6 h-6 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
-                      if (status === 'green') return <div className="w-6 h-6 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
+                    {rowDeviceName && deviceStatus ? (() => {
+                      if (deviceStatus === 'red') return <div className="w-6 h-6 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
+                      if (deviceStatus === 'green') return <div className="w-6 h-6 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
                       return <div className="w-6 h-6 rounded-full bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — Unknown`} />
                     })() : null}
                   </div>
