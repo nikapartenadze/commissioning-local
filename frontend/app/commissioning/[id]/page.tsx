@@ -1569,6 +1569,7 @@ export default function CommissioningPage() {
               setShowChangeRequestDialog(true)
             }}
             currentUser={currentUser ? { fullName: currentUser.fullName, isAdmin: currentUser.isAdmin } : null}
+            faultedDevices={faultedDevices}
           />
       </div>
       </>
