@@ -105,7 +105,7 @@ export function PlcToolbar({
           data-tour="start-button"
           size="lg"
           className={cn(
-            "h-11 sm:h-14 px-3 sm:px-6 text-sm sm:text-lg font-bold uppercase tracking-wider transition-all",
+            "h-11 sm:h-14 px-3 sm:px-6 min-w-[90px] sm:min-w-[130px] text-sm sm:text-lg font-bold uppercase tracking-wider transition-colors",
             isTesting
               ? "bg-red-600 hover:bg-red-700 text-white animate-pulse"
               : "bg-green-600 hover:bg-green-700 text-white"
