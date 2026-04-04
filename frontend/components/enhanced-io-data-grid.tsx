@@ -902,10 +902,10 @@ export function EnhancedIoDataGrid({
                     className="px-2 py-3 text-center flex-shrink-0 flex items-center justify-center"
                     style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
                   >
-                    {rowDeviceName && deviceStatus ? (() => {
+                    {rowDeviceName ? (() => {
                       if (deviceStatus === 'red') return <div className="w-6 h-6 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
                       if (deviceStatus === 'green') return <div className="w-6 h-6 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
-                      return <div className="w-6 h-6 rounded-full bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — Unknown`} />
+                      return <div className="w-6 h-6 rounded-full bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
                     })() : null}
                   </div>
                    {showResultColumn && (
