@@ -992,6 +992,17 @@ export default function CommissioningPage() {
   }
 
   const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
+    // Block if parent device is faulted
+    const failDeviceName = io.networkDeviceName || getDeviceName(io.name)
+    if (failDeviceName && faultedDevices.has(failDeviceName)) {
+      toast({
+        title: "Cannot test — device faulted",
+        description: `${failDeviceName} has a connection fault. Fix the fault first.`,
+        variant: "destructive"
+      })
+      return
+    }
+
     // Save previous state for rollback
     const previousResult = io.result
     const previousComments = io.comments

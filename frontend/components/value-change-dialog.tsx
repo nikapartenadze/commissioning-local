@@ -102,7 +102,7 @@ export function ValueChangeDialog({
                   Parent device is FAULTED — connection issue detected
                 </div>
                 <div className="text-xs text-center text-red-500 dark:text-red-400/80">
-                  Cannot mark as Pass while device has a connection fault. Fix the fault or mark as Fail.
+                  Cannot test — device has a connection fault. Fix the fault first.
                 </div>
               </div>
             )}
@@ -172,7 +172,7 @@ export function ValueChangeDialog({
               <Button variant="outline" onClick={handleCancel}>
                 Cancel
               </Button>
-              <Button variant="destructive" onClick={handleNo}>
+              <Button variant="destructive" onClick={handleNo} disabled={deviceFaulted}>
                 Fail
               </Button>
               <Button onClick={handleYes} disabled={deviceFaulted}>
