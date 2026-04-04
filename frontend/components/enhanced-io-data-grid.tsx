@@ -129,7 +129,7 @@ export function EnhancedIoDataGrid({
   const [showDiagnosticDialog, setShowDiagnosticDialog] = useState(false)
   const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
   const [moduleHealth, setModuleHealth] = useState<Record<string, 'ok' | 'warning' | 'error'>>({})
-  const [activeKeywordFilters, setActiveKeywordFilters] = useState<string[]>([])
+  const [activeKeywordFilters, setActiveKeywordFilters] = useState<Record<string, 'include' | 'exclude'>>({})
   const [assignMode, setAssignMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [users, setUsers] = useState<{ id: number; fullName: string }[]>([])
@@ -341,10 +341,38 @@ export function EnhancedIoDataGrid({
   }, [ios])
 
   const toggleKeywordFilter = (keyword: string) => {
-    setActiveKeywordFilters(prev =>
-      prev.includes(keyword) ? prev.filter(k => k !== keyword) : [...prev, keyword]
-    )
+    setActiveKeywordFilters(prev => {
+      const current = prev[keyword]
+      const next = { ...prev }
+      if (!current) {
+        next[keyword] = 'include'
+      } else if (current === 'include') {
+        next[keyword] = 'exclude'
+      } else {
+        delete next[keyword]
+      }
+      return next
+    })
   }
+
+  // Clean up stale keyword filters when available keywords change (e.g., after pulling different subsystem)
+  useEffect(() => {
+    const availableKeywords = new Set(keywordFilters.map(kf => kf.keyword))
+    setActiveKeywordFilters(prev => {
+      const keys = Object.keys(prev)
+      if (keys.length === 0) return prev
+      const cleaned: Record<string, 'include' | 'exclude'> = {}
+      let changed = false
+      for (const k of keys) {
+        if (availableKeywords.has(k)) {
+          cleaned[k] = prev[k]
+        } else {
+          changed = true
+        }
+      }
+      return changed ? cleaned : prev
+    })
+  }, [keywordFilters])
 
   // Pre-compute punchlist IO set for fast lookup
   const punchlistIoSet = useMemo(() => {
@@ -374,10 +402,14 @@ export function EnhancedIoDataGrid({
         if (!currentUser?.fullName || io.assignedTo !== currentUser.fullName) return false
       }
 
-      // Apply keyword filters (AND logic — must match ALL active keywords)
-      if (activeKeywordFilters.length > 0) {
+      // Apply keyword filters — include (AND): must match ALL; exclude: must match NONE
+      const activeEntries = Object.entries(activeKeywordFilters)
+      if (activeEntries.length > 0) {
         const text = `${io.name || ''} ${io.description || ''}`.toUpperCase()
-        if (!activeKeywordFilters.every(kw => text.includes(kw))) return false
+        const includes = activeEntries.filter(([, mode]) => mode === 'include')
+        const excludes = activeEntries.filter(([, mode]) => mode === 'exclude')
+        if (includes.length > 0 && !includes.every(([kw]) => text.includes(kw))) return false
+        if (excludes.length > 0 && excludes.some(([kw]) => text.includes(kw))) return false
       }
 
       if (filterTags.length === 0 && !searchTerm.trim()) return true
@@ -612,24 +644,31 @@ export function EnhancedIoDataGrid({
       {keywordFilters.length > 0 && (
         <div className="flex items-center gap-1.5 px-2 py-1.5 border-b bg-muted/20 flex-shrink-0 overflow-x-auto">
           <span className="text-[10px] text-[#C6941A] uppercase tracking-wider font-semibold shrink-0">Filter:</span>
-          {keywordFilters.map(({ keyword, count }) => (
+          {keywordFilters.map(({ keyword, count }) => {
+            const mode = activeKeywordFilters[keyword]
+            return (
+              <button
+                key={keyword}
+                onClick={() => toggleKeywordFilter(keyword)}
+                className={cn(
+                  "px-2 py-0.5 rounded-full text-xs font-medium transition-colors shrink-0",
+                  mode === 'include'
+                    ? "bg-primary text-primary-foreground"
+                    : mode === 'exclude'
+                    ? "bg-destructive text-destructive-foreground line-through"
+                    : "bg-muted border border-[#C6941A]/20 hover:border-[#C6941A]/50 text-muted-foreground hover:text-foreground"
+                )}
+                title={mode === 'include' ? 'Showing only — click to exclude' : mode === 'exclude' ? 'Excluding — click to clear' : 'Click to include, click again to exclude'}
+              >
+                {mode === 'exclude' && <span className="mr-0.5">-</span>}
+                {keyword}
+                <span className="ml-1 opacity-60">{count}</span>
+              </button>
+            )
+          })}
+          {Object.keys(activeKeywordFilters).length > 0 && (
             <button
-              key={keyword}
-              onClick={() => toggleKeywordFilter(keyword)}
-              className={cn(
-                "px-2 py-0.5 rounded-full text-xs font-medium transition-colors shrink-0",
-                activeKeywordFilters.includes(keyword)
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted border border-[#C6941A]/20 hover:border-[#C6941A]/50 text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {keyword}
-              <span className="ml-1 opacity-60">{count}</span>
-            </button>
-          ))}
-          {activeKeywordFilters.length > 0 && (
-            <button
-              onClick={() => setActiveKeywordFilters([])}
+              onClick={() => setActiveKeywordFilters({})}
               className="px-2 py-0.5 rounded-full text-xs text-muted-foreground hover:text-foreground"
             >
               Clear
