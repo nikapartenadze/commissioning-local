@@ -794,9 +794,8 @@ export function EnhancedIoDataGrid({
           >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const io = filteredIos[virtualRow.index]
-              // Only use networkDeviceName (set from cloud pull) — not extracted fallback
-              // IOs without a network device parent are always testable
-              const rowDeviceName = io.networkDeviceName || null
+              // Only show device status for IOs with a matching network topology device
+              const rowDeviceName = (io as any).hasNetworkDevice ? io.networkDeviceName : null
               const deviceStatus = rowDeviceName ? deviceStatuses.get(rowDeviceName) : undefined
               const isDeviceFaulted = deviceStatus === 'red'
               return (
