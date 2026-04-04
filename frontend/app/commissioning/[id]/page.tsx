@@ -775,13 +775,17 @@ export default function CommissioningPage() {
         setIos(prev => {
           if (prev.length === 0) return data // First load — set everything
           if (prev.length !== data.length) return data // Different count — full replace
-          // Same count — merge by updating only changed IOs
+          // Check if IDs match — if not, it's a different subsystem → full replace
+          const prevIds = new Set(prev.map(io => io.id))
+          const newIds = new Set(data.map((io: IoItem) => io.id))
+          const sameIds = data.every((io: IoItem) => prevIds.has(io.id)) && prev.every(io => newIds.has(io.id))
+          if (!sameIds) return data // Different IOs — full replace
+          // Same IOs — merge by updating only changed fields
           const newMap = new Map(data.map((io: IoItem) => [io.id, io]))
           let changed = false
           const merged = prev.map(io => {
             const updated = newMap.get(io.id)
             if (!updated) return io
-            // Check if anything actually changed
             if (io.result !== updated.result || io.comments !== updated.comments ||
                 io.timestamp !== updated.timestamp || io.name !== updated.name ||
                 io.description !== updated.description) {
