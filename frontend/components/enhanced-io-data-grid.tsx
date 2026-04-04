@@ -24,6 +24,7 @@ type IoItem = {
   tagType?: string | null
   failureMode?: string | null
   assignedTo?: string | null
+  networkDeviceName?: string | null
 }
 
 type TestHistory = {
@@ -53,6 +54,7 @@ interface EnhancedIoDataGridProps {
   activePunchlistId?: number | null
   onRequestChange?: (io: IoItem) => void
   currentUser?: { fullName: string; isAdmin: boolean } | null
+  faultedDevices?: Set<string>
 }
 
 // Column widths — responsive via hook
@@ -69,6 +71,7 @@ function useColumnWidths() {
     description: 180,
     ioPoint: 160,
     state: 60,
+    deviceStatus: 60,
     result: 80,
     timestamp: 0, // hidden on mobile
     comments: 0,  // hidden on mobile
@@ -81,6 +84,7 @@ function useColumnWidths() {
     description: 320,
     ioPoint: 260,
     state: 100,
+    deviceStatus: 90,
     result: 120,
     timestamp: 180,
     comments: 220,
@@ -112,7 +116,8 @@ export function EnhancedIoDataGrid({
   punchlists,
   activePunchlistId,
   onRequestChange,
-  currentUser
+  currentUser,
+  faultedDevices = new Set()
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -251,6 +256,18 @@ export function EnhancedIoDataGrid({
   const getModuleName = (ioName: string): string | null => {
     const colonIndex = ioName.indexOf(':')
     return colonIndex > 0 ? ioName.substring(0, colonIndex) : null
+  }
+
+  // Extract device name from tag name (same logic as commissioning page)
+  const extractDeviceName = (tagName: string | null | undefined): string | null => {
+    if (!tagName) return null
+    const colonIdx = tagName.indexOf(':')
+    if (colonIdx > 0) return tagName.substring(0, colonIdx)
+    const fiomMatch = tagName.match(/^(.+?)_X\d/)
+    if (fiomMatch) return fiomMatch[1]
+    const dotIdx = tagName.indexOf('.')
+    if (dotIdx > 0) return tagName.substring(0, dotIdx)
+    return tagName
   }
 
   const handleShowHistory = async (io: IoItem) => {
@@ -553,6 +570,7 @@ export function EnhancedIoDataGrid({
     COLUMN_WIDTHS.description +
     COLUMN_WIDTHS.ioPoint +
     (showStateColumn ? COLUMN_WIDTHS.state : 0) +
+    COLUMN_WIDTHS.deviceStatus +
     (showResultColumn ? COLUMN_WIDTHS.result : 0) +
     (showTimestamp ? COLUMN_WIDTHS.timestamp : 0) +
     (showComments ? COLUMN_WIDTHS.comments : 0) +
@@ -703,6 +721,12 @@ export function EnhancedIoDataGrid({
                 State
               </div>
             )}
+            <div
+              className="px-2 py-3 text-center text-xs font-bold text-foreground uppercase flex-shrink-0"
+              style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
+            >
+              Device
+            </div>
             {showResultColumn && (
               <div
                 className="px-4 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
@@ -768,6 +792,8 @@ export function EnhancedIoDataGrid({
           >
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const io = filteredIos[virtualRow.index]
+              const rowDeviceName = io.networkDeviceName || extractDeviceName(io.name)
+              const isDeviceFaulted = rowDeviceName ? faultedDevices.has(rowDeviceName) : false
               return (
                 <div
                   key={io.id}
@@ -777,7 +803,8 @@ export function EnhancedIoDataGrid({
                     "transition-colors border-b border-border absolute left-0 w-full flex group",
                     isTesting ? "cursor-pointer" : "cursor-default",
                     getRowClassName(io),
-                    currentTestIo?.id === io.id && "border-l-4 border-l-primary"
+                    currentTestIo?.id === io.id && "border-l-4 border-l-primary",
+                    isDeviceFaulted && "opacity-40 pointer-events-none"
                   )}
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
@@ -865,6 +892,19 @@ export function EnhancedIoDataGrid({
                       {getStateDisplay(io.state)}
                     </div>
                   )}
+                  {/* Device Status */}
+                  <div
+                    className="px-2 py-3 text-center flex-shrink-0 flex items-center justify-center"
+                    style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
+                  >
+                    {rowDeviceName ? (
+                      isDeviceFaulted ? (
+                        <span className="w-3 h-3 rounded-full bg-red-500" title={`${rowDeviceName} — FAULTED`} />
+                      ) : (
+                        <span className="w-3 h-3 rounded-full bg-green-500" title={`${rowDeviceName} — OK`} />
+                      )
+                    ) : null}
+                  </div>
                    {showResultColumn && (
                      <div
                        className="px-4 py-2 flex items-center justify-center flex-shrink-0"
