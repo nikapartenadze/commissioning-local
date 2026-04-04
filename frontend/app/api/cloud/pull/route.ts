@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db-sqlite'
+import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
 import type { CloudPullResponse } from '@/lib/cloud/types'
@@ -209,7 +209,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       }
 
       // Auto-populate networkDeviceName from tag name for any IOs still missing it
-      const { extractDeviceName } = await import('@/lib/db-sqlite')
+      // extractDeviceName imported at top of file
       const iosWithoutDevice = db.prepare(
         'SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL AND Name IS NOT NULL'
       ).all() as { id: number; Name: string }[]
