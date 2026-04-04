@@ -296,38 +296,28 @@ export function EnhancedIoDataGrid({
     setSearchTerm('')
   }
 
-  // Auto-detect keyword filters from IO descriptions and names
+  // Auto-detect keyword filters from IO descriptions only
   const keywordFilters = useMemo(() => {
     if (ios.length === 0) return []
 
-    // Common industrial keywords to look for
+    // Common industrial keywords to look for in descriptions
     const KEYWORDS = [
-      'PE', 'LPE', 'TPE', 'FPE',
-      'VFD', 'AUX', 'FIOM', 'PMM', 'SIO',
-      'MOTOR', 'PHOTO', 'PROX', 'SAFETY',
-      'DISCONNECT', 'TRACKING',
       'SPARE',
+      'VFD', 'DISCONNECT', 'AUX',
+      'MOTOR', 'PHOTO', 'PROX', 'SAFETY',
+      'TRACKING', 'SIO', 'FIOM', 'PMM',
+      'PE', 'LPE', 'TPE', 'FPE',
     ]
 
-    // Count occurrences across all IOs
+    // Count occurrences in descriptions only
     const counts: Record<string, number> = {}
     for (const io of ios) {
-      const text = `${io.name || ''} ${io.description || ''}`.toUpperCase()
+      const desc = (io.description || '').toUpperCase()
+      if (!desc) continue
       for (const kw of KEYWORDS) {
-        if (text.includes(kw)) {
+        if (desc.includes(kw)) {
           counts[kw] = (counts[kw] || 0) + 1
         }
-      }
-    }
-
-    // Also detect module prefixes (e.g., NCP1_1, UL26_19) from IO names
-    const modulePrefixes: Record<string, number> = {}
-    for (const io of ios) {
-      const name = io.name || ''
-      const match = name.match(/^([A-Z]+\d+_\d+)_/)
-      if (match) {
-        const prefix = match[1]
-        modulePrefixes[prefix] = (modulePrefixes[prefix] || 0) + 1
       }
     }
 
@@ -402,14 +392,14 @@ export function EnhancedIoDataGrid({
         if (!currentUser?.fullName || io.assignedTo !== currentUser.fullName) return false
       }
 
-      // Apply keyword filters — include (AND): must match ALL; exclude: must match NONE
+      // Apply keyword filters on description — include (AND): must match ALL; exclude: must match NONE
       const activeEntries = Object.entries(activeKeywordFilters)
       if (activeEntries.length > 0) {
-        const text = `${io.name || ''} ${io.description || ''}`.toUpperCase()
+        const desc = (io.description || '').toUpperCase()
         const includes = activeEntries.filter(([, mode]) => mode === 'include')
         const excludes = activeEntries.filter(([, mode]) => mode === 'exclude')
-        if (includes.length > 0 && !includes.every(([kw]) => text.includes(kw))) return false
-        if (excludes.length > 0 && excludes.some(([kw]) => text.includes(kw))) return false
+        if (includes.length > 0 && !includes.every(([kw]) => desc.includes(kw))) return false
+        if (excludes.length > 0 && excludes.some(([kw]) => desc.includes(kw))) return false
       }
 
       if (filterTags.length === 0 && !searchTerm.trim()) return true

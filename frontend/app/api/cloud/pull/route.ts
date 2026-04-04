@@ -208,14 +208,15 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         }
       }
 
-      // Auto-populate networkDeviceName from tag name prefix for any IOs still missing it
+      // Auto-populate networkDeviceName from tag name for any IOs still missing it
+      const { extractDeviceName } = await import('@/lib/db-sqlite')
       const iosWithoutDevice = db.prepare(
         'SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL AND Name IS NOT NULL'
       ).all() as { id: number; Name: string }[]
 
       const updateDeviceStmt = db.prepare('UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?')
       for (const io of iosWithoutDevice) {
-        const deviceName = io.Name?.split(':')[0]
+        const deviceName = extractDeviceName(io.Name)
         if (deviceName) {
           updateDeviceStmt.run(deviceName, io.id)
         }

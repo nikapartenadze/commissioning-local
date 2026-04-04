@@ -337,6 +337,27 @@ export function ioToApi(row: Io) {
 }
 
 /** Check database health */
+/**
+ * Extract the parent network device name from an IO tag name.
+ * Handles both formats:
+ *   "NCP1_8_VFD:I.In_0"         → "NCP1_8_VFD"    (colon-separated)
+ *   "PDP04_FIOM1_X5.PIN4_DI"    → "PDP04_FIOM1"   (FIOM sub-port, _X\d pattern)
+ *   "SLOT5_IB16:I.Data.0"       → "SLOT5_IB16"    (local slot module)
+ */
+export function extractDeviceName(tagName: string): string | null {
+  if (!tagName) return null
+  // Format 1: colon-separated (most common)
+  const colonIdx = tagName.indexOf(':')
+  if (colonIdx > 0) return tagName.substring(0, colonIdx)
+  // Format 2: FIOM sub-port (_X0-X9 then .PIN or .Communication)
+  const fiomMatch = tagName.match(/^(.+?)_X\d/)
+  if (fiomMatch) return fiomMatch[1]
+  // Format 3: dot-separated without colon (rare)
+  const dotIdx = tagName.indexOf('.')
+  if (dotIdx > 0) return tagName.substring(0, dotIdx)
+  return tagName
+}
+
 export function checkDatabaseHealth(): boolean {
   try {
     db.prepare('SELECT 1').get()
