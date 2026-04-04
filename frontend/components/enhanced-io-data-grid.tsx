@@ -55,6 +55,7 @@ interface EnhancedIoDataGridProps {
   onRequestChange?: (io: IoItem) => void
   currentUser?: { fullName: string; isAdmin: boolean } | null
   faultedDevices?: Set<string>
+  deviceStatuses?: Map<string, 'green' | 'red' | 'gray'>
 }
 
 // Column widths — responsive via hook
@@ -117,7 +118,8 @@ export function EnhancedIoDataGrid({
   activePunchlistId,
   onRequestChange,
   currentUser,
-  faultedDevices = new Set()
+  faultedDevices = new Set(),
+  deviceStatuses = new Map()
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -892,18 +894,17 @@ export function EnhancedIoDataGrid({
                       {getStateDisplay(io.state)}
                     </div>
                   )}
-                  {/* Device Status */}
+                  {/* Device Status — same style as State column */}
                   <div
                     className="px-2 py-3 text-center flex-shrink-0 flex items-center justify-center"
                     style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
                   >
-                    {rowDeviceName ? (
-                      isDeviceFaulted ? (
-                        <span className="w-3 h-3 rounded-full bg-red-500" title={`${rowDeviceName} — FAULTED`} />
-                      ) : (
-                        <span className="w-3 h-3 rounded-full bg-green-500" title={`${rowDeviceName} — OK`} />
-                      )
-                    ) : null}
+                    {rowDeviceName ? (() => {
+                      const status = deviceStatuses.get(rowDeviceName)
+                      if (status === 'red') return <div className="w-6 h-6 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
+                      if (status === 'green') return <div className="w-6 h-6 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
+                      return <div className="w-6 h-6 rounded-full bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — Unknown`} />
+                    })() : null}
                   </div>
                    {showResultColumn && (
                      <div
