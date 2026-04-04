@@ -27,15 +27,25 @@ export async function GET(request: Request) {
     console.log(`[IOs API] Got ${count} tags from PLC client`)
     const stateMap = new Map(tags.map(t => [t.id, t.state]))
 
+    // Get actual network device names from topology data
+    const networkDevices = new Set(
+      (db.prepare('SELECT DISTINCT DeviceName FROM NetworkPorts WHERE DeviceName IS NOT NULL').all() as { DeviceName: string }[])
+        .map(r => r.DeviceName)
+    )
+
     // Merge PLC states with IO data
-    const iosWithState = ios.map(io => ({
-      ...ioToApi(io),
-      state: stateMap.get(io.id) ?? null,
-      isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO'),
-      hasResult: !!io.Result,
-      isPassed: io.Result === 'Passed',
-      isFailed: io.Result === 'Failed'
-    }))
+    const iosWithState = ios.map(io => {
+      const deviceName = io.NetworkDeviceName
+      return {
+        ...ioToApi(io),
+        state: stateMap.get(io.id) ?? null,
+        hasNetworkDevice: deviceName ? networkDevices.has(deviceName) : false,
+        isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO'),
+        hasResult: !!io.Result,
+        isPassed: io.Result === 'Passed',
+        isFailed: io.Result === 'Failed'
+      }
+    })
 
     return NextResponse.json(iosWithState)
   } catch (error) {
