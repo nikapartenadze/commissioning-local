@@ -74,7 +74,8 @@ export async function POST(
 
     // Block PASS if parent device is faulted (ConnectionFaulted = true)
     if (normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
-      const deviceName = io.NetworkDeviceName || io.Name?.split(':')[0]
+      const { extractDeviceName } = await import('@/lib/db-sqlite')
+      const deviceName = io.NetworkDeviceName || extractDeviceName(io.Name || '')
       if (deviceName) {
         const client = getPlcTags()
         const faultTag = `${deviceName}:I.ConnectionFaulted`
