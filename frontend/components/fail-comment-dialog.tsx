@@ -63,21 +63,21 @@ export function FailCommentDialog({
         const response = await fetch(`${API_ENDPOINTS.diagnosticFailureModes}?tagType=${encodeURIComponent(io.tagType)}`)
         if (response.ok) {
           const modes = await response.json()
-          // Remove "Other" from API list, add it last
-          const withoutOther = modes.filter((m: string) => m !== 'Other')
-          setFailureModes([...withoutOther, 'Other'])
+          // Remove "Other" and "Not Installed" from API list, add them in correct order
+          const filtered = modes.filter((m: string) => m !== 'Other' && m !== 'Not Installed')
+          setFailureModes(['Not Installed', ...filtered, 'Other'])
         } else {
           // Fallback to generic modes
-          setFailureModes(['No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Other'])
+          setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Other'])
         }
       } else {
         // Generic failure modes if no tag type
-        setFailureModes(['No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Configuration error', 'Other'])
+        setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Configuration error', 'Other'])
       }
     } catch (error) {
       console.error('Error loading failure modes:', error)
       // Fallback to generic modes
-      setFailureModes(['No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Other'])
+      setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Other'])
     } finally {
       setLoadingModes(false)
     }
