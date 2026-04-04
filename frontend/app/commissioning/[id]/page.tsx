@@ -1282,6 +1282,21 @@ export default function CommissioningPage() {
   }
 
   const handleToggleTesting = async () => {
+    // Optimistic UI update — toggle immediately
+    const newTestingState = !plcStatus.isTesting
+    setPlcStatus(prev => ({ ...prev, isTesting: newTestingState }))
+
+    // If stopping, clear dialogs immediately
+    if (!newTestingState) {
+      setDialogQueue([])
+      setCurrentDialogIo(null)
+      setPendingFailIo(null)
+      setShowValueChangeDialog(false)
+      setShowFailCommentDialog(false)
+      setShowFireOutputDialog(false)
+      localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
+    }
+
     try {
       const response = await authFetch(API_ENDPOINTS.testingToggle, {
         method: 'POST',
@@ -1293,20 +1308,7 @@ export default function CommissioningPage() {
         const result = await response.json()
         logger.log('Testing toggled:', result.isTesting)
 
-        // If testing is being turned OFF, clear all pending dialogs
-        if (!result.isTesting) {
-          setDialogQueue([])
-          setCurrentDialogIo(null)
-          setPendingFailIo(null)
-          setShowValueChangeDialog(false)
-          setShowFailCommentDialog(false)
-          setShowFireOutputDialog(false)
-          localStorage.removeItem(DIALOG_QUEUE_STORAGE_KEY)
-          if (DEBUG_OTHER) {
-            console.log('🛑 Testing stopped - cleared all pending dialogs')
-          }
-        }
-
+        // Sync with server state (in case it differs from optimistic)
         setPlcStatus(prev => ({
           ...prev,
           isTesting: result.isTesting
@@ -1317,6 +1319,8 @@ export default function CommissioningPage() {
       }
     } catch (error) {
       logger.error('Error toggling testing:', error)
+      // Revert optimistic update on error
+      setPlcStatus(prev => ({ ...prev, isTesting: !newTestingState }))
     }
   }
 
