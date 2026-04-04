@@ -283,7 +283,7 @@ export function PlcToolbar({
         </div>
 
         {/* Progress Bar - Flex grow to fill space */}
-        <div className="flex-1 mx-1 sm:mx-4 min-w-[100px] sm:min-w-[200px] order-last sm:order-none w-full sm:w-auto">
+        <div className="flex-1 mx-1 sm:mx-4 min-w-[100px] sm:min-w-[200px]">
           <div className="flex items-center gap-3">
             <div className="flex-1 h-6 sm:h-8 bg-muted rounded-full overflow-hidden relative">
               {/* Passed portion (green) */}
