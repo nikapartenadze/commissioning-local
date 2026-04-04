@@ -72,6 +72,22 @@ export async function POST(
       return NextResponse.json({ error: 'SPARE IOs cannot be tested' }, { status: 400 })
     }
 
+    // Block PASS if parent device is faulted (ConnectionFaulted = true)
+    if (normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
+      const deviceName = io.NetworkDeviceName || io.Name?.split(':')[0]
+      if (deviceName) {
+        const client = getPlcTags()
+        const faultTag = `${deviceName}:I.ConnectionFaulted`
+        const faultState = client.tags.find(t => t.name === faultTag)
+        if (faultState && faultState.state === 'TRUE') {
+          return NextResponse.json(
+            { error: `Cannot pass — parent device ${deviceName} has a connection fault` },
+            { status: 400 }
+          )
+        }
+      }
+    }
+
     // Get current PLC state
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)
