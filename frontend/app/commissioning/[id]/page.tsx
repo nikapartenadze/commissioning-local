@@ -44,6 +44,18 @@ import { logger } from "@/lib/logger"
 const DEBUG_FIRE = true      // Fire output logs
 const DEBUG_OTHER = false    // All other logs
 
+/** Extract parent device name from IO tag name */
+function getDeviceName(tagName: string | null | undefined): string | null {
+  if (!tagName) return null
+  const colonIdx = tagName.indexOf(':')
+  if (colonIdx > 0) return tagName.substring(0, colonIdx)
+  const fiomMatch = tagName.match(/^(.+?)_X\d/)
+  if (fiomMatch) return fiomMatch[1]
+  const dotIdx = tagName.indexOf('.')
+  if (dotIdx > 0) return tagName.substring(0, dotIdx)
+  return tagName
+}
+
 interface IoItem {
   id: number
   name: string
@@ -322,7 +334,16 @@ export default function CommissioningPage() {
               const faulted = new Set<string>()
               for (const [tagName, value] of Object.entries(tags)) {
                 if (value === true) {
-                  const deviceName = tagName.split(':')[0]
+                  // Fault tag: "PDP04_FIOM1:I.ConnectionFaulted" → "PDP04_FIOM1"
+                  // Sub-port:  "PDP04_FIOM1_X4.Communication_Faulted" → "PDP04_FIOM1"
+                  const colonIdx = tagName.indexOf(':')
+                  let deviceName: string | null = null
+                  if (colonIdx > 0) {
+                    deviceName = tagName.substring(0, colonIdx)
+                  } else {
+                    const fiomMatch = tagName.match(/^(.+?)_X\d/)
+                    deviceName = fiomMatch ? fiomMatch[1] : tagName.split('.')[0]
+                  }
                   if (deviceName) faulted.add(deviceName)
                 }
               }
@@ -711,7 +732,7 @@ export default function CommissioningPage() {
             const isSpare = io.description?.toUpperCase().includes('SPARE')
             const isTrigger = currentPlcStatus.isTesting && stateActuallyChanged && update.State === 'TRUE'
             // Device prefix: everything before the first ":"
-            const devicePrefix = io.name?.split(':')[0] || ''
+            const devicePrefix = getDeviceName(io.name) || ''
 
             if (isTrigger && isSpare) {
               // SPARE triggered — delay 500ms, show info modal UNLESS a non-SPARE from same device fires first
@@ -916,7 +937,7 @@ export default function CommissioningPage() {
 
   const handleMarkPassed = async (io: IoItem) => {
     // Block if parent device is faulted
-    const deviceName = io.networkDeviceName || io.name?.split(':')[0]
+    const deviceName = io.networkDeviceName || getDeviceName(io.name)
     if (deviceName && faultedDevices.has(deviceName)) {
       toast({
         title: "Cannot pass — device faulted",
@@ -1593,7 +1614,7 @@ export default function CommissioningPage() {
           remainingCount={dialogQueue.length}
           deviceFaulted={(() => {
             const io = currentDialogIo ? ios.find(i => i.id === currentDialogIo.id) : null
-            const deviceName = io?.networkDeviceName || io?.name?.split(':')[0]
+            const deviceName = io?.networkDeviceName || getDeviceName(io?.name)
             return deviceName ? faultedDevices.has(deviceName) : false
           })()}
           onYes={handleValueChangeYes}
