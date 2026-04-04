@@ -911,6 +911,17 @@ export default function CommissioningPage() {
   }
 
   const handleMarkPassed = async (io: IoItem) => {
+    // Block if parent device is faulted
+    const deviceName = io.networkDeviceName || io.name?.split(':')[0]
+    if (deviceName && faultedDevices.has(deviceName)) {
+      toast({
+        title: "Cannot pass — device faulted",
+        description: `${deviceName} has a connection fault. Fix the fault before marking as Pass.`,
+        variant: "destructive"
+      })
+      return
+    }
+
     // Save previous state for rollback
     const previousResult = io.result
     const previousTimestamp = io.timestamp
