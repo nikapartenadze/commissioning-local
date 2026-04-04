@@ -130,7 +130,7 @@ export function PlcToolbar({
         <div className="w-px h-10 bg-border hidden sm:block" />
 
         {/* Contextual stat cards based on active tab */}
-        <div className="flex items-center gap-0.5 sm:gap-1">
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {activeTab === 'io' && (
             <>
               <button
@@ -313,7 +313,7 @@ export function PlcToolbar({
         <div className="w-px h-10 bg-border hidden sm:block" />
 
         {/* Action Buttons */}
-        <div className="flex items-center gap-0.5 sm:gap-1">
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           <Button
             variant="ghost"
             size="lg"
@@ -375,7 +375,7 @@ export function PlcToolbar({
         <div className="w-px h-10 bg-border hidden sm:block" />
 
         {/* Status & Config */}
-        <div className="flex items-center gap-0.5 sm:gap-1">
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* Simulator Toggle - Admin only */}
           {currentUser?.isAdmin && onToggleSimulator && (
             <Button
