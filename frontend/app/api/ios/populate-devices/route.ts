@@ -1,20 +1,17 @@
 export const dynamic = 'force-dynamic'
 
 import { NextResponse } from 'next/server'
-import { db } from '@/lib/db-sqlite'
+import { db, extractDeviceName } from '@/lib/db-sqlite'
 
 export async function POST() {
   try {
-    // Fetch all IOs where NetworkDeviceName is null and Name contains ':'
     const ios = db.prepare(
-      "SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL AND Name LIKE '%:%'"
+      "SELECT id, Name FROM Ios WHERE Name IS NOT NULL"
     ).all() as { id: number; Name: string }[]
 
-    // Group IOs by their device prefix for efficient batch updates
     const groups = new Map<string, number[]>()
     for (const io of ios) {
-      const colonIndex = io.Name.indexOf(':')
-      const deviceName = io.Name.substring(0, colonIndex)
+      const deviceName = extractDeviceName(io.Name)
       if (!deviceName) continue
 
       const ids = groups.get(deviceName) ?? []
@@ -22,7 +19,6 @@ export async function POST() {
       groups.set(deviceName, ids)
     }
 
-    // Batch update each group
     let updatedCount = 0
     const updateStmt = db.prepare(
       'UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?'
