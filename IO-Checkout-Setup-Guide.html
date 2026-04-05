@@ -80,11 +80,11 @@
   <h1>IO Checkout Tool</h1>
   <p class="subtitle">Setup & User Guide</p>
   <p class="subtitle" style="font-size:15px; color:#94a3b8;">Industrial I/O Commissioning Application</p>
-  <span class="version">v2.9</span>
+  <span class="version">v2.10</span>
   <div class="meta" style="margin-top: 40px;">
     <span>For: Field Technicians & System Administrators</span>
     <span>Platform: Windows Tablet / Desktop</span>
-    <span>Last Updated: March 2026</span>
+    <span>Last Updated: April 2026</span>
   </div>
 </div>
 
@@ -130,7 +130,7 @@
 
 <p>Regardless of installation method, the first startup involves:</p>
 <ol>
-  <li>Application starts on <strong>port 3000</strong> (HTTP) and <strong>port 3002</strong> (WebSocket)</li>
+  <li>Application starts on <strong>port 3000</strong> (HTTP + WebSocket on <code>/ws</code> path)</li>
   <li>A blank SQLite database is created automatically</li>
   <li>A default <code>config.json</code> file is generated</li>
   <li>The default admin account is ready with PIN <code>111111</code></li>
@@ -142,12 +142,11 @@
 
 <h3 id="firewall">1.2 Firewall Setup</h3>
 
-<p>Two ports are required for other devices (tablets, laptops) to connect:</p>
+<p>One port is required for other devices (tablets, laptops) to connect:</p>
 
 <table>
   <tr><th>Port</th><th>Protocol</th><th>Purpose</th></tr>
-  <tr><td><code>3000</code></td><td>TCP</td><td>Web UI — technicians access this in their browser</td></tr>
-  <tr><td><code>3002</code></td><td>TCP</td><td>WebSocket — real-time PLC state updates</td></tr>
+  <tr><td><code>3000</code></td><td>TCP</td><td>Web UI + WebSocket — all traffic uses this single port</td></tr>
 </table>
 
 <div class="tip">
@@ -173,7 +172,7 @@
 </div>
 <div class="step">
   <div class="step-num">3</div>
-  <div class="step-content">Open a browser and navigate to <code>http://localhost:3000</code> (or <code>http://SERVER_IP:3000</code> from another device).</div>
+  <div class="step-content">Open a browser and navigate to <code>http://localhost:3000</code> (or <code>http://{{SERVER_IP}}:3000</code> from another device).</div>
 </div>
 
 <h4>Stopping the Application</h4>
@@ -240,7 +239,7 @@ nssm stop IOCheckout
 
 <div class="step">
   <div class="step-num">1</div>
-  <div class="step-content">Open the application in a browser: <code>http://SERVER_IP:3000</code></div>
+  <div class="step-content">Open the application in a browser: <code>http://{{SERVER_IP}}:3000</code> (replace <code>{{SERVER_IP}}</code> with the actual IP address of the server — run <code>STATUS.bat</code> to find it)</div>
 </div>
 <div class="step">
   <div class="step-num">2</div>
@@ -541,8 +540,7 @@ nssm stop IOCheckout
 <h3>Ports</h3>
 <table>
   <tr><th>Port</th><th>Purpose</th><th>Firewall</th></tr>
-  <tr><td><code>3000</code></td><td>Web UI (HTTP)</td><td>Open</td></tr>
-  <tr><td><code>3002</code></td><td>WebSocket (real-time updates)</td><td>Open</td></tr>
+  <tr><td><code>3000</code></td><td>Web UI + WebSocket (all traffic)</td><td>Open</td></tr>
   <tr><td><code>3102</code></td><td>Internal broadcast API</td><td>Do NOT open</td></tr>
 </table>
 
@@ -572,8 +570,8 @@ nssm stop IOCheckout
 </table>
 
 <div style="text-align:center; margin-top:60px; padding-top:20px; border-top:1px solid #e2e8f0; color:#94a3b8; font-size:13px;">
-  <p>IO Checkout Tool v2.9 — Setup & User Guide</p>
-  <p>LCI Engineering &bull; March 2026</p>
+  <p>IO Checkout Tool v2.10 — Setup & User Guide</p>
+  <p>LCI Engineering &bull; April 2026</p>
 </div>
 
 </body>
