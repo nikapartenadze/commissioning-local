@@ -27,7 +27,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { UserMenu } from "@/components/user-menu"
-import { Download, Settings, BarChart3, History } from "lucide-react"
+import { Download, Settings, BarChart3, History, VolumeX } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import {
   PlcConfig,
@@ -189,6 +189,33 @@ export default function CommissioningPage() {
   const [tagStatus, setTagStatus] = useState<TagStatus | null>(null)
   const [showTagStatusDialog, setShowTagStatusDialog] = useState(false)
   const [showTour, setShowTour] = useState(false)
+
+  // Muted IOs — suppress dialog triggers for noisy IOs
+  const [mutedIos, setMutedIos] = useState<Set<number>>(new Set())
+
+  const toggleMuteIo = (ioId: number) => {
+    setMutedIos(prev => {
+      const next = new Set(prev)
+      if (next.has(ioId)) next.delete(ioId)
+      else next.add(ioId)
+      return next
+    })
+  }
+
+  // Load muted IOs from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('muted-ios')
+    if (saved) {
+      try {
+        setMutedIos(new Set(JSON.parse(saved)))
+      } catch {}
+    }
+  }, [])
+
+  // Save muted IOs to localStorage on change
+  useEffect(() => {
+    localStorage.setItem('muted-ios', JSON.stringify(Array.from(mutedIos)))
+  }, [mutedIos])
 
   // localStorage key for dialog queue persistence
   const DIALOG_QUEUE_STORAGE_KEY = 'io-checkout-dialog-queue'
@@ -486,6 +513,7 @@ export default function CommissioningPage() {
   const previousStatesRef = useRef(previousStates)
   const currentUserRef = useRef(currentUser)
   const faultedDevicesRef = useRef(faultedDevices)
+  const mutedIosRef = useRef(mutedIos)
 
   // Keep refs updated
   useEffect(() => {
@@ -507,6 +535,10 @@ export default function CommissioningPage() {
   useEffect(() => {
     faultedDevicesRef.current = faultedDevices
   }, [faultedDevices])
+
+  useEffect(() => {
+    mutedIosRef.current = mutedIos
+  }, [mutedIos])
 
   // Handle SignalR testing state changes
   useEffect(() => {
@@ -787,6 +819,15 @@ export default function CommissioningPage() {
             const isTrigger = currentPlcStatus.isTesting && stateActuallyChanged && update.State === 'TRUE'
             // Device prefix: everything before the first ":"
             const devicePrefix = getDeviceName(io.name) || ''
+
+            // Don't trigger dialog for muted IOs
+            if (isTrigger && mutedIosRef.current.has(io.id)) {
+              setPreviousStates(prev => ({
+                ...prev,
+                [io.id]: update.State
+              }))
+              return updatedIo
+            }
 
             if (isTrigger && isSpare) {
               // SPARE triggered — delay 500ms, add to dialog queue UNLESS a non-SPARE from same device fires first
@@ -1614,6 +1655,24 @@ export default function CommissioningPage() {
         />
       </div>
 
+      {/* Muted IOs indicator */}
+      {mutedIos.size > 0 && (
+        <div className="flex-shrink-0 px-4 py-1.5 bg-orange-50 dark:bg-orange-950/30 border-b border-orange-200 dark:border-orange-800/40 flex items-center gap-2">
+          <VolumeX className="h-4 w-4 text-orange-500" />
+          <span className="text-sm text-orange-700 dark:text-orange-300 font-medium">
+            {mutedIos.size} muted IO{mutedIos.size !== 1 ? 's' : ''}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs text-orange-600 dark:text-orange-400 hover:text-orange-800 hover:bg-orange-100 dark:hover:bg-orange-900/40"
+            onClick={() => setMutedIos(new Set())}
+          >
+            Unmute all
+          </Button>
+        </div>
+      )}
+
       {/* Data Grid - Takes all remaining space */}
       <div className="flex-1 min-h-0 overflow-hidden">
         <EnhancedIoDataGrid
@@ -1642,6 +1701,8 @@ export default function CommissioningPage() {
             currentUser={currentUser ? { fullName: currentUser.fullName, isAdmin: currentUser.isAdmin } : null}
             faultedDevices={faultedDevices}
             deviceStatuses={deviceStatuses}
+            mutedIos={mutedIos}
+            onToggleMute={toggleMuteIo}
           />
       </div>
       </>
