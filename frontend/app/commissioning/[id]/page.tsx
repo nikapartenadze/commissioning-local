@@ -38,6 +38,7 @@ import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/li
 import { ErrorBoundary } from "@/components/error-boundary"
 import { GuidedTour } from "@/components/guided-tour"
 import { NamePrompt } from "@/components/name-prompt"
+import { ConnectionLostOverlay } from "@/components/connection-lost-overlay"
 import { logger } from "@/lib/logger"
 
 // Debug flags - set to true to enable specific logging
@@ -1431,6 +1432,7 @@ export default function CommissioningPage() {
 
   return (
     <ErrorBoundary>
+    <ConnectionLostOverlay visible={signalR.isHeartbeatLost} />
     {!userLoading && !currentUser && (
       <NamePrompt onNameSet={(name) => setCurrentUser({ fullName: name, isAdmin: true, loginTime: new Date() })} />
     )}
