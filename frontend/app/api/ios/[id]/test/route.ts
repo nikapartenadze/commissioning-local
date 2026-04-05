@@ -67,9 +67,9 @@ export async function POST(
       return NextResponse.json({ error: 'IO not found' }, { status: 404 })
     }
 
-    // Block SPARE IOs from being tested
-    if (io.Description?.toUpperCase().includes('SPARE')) {
-      return NextResponse.json({ error: 'SPARE IOs cannot be tested' }, { status: 400 })
+    // Block SPARE IOs from being passed (can only be failed)
+    if (io.Description?.toUpperCase().includes('SPARE') && normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
+      return NextResponse.json({ error: 'SPARE IOs cannot be passed' }, { status: 400 })
     }
 
     // Block testing if parent device is faulted (ConnectionFaulted = true)
