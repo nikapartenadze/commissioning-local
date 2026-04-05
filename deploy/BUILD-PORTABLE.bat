@@ -146,16 +146,34 @@ xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\@prisma\client" "%OUTPUT_DIR%\app
 REM ws module
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
 
-REM better-sqlite3 (native module — rebuild for bundled Node.js ABI)
+REM better-sqlite3 (native module — must be built for bundled Node.js ABI)
 echo   Installing better-sqlite3 for Node.js %NODE_VER%...
 pushd "%OUTPUT_DIR%\app"
-"%OUTPUT_DIR%\node\node.exe" "%OUTPUT_DIR%\node\node_modules\npm\bin\npm-cli.js" install better-sqlite3 --no-save --ignore-scripts 2>nul
-"%OUTPUT_DIR%\node\node.exe" "%OUTPUT_DIR%\node\node_modules\npm\bin\npm-cli.js" rebuild better-sqlite3 2>nul
-if not exist "%OUTPUT_DIR%\app\node_modules\better-sqlite3\build\Release\better_sqlite3.node" (
-    echo   WARNING: better-sqlite3 rebuild failed — copying from dev build...
-    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\node_modules\better-sqlite3"
-    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\bindings" "%OUTPUT_DIR%\app\node_modules\bindings"
-    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\file-uri-to-path" "%OUTPUT_DIR%\app\node_modules\file-uri-to-path" 2>nul
+set "PORTABLE_NODE=%OUTPUT_DIR%\node\node.exe"
+set "PORTABLE_NPM=%OUTPUT_DIR%\node\node_modules\npm\bin\npm-cli.js"
+REM Install without scripts first, then rebuild with bundled node as target
+"%PORTABLE_NODE%" "%PORTABLE_NPM%" install better-sqlite3 --no-save --ignore-scripts 2>nul
+REM Force node-gyp to use bundled Node.js by setting npm_config_nodedir and PATH
+set "npm_config_nodedir=%OUTPUT_DIR%\node"
+set "PATH=%OUTPUT_DIR%\node;%PATH%"
+"%PORTABLE_NODE%" "%PORTABLE_NPM%" rebuild better-sqlite3 2>nul
+set "npm_config_nodedir="
+REM Verify the .node file was compiled for the correct ABI
+"%PORTABLE_NODE%" -e "require('better-sqlite3')" 2>nul
+if %errorlevel% neq 0 (
+    echo   WARNING: better-sqlite3 native module ABI mismatch — trying prebuild-install...
+    REM Try using prebuild-install to download correct prebuild
+    "%PORTABLE_NODE%" "%PORTABLE_NPM%" install --no-save prebuild-install 2>nul
+    "%PORTABLE_NODE%" node_modules\prebuild-install\bin.js -r napi -d better-sqlite3 2>nul
+    "%PORTABLE_NODE%" -e "require('better-sqlite3')" 2>nul
+    if %errorlevel% neq 0 (
+        echo   ERROR: Could not build better-sqlite3 for Node.js %NODE_VER%
+        echo   The portable build Node.js version may not match the system Node.js.
+    ) else (
+        echo   better-sqlite3 prebuild installed successfully
+    )
+) else (
+    echo   better-sqlite3 compiled successfully for Node.js %NODE_VER%
 )
 popd
 
