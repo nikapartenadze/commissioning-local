@@ -572,6 +572,37 @@ export default function CommissioningPage() {
     }
   }, [signalR.onNetworkStatusChange, signalR.offNetworkStatusChange])
 
+  // Handle device fault changes instantly via WebSocket
+  useEffect(() => {
+    const handleDeviceFault = (tagName: string, faulted: boolean) => {
+      // Extract device name from fault tag
+      const colonIdx = tagName.indexOf(':')
+      let deviceName: string | null = null
+      if (colonIdx > 0) {
+        deviceName = tagName.substring(0, colonIdx)
+      } else {
+        const fiomMatch = tagName.match(/^(.+?)_X\d/)
+        deviceName = fiomMatch ? fiomMatch[1] : tagName.split('.')[0]
+      }
+      if (!deviceName) return
+
+      setFaultedDevices(prev => {
+        const next = new Set(prev)
+        if (faulted) next.add(deviceName!)
+        else next.delete(deviceName!)
+        return next
+      })
+      setDeviceStatuses(prev => {
+        const next = new Map(prev)
+        next.set(deviceName!, faulted ? 'red' : 'green')
+        return next
+      })
+    }
+
+    signalR.onDeviceFaultChanged(handleDeviceFault)
+    return () => { signalR.offDeviceFaultChanged(handleDeviceFault) }
+  }, [signalR.onDeviceFaultChanged, signalR.offDeviceFaultChanged])
+
   // Handle IOs updated (cloud pull from another device)
   useEffect(() => {
     const handleIOsUpdated = () => {

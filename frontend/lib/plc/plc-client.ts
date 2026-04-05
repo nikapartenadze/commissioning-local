@@ -636,6 +636,12 @@ export class PlcClient extends EventEmitter {
    * Handle tag value changes from the reader
    */
   private handleTagValueChange(event: TagValueChangeEvent): void {
+    // Broadcast ConnectionFaulted/Communication_Faulted tag changes as network status
+    if (event.name.includes('ConnectionFaulted') || event.name.includes('Communication_Faulted')) {
+      this.emit('tagValueChanged', event);
+      return;
+    }
+
     const io = this.ioTags.get(event.name);
     if (!io) return;
 
