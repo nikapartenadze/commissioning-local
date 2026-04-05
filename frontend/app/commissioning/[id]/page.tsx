@@ -364,7 +364,7 @@ export default function CommissioningPage() {
         } catch {}
       }
       poll()
-      const interval = setInterval(poll, activeTab === 'network' ? 3000 : 10000)
+      const interval = setInterval(poll, 3000)
       return () => { active = false; clearInterval(interval) }
     } else if (activeTab === 'estop') {
       let active = true
