@@ -70,6 +70,7 @@ export interface WebSocketConnection {
   isConnected: boolean
   isConfigReloading: boolean
   isTesting: boolean
+  isHeartbeatLost: boolean
   connect: () => void
   disconnect: () => void
   onIOUpdate: (callback: (update: IOUpdate) => void) => void
@@ -129,11 +130,16 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const [isConnected, setIsConnected] = useState(false)
   const [isConfigReloading, setIsConfigReloading] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
+  const [isHeartbeatLost, setIsHeartbeatLost] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isManualDisconnectRef = useRef(false)
+  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastAckRef = useRef<number>(Date.now())
+  const serverVersionRef = useRef<string | null>(null)
+  const isHeartbeatLostRef = useRef(false)
 
   // Callback refs
   const ioCallbacksRef = useRef<Set<(update: IOUpdate) => void>>(new Set())
@@ -337,6 +343,26 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           })
           break
         }
+
+        case 'HeartbeatAck': {
+          const ackMsg = message as unknown as { serverVersion: string; timestamp: number }
+          lastAckRef.current = Date.now()
+
+          if (isHeartbeatLostRef.current) {
+            // Connection restored
+            if (serverVersionRef.current && serverVersionRef.current !== ackMsg.serverVersion) {
+              // Server version changed — full page reload
+              window.location.reload()
+            }
+            setIsHeartbeatLost(false)
+            isHeartbeatLostRef.current = false
+          }
+
+          if (!serverVersionRef.current) {
+            serverVersionRef.current = ackMsg.serverVersion
+          }
+          break
+        }
       }
     } catch (error) {
       console.error('[PlcWebSocket] Error parsing message:', error)
@@ -405,6 +431,22 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
             } catch {}
           })
         }
+
+        // Start heartbeat
+        lastAckRef.current = Date.now()
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current)
+        }
+        heartbeatIntervalRef.current = setInterval(() => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'Heartbeat' }))
+          }
+          // Check if we've missed acks for too long (10s = ~3 missed heartbeats)
+          if (Date.now() - lastAckRef.current > 10000) {
+            setIsHeartbeatLost(true)
+            isHeartbeatLostRef.current = true
+          }
+        }, 3000)
       }
 
       ws.onmessage = handleMessage
@@ -413,6 +455,12 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
         WS_DEBUG && console.log('[PlcWebSocket] Disconnected:', event.code, event.reason)
         setIsConnected(false)
         wsRef.current = null
+
+        // Stop heartbeat
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current)
+          heartbeatIntervalRef.current = null
+        }
 
         // Code 1005 = No Status Received (normal during page navigation)
         // Code 1000 = Normal closure
@@ -469,12 +517,19 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
       reconnectTimeoutRef.current = null
     }
 
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current)
+      heartbeatIntervalRef.current = null
+    }
+
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null
     }
 
     setIsConnected(false)
+    setIsHeartbeatLost(false)
+    isHeartbeatLostRef.current = false
     reconnectAttemptsRef.current = 0
     WS_DEBUG && console.log('[PlcWebSocket] Manually disconnected')
   }, [])
@@ -587,6 +642,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     isConnected,
     isConfigReloading,
     isTesting,
+    isHeartbeatLost,
     connect,
     disconnect,
     onIOUpdate,
