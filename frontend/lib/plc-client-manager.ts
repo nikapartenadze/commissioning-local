@@ -145,6 +145,15 @@ function setupClientEventListeners(client: PlcClient): void {
     });
   });
 
+  // Broadcast ConnectionFaulted tag changes for instant network device status updates
+  client.on('tagValueChanged', (event) => {
+    broadcastToWebSocket({
+      type: 'DeviceFaultChanged',
+      tagName: event.name,
+      faulted: event.newValue ? true : false,
+    });
+  });
+
   // Broadcast connection status changes
   client.on('connectionStatusChanged', (status) => {
     const config = getState().currentConnectionConfig;
