@@ -147,6 +147,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const tagStatusCallbacksRef = useRef<Set<(update: TagStatusUpdate) => void>>(new Set())
   const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
   const cloudConnectionCallbacksRef = useRef<Set<(connected: boolean) => void>>(new Set())
+  const deviceFaultCallbacksRef = useRef<Set<(tagName: string, faulted: boolean) => void>>(new Set())
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
@@ -320,6 +321,18 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
               cb(update)
             } catch (error) {
               console.error('[PlcWebSocket] Error in tag status callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'DeviceFaultChanged': {
+          const dfMsg = message as { tagName: string; faulted: boolean }
+          deviceFaultCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(dfMsg.tagName, dfMsg.faulted)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in device fault callback:', error)
             }
           })
           break
@@ -515,6 +528,14 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     tagStatusCallbacksRef.current.delete(callback)
   }, [])
 
+  const onDeviceFaultChanged = useCallback((callback: (tagName: string, faulted: boolean) => void) => {
+    deviceFaultCallbacksRef.current.add(callback)
+  }, [])
+
+  const offDeviceFaultChanged = useCallback((callback: (tagName: string, faulted: boolean) => void) => {
+    deviceFaultCallbacksRef.current.delete(callback)
+  }, [])
+
   const onError = useCallback((callback: (event: ErrorEvent) => void) => {
     errorCallbacksRef.current.add(callback)
   }, [])
@@ -590,6 +611,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     offReconnected,
     onCloudConnectionChange,
     offCloudConnectionChange,
+    onDeviceFaultChanged,
+    offDeviceFaultChanged,
   }
 }
 
