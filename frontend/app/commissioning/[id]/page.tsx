@@ -1520,6 +1520,9 @@ export default function CommissioningPage() {
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            <span className="text-[9px] font-mono text-muted-foreground/50 hidden sm:inline" title={`Build: ${process.env.NEXT_PUBLIC_BUILD_HASH} (${process.env.NEXT_PUBLIC_BUILD_DATE})`}>
+              {process.env.NEXT_PUBLIC_BUILD_HASH}
+            </span>
             <UserMenu />
             <ThemeToggle />
           </div>
