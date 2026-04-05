@@ -333,13 +333,17 @@ export default function CommissioningPage() {
               const faulted = new Set<string>()
               const statuses = new Map<string, 'green' | 'red' | 'gray'>()
               for (const [tagName, value] of Object.entries(tags)) {
+                // Extract device name from fault tag
+                // PDP04_FIOM1:I.ConnectionFaulted → PDP04_FIOM1
+                // PDP04_FIOM1_X4.Communication_Faulted → PDP04_FIOM1_X4 (sub-device, NOT parent)
                 const colonIdx = tagName.indexOf(':')
                 let deviceName: string | null = null
                 if (colonIdx > 0) {
                   deviceName = tagName.substring(0, colonIdx)
                 } else {
-                  const fiomMatch = tagName.match(/^(.+?)_X\d/)
-                  deviceName = fiomMatch ? fiomMatch[1] : tagName.split('.')[0]
+                  // Sub-port fault tag — keep the full sub-device name (e.g., PDP04_FIOM1_X4)
+                  const dotIdx = tagName.indexOf('.')
+                  deviceName = dotIdx > 0 ? tagName.substring(0, dotIdx) : tagName
                 }
                 if (deviceName) {
                   if (value === true) {
@@ -576,13 +580,15 @@ export default function CommissioningPage() {
   useEffect(() => {
     const handleDeviceFault = (tagName: string, faulted: boolean) => {
       // Extract device name from fault tag
+      // PDP04_FIOM1:I.ConnectionFaulted → PDP04_FIOM1
+      // PDP04_FIOM1_X4.Communication_Faulted → PDP04_FIOM1_X4
       const colonIdx = tagName.indexOf(':')
       let deviceName: string | null = null
       if (colonIdx > 0) {
         deviceName = tagName.substring(0, colonIdx)
       } else {
-        const fiomMatch = tagName.match(/^(.+?)_X\d/)
-        deviceName = fiomMatch ? fiomMatch[1] : tagName.split('.')[0]
+        const dotIdx = tagName.indexOf('.')
+        deviceName = dotIdx > 0 ? tagName.substring(0, dotIdx) : tagName
       }
       if (!deviceName) return
 
