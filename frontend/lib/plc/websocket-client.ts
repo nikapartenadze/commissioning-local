@@ -335,7 +335,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
         }
 
         case 'DeviceFaultChanged': {
-          const dfMsg = message as { tagName: string; faulted: boolean }
+          const dfMsg = message as unknown as { tagName: string; faulted: boolean }
           deviceFaultCallbacksRef.current.forEach((cb) => {
             try {
               cb(dfMsg.tagName, dfMsg.faulted)
