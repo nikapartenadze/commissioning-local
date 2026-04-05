@@ -17,7 +17,7 @@
 !define APP_PUBLISHER "autStand"
 !define APP_URL "https://commissioning.lci.ge"
 !ifndef APP_VERSION
-  !define APP_VERSION "2.9.17"
+  !define APP_VERSION "2.10.0"
 !endif
 
 !define INSTALL_DIR "$PROGRAMFILES\${APP_SHORT}"
