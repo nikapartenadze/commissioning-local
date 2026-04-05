@@ -11,6 +11,12 @@ interface NamePromptProps {
 export function NamePrompt({ onNameSet }: NamePromptProps) {
   const [name, setName] = useState("")
   const [error, setError] = useState("")
+  const [previousName] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('tester-name-previous')
+    }
+    return null
+  })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -20,6 +26,7 @@ export function NamePrompt({ onNameSet }: NamePromptProps) {
       return
     }
     localStorage.setItem("tester-name", trimmed)
+    localStorage.removeItem("tester-name-previous")
     onNameSet(trimmed)
   }
 
@@ -32,6 +39,11 @@ export function NamePrompt({ onNameSet }: NamePromptProps) {
         <p className="text-muted-foreground text-center mb-6">
           Enter your name to continue. This will be recorded with all test results.
         </p>
+        {previousName && (
+          <p className="text-sm text-muted-foreground text-center mb-4">
+            Current: <span className="font-medium text-foreground">{previousName}</span>
+          </p>
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <Input
