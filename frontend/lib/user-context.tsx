@@ -56,6 +56,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
+    // Save previous name so NamePrompt can show "Current: ..."
+    const previousName = localStorage.getItem('tester-name')
+    if (previousName) {
+      localStorage.setItem('tester-name-previous', previousName)
+    }
     setCurrentUserState(null)
     localStorage.removeItem('tester-name')
     // Clean up old auth keys if they exist

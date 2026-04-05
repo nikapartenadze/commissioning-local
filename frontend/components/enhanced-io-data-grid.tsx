@@ -8,7 +8,7 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
@@ -56,6 +56,8 @@ interface EnhancedIoDataGridProps {
   currentUser?: { fullName: string; isAdmin: boolean } | null
   faultedDevices?: Set<string>
   deviceStatuses?: Map<string, 'green' | 'red' | 'gray'>
+  mutedIos?: Set<number>
+  onToggleMute?: (ioId: number) => void
 }
 
 // Column widths — responsive via hook
@@ -80,6 +82,7 @@ function useColumnWidths() {
     help: 50,
     failed: 50,
     clear: 50,
+    mute: 50,
     output: 80,
   } : {
     description: 320,
@@ -93,6 +96,7 @@ function useColumnWidths() {
     help: 70,
     failed: 70,
     clear: 70,
+    mute: 60,
     output: 100,
   }
 }
@@ -119,7 +123,9 @@ export function EnhancedIoDataGrid({
   onRequestChange,
   currentUser,
   faultedDevices = new Set(),
-  deviceStatuses = new Map()
+  deviceStatuses = new Map(),
+  mutedIos = new Set(),
+  onToggleMute
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -584,6 +590,7 @@ export function EnhancedIoDataGrid({
     COLUMN_WIDTHS.help +
     COLUMN_WIDTHS.failed +
     COLUMN_WIDTHS.clear +
+    COLUMN_WIDTHS.mute +
     COLUMN_WIDTHS.output
 
   return (
@@ -783,6 +790,12 @@ export function EnhancedIoDataGrid({
             </div>
             <div
               className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
+              style={{ width: `${COLUMN_WIDTHS.mute}px` }}
+            >
+              Mute
+            </div>
+            <div
+              className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.output}px` }}
             >
               Fire
@@ -850,6 +863,11 @@ export function EnhancedIoDataGrid({
                      <div className="line-clamp-2 leading-tight flex-1">
                        {io.description || <span className="text-muted-foreground">—</span>}
                      </div>
+                     {mutedIos.has(io.id) && (
+                       <span className="ml-1.5 shrink-0" title="Muted — dialog triggers suppressed">
+                         <VolumeX className="h-3.5 w-3.5 text-orange-400" />
+                       </span>
+                     )}
                      {isDeviceFaulted && (
                        <span className="ml-2 text-[10px] text-red-500 font-medium shrink-0">DEVICE FAULTED</span>
                      )}
@@ -1061,6 +1079,29 @@ export function EnhancedIoDataGrid({
                       title="Clear"
                     >
                       <X className="h-5 w-5" />
+                    </Button>
+                  </div>
+                  {/* Mute Column */}
+                  <div
+                    className="px-1 py-2 flex items-center justify-center flex-shrink-0"
+                    style={{ width: `${COLUMN_WIDTHS.mute}px` }}
+                  >
+                    <Button
+                      variant={mutedIos.has(io.id) ? "secondary" : "ghost"}
+                      size="icon"
+                      className={cn(
+                        "h-10 w-10",
+                        mutedIos.has(io.id)
+                          ? "text-orange-500 hover:text-orange-600 bg-orange-100 dark:bg-orange-900/30 hover:bg-orange-200 dark:hover:bg-orange-900/50"
+                          : "text-muted-foreground/40 hover:text-muted-foreground"
+                      )}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onToggleMute?.(io.id)
+                      }}
+                      title={mutedIos.has(io.id) ? "Unmute — re-enable dialog triggers" : "Mute — suppress dialog triggers"}
+                    >
+                      {mutedIos.has(io.id) ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
                     </Button>
                   </div>
                   {/* Fire Output Column */}
