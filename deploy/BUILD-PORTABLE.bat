@@ -148,34 +148,31 @@ xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_module
 
 REM better-sqlite3 (native module — must be built for bundled Node.js ABI)
 echo   Installing better-sqlite3 for Node.js %NODE_VER%...
-pushd "%OUTPUT_DIR%\app"
 set "PORTABLE_NODE=%OUTPUT_DIR%\node\node.exe"
 set "PORTABLE_NPM=%OUTPUT_DIR%\node\node_modules\npm\bin\npm-cli.js"
-REM Install without scripts first, then rebuild with bundled node as target
-"%PORTABLE_NODE%" "%PORTABLE_NPM%" install better-sqlite3 --no-save --ignore-scripts 2>nul
-REM Force node-gyp to use bundled Node.js by setting npm_config_nodedir and PATH
+REM Build in isolated temp dir to avoid polluting portable node_modules
+if exist "%TEMP_DIR%\sqlite-build" rmdir /s /q "%TEMP_DIR%\sqlite-build"
+mkdir "%TEMP_DIR%\sqlite-build"
+pushd "%TEMP_DIR%\sqlite-build"
 set "npm_config_nodedir=%OUTPUT_DIR%\node"
 set "PATH=%OUTPUT_DIR%\node;%PATH%"
-"%PORTABLE_NODE%" "%PORTABLE_NPM%" rebuild better-sqlite3 2>nul
+"%PORTABLE_NODE%" "%PORTABLE_NPM%" init -y >nul 2>nul
+"%PORTABLE_NODE%" "%PORTABLE_NPM%" install better-sqlite3 --no-save 2>nul
 set "npm_config_nodedir="
-REM Verify the .node file was compiled for the correct ABI
+REM Verify it works with bundled Node
 "%PORTABLE_NODE%" -e "require('better-sqlite3')" 2>nul
 if %errorlevel% neq 0 (
-    echo   WARNING: better-sqlite3 native module ABI mismatch — trying prebuild-install...
-    REM Try using prebuild-install to download correct prebuild
-    "%PORTABLE_NODE%" "%PORTABLE_NPM%" install --no-save prebuild-install 2>nul
-    "%PORTABLE_NODE%" node_modules\prebuild-install\bin.js -r napi -d better-sqlite3 2>nul
-    "%PORTABLE_NODE%" -e "require('better-sqlite3')" 2>nul
-    if %errorlevel% neq 0 (
-        echo   ERROR: Could not build better-sqlite3 for Node.js %NODE_VER%
-        echo   The portable build Node.js version may not match the system Node.js.
-    ) else (
-        echo   better-sqlite3 prebuild installed successfully
-    )
+    echo   WARNING: better-sqlite3 build failed for Node.js %NODE_VER% — copying from dev...
+    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\node_modules\better-sqlite3"
 ) else (
     echo   better-sqlite3 compiled successfully for Node.js %NODE_VER%
+    xcopy /E /I /Q /Y "%TEMP_DIR%\sqlite-build\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\node_modules\better-sqlite3"
 )
 popd
+REM Copy bindings dependency (needed by better-sqlite3 to find .node file)
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\bindings" "%OUTPUT_DIR%\app\node_modules\bindings"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\file-uri-to-path" "%OUTPUT_DIR%\app\node_modules\file-uri-to-path" 2>nul
+rmdir /s /q "%TEMP_DIR%\sqlite-build" 2>nul
 
 REM http-proxy module (for standalone WebSocket upgrade proxy)
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\http-proxy" "%OUTPUT_DIR%\app\node_modules\http-proxy"
