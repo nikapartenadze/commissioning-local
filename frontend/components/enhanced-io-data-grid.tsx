@@ -392,6 +392,10 @@ export function EnhancedIoDataGrid({
 
   const filteredIos = useMemo(() => {
     const filtered = ios.filter(io => {
+      // Hide SPAREs unless failed or explicitly filtered by SPARE keyword
+      const isSpare = io.description?.toUpperCase().includes('SPARE')
+      if (isSpare && io.result !== 'Failed' && !activeKeywordFilters['SPARE']) return false
+
       // Punchlist filter — if active, only show IOs in this punchlist
       if (punchlistIoSet && !punchlistIoSet.has(io.id)) return false
 
@@ -808,7 +812,7 @@ export function EnhancedIoDataGrid({
                     isTesting ? "cursor-pointer" : "cursor-default",
                     getRowClassName(io),
                     currentTestIo?.id === io.id && "border-l-4 border-l-primary",
-                    isDeviceFaulted && "opacity-40 pointer-events-none"
+                    isDeviceFaulted && "opacity-50 pointer-events-none select-none"
                   )}
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
@@ -846,6 +850,9 @@ export function EnhancedIoDataGrid({
                      <div className="line-clamp-2 leading-tight flex-1">
                        {io.description || <span className="text-muted-foreground">—</span>}
                      </div>
+                     {isDeviceFaulted && (
+                       <span className="ml-2 text-[10px] text-red-500 font-medium shrink-0">DEVICE FAULTED</span>
+                     )}
                      {!isTesting && onRequestChange && (
                        <button
                          className="ml-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground shrink-0"
