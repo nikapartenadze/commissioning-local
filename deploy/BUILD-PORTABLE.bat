@@ -127,6 +127,14 @@ xcopy /E /I /Q /Y "%FRONTEND_DIR%\.next\standalone" "%OUTPUT_DIR%\app"
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\.next\static" "%OUTPUT_DIR%\app\.next\static"
 if exist "%FRONTEND_DIR%\public" xcopy /E /I /Q /Y "%FRONTEND_DIR%\public" "%OUTPUT_DIR%\app\public"
 
+REM Remove dev artifacts that shouldn't be in portable
+if exist "%OUTPUT_DIR%\app\backups" rmdir /s /q "%OUTPUT_DIR%\app\backups"
+if exist "%OUTPUT_DIR%\app\logs" rmdir /s /q "%OUTPUT_DIR%\app\logs"
+if exist "%OUTPUT_DIR%\app\test-instance-b" rmdir /s /q "%OUTPUT_DIR%\app\test-instance-b"
+del "%OUTPUT_DIR%\app\database.db" 2>nul
+del "%OUTPUT_DIR%\app\database.db-wal" 2>nul
+del "%OUTPUT_DIR%\app\database.db-shm" 2>nul
+
 REM Preserve standalone server before overwriting with custom server
 if exist "%OUTPUT_DIR%\app\server.js" (
     copy "%OUTPUT_DIR%\app\server.js" "%OUTPUT_DIR%\app\next-server.js" >nul
