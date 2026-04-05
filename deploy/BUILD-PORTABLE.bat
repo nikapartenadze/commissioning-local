@@ -146,6 +146,19 @@ xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\@prisma\client" "%OUTPUT_DIR%\app
 REM ws module
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
 
+REM better-sqlite3 (native module — install fresh with bundled Node.js to get correct ABI)
+echo   Installing better-sqlite3 for Node.js %NODE_VER%...
+cd /d "%OUTPUT_DIR%\app"
+set "PATH=%OUTPUT_DIR%\node;%PATH%"
+"%OUTPUT_DIR%\node\npx.cmd" --yes npm@latest install better-sqlite3 --no-save 2>nul
+if %errorlevel% neq 0 (
+    echo   WARNING: better-sqlite3 install failed — copying from dev build...
+    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\node_modules\better-sqlite3"
+    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\bindings" "%OUTPUT_DIR%\app\node_modules\bindings"
+    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\file-uri-to-path" "%OUTPUT_DIR%\app\node_modules\file-uri-to-path" 2>nul
+)
+cd /d "%FRONTEND_DIR%"
+
 REM http-proxy module (for standalone WebSocket upgrade proxy)
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\http-proxy" "%OUTPUT_DIR%\app\node_modules\http-proxy"
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\eventemitter3" "%OUTPUT_DIR%\app\node_modules\eventemitter3" 2>nul
