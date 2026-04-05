@@ -95,6 +95,8 @@ export interface WebSocketConnection {
   offReconnected: (callback: () => void) => void
   onCloudConnectionChange: (callback: (connected: boolean) => void) => void
   offCloudConnectionChange: (callback: (connected: boolean) => void) => void
+  onDeviceFaultChanged: (callback: (tagName: string, faulted: boolean) => void) => void
+  offDeviceFaultChanged: (callback: (tagName: string, faulted: boolean) => void) => void
 }
 
 // ============================================================================
