@@ -327,10 +327,15 @@ export function PlcConfigDialog({
       } else {
         let errorMsg = ''
         try {
-          const errorData = await response.json()
-          errorMsg = errorData.message || JSON.stringify(errorData)
+          const errorText = await response.text()
+          try {
+            const errorData = JSON.parse(errorText)
+            errorMsg = errorData.message || errorData.error || errorText
+          } catch {
+            errorMsg = errorText || response.statusText
+          }
         } catch {
-          errorMsg = await response.text() || response.statusText
+          errorMsg = response.statusText
         }
         addPullLog(`ERROR: ${response.status} - ${errorMsg}`)
         setPullStatus({ type: 'error', message: errorMsg })
