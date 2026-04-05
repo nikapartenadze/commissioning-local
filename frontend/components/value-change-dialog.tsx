@@ -42,6 +42,8 @@ export function ValueChangeDialog({
 }: ValueChangeDialogProps) {
   if (!io) return null
 
+  const isSpare = io.description?.toUpperCase().includes('SPARE')
+
   const isOutput = (ioName: string | null): boolean => {
     if (!ioName) return false
     return ioName.includes(':O.') || ioName.includes(':SO.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.endsWith('_DO')
@@ -78,7 +80,7 @@ export function ValueChangeDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{isOutputTag ? 'Output fired' : 'Input value changed'}</DialogTitle>
+          <DialogTitle>{isSpare ? 'SPARE IO Triggered' : isOutputTag ? 'Output fired' : 'Input value changed'}</DialogTitle>
         </DialogHeader>
         
         <div className="space-y-4">
@@ -108,10 +110,20 @@ export function ValueChangeDialog({
             )}
             <div className="p-3 bg-muted rounded-lg">
               <div className="text-sm font-medium text-center">
-                {isOutputTag ? (
+                {isSpare ? (
+                  <>
+                    This IO is marked as SPARE. Skip or mark as{' '}
+                    <Badge
+                      variant="destructive"
+                      className="text-sm font-bold mx-1"
+                    >
+                      Failed
+                    </Badge>
+                  </>
+                ) : isOutputTag ? (
                   <>
                     Output was fired. Did it work correctly?{' '}
-                    <Badge 
+                    <Badge
                       variant="default"
                       className="text-sm font-bold mx-1"
                     >
@@ -121,7 +133,7 @@ export function ValueChangeDialog({
                 ) : (
                   <>
                     Input value changed to{' '}
-                    <Badge 
+                    <Badge
                       variant="default"
                       className="text-sm font-bold mx-1"
                     >
@@ -170,14 +182,16 @@ export function ValueChangeDialog({
             ) : <div />}
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleCancel}>
-                Cancel
+                {isSpare ? 'Skip' : 'Cancel'}
               </Button>
               <Button variant="destructive" onClick={handleNo} disabled={deviceFaulted}>
                 Fail
               </Button>
-              <Button onClick={handleYes} disabled={deviceFaulted}>
-                Pass
-              </Button>
+              {!isSpare && (
+                <Button onClick={handleYes} disabled={deviceFaulted}>
+                  Pass
+                </Button>
+              )}
             </div>
           </div>
         </div>

@@ -170,8 +170,6 @@ export default function CommissioningPage() {
   // Track if testing was active before switching to non-IO tab (so we can resume on return)
   const wasTestingBeforeTabSwitch = useRef(false)
 
-  // SPARE IO triggered — informational modal (no pass/fail)
-  const [spareTriggeredIo, setSpareTriggeredIo] = useState<IoItem | null>(null)
   // Pending SPARE timers — keyed by device prefix (before :), cancel if non-SPARE from same device fires
   const pendingSpareTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
@@ -482,6 +480,7 @@ export default function CommissioningPage() {
   const outputFiringInProgressRef = useRef(outputFiringInProgress)
   const previousStatesRef = useRef(previousStates)
   const currentUserRef = useRef(currentUser)
+  const faultedDevicesRef = useRef(faultedDevices)
 
   // Keep refs updated
   useEffect(() => {
@@ -499,6 +498,10 @@ export default function CommissioningPage() {
   useEffect(() => {
     currentUserRef.current = currentUser
   }, [currentUser])
+
+  useEffect(() => {
+    faultedDevicesRef.current = faultedDevices
+  }, [faultedDevices])
 
   // Handle SignalR testing state changes
   useEffect(() => {
@@ -748,10 +751,10 @@ export default function CommissioningPage() {
             const devicePrefix = getDeviceName(io.name) || ''
 
             if (isTrigger && isSpare) {
-              // SPARE triggered — delay 500ms, show info modal UNLESS a non-SPARE from same device fires first
+              // SPARE triggered — delay 500ms, add to dialog queue UNLESS a non-SPARE from same device fires first
               const timer = setTimeout(() => {
                 pendingSpareTimers.current.delete(devicePrefix)
-                setSpareTriggeredIo(updatedIo)
+                addToDialogQueue(updatedIo)
               }, 500)
               // Cancel any existing SPARE timer for this device
               if (pendingSpareTimers.current.has(devicePrefix)) {
@@ -764,6 +767,19 @@ export default function CommissioningPage() {
                 clearTimeout(pendingSpareTimers.current.get(devicePrefix)!)
                 pendingSpareTimers.current.delete(devicePrefix)
               }
+
+              // Don't trigger dialog for IOs on faulted network devices
+              const currentFaultedDevices = faultedDevicesRef.current
+              const ioDeviceName = io.networkDeviceName || getDeviceName(io.name)
+              if (ioDeviceName && currentFaultedDevices.has(ioDeviceName)) {
+                // Silently skip — device is faulted, testing blocked
+                setPreviousStates(prev => ({
+                  ...prev,
+                  [io.id]: update.State
+                }))
+                return updatedIo
+              }
+
               // Show pass/fail dialog
               const user = currentUserRef.current
               if (updatedIo.assignedTo && user?.fullName && updatedIo.assignedTo !== user.fullName) {
@@ -1690,24 +1706,6 @@ export default function CommissioningPage() {
           open={showChangeRequestsPanel}
           onOpenChange={setShowChangeRequestsPanel}
         />
-
-        {/* SPARE IO Triggered — Info Only */}
-        <Dialog open={!!spareTriggeredIo} onOpenChange={(open) => { if (!open) setSpareTriggeredIo(null) }}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>SPARE IO Triggered</DialogTitle>
-            </DialogHeader>
-            {spareTriggeredIo && (
-              <div className="space-y-2">
-                <p className="font-mono text-sm font-semibold">{spareTriggeredIo.name}</p>
-                {spareTriggeredIo.description && (
-                  <p className="text-sm text-muted-foreground">{spareTriggeredIo.description}</p>
-                )}
-                <p className="text-xs text-muted-foreground">This IO is marked as SPARE and cannot be tested.</p>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
 
         {/* Clear Result Confirmation Dialog */}
         <Dialog open={!!confirmClearIo} onOpenChange={(open) => { if (!open) setConfirmClearIo(null) }}>
