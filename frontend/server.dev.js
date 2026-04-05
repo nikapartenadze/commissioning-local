@@ -62,6 +62,18 @@ const plcClients = new Set();
 plcWss.on('connection', (ws) => {
   plcClients.add(ws);
   ws.isAlive = true;
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'Heartbeat') {
+        ws.send(JSON.stringify({
+          type: 'HeartbeatAck',
+          serverVersion: process.env.NEXT_PUBLIC_BUILD_HASH || 'dev',
+          timestamp: Date.now()
+        }));
+      }
+    } catch {}
+  });
   ws.on('pong', () => { ws.isAlive = true; });
   ws.on('close', () => { plcClients.delete(ws); });
   ws.on('error', () => { plcClients.delete(ws); });
