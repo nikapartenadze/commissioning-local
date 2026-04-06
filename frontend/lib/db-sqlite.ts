@@ -369,7 +369,7 @@ export function extractDeviceName(tagName: string): string | null {
   // Format 3: dot-separated without colon (rare)
   const dotIdx = tagName.indexOf('.')
   if (dotIdx > 0) return tagName.substring(0, dotIdx)
-  return tagName
+  return null
 }
 
 export function checkDatabaseHealth(): boolean {
