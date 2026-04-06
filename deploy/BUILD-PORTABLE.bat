@@ -81,6 +81,8 @@ REM ═════════════════════════�
 echo [3/7] Cleaning previous build...
 if exist "%OUTPUT_DIR%" rmdir /s /q "%OUTPUT_DIR%"
 mkdir "%OUTPUT_DIR%"
+REM Clear Next.js build cache to ensure fresh compilation
+if exist "%FRONTEND_DIR%\.next" rmdir /s /q "%FRONTEND_DIR%\.next"
 
 REM ══════════════════════════════════════════════════════════════
 REM  Step 4: Install dependencies + Prisma
