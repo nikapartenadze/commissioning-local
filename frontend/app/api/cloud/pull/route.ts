@@ -301,12 +301,16 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
     // Pull network topology directly
     try {
-      const netRes = await fetch(`${remoteUrl}/api/sync/network/${subsystemId}`, {
+      const netUrl = `${remoteUrl}/api/sync/network/${subsystemId}`
+      console.log(`[CloudPull] Fetching network from: ${netUrl}`)
+      const netRes = await fetch(netUrl, {
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
         signal: AbortSignal.timeout(15000),
       })
+      console.log(`[CloudPull] Network response: ${netRes.status}`)
       if (netRes.ok) {
         const netData = await netRes.json()
+        console.log(`[CloudPull] Network data: success=${netData.success}, rings=${netData.rings?.length || 0}`)
         if (netData.success && netData.rings?.length > 0) {
           // Clear existing network data for this subsystem
           db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?').run(subsystemId)
