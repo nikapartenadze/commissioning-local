@@ -8,7 +8,7 @@ try {
   gitHash = execSync('git rev-parse --short HEAD').toString().trim()
 } catch {}
 try {
-  gitTag = execSync('git describe --tags --abbrev=0 2>/dev/null || echo ""').toString().trim()
+  gitTag = execSync('git describe --tags --abbrev=0 2>/dev/null || true').toString().trim()
 } catch {}
 
 /** @type {import('next').NextConfig} */

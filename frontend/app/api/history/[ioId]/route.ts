@@ -16,10 +16,11 @@ interface HistoryRow {
 
 export async function GET(
   request: Request,
-  { params }: { params: { ioId: string } }
+  { params }: { params: Promise<{ ioId: string }> }
 ) {
   try {
-    const ioId = parseInt(params.ioId)
+    const { ioId: ioIdStr } = await params
+    const ioId = parseInt(ioIdStr)
 
     if (isNaN(ioId)) {
       return NextResponse.json({ error: 'Invalid IO ID' }, { status: 400 })
