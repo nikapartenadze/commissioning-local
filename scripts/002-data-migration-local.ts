@@ -1,5 +1,5 @@
 /**
- * Phase 2: Data Migration Script (PRODUCTION)
+ * Phase 2: Data Migration Script (LOCAL DOCKER TEST)
  * Copies data from `prod` database to `autstand` database.
  *
  * Prerequisites:
@@ -25,21 +25,21 @@ const { Client } = pg
 // ============================================================================
 
 const PROD_DB = {
-  host: 'autstandpostgresql.postgres.database.azure.com',
-  port: 5432,
+  host: 'localhost',
+  port: 5433,
   database: 'prod',
-  user: 'Sharpness6069',
-  password: 'X8RsQamU@3uMEN^u',
-  ssl: { rejectUnauthorized: false },
+  user: 'testuser',
+  password: 'testpass',
+  
 }
 
 const AUTSTAND_DB = {
-  host: 'autstandpostgresql.postgres.database.azure.com',
-  port: 5432,
+  host: 'localhost',
+  port: 5433,
   database: 'autstand',
-  user: 'Sharpness6069',
-  password: 'X8RsQamU@3uMEN^u',
-  ssl: { rejectUnauthorized: false },
+  user: 'testuser',
+  password: 'testpass',
+  
 }
 
 const DRY_RUN = process.argv.includes('--dry-run')
