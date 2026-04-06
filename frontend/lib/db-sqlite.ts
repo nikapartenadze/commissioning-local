@@ -26,6 +26,14 @@ if (process.env.NODE_ENV !== 'production') globalForDb.db = db
 // Auto-run on import — ensures tables exist even on old Prisma databases
 try {
   initializeSchema()
+  // Add new columns for existing databases (safe: SQLite ignores if column already exists)
+  const migrations = [
+    'ALTER TABLE Ios ADD COLUMN InstallationStatus TEXT',
+    'ALTER TABLE Ios ADD COLUMN InstallationPercent REAL',
+  ]
+  for (const sql of migrations) {
+    try { db.exec(sql) } catch { /* column already exists */ }
+  }
 } catch (e) {
   console.warn('[DB] Schema init warning:', (e as Error).message)
 }
@@ -64,7 +72,9 @@ export function initializeSchema() {
       AssignedTo TEXT,
       PunchlistStatus TEXT,
       Trade TEXT,
-      ClarificationNote TEXT
+      ClarificationNote TEXT,
+      InstallationStatus TEXT,
+      InstallationPercent REAL
     );
     CREATE INDEX IF NOT EXISTS idx_ios_subsystemid ON Ios(SubsystemId);
     CREATE INDEX IF NOT EXISTS idx_ios_result ON Ios(Result);
@@ -269,6 +279,8 @@ export interface Io {
   PunchlistStatus: string | null
   Trade: string | null
   ClarificationNote: string | null
+  InstallationStatus: string | null
+  InstallationPercent: number | null
 }
 
 export interface TestHistory {
@@ -333,6 +345,8 @@ export function ioToApi(row: Io) {
     punchlistStatus: row.PunchlistStatus,
     trade: row.Trade,
     clarificationNote: row.ClarificationNote,
+    installationStatus: row.InstallationStatus,
+    installationPercent: row.InstallationPercent,
   }
 }
 

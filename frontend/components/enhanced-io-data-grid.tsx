@@ -25,6 +25,8 @@ type IoItem = {
   failureMode?: string | null
   assignedTo?: string | null
   networkDeviceName?: string | null
+  installationStatus?: string | null
+  installationPercent?: number | null
 }
 
 type TestHistory = {
@@ -75,6 +77,7 @@ function useColumnWidths() {
     ioPoint: 160,
     state: 60,
     deviceStatus: 60,
+    installStatus: 60,
     result: 80,
     timestamp: 0, // hidden on mobile
     comments: 0,  // hidden on mobile
@@ -89,6 +92,7 @@ function useColumnWidths() {
     ioPoint: 260,
     state: 100,
     deviceStatus: 90,
+    installStatus: 90,
     result: 120,
     timestamp: 180,
     comments: 220,
@@ -583,6 +587,7 @@ export function EnhancedIoDataGrid({
     COLUMN_WIDTHS.ioPoint +
     (showStateColumn ? COLUMN_WIDTHS.state : 0) +
     COLUMN_WIDTHS.deviceStatus +
+    COLUMN_WIDTHS.installStatus +
     (showResultColumn ? COLUMN_WIDTHS.result : 0) +
     (showTimestamp ? COLUMN_WIDTHS.timestamp : 0) +
     (showComments ? COLUMN_WIDTHS.comments : 0) +
@@ -739,6 +744,12 @@ export function EnhancedIoDataGrid({
               style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
             >
               Net Device
+            </div>
+            <div
+              className="px-2 py-3 text-center text-xs font-bold text-foreground uppercase flex-shrink-0"
+              style={{ width: `${COLUMN_WIDTHS.installStatus}px` }}
+            >
+              Install
             </div>
             {showResultColumn && (
               <div
@@ -931,6 +942,23 @@ export function EnhancedIoDataGrid({
                       if (deviceStatus === 'green') return <div className="w-6 h-6 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
                       return <div className="w-6 h-6 rounded-full bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
                     })() : null}
+                  </div>
+                  {/* Installation Status */}
+                  <div
+                    className="px-2 py-3 text-center flex-shrink-0 flex items-center justify-center"
+                    style={{ width: `${COLUMN_WIDTHS.installStatus}px` }}
+                  >
+                    {io.installationStatus === 'complete' && (
+                      <Badge variant="default" className="bg-green-600 text-white text-[10px] px-1.5">Installed</Badge>
+                    )}
+                    {io.installationStatus === 'in-progress' && (
+                      <Badge variant="secondary" className="bg-amber-500 text-white text-[10px] px-1.5">
+                        {Math.round((io.installationPercent ?? 0) * 100)}%
+                      </Badge>
+                    )}
+                    {io.installationStatus === 'not-started' && (
+                      <Badge variant="outline" className="text-muted-foreground text-[10px] px-1.5">Not Inst.</Badge>
+                    )}
                   </div>
                    {showResultColumn && (
                      <div
