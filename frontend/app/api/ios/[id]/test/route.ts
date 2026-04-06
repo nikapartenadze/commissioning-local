@@ -61,6 +61,12 @@ export async function POST(
       )
     }
 
+    // Block testing if PLC is not connected
+    const plcClient = getPlcTags()
+    if (!plcClient.tags || plcClient.count === 0) {
+      return NextResponse.json({ error: 'PLC not connected — connect to PLC before testing' }, { status: 400 })
+    }
+
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
