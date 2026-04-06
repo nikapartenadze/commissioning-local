@@ -295,46 +295,96 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       // WebSocket server might not be running
     }
 
-    // Also pull network + estop data alongside IOs (non-blocking, failures don't affect IO pull)
+    // Also pull network + estop data alongside IOs (non-blocking, direct DB writes — no self-referential HTTP)
     let networkPulled = 0
     let estopPulled = 0
+
+    // Pull network topology directly
     try {
-      // Pull network topology
       const netRes = await fetch(`${remoteUrl}/api/sync/network/${subsystemId}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiPassword || '',
-        },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
         signal: AbortSignal.timeout(15000),
       })
       if (netRes.ok) {
         const netData = await netRes.json()
-        // Pull-network logic handled by existing endpoint
-        const pullNetRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/cloud/pull-network`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        })
-        if (pullNetRes.ok) {
-          const pullNetData = await pullNetRes.json()
-          networkPulled = pullNetData.rings || 0
+        if (netData.success && netData.rings?.length > 0) {
+          // Clear existing network data for this subsystem
+          db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?').run(subsystemId)
+
+          const insertRingStmt = db.prepare('INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)')
+          const insertNodeStmt = db.prepare('INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          const insertPortStmt = db.prepare('INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+
+          for (const ring of netData.rings) {
+            const ringResult = insertRingStmt.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
+            const ringId = ringResult.lastInsertRowid
+
+            for (const node of (ring.nodes || [])) {
+              const nodeResult = insertNodeStmt.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
+              const nodeId = nodeResult.lastInsertRowid
+
+              // First pass: insert ports without parentPortId
+              const portIdMap = new Map<string, number>()
+              for (const port of (node.ports || [])) {
+                const portResult = insertPortStmt.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceType || null, port.deviceIp || null, port.statusTag || null, null)
+                if (port.deviceName) portIdMap.set(port.deviceName, Number(portResult.lastInsertRowid))
+              }
+
+              // Second pass: link sub-ports to parent FIOM ports
+              for (const port of (node.ports || [])) {
+                if (port.parentDeviceName && portIdMap.has(port.parentDeviceName)) {
+                  const childId = portIdMap.get(port.deviceName)
+                  const parentId = portIdMap.get(port.parentDeviceName)
+                  if (childId && parentId) {
+                    db.prepare('UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?').run(parentId, childId)
+                  }
+                }
+              }
+            }
+          }
+          networkPulled = netData.rings.length
+          console.log(`[CloudPull] Network: ${networkPulled} rings pulled directly`)
         }
       }
-    } catch {
-      console.log('[CloudPull] Network pull skipped or failed (non-critical)')
+    } catch (e) {
+      console.log('[CloudPull] Network pull failed (non-critical):', (e as Error).message)
     }
 
+    // Pull estop data directly
     try {
-      // Pull estop data
-      const pullEstopRes = await fetch(`http://localhost:${process.env.PORT || 3000}/api/cloud/pull-estop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const estopRes = await fetch(`${remoteUrl}/api/sync/estop?subsystemId=${subsystemId}`, {
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+        signal: AbortSignal.timeout(15000),
       })
-      if (pullEstopRes.ok) {
-        const pullEstopData = await pullEstopRes.json()
-        estopPulled = pullEstopData.zones || 0
+      if (estopRes.ok) {
+        const estopData = await estopRes.json()
+        if (estopData.success && estopData.zones?.length > 0) {
+          db.prepare('DELETE FROM EStopZones').run()
+          const insertZoneStmt = db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)')
+          const insertEpcStmt = db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)')
+          const insertIoPointStmt = db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)')
+          const insertVfdStmt = db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)')
+
+          for (const zone of estopData.zones) {
+            const zoneResult = insertZoneStmt.run(subsystemId, zone.name)
+            const zoneId = zoneResult.lastInsertRowid
+            for (const epc of (zone.epcs || [])) {
+              const epcResult = insertEpcStmt.run(zoneId, epc.name, epc.checkTag)
+              const epcId = epcResult.lastInsertRowid
+              for (const io of (epc.ioPoints || [])) {
+                insertIoPointStmt.run(epcId, io.tag)
+              }
+              for (const vfd of (epc.vfds || [])) {
+                insertVfdStmt.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
+              }
+            }
+          }
+          estopPulled = estopData.zones.length
+          console.log(`[CloudPull] EStop: ${estopPulled} zones pulled directly`)
+        }
       }
-    } catch {
-      console.log('[CloudPull] EStop pull skipped or failed (non-critical)')
+    } catch (e) {
+      console.log('[CloudPull] EStop pull failed (non-critical):', (e as Error).message)
     }
 
     // Pull safety data
