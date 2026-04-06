@@ -266,6 +266,26 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.warn('[CloudPull] Failed to save config:', e)
     }
 
+    // Fetch real project + subsystem names from cloud and update local DB
+    try {
+      const infoUrl = `${remoteUrl}/api/sync/subsystem-info/${subsystemId}`
+      const infoRes = await fetch(infoUrl, {
+        headers: { 'X-API-Key': apiPassword || '' },
+      })
+      if (infoRes.ok) {
+        const info = await infoRes.json()
+        if (info.projectName) {
+          db.prepare('UPDATE Projects SET Name = ? WHERE id = (SELECT ProjectId FROM Subsystems WHERE id = ?)').run(info.projectName, subsystemId)
+        }
+        if (info.subsystemName) {
+          db.prepare('UPDATE Subsystems SET Name = ? WHERE id = ?').run(info.subsystemName, subsystemId)
+        }
+        console.log(`[CloudPull] Updated names: ${info.projectName} / ${info.subsystemName}`)
+      }
+    } catch (e) {
+      // Non-critical — names just stay as placeholders
+    }
+
     // Mark CloudSyncService as connected (it reads config from configService on demand)
     try {
       const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
