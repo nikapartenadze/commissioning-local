@@ -1045,9 +1045,9 @@ export default function CommissioningPage() {
   }
 
   const handleMarkPassed = async (io: IoItem) => {
-    // Block if parent device is faulted
+    // Block if parent device is faulted (only for IOs with real network devices)
     const deviceName = io.networkDeviceName || getDeviceName(io.name)
-    if (deviceName && faultedDevices.has(deviceName)) {
+    if (io.hasNetworkDevice && deviceName && faultedDevices.has(deviceName)) {
       toast({
         title: "Cannot pass — device faulted",
         description: `${deviceName} has a connection fault. Fix the fault before marking as Pass.`,
@@ -1101,9 +1101,9 @@ export default function CommissioningPage() {
   }
 
   const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
-    // Block if parent device is faulted
+    // Block if parent device is faulted (only for IOs with real network devices)
     const failDeviceName = io.networkDeviceName || getDeviceName(io.name)
-    if (failDeviceName && faultedDevices.has(failDeviceName)) {
+    if (io.hasNetworkDevice && failDeviceName && faultedDevices.has(failDeviceName)) {
       toast({
         title: "Cannot test — device faulted",
         description: `${failDeviceName} has a connection fault. Fix the fault first.`,
@@ -1481,16 +1481,14 @@ export default function CommissioningPage() {
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}
       <header className="flex-shrink-0 z-50">
-        {/* Gold accent line */}
-        <div className="h-1 bg-[#C6941A]" />
         {/* Top row: title + tabs + actions */}
-        <div className="flex items-center justify-between px-2 sm:px-4 h-11 sm:h-12 bg-card border-b border-[#C6941A]/20">
+        <div className="flex items-center justify-between px-2 sm:px-4 h-10 sm:h-10 bg-card border-b border-[#C6941A]/20 border-t-2 border-t-[#C6941A]">
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo_autstand.svg" alt="Autstand" className="h-5 hidden sm:block" />
             <div className="h-5 w-px bg-border shrink-0 hidden sm:block" />
             <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
-              SUB {plcConfig.subsystemId}
+              {ios.length > 0 && ios[0].subsystemName ? ios[0].subsystemName : `SUB ${plcConfig.subsystemId}`}
             </span>
             <div className="h-5 w-px bg-border shrink-0" />
             <div className="flex bg-muted rounded p-0.5 gap-0.5 shrink-0">
@@ -1564,9 +1562,11 @@ export default function CommissioningPage() {
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${process.env.NEXT_PUBLIC_BUILD_VERSION} • ${process.env.NEXT_PUBLIC_BUILD_HASH} • ${process.env.NEXT_PUBLIC_BUILD_DATE}`}>
-              {process.env.NEXT_PUBLIC_BUILD_VERSION}
-            </span>
+            {process.env.NEXT_PUBLIC_BUILD_VERSION && (
+              <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${process.env.NEXT_PUBLIC_BUILD_VERSION} • ${process.env.NEXT_PUBLIC_BUILD_HASH} • ${process.env.NEXT_PUBLIC_BUILD_DATE}`}>
+                {process.env.NEXT_PUBLIC_BUILD_VERSION}
+              </span>
+            )}
             <UserMenu />
             <ThemeToggle />
           </div>
@@ -1747,6 +1747,7 @@ export default function CommissioningPage() {
           onOpenChange={setShowFireOutputDialog}
           io={selectedIo ? ios.find(i => i.id === selectedIo.id) || selectedIo : null}
           onFireOutput={handleFireOutput}
+          autoCloseOnRelease={plcStatus.isTesting}
         />
 
         {/* Value Change Dialog - use current IO from array to get live state updates */}
