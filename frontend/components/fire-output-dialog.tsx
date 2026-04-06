@@ -23,6 +23,7 @@ interface FireOutputDialogProps {
   onOpenChange: (open: boolean) => void
   io: IoItem | null
   onFireOutput: (io: IoItem, action: 'start' | 'stop' | 'toggle') => void
+  autoCloseOnRelease?: boolean
 }
 
 export function FireOutputDialog({
@@ -30,6 +31,7 @@ export function FireOutputDialog({
   onOpenChange,
   io,
   onFireOutput,
+  autoCloseOnRelease = false,
 }: FireOutputDialogProps) {
   const [isHolding, setIsHolding] = useState(false)
   const ioRef = useRef(io)
@@ -72,7 +74,7 @@ export function FireOutputDialog({
     onFireOutput(ioRef.current, 'start') // Turn ON instantly
   }, [onFireOutput])
 
-  // Release: turn OFF
+  // Release: turn OFF (and auto-close if in testing mode)
   const handlePressEnd = useCallback(() => {
     if (!isPressedRef.current || !ioRef.current) return
 
@@ -80,7 +82,10 @@ export function FireOutputDialog({
     isPressedRef.current = false
     setIsHolding(false)
     onFireOutput(currentIo, 'stop') // Turn OFF on release
-  }, [onFireOutput, closeDialog])
+    if (autoCloseOnRelease) {
+      onOpenChange(false)
+    }
+  }, [onFireOutput, autoCloseOnRelease, onOpenChange])
 
   // Handle pointer leaving button while pressed — turn OFF
   const handlePressCancel = useCallback(() => {

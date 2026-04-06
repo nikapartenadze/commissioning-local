@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import {
   Play,
   Square,
-  BarChart3,
+  PieChart,
   Download,
   History,
   Cloud,
@@ -108,7 +108,7 @@ export function PlcToolbar({
           className={cn(
             "h-11 sm:h-14 px-3 sm:px-6 min-w-[90px] sm:min-w-[130px] text-sm sm:text-lg font-bold uppercase tracking-wider transition-colors",
             isTesting
-              ? "bg-red-600 hover:bg-red-700 text-white animate-pulse"
+              ? "bg-red-600 hover:bg-red-700 text-white"
               : isPlcConnected
                 ? "bg-green-600 hover:bg-green-700 text-white"
                 : "bg-gray-500 text-gray-300 cursor-not-allowed"
@@ -324,7 +324,7 @@ export function PlcToolbar({
             onClick={onShowGraph}
             title="Show Graph"
           >
-            <BarChart3 className="w-5 h-5 sm:w-6 sm:h-6" />
+            <PieChart className="w-5 h-5 sm:w-6 sm:h-6" />
           </Button>
 
           <Button
