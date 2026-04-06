@@ -133,6 +133,8 @@ export default function CommissioningPage() {
   // State management
   const [ios, setIos] = useState<IoItem[]>([])
   const [filteredIos, setFilteredIos] = useState<IoItem[]>([])
+  const [projectName, setProjectName] = useState<string | null>(null)
+  const [subsystemLabel, setSubsystemLabel] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const hasLoadedOnce = useRef(false)
   const [signalRWasConnected, setSignalRWasConnected] = useState(false)
@@ -203,14 +205,29 @@ export default function CommissioningPage() {
     })
   }
 
-  // Load muted IOs from localStorage on mount
+  // Clear muted IOs when server restarts, restore otherwise
   useEffect(() => {
-    const saved = localStorage.getItem('muted-ios')
-    if (saved) {
-      try {
-        setMutedIos(new Set(JSON.parse(saved)))
-      } catch {}
-    }
+    fetch('/api/health').then(r => r.json()).then(data => {
+      const lastServerStart = localStorage.getItem('server-start-time')
+      if (data.serverStartTime && data.serverStartTime !== lastServerStart) {
+        // Server restarted — clear mutes
+        localStorage.removeItem('muted-ios')
+        localStorage.setItem('server-start-time', data.serverStartTime)
+        setMutedIos(new Set())
+      } else {
+        // Same session — restore mutes
+        const saved = localStorage.getItem('muted-ios')
+        if (saved) {
+          try { setMutedIos(new Set(JSON.parse(saved))) } catch {}
+        }
+      }
+    }).catch(() => {
+      // Offline — restore from localStorage
+      const saved = localStorage.getItem('muted-ios')
+      if (saved) {
+        try { setMutedIos(new Set(JSON.parse(saved))) } catch {}
+      }
+    })
   }, [])
 
   // Save muted IOs to localStorage on change
@@ -899,7 +916,11 @@ export default function CommissioningPage() {
       // Load IOs from backend (real PLC data) - retry on failure
       const response = await fetchWithRetry(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
       if (response.ok) {
-        const data = await response.json() as IoItem[]
+        const json = await response.json()
+        // API returns { ios, projectName, subsystemName } or plain array (backwards compat)
+        const data = (Array.isArray(json) ? json : json.ios) as IoItem[]
+        if (!Array.isArray(json) && json.projectName) setProjectName(json.projectName)
+        if (!Array.isArray(json) && json.subsystemName) setSubsystemLabel(json.subsystemName)
         // Merge new data into existing array to avoid full re-render flash
         // React will only re-render rows that actually changed
         setIos(prev => {
@@ -1488,7 +1509,9 @@ export default function CommissioningPage() {
             <img src="/logo_autstand.svg" alt="Autstand" className="h-5 hidden sm:block" />
             <div className="h-5 w-px bg-border shrink-0 hidden sm:block" />
             <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
-              {ios.length > 0 && ios[0].subsystemName ? ios[0].subsystemName : `SUB ${plcConfig.subsystemId}`}
+              {projectName && subsystemLabel
+                ? `${projectName} / ${subsystemLabel}`
+                : subsystemLabel || (ios.length > 0 && ios[0].subsystemName ? ios[0].subsystemName : `SUB ${plcConfig.subsystemId}`)}
             </span>
             <div className="h-5 w-px bg-border shrink-0" />
             <div className="flex bg-muted rounded p-0.5 gap-0.5 shrink-0">
@@ -1573,20 +1596,6 @@ export default function CommissioningPage() {
         </div>
       </header>
 
-      {/* SignalR Connection Warning - Shows when real-time updates are disconnected */}
-      {showWsWarning && !signalR.isConnected && (
-        <div className="bg-amber-500/10 border-b border-amber-500/30 px-2 sm:px-4 py-1.5 sm:py-2 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-            <span className="text-xs sm:text-sm text-amber-600 dark:text-amber-400 font-medium">
-              Reconnecting...
-            </span>
-          </div>
-          <span className="text-xs text-amber-500/70 hidden sm:inline">
-            PLC data may be stale
-          </span>
-        </div>
-      )}
 
       {/* Network Status - Shows PLC path, cloud connection, etc */}
       <NetworkStatusBreadcrumbs className="flex-shrink-0 border-b" />
@@ -1716,7 +1725,7 @@ export default function CommissioningPage() {
       {showGraph && (
         <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
           <TestResultsChart
-            data={calculateTestResults(filteredIos)}
+            data={calculateTestResults(filteredIos.length > 0 ? filteredIos : ios)}
             onClose={() => setShowGraph(false)}
           />
         </div>
@@ -1773,7 +1782,7 @@ export default function CommissioningPage() {
           onNo={handleValueChangeNo}
           onCancel={handleValueChangeCancel}
           onClearAll={handleClearAllDialogs}
-          onStopTesting={plcStatus.isTesting ? handleToggleTesting : undefined}
+          onMute={(io) => toggleMuteIo(io.id)}
         />
 
         {/* Fail Comment Dialog - use current IO from array to get live state updates */}

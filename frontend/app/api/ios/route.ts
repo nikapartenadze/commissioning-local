@@ -47,7 +47,21 @@ export async function GET(request: Request) {
       }
     })
 
-    return NextResponse.json(iosWithState)
+    // Get project and subsystem names for header
+    let projectName: string | null = null
+    let subsystemName: string | null = null
+    const lookupSubId = subsystemId || (ios.length > 0 ? String(ios[0].SubsystemId) : null)
+    if (lookupSubId) {
+      const sub = db.prepare(
+        'SELECT s.Name as subName, p.Name as projName FROM Subsystems s JOIN Projects p ON s.ProjectId = p.id WHERE s.id = ?'
+      ).get(parseInt(lookupSubId)) as { subName: string | null; projName: string | null } | undefined
+      if (sub) {
+        projectName = sub.projName
+        subsystemName = sub.subName
+      }
+    }
+
+    return NextResponse.json({ ios: iosWithState, projectName, subsystemName })
   } catch (error) {
     console.error('Error fetching IOs:', error)
     return NextResponse.json(
