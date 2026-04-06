@@ -25,6 +25,7 @@ type IoItem = {
   failureMode?: string | null
   assignedTo?: string | null
   networkDeviceName?: string | null
+  hasNetworkDevice?: boolean
   installationStatus?: string | null
   installationPercent?: number | null
 }
@@ -823,7 +824,7 @@ export function EnhancedIoDataGrid({
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const io = filteredIos[virtualRow.index]
               // Only show device status for IOs with a matching network topology device
-              const rowDeviceName = (io as any).hasNetworkDevice ? io.networkDeviceName : null
+              const rowDeviceName = io.hasNetworkDevice ? io.networkDeviceName : null
               const deviceStatus = rowDeviceName ? deviceStatuses.get(rowDeviceName) : undefined
               const isDeviceFaulted = deviceStatus === 'red'
               return (
@@ -836,7 +837,7 @@ export function EnhancedIoDataGrid({
                     isTesting ? "cursor-pointer" : "cursor-default",
                     getRowClassName(io),
                     currentTestIo?.id === io.id && "border-l-4 border-l-primary",
-                    isDeviceFaulted && "opacity-50 pointer-events-none select-none"
+                    isDeviceFaulted && "opacity-50"
                   )}
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
