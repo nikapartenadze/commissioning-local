@@ -83,7 +83,8 @@ export function FireOutputDialog({
     setIsHolding(false)
     onFireOutput(currentIo, 'stop') // Turn OFF on release
     if (autoCloseOnRelease) {
-      onOpenChange(false)
+      // Small delay to ensure state updates propagate before closing
+      setTimeout(() => onOpenChange(false), 100)
     }
   }, [onFireOutput, autoCloseOnRelease, onOpenChange])
 

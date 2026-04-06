@@ -437,29 +437,6 @@ export function PlcToolbar({
             </div>
           )}
 
-          {/* Tag Status Indicator */}
-          {tagStatus && tagStatus.totalTags > 0 && (
-            <Button
-              variant={tagStatus.hasErrors ? "outline" : "ghost"}
-              size="lg"
-              className={cn(
-                "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-1.5",
-                tagStatus.hasErrors
-                  ? "text-amber-600 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20"
-                  : "text-green-600"
-              )}
-              onClick={onShowTagStatus}
-              title={tagStatus.hasErrors
-                ? `${tagStatus.failedTags} tags have errors - click for details`
-                : `All ${tagStatus.totalTags} tags working`}
-            >
-              {tagStatus.hasErrors && <AlertTriangle className="w-4 h-4" />}
-              <span className="text-xs font-mono">
-                {tagStatus.successfulTags}/{tagStatus.totalTags}
-              </span>
-              <span className="text-[10px] uppercase hidden lg:inline">TAGS</span>
-            </Button>
-          )}
 
           {/* Cloud Status */}
           {currentUser && (

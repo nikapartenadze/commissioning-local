@@ -75,43 +75,50 @@ function useColumnWidths() {
 
   // Action buttons: fixed small sizes, always visible
   const actionW = 40
-  const fireW = width < 768 ? 60 : 76
-  const actionsTotal = actionW * 5 + fireW // hist+help+fail+clear+mute + fire
+  const fireW = actionW
+  const actionsTotal = actionW * 6
 
-  // Available space for data columns
-  const available = width - actionsTotal - 16 // 16px for padding
+  // Available space for data columns after actions
+  const available = width - actionsTotal - 16
 
   if (width < 768) {
-    // Mobile: hide timestamp & comments, split remaining among 6 data cols
-    const desc = Math.floor(available * 0.28)
-    const io = Math.floor(available * 0.25)
-    const state = Math.floor(available * 0.10)
-    const dev = Math.floor(available * 0.10)
-    const inst = Math.floor(available * 0.10)
-    const result = Math.floor(available * 0.17)
+    // Phone: fixed readable sizes, horizontal scroll is fine
     return {
-      description: desc, ioPoint: io, state, deviceStatus: dev,
-      installStatus: inst, result, timestamp: 0, comments: 0,
+      description: 200, ioPoint: 180, state: 60,
+      deviceStatus: 60, installStatus: 0, result: 80,
+      timestamp: 0, comments: 0,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
   }
 
-  // Desktop/tablet: all columns, proportional to screen
-  const desc = Math.floor(available * 0.20)
-  const io = Math.floor(available * 0.16)
-  const state = Math.floor(available * 0.06)
-  const dev = Math.floor(available * 0.05)
-  const inst = Math.floor(available * 0.05)
-  const result = Math.floor(available * 0.07)
-  const ts = Math.floor(available * 0.14)
-  const comments = Math.floor(available * 0.17)
+  if (width < 1024) {
+    // Small tablet
+    return {
+      description: 220, ioPoint: 200, state: 70,
+      deviceStatus: 60, installStatus: 0, result: 90,
+      timestamp: 0, comments: 0,
+      history: actionW, help: actionW, failed: actionW, clear: actionW,
+      mute: actionW, output: fireW,
+    }
+  }
 
+  if (width < 1400) {
+    // Large tablet / small laptop
+    return {
+      description: 260, ioPoint: 220, state: 70,
+      deviceStatus: 60, installStatus: 60, result: 90,
+      timestamp: 150, comments: 0,
+      history: actionW, help: actionW, failed: actionW, clear: actionW,
+      mute: actionW, output: fireW,
+    }
+  }
+
+  // Full desktop: all columns
   return {
-    description: Math.max(desc, 160), ioPoint: Math.max(io, 130),
-    state: Math.max(state, 50), deviceStatus: Math.max(dev, 44),
-    installStatus: Math.max(inst, 44), result: Math.max(result, 60),
-    timestamp: Math.max(ts, 100), comments: Math.max(comments, 120),
+    description: 300, ioPoint: 240, state: 80,
+    deviceStatus: 70, installStatus: 70, result: 100,
+    timestamp: 160, comments: 200,
     history: actionW, help: actionW, failed: actionW, clear: actionW,
     mute: actionW, output: fireW,
   }
@@ -728,7 +735,7 @@ export function EnhancedIoDataGrid({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
       >
-        <div style={{ minWidth: `${totalWidth}px` }}>
+        <div style={{ minWidth: `${totalWidth}px`, width: '100%' }}>
           {/* Header - Sticky, bold, industrial */}
           <div className="bg-muted sticky top-0 z-10 flex border-b-2 border-[#C6941A]/40">
             <div
@@ -861,9 +868,6 @@ export function EnhancedIoDataGrid({
                          <VolumeX className="h-3.5 w-3.5 text-orange-400" />
                        </span>
                      )}
-                     {isDeviceFaulted && (
-                       <span className="ml-2 text-[10px] text-red-500 font-medium shrink-0">DEVICE FAULTED</span>
-                     )}
                      {!isTesting && onRequestChange && (
                        <button
                          className="ml-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground shrink-0"
@@ -875,7 +879,7 @@ export function EnhancedIoDataGrid({
                      )}
                    </div>
                    <div
-                     className="px-4 py-2 text-sm font-mono font-medium flex-shrink-0 overflow-hidden flex items-center gap-2 select-text"
+                     className="px-4 py-2 text-xs font-mono font-medium flex-shrink-0 overflow-hidden text-ellipsis flex items-center gap-2 select-text"
                      style={{ width: `${COLUMN_WIDTHS.ioPoint}px` }}
                      data-selectable
                    >
@@ -920,9 +924,9 @@ export function EnhancedIoDataGrid({
                     style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
                   >
                     {rowDeviceName ? (() => {
-                      if (deviceStatus === 'red') return <div className="w-6 h-6 min-w-[24px] rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
-                      if (deviceStatus === 'green') return <div className="w-6 h-6 min-w-[24px] rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
-                      return <div className="w-6 h-6 min-w-[24px] rounded-full bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
+                      if (deviceStatus === 'red') return <div className="w-5 h-5 min-w-[20px] rounded-sm bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
+                      if (deviceStatus === 'green') return <div className="w-5 h-5 min-w-[20px] rounded-sm bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
+                      return <div className="w-5 h-5 min-w-[20px] rounded-sm bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
                     })() : null}
                   </div>
                   {/* Installation Status */}
@@ -1032,13 +1036,13 @@ export function EnhancedIoDataGrid({
                   </div>
                   {/* Clear */}
                   <div className="px-1 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.clear}px` }}>
-                    <Button variant="ghost" size="icon" className="h-10 w-10 disabled:opacity-30" onClick={(e) => { e.stopPropagation(); onClearResult?.(io) }} disabled={!io.result} title="Clear">
+                    <Button variant="ghost" size="icon" className="h-10 w-10 text-blue-500 hover:text-blue-600 hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-30 disabled:text-gray-400" onClick={(e) => { e.stopPropagation(); onClearResult?.(io) }} disabled={!io.result} title="Clear">
                       <X className="h-5 w-5" />
                     </Button>
                   </div>
                   {/* Mute */}
                   <div className="px-1 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.mute}px` }}>
-                    <Button variant={mutedIos.has(io.id) ? "secondary" : "ghost"} size="icon" className={cn("h-10 w-10", mutedIos.has(io.id) ? "text-orange-500 hover:text-orange-600 bg-orange-100 dark:bg-orange-900/30 hover:bg-orange-200 dark:hover:bg-orange-900/50" : "text-muted-foreground/40 hover:text-muted-foreground")} onClick={(e) => { e.stopPropagation(); onToggleMute?.(io.id) }} title={mutedIos.has(io.id) ? "Unmute" : "Mute"}>
+                    <Button variant={mutedIos.has(io.id) ? "secondary" : "ghost"} size="icon" className={cn("h-10 w-10", mutedIos.has(io.id) ? "text-orange-500 hover:text-orange-600 bg-orange-100 dark:bg-orange-900/30 hover:bg-orange-200 dark:hover:bg-orange-900/50" : "text-orange-400 hover:text-orange-500 hover:bg-orange-100 dark:hover:bg-orange-900/30")} onClick={(e) => { e.stopPropagation(); onToggleMute?.(io.id) }} title={mutedIos.has(io.id) ? "Unmute" : "Mute"}>
                       {mutedIos.has(io.id) ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
                     </Button>
                   </div>
@@ -1048,8 +1052,8 @@ export function EnhancedIoDataGrid({
                       isSafetyOutput(io.name) ? (
                         <span className="text-xs text-muted-foreground/50 px-2" title="Safety outputs cannot be fired directly">SAFETY</span>
                       ) : (
-                        <Button variant="default" size="sm" className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold shadow-md disabled:opacity-30 disabled:bg-amber-500/50" onClick={(e) => { e.stopPropagation(); onShowFireOutputDialog?.(io) }} title="Fire Output">
-                          <Play className="h-4 w-4 mr-1" />FIRE
+                        <Button variant="ghost" size="icon" className="h-10 w-10 text-amber-500 hover:text-amber-600 hover:bg-amber-100 dark:hover:bg-amber-900/30" onClick={(e) => { e.stopPropagation(); onShowFireOutputDialog?.(io) }} title="Fire Output">
+                          <Play className="h-5 w-5" />
                         </Button>
                       )
                     ) : (

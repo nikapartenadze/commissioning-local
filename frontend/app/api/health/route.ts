@@ -3,6 +3,8 @@ import { db } from '@/lib/db-sqlite'
 
 export const dynamic = 'force-dynamic'
 
+const SERVER_START_TIME = Date.now().toString()
+
 export async function GET() {
   try {
     // Check database connectivity
@@ -11,7 +13,8 @@ export async function GET() {
     return NextResponse.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
-      database: 'connected'
+      database: 'connected',
+      serverStartTime: SERVER_START_TIME,
     })
   } catch (error) {
     console.error('Health check failed:', error)
