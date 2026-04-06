@@ -1563,8 +1563,8 @@ export default function CommissioningPage() {
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <span className="text-[9px] font-mono text-muted-foreground/50 hidden sm:inline" title={`Build: ${process.env.NEXT_PUBLIC_BUILD_HASH} (${process.env.NEXT_PUBLIC_BUILD_DATE})`}>
-              {process.env.NEXT_PUBLIC_BUILD_HASH}
+            <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${process.env.NEXT_PUBLIC_BUILD_VERSION} • ${process.env.NEXT_PUBLIC_BUILD_HASH} • ${process.env.NEXT_PUBLIC_BUILD_DATE}`}>
+              {process.env.NEXT_PUBLIC_BUILD_VERSION}
             </span>
             <UserMenu />
             <ThemeToggle />
