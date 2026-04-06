@@ -104,14 +104,17 @@ export function PlcToolbar({
         <Button
           data-tour="start-button"
           size="lg"
+          disabled={!isPlcConnected && !isTesting}
           className={cn(
             "h-11 sm:h-14 px-3 sm:px-6 min-w-[90px] sm:min-w-[130px] text-sm sm:text-lg font-bold uppercase tracking-wider transition-colors",
             isTesting
               ? "bg-red-600 hover:bg-red-700 text-white animate-pulse"
-              : "bg-green-600 hover:bg-green-700 text-white"
+              : isPlcConnected
+                ? "bg-green-600 hover:bg-green-700 text-white"
+                : "bg-gray-500 text-gray-300 cursor-not-allowed"
           )}
           onClick={onToggleTesting}
-          title={isTesting ? "Click to stop testing mode" : "Click to start testing mode"}
+          title={!isPlcConnected && !isTesting ? "Connect to PLC first" : isTesting ? "Click to stop testing mode" : "Click to start testing mode"}
         >
           {isTesting ? (
             <>
