@@ -2,9 +2,13 @@ import { execSync } from 'child_process'
 
 // Inject build info at compile time
 let gitHash = 'dev'
+let gitTag = ''
 let buildDate = new Date().toISOString().split('T')[0]
 try {
   gitHash = execSync('git rev-parse --short HEAD').toString().trim()
+} catch {}
+try {
+  gitTag = execSync('git describe --tags --abbrev=0 2>/dev/null || echo ""').toString().trim()
 } catch {}
 
 /** @type {import('next').NextConfig} */
@@ -12,6 +16,7 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_BUILD_HASH: gitHash,
     NEXT_PUBLIC_BUILD_DATE: buildDate,
+    NEXT_PUBLIC_BUILD_VERSION: gitTag || `build-${gitHash}`,
   },
   // Standalone output for Docker (custom server wraps this)
   output: 'standalone',
