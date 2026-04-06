@@ -25,7 +25,7 @@ interface ValueChangeDialogProps {
   onNo: (io: IoItem) => void
   onCancel: (io: IoItem) => void
   onClearAll?: () => void
-  onStopTesting?: () => void
+  onMute?: (io: IoItem) => void
 }
 
 export function ValueChangeDialog({
@@ -37,7 +37,7 @@ export function ValueChangeDialog({
   onNo,
   onCancel,
   onClearAll,
-  onStopTesting,
+  onMute,
   deviceFaulted = false
 }: ValueChangeDialogProps) {
   if (!io) return null
@@ -167,17 +167,18 @@ export function ValueChangeDialog({
 
           {/* Action Buttons */}
           <div className="flex justify-between items-center gap-2">
-            {onStopTesting ? (
+            {onMute ? (
               <Button
                 variant="outline"
                 size="sm"
-                className="text-red-600 border-red-300 hover:bg-red-50 dark:text-red-400 dark:border-red-800 dark:hover:bg-red-950"
+                className="text-orange-500 border-orange-300 hover:bg-orange-50 dark:text-orange-400 dark:border-orange-800 dark:hover:bg-orange-950"
                 onClick={() => {
-                  onStopTesting()
+                  onMute(io)
+                  onCancel(io)
                   onOpenChange(false)
                 }}
               >
-                Stop Testing
+                Mute
               </Button>
             ) : <div />}
             <div className="flex gap-2">

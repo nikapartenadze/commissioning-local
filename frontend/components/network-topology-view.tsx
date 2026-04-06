@@ -249,7 +249,10 @@ function RingLayout({
   const renderNode = (node: typeof nodes[0]) => {
     const isExpanded = expandedNodeId === node.id
     const status = getNodeStatus(node)
-    const deviceCount = node.ports.filter((p) => p.deviceName).length
+    const devicePorts = node.ports.filter((p) => p.deviceName && p.statusTag)
+    const totalDevices = node.ports.filter((p) => p.deviceName).length
+    const connectedDevices = devicePorts.filter(p => getStatusColor(p.statusTag, tagStates) === 'green').length
+    const allConnected = connectedDevices === totalDevices && totalDevices > 0
     return (
       <button
         onClick={() => onToggleNode(node.id)}
@@ -257,17 +260,21 @@ function RingLayout({
           'w-full relative rounded-lg border-2 px-4 py-3 text-center transition-all',
           isExpanded
             ? 'border-blue-400 bg-accent ring-1 ring-blue-400/20'
-            : 'border-border bg-card hover:border-muted-foreground'
+            : status === 'green'
+              ? 'border-green-500/50 bg-green-500/5 hover:bg-green-500/10'
+              : status === 'red'
+                ? 'border-red-500/50 bg-red-500/5 hover:bg-red-500/10'
+                : 'border-border bg-card hover:border-muted-foreground'
         )}
       >
-        <div className="absolute top-2 right-2">
-          <StatusDot status={status} size="md" />
-        </div>
         <p className="text-sm font-bold text-foreground">{node.name}</p>
         <p className="text-xs font-mono text-muted-foreground mt-0.5">{node.ipAddress || ''}</p>
-        <Badge variant="outline" className="mt-1.5 text-[10px] border-border text-muted-foreground">
-          {deviceCount} devices
-        </Badge>
+        <p className={cn(
+          "mt-1.5 text-xs font-bold",
+          allConnected ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+        )}>
+          {connectedDevices}/{totalDevices} connected
+        </p>
         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
           {isExpanded ? (
             <ChevronDown className="w-4 h-4 text-primary" />
@@ -321,9 +328,6 @@ function RingLayout({
             getStatusColor(ring.mcmTag, tagStates) === 'red' ? 'border-red-500/50 bg-red-500/10' :
             'border-gray-500/50 bg-gray-500/10'
           )}>
-            <div className="absolute top-2 right-2">
-              <StatusDot status={getStatusColor(ring.mcmTag, tagStates)} size="md" />
-            </div>
             <p className="text-sm font-bold text-foreground">{ring.mcmName}</p>
             <p className="text-xs font-mono text-muted-foreground mt-0.5">{ring.mcmIp || ''}</p>
             <Badge variant="outline" className="mt-1.5 text-[10px]">
