@@ -79,18 +79,23 @@ export async function POST(
     }
 
     // Block testing if parent device is faulted (ConnectionFaulted = true)
+    // Only check for IOs that have a real network device (exists in NetworkPorts table)
     {
-      const { extractDeviceName } = await import('@/lib/db-sqlite')
-      const deviceName = io.NetworkDeviceName || extractDeviceName(io.Name || '')
+      const deviceName = io.NetworkDeviceName
       if (deviceName) {
-        const client = getPlcTags()
-        const faultTag = `${deviceName}:I.ConnectionFaulted`
-        const faultState = client.tags.find(t => t.name === faultTag)
-        if (faultState && faultState.state === 'TRUE') {
-          return NextResponse.json(
-            { error: `Cannot test — parent device ${deviceName} has a connection fault. Fix the fault first.` },
-            { status: 400 }
-          )
+        const hasNetworkDevice = db.prepare(
+          'SELECT 1 FROM NetworkPorts WHERE DeviceName = ? LIMIT 1'
+        ).get(deviceName)
+        if (hasNetworkDevice) {
+          const client = getPlcTags()
+          const faultTag = `${deviceName}:I.ConnectionFaulted`
+          const faultState = client.tags.find(t => t.name === faultTag)
+          if (faultState && faultState.state === 'TRUE') {
+            return NextResponse.json(
+              { error: `Cannot test — parent device ${deviceName} has a connection fault. Fix the fault first.` },
+              { status: 400 }
+            )
+          }
         }
       }
     }

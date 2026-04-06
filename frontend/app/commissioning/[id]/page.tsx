@@ -68,6 +68,7 @@ interface IoItem {
   subsystemName: string
   assignedTo?: string | null
   networkDeviceName?: string | null
+  hasNetworkDevice?: boolean
 }
 
 interface ChartData {
@@ -1763,6 +1764,7 @@ export default function CommissioningPage() {
           remainingCount={dialogQueue.length}
           deviceFaulted={(() => {
             const io = currentDialogIo ? ios.find(i => i.id === currentDialogIo.id) : null
+            if (!io?.hasNetworkDevice) return false
             const deviceName = io?.networkDeviceName || getDeviceName(io?.name)
             return deviceName ? faultedDevices.has(deviceName) : false
           })()}
