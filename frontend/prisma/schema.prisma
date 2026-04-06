@@ -51,11 +51,13 @@ model Io {
   version           BigInt    @default(0) @map("Version")
   tagType           String?   @map("TagType")
   cloudSyncedAt     DateTime? @map("CloudSyncedAt")
-  networkDeviceName String?   @map("NetworkDeviceName")
-  assignedTo        String?   @map("AssignedTo")
-  punchlistStatus    String?   @map("PunchlistStatus")
-  trade              String?   @map("Trade")
-  clarificationNote  String?   @map("ClarificationNote")
+  networkDeviceName   String?   @map("NetworkDeviceName")
+  assignedTo          String?   @map("AssignedTo")
+  punchlistStatus     String?   @map("PunchlistStatus")
+  trade               String?   @map("Trade")
+  clarificationNote   String?   @map("ClarificationNote")
+  installationStatus  String?   @map("InstallationStatus")
+  installationPercent Float?    @map("InstallationPercent")
 
   subsystem     Subsystem     @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
   testHistories TestHistory[]
