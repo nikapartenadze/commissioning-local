@@ -307,7 +307,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
     // Pull network topology directly
     try {
-      const netUrl = `${remoteUrl}/api/sync/network/${subsystemId}`
+      const netUrl = `${remoteUrl}/api/network?subsystemId=${subsystemId}`
       console.log(`[CloudPull] Fetching network from: ${netUrl}`)
       const netRes = await fetch(netUrl, {
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
