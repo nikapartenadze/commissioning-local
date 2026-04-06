@@ -49,6 +49,9 @@ export interface Io {
   tagType?: string | null
   cloudSyncedAt?: Date | null
   networkDeviceName?: string | null
+  installationStatus?: string | null    // 'complete' | 'in-progress' | 'not-started' | null
+  installationPercent?: number | null   // 0.0 - 1.0
+  deviceName?: string | null
 }
 
 export interface IoUpdateDto {

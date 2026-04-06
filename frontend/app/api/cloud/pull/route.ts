@@ -176,8 +176,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
       // Prepare the upsert statement
       const upsertStmt = db.prepare(`
-        INSERT OR REPLACE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments, NetworkDeviceName)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments, NetworkDeviceName, InstallationStatus, InstallationPercent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
 
       let upsertedCount = 0
@@ -201,6 +201,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
             cloudIo.timestamp ?? null,
             cloudIo.comments ?? null,
             cloudIo.networkDeviceName ?? null,
+            cloudIo.installationStatus ?? null,
+            cloudIo.installationPercent ?? null,
           )
           upsertedCount++
         } catch (error) {
@@ -285,16 +287,20 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     }
 
     // Broadcast to all clients to reload their IO data
+    console.log('[CloudPull] Broadcasting IO update to WebSocket clients...')
     try {
       await fetch(getWsBroadcastUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'IOsUpdated', count: result })
+        body: JSON.stringify({ type: 'IOsUpdated', count: result }),
+        signal: AbortSignal.timeout(5000),
       })
-    } catch {
-      // WebSocket server might not be running
+      console.log('[CloudPull] Broadcast sent')
+    } catch (e) {
+      console.log('[CloudPull] Broadcast skipped:', (e as Error).message)
     }
 
+    console.log('[CloudPull] Starting network/estop/safety/punchlist pull...')
     // Also pull network + estop data alongside IOs (non-blocking, direct DB writes — no self-referential HTTP)
     let networkPulled = 0
     let estopPulled = 0
