@@ -69,6 +69,9 @@ interface IoItem {
   assignedTo?: string | null
   networkDeviceName?: string | null
   hasNetworkDevice?: boolean
+  installationStatus?: string | null
+  installationPercent?: number | null
+  poweredUp?: boolean | null
 }
 
 interface ChartData {
@@ -174,8 +177,43 @@ export default function CommissioningPage() {
   // Track if testing was active before switching to non-IO tab (so we can resume on return)
   const wasTestingBeforeTabSwitch = useRef(false)
 
-  // Pending SPARE timers — keyed by device prefix (before :), cancel if non-SPARE from same device fires
+  // Pending SPARE timers — keyed by port pair key, cancel if paired non-SPARE fires
   const pendingSpareTimers = useRef<Map<string, NodeJS.Timeout>>(new Map())
+
+  // Get the port pair key for an IO — paired channels share the same key
+  // VFD In: In_0+In_1 pair, In_2+In_3 pair (even/odd)
+  // VFD IO: IO_0+IO_1 pair
+  // VFD SI: In00+In01 pair, In02+In03 pair
+  // FIOM: PIN2+PIN4 on same Xn port
+  const getPortPairKey = (ioName: string): string => {
+    // FIOM: UL20_19_FIOM1_X3.PIN4_DI → UL20_19_FIOM1_X3
+    const fiomMatch = ioName.match(/^(.+_X\d+)\.PIN[24]/)
+    if (fiomMatch) return fiomMatch[1]
+
+    // VFD I.In_N: pair by even base (0+1, 2+3)
+    const inMatch = ioName.match(/^(.+:I\.In_)(\d+)$/)
+    if (inMatch) {
+      const n = parseInt(inMatch[2])
+      return `${inMatch[1]}${n - (n % 2)}_pair`
+    }
+
+    // VFD I.IO_N: pair by even base
+    const ioMatch = ioName.match(/^(.+:I\.IO_)(\d+)$/)
+    if (ioMatch) {
+      const n = parseInt(ioMatch[2])
+      return `${ioMatch[1]}${n - (n % 2)}_pair`
+    }
+
+    // VFD SI.InNNData: pair by even base (00+01, 02+03)
+    const siMatch = ioName.match(/^(.+:SI\.In)(\d{2})(Data)$/)
+    if (siMatch) {
+      const n = parseInt(siMatch[2])
+      return `${siMatch[1]}${String(n - (n % 2)).padStart(2, '0')}_pair`
+    }
+
+    // Fallback: use the full name (no pairing)
+    return ioName
+  }
 
   // Dialog queue for handling multiple simultaneous triggers
   const [dialogQueue, setDialogQueue] = useState<IoItem[]>([])
@@ -183,7 +221,7 @@ export default function CommissioningPage() {
 
   const [punchlists, setPunchlists] = useState<Array<{ id: number; name: string; ioIds: number[] }>>([])
   const [activePunchlistId, setActivePunchlistId] = useState<number | null>(null)
-  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null>(null)
+  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null>(null)
   const [showChangeRequestDialog, setShowChangeRequestDialog] = useState(false)
   const [showChangeRequestsPanel, setShowChangeRequestsPanel] = useState(false)
   const [changeRequestIo, setChangeRequestIo] = useState<IoItem | null>(null)
@@ -848,21 +886,23 @@ export default function CommissioningPage() {
             }
 
             if (isTrigger && isSpare) {
-              // SPARE triggered — delay 500ms, add to dialog queue UNLESS a non-SPARE from same device fires first
+              // SPARE triggered — delay 500ms, add to dialog queue UNLESS paired non-SPARE fires first
+              const portKey = getPortPairKey(io.name)
               const timer = setTimeout(() => {
-                pendingSpareTimers.current.delete(devicePrefix)
+                pendingSpareTimers.current.delete(portKey)
                 addToDialogQueue(updatedIo)
               }, 500)
-              // Cancel any existing SPARE timer for this device
-              if (pendingSpareTimers.current.has(devicePrefix)) {
-                clearTimeout(pendingSpareTimers.current.get(devicePrefix)!)
+              // Cancel any existing SPARE timer for this port pair
+              if (pendingSpareTimers.current.has(portKey)) {
+                clearTimeout(pendingSpareTimers.current.get(portKey)!)
               }
-              pendingSpareTimers.current.set(devicePrefix, timer)
+              pendingSpareTimers.current.set(portKey, timer)
             } else if (isTrigger && !isSpare && !io.result) {
-              // Non-SPARE triggered — cancel any pending SPARE dialog from same device (same port pair)
-              if (pendingSpareTimers.current.has(devicePrefix)) {
-                clearTimeout(pendingSpareTimers.current.get(devicePrefix)!)
-                pendingSpareTimers.current.delete(devicePrefix)
+              // Non-SPARE triggered — cancel any pending SPARE from the same port pair (cross-talk)
+              const portKey = getPortPairKey(io.name)
+              if (pendingSpareTimers.current.has(portKey)) {
+                clearTimeout(pendingSpareTimers.current.get(portKey)!)
+                pendingSpareTimers.current.delete(portKey)
               }
 
               // Don't trigger dialog for IOs on faulted network devices
@@ -1233,6 +1273,10 @@ export default function CommissioningPage() {
 
 
   const handleShowFireOutputDialog = (io: IoItem) => {
+    // Unmute the IO if it was muted — firing means the user wants to interact with it
+    if (mutedIos.has(io.id)) {
+      toggleMuteIo(io.id)
+    }
     setSelectedIo(io)
     setShowFireOutputDialog(true)
   }
@@ -1637,6 +1681,7 @@ export default function CommissioningPage() {
           passedIos={ios.filter(io => io.result === 'Passed').length}
           failedIos={ios.filter(io => io.result === 'Failed').length}
           notTestedIos={ios.filter(io => !io.result).length}
+          notInstalledIos={ios.filter(io => io.installationStatus && io.installationStatus !== 'complete').length}
           onToggleTesting={handleToggleTesting}
           onShowGraph={() => setShowGraph(true)}
           onDownloadCsv={handleDownloadCsv}
@@ -1756,7 +1801,7 @@ export default function CommissioningPage() {
           onOpenChange={setShowFireOutputDialog}
           io={selectedIo ? ios.find(i => i.id === selectedIo.id) || selectedIo : null}
           onFireOutput={handleFireOutput}
-          autoCloseOnRelease={plcStatus.isTesting}
+          autoCloseOnRelease
         />
 
         {/* Value Change Dialog - use current IO from array to get live state updates */}
