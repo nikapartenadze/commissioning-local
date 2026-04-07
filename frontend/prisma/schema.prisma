@@ -58,6 +58,7 @@ model Io {
   clarificationNote   String?   @map("ClarificationNote")
   installationStatus  String?   @map("InstallationStatus")
   installationPercent Float?    @map("InstallationPercent")
+  poweredUp           Int?      @map("PoweredUp")
 
   subsystem     Subsystem     @relation(fields: [subsystemId], references: [id], onDelete: Cascade)
   testHistories TestHistory[]

@@ -52,6 +52,7 @@ export interface Io {
   installationStatus?: string | null    // 'complete' | 'in-progress' | 'not-started' | null
   installationPercent?: number | null   // 0.0 - 1.0
   deviceName?: string | null
+  poweredUp?: boolean | null
 }
 
 export interface IoUpdateDto {

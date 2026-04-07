@@ -176,8 +176,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
       // Prepare the upsert statement
       const upsertStmt = db.prepare(`
-        INSERT OR REPLACE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments, NetworkDeviceName, InstallationStatus, InstallationPercent)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments, NetworkDeviceName, InstallationStatus, InstallationPercent, PoweredUp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
 
       let upsertedCount = 0
@@ -203,6 +203,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
             cloudIo.networkDeviceName ?? null,
             cloudIo.installationStatus ?? null,
             cloudIo.installationPercent ?? null,
+            cloudIo.poweredUp === true ? 1 : cloudIo.poweredUp === false ? 0 : null,
           )
           upsertedCount++
         } catch (error) {
@@ -230,6 +231,42 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     })()
 
     console.log(`[CloudPull] Successfully upserted ${result} IOs to local database`)
+
+    // Pull test histories from cloud response
+    const cloudHistories = cloudData.testHistories || []
+    let historiesPulled = 0
+    if (cloudHistories.length > 0) {
+      try {
+        db.transaction(() => {
+          // Clear existing test histories for the pulled IOs
+          db.prepare('DELETE FROM TestHistories').run()
+
+          const insertHistoryStmt = db.prepare(
+            'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, TestedBy, State) VALUES (?, ?, ?, ?, ?, ?)'
+          )
+
+          for (const h of cloudHistories) {
+            if (!h.ioId || !h.timestamp) continue
+            try {
+              insertHistoryStmt.run(
+                h.ioId,
+                h.result ?? null,
+                h.timestamp,
+                h.comments ?? null,
+                h.testedBy ?? null,
+                h.state ?? null,
+              )
+              historiesPulled++
+            } catch {
+              // Skip individual history records that fail (e.g. FK constraint if IO was filtered)
+            }
+          }
+        })()
+        console.log(`[CloudPull] Pulled ${historiesPulled} test history records from cloud`)
+      } catch (e) {
+        console.error('[CloudPull] Test history pull failed:', e)
+      }
+    }
 
     // Auto-assign tagType from descriptions for IOs that don't have one
     try {
@@ -492,6 +529,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       networkPulled,
       estopPulled,
       punchlistsPulled,
+      historiesPulled,
       ...(pullWarning ? { warning: pullWarning } : {}),
       debug: {
         cloudIosLength: cloudIos.length,
