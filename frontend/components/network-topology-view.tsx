@@ -237,11 +237,11 @@ function RingLayout({
     const dpmStatus = getStatusColor(node.statusTag, tagStates)
     if (dpmStatus === 'red') return 'red'
     // Check all connected device ports
-    const devicePorts = node.ports.filter(p => p.deviceName && p.statusTag)
-    if (devicePorts.length === 0) return dpmStatus
-    const anyFaulted = devicePorts.some(p => getStatusColor(p.statusTag, tagStates) === 'red')
+    const directPorts = node.ports.filter(p => p.deviceName && p.statusTag && !p.parentPortId)
+    if (directPorts.length === 0) return dpmStatus
+    const anyFaulted = directPorts.some(p => getStatusColor(p.statusTag, tagStates) === 'red')
     if (anyFaulted) return 'red'
-    const allGreen = devicePorts.every(p => getStatusColor(p.statusTag, tagStates) === 'green')
+    const allGreen = directPorts.every(p => getStatusColor(p.statusTag, tagStates) === 'green')
     if (allGreen && dpmStatus === 'green') return 'green'
     return 'gray' // Some unknown/unread
   }
@@ -249,37 +249,33 @@ function RingLayout({
   const renderNode = (node: typeof nodes[0]) => {
     const isExpanded = expandedNodeId === node.id
     const status = getNodeStatus(node)
-    const devicePorts = node.ports.filter((p) => p.deviceName && p.statusTag)
-    const totalDevices = node.ports.filter((p) => p.deviceName).length
-    const connectedDevices = devicePorts.filter(p => getStatusColor(p.statusTag, tagStates) === 'green').length
+    const directPorts = node.ports.filter((p) => p.deviceName && p.statusTag && !p.parentPortId)
+    const totalDevices = directPorts.length
+    const connectedDevices = directPorts.filter(p => getStatusColor(p.statusTag, tagStates) === 'green').length
     const allConnected = connectedDevices === totalDevices && totalDevices > 0
     return (
       <button
         onClick={() => onToggleNode(node.id)}
         className={cn(
           'w-full relative rounded-lg border-2 px-4 py-3 text-center transition-all',
-          isExpanded
-            ? 'border-blue-400 bg-accent ring-1 ring-blue-400/20'
-            : status === 'green'
-              ? 'border-green-500/50 bg-green-500/5 hover:bg-green-500/10'
+          status === 'green'
+              ? 'border-green-600 bg-green-600/90 text-white hover:bg-green-600'
               : status === 'red'
-                ? 'border-red-500/50 bg-red-500/5 hover:bg-red-500/10'
-                : 'border-border bg-card hover:border-muted-foreground'
+                ? 'border-red-600 bg-red-600/90 text-white hover:bg-red-600'
+                : 'border-gray-500 bg-gray-500/90 text-white hover:bg-gray-500',
+          isExpanded && 'ring-2 ring-white/70 shadow-lg scale-[1.03]'
         )}
       >
-        <p className="text-sm font-bold text-foreground">{node.name}</p>
-        <p className="text-xs font-mono text-muted-foreground mt-0.5">{node.ipAddress || ''}</p>
-        <p className={cn(
-          "mt-1.5 text-xs font-bold",
-          allConnected ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
-        )}>
+        <p className="text-sm font-bold text-white">{node.name}</p>
+        <p className="text-xs font-mono text-white/70 mt-0.5">{node.ipAddress || ''}</p>
+        <p className="mt-1.5 text-xs font-bold text-white/90">
           {connectedDevices}/{totalDevices} connected
         </p>
         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
           {isExpanded ? (
-            <ChevronDown className="w-4 h-4 text-primary" />
+            <ChevronDown className="w-4 h-4 text-white" />
           ) : (
-            <ChevronRight className="w-4 h-4 text-muted-foreground rotate-90" />
+            <ChevronRight className="w-4 h-4 text-white/60 rotate-90" />
           )}
         </div>
       </button>
@@ -324,13 +320,13 @@ function RingLayout({
           style={{ gridRow: 1, gridColumn: 1 }}
         >
           <div className={cn("relative rounded-lg border-2 px-4 py-3 text-center",
-            getStatusColor(ring.mcmTag, tagStates) === 'green' ? 'border-green-500/50 bg-green-500/10' :
-            getStatusColor(ring.mcmTag, tagStates) === 'red' ? 'border-red-500/50 bg-red-500/10' :
-            'border-gray-500/50 bg-gray-500/10'
+            getStatusColor(ring.mcmTag, tagStates) === 'green' ? 'border-green-600 bg-green-600/90 text-white' :
+            getStatusColor(ring.mcmTag, tagStates) === 'red' ? 'border-red-600 bg-red-600/90 text-white' :
+            'border-gray-500 bg-gray-500/90 text-white'
           )}>
-            <p className="text-sm font-bold text-foreground">{ring.mcmName}</p>
-            <p className="text-xs font-mono text-muted-foreground mt-0.5">{ring.mcmIp || ''}</p>
-            <Badge variant="outline" className="mt-1.5 text-[10px]">
+            <p className="text-sm font-bold text-white">{ring.mcmName}</p>
+            <p className="text-xs font-mono text-white/70 mt-0.5">{ring.mcmIp || ''}</p>
+            <Badge variant="outline" className="mt-1.5 text-[10px] border-white/40 text-white/90 bg-white/10">
               Controller
             </Badge>
           </div>
@@ -476,10 +472,9 @@ function deviceHeaderColor(s: StatusColor): string {
   return '#6b7280'                     // gray-500
 }
 
-function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: NetworkNode; tagStates: Record<string, boolean | null>; subsystemId?: number; onViewDeviceIos?: (deviceName: string, deviceType: string | null, status: string) => void }) {
+function StarDiagram({ node, tagStates, onSelectDevice }: { node: NetworkNode; tagStates: Record<string, boolean | null>; onSelectDevice?: (deviceName: string) => void }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const vp = useViewport(viewportRef)
-  const [selectedDevice, setSelectedDevice] = useState<{ name: string; type: string; ip: string; port: number | string; x: number; y: number } | null>(null)
   const [expandedFiom, setExpandedFiom] = useState<NetworkPort | null>(null)
 
   const FIRST_VISIBLE_PORT = 5 // skip ports 1-4 (unreachable)
@@ -556,7 +551,7 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
       <div
         ref={viewportRef}
         className="relative overflow-hidden cursor-grab active:cursor-grabbing select-none flex-1 min-h-0"
-        onMouseDown={(e) => { vp.onMouseDown(e); setSelectedDevice(null) }}
+        onMouseDown={vp.onMouseDown}
         onMouseMove={vp.onMouseMove}
         onMouseUp={vp.onMouseUp}
         onMouseLeave={vp.onMouseUp}
@@ -598,21 +593,10 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
                 e.stopPropagation()
                 const isFiom = deviceType === 'FIOM'
                 if (isFiom) {
-                  // Build the port with subPorts from all ports on this node that have parentPortId = this port's id
                   const fiomWithSubs = { ...port, subPorts: node.ports.filter(p => p.parentPortId === port.id) }
                   setExpandedFiom(prev => prev?.id === port.id ? null : fiomWithSubs)
-                  setSelectedDevice(null)
-                } else {
-                  const rect = viewportRef.current?.getBoundingClientRect()
-                  if (rect) setSelectedDevice({
-                    name: port.deviceName || '',
-                    type: deviceType,
-                    ip: port.deviceIp || 'No IP',
-                    port: port.portNumber,
-                    x: e.clientX - rect.left,
-                    y: e.clientY - rect.top,
-                  })
                 }
+                onSelectDevice?.(port.deviceName || '')
               }}>
                 {/* Full card background */}
                 <rect x={cx - DEVICE_W / 2} y={DEVICE_Y} width={DEVICE_W} height={DEVICE_H} rx={4} fill="hsl(var(--card))" />
@@ -667,23 +651,30 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
           {connectedPorts.map((port, devIdx) => {
             const deviceType = getDeviceType(port.deviceName || '')
             if (deviceType !== 'FIOM') return null
-            const subCount = node.ports.filter(p => p.parentPortId === port.id).length
-            if (subCount === 0) return null
+            const subPorts = node.ports.filter(p => p.parentPortId === port.id)
+            if (subPorts.length === 0) return null
+            const subWithStatus = subPorts.filter(p => p.statusTag)
+            const subHealthy = subWithStatus.filter(p => getStatusColor(p.statusTag, tagStates) === 'green').length
+            const subTotal = subWithStatus.length
+            const allOk = subHealthy === subTotal && subTotal > 0
             const { x: cx, y: cy } = devPos(devIdx)
-            const badgeX = cx + DEVICE_W / 2 - 2
+            const badgeX = cx + DEVICE_W / 2 + 4
             const badgeY = cy - DEVICE_H / 2 - 2
             const isOpen = expandedFiom?.id === port.id
+            const badgeW = 30
+            const badgeH = 16
+            const fillColor = allOk ? '#16a34a' : '#dc2626'
+            const pulseColor = allOk ? '#22c55e' : '#ef4444'
             return (
               <g key={`fiom-badge-${port.id}`}>
-                <circle cx={badgeX} cy={badgeY} r={9} fill={isOpen ? '#C6941A' : '#92700F'} />
-                <text x={badgeX} y={badgeY + 3.5} textAnchor="middle" fontSize={9} fontWeight="bold" fill="#fff">
-                  {subCount}
+                <rect x={badgeX - badgeW / 2} y={badgeY - badgeH / 2} width={badgeW} height={badgeH} rx={8} fill={fillColor} />
+                <text x={badgeX} y={badgeY + 3.5} textAnchor="middle" fontSize={8} fontWeight="bold" fill="#fff">
+                  {subHealthy}/{subTotal}
                 </text>
                 {!isOpen && (
-                  <circle cx={badgeX} cy={badgeY} r={9} fill="none" stroke="#f59e0b" strokeWidth={2}>
-                    <animate attributeName="r" values="9;13;9" dur="1.5s" repeatCount="indefinite" />
-                    <animate attributeName="opacity" values="1;0;1" dur="1.5s" repeatCount="indefinite" />
-                  </circle>
+                  <rect x={badgeX - badgeW / 2} y={badgeY - badgeH / 2} width={badgeW} height={badgeH} rx={8} fill="none" stroke={pulseColor} strokeWidth={2}>
+                    <animate attributeName="opacity" values="1;0.3;1" dur="1.5s" repeatCount="indefinite" />
+                  </rect>
                 )}
               </g>
             )
@@ -735,43 +726,6 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
           })}
         </svg>
 
-        {/* Click popup for device info */}
-        {selectedDevice && (
-          <div
-            className="absolute z-10 bg-popover border rounded-lg shadow-lg p-3 min-w-[200px]"
-            style={{ left: Math.min(selectedDevice.x, 300), top: Math.max(selectedDevice.y - 80, 8) }}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-sm text-foreground">{selectedDevice.name}</span>
-                <CopyBtn text={selectedDevice.name} />
-              </div>
-              <button onClick={() => setSelectedDevice(null)} className="text-muted-foreground hover:text-foreground p-0.5">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div className="text-xs text-muted-foreground space-y-0.5">
-              <p>Type: <span className="font-medium text-primary">{selectedDevice.type}</span></p>
-              <p className="flex items-center gap-1">IP: <span className="font-mono text-foreground">{selectedDevice.ip}</span> {selectedDevice.ip !== 'No IP' && <CopyBtn text={selectedDevice.ip} />}</p>
-              <p className="flex items-center gap-1">Port: <span className="font-mono text-foreground">{selectedDevice.port}</span> <CopyBtn text={String(selectedDevice.port)} /></p>
-            </div>
-            {onViewDeviceIos && (
-              <button
-                onClick={() => {
-                  const status = getStatusColor(
-                    `${selectedDevice.name}:I.ConnectionFaulted`,
-                    tagStates
-                  )
-                  onViewDeviceIos(selectedDevice.name, selectedDevice.type, status)
-                  setSelectedDevice(null)
-                }}
-                className="mt-2 w-full text-xs px-2 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-              >
-                View IOs
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
       {/* FIOM modal */}
@@ -781,8 +735,14 @@ function StarDiagram({ node, tagStates, subsystemId, onViewDeviceIos }: { node: 
             <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b bg-card/95 backdrop-blur-sm">
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-foreground">{expandedFiom.deviceName}</span>
+                <CopyBtn text={expandedFiom.deviceName || ''} />
                 <Badge variant="outline" className="text-[10px]">FIBER I/O MODULE</Badge>
-                <span className="text-xs text-muted-foreground font-mono">{expandedFiom.deviceIp}</span>
+                {expandedFiom.deviceIp && (
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground font-mono">
+                    {expandedFiom.deviceIp}
+                    <CopyBtn text={expandedFiom.deviceIp} />
+                  </span>
+                )}
               </div>
               <button onClick={() => setExpandedFiom(null)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
                 <X className="w-4 h-4" />
@@ -804,14 +764,6 @@ interface NetworkTopologyViewProps {
   subsystemId?: number
 }
 
-interface DeviceIo {
-  id: number
-  name: string
-  description: string | null
-  result: string | null
-  timestamp: string | null
-}
-
 export default function NetworkTopologyView({ subsystemId }: NetworkTopologyViewProps) {
   const [rings, setRings] = useState<NetworkRing[]>([])
   const [loading, setLoading] = useState(true)
@@ -820,29 +772,6 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [tagStates, setTagStates] = useState<Record<string, boolean | null>>({})
   // Device table always visible in right panel
   const [tableSearch, setTableSearch] = useState('')
-  // Device detail modal
-  const [deviceDetail, setDeviceDetail] = useState<{ name: string; type: string | null; status: string } | null>(null)
-  const [deviceIos, setDeviceIos] = useState<DeviceIo[]>([])
-  const [deviceIosLoading, setDeviceIosLoading] = useState(false)
-
-  const openDeviceDetail = useCallback(async (deviceName: string, deviceType: string | null, status: string) => {
-    setDeviceDetail({ name: deviceName, type: deviceType, status })
-    setDeviceIos([])
-    setDeviceIosLoading(true)
-    try {
-      const res = await authFetch(`/api/ios?subsystemId=${subsystemId || ''}`)
-      if (res.ok) {
-        const ios = await res.json()
-        const filtered = ios.filter((io: DeviceIo & { networkDeviceName?: string }) =>
-          io.networkDeviceName === deviceName || io.name?.split(':')[0] === deviceName
-        )
-        setDeviceIos(filtered)
-      }
-    } catch {
-      // Failed to fetch IOs
-    }
-    setDeviceIosLoading(false)
-  }, [subsystemId])
 
   // Poll PLC for network device status tags every 3 seconds
   useEffect(() => {
@@ -1083,16 +1012,18 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
       {/* Expanded DPM: Star diagram (left half) + Device table (right half) */}
       {expandedNode && (
-        <div className="flex border rounded-lg overflow-hidden flex-1 min-h-0">
+        <div className="flex border rounded-lg overflow-hidden flex-1 min-h-0 mt-2.5">
           {/* Left: Star diagram */}
           <div className="flex-1 min-w-0 flex flex-col">
-            <StarDiagram node={expandedNode} tagStates={tagStates} subsystemId={subsystemId} onViewDeviceIos={openDeviceDetail} />
+            <StarDiagram node={expandedNode} tagStates={tagStates} onSelectDevice={(name) => setTableSearch(name)} />
           </div>
 
           {/* Right: Device table */}
           <div className="w-1/2 flex-shrink-0 border-l flex flex-col overflow-hidden">
             <div className="p-3 border-b space-y-2">
-              <h3 className="font-semibold text-sm">{expandedNode.name} — {dpmDevices.length} devices</h3>
+              <h3 className="font-semibold text-sm">
+                {expandedNode.name} — {tableSearch ? `${filteredDpmDevices.length}/${dpmDevices.length}` : dpmDevices.length} devices
+              </h3>
               <div className="relative">
                 <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
                 <input
@@ -1100,8 +1031,16 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                   placeholder="Search devices..."
                   value={tableSearch}
                   onChange={e => setTableSearch(e.target.value)}
-                  className="w-full pl-8 pr-3 py-2 text-sm rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                  className={cn("w-full pl-8 py-2 text-sm rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary", tableSearch ? "pr-8" : "pr-3")}
                 />
+                {tableSearch && (
+                  <button
+                    onClick={() => setTableSearch('')}
+                    className="absolute right-2 top-2 p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
             <div className="flex-1 overflow-y-auto">
@@ -1119,8 +1058,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                   {filteredDpmDevices.map((device, i) => (
                     <tr
                       key={`${device.portNumber}-${i}`}
-                      className="border-b border-border/50 hover:bg-accent/50 transition-colors cursor-pointer"
-                      onClick={() => openDeviceDetail(device.deviceName, device.deviceType, device.status)}
+                      className="border-b border-border/50 hover:bg-accent/50 transition-colors"
                     >
                       <td className="px-3 py-2">
                         <span className={cn(
@@ -1131,11 +1069,17 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                         )} />
                       </td>
                       <td className="px-2 py-2">
-                        <div className="font-medium text-foreground truncate max-w-[140px]" title={device.deviceName}>
-                          {device.deviceName}
+                        <div className="flex items-center gap-1">
+                          <span className="font-medium text-foreground truncate max-w-[120px]" title={device.deviceName}>
+                            {device.deviceName}
+                          </span>
+                          <CopyBtn text={device.deviceName} />
                         </div>
                         {device.deviceIp && (
-                          <div className="text-muted-foreground text-[10px] font-mono">{device.deviceIp}</div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-muted-foreground text-[10px] font-mono">{device.deviceIp}</span>
+                            <CopyBtn text={device.deviceIp} />
+                          </div>
                         )}
                       </td>
                       <td className="px-2 py-2">
@@ -1173,82 +1117,6 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         </div>
       )}
 
-      {/* Device Detail Modal — shows all IOs for a device */}
-      {deviceDetail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setDeviceDetail(null)}>
-          <div className="relative bg-card border rounded-xl shadow-2xl w-[90vw] max-w-[700px] max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b bg-card/95 backdrop-blur-sm">
-              <div className="flex items-center gap-3">
-                <span className={cn(
-                  "w-2.5 h-2.5 rounded-full",
-                  deviceDetail.status === 'green' && "bg-green-500",
-                  deviceDetail.status === 'red' && "bg-red-500",
-                  deviceDetail.status === 'gray' && "bg-gray-500",
-                )} />
-                <span className="text-sm font-semibold text-foreground">{deviceDetail.name}</span>
-                {deviceDetail.type && <Badge variant="outline" className="text-[10px]">{deviceDetail.type}</Badge>}
-                <Badge variant="secondary" className="text-[10px]">
-                  {deviceIos.length} IOs
-                </Badge>
-                {!deviceIosLoading && deviceIos.length > 0 && (
-                  <>
-                    <Badge className="text-[10px] bg-green-500/20 text-green-600 dark:text-green-400 border-0">
-                      {deviceIos.filter(io => io.result === 'Passed').length} passed
-                    </Badge>
-                    <Badge className="text-[10px] bg-red-500/20 text-red-600 dark:text-red-400 border-0">
-                      {deviceIos.filter(io => io.result === 'Failed').length} failed
-                    </Badge>
-                  </>
-                )}
-              </div>
-              <button onClick={() => setDeviceDetail(null)} className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="overflow-y-auto max-h-[calc(80vh-52px)]">
-              {deviceIosLoading ? (
-                <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-5 h-5 animate-spin text-muted-foreground mr-2" />
-                  <span className="text-sm text-muted-foreground">Loading IOs...</span>
-                </div>
-              ) : deviceIos.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground text-sm">
-                  No IOs found for this device
-                </div>
-              ) : (
-                <table className="w-full text-xs">
-                  <thead className="sticky top-0 bg-card border-b">
-                    <tr className="text-left text-muted-foreground">
-                      <th className="px-4 py-2 font-medium">Tag Name</th>
-                      <th className="px-3 py-2 font-medium">Description</th>
-                      <th className="px-3 py-2 font-medium text-center w-20">Result</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {deviceIos.map((io: DeviceIo) => (
-                      <tr key={io.id} className="border-b border-border/50 hover:bg-accent/30">
-                        <td className="px-4 py-2 font-mono text-foreground">{io.name}</td>
-                        <td className="px-3 py-2 text-muted-foreground truncate max-w-[250px]" title={io.description || ''}>
-                          {io.description || '—'}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          {io.result === 'Passed' ? (
-                            <Badge className="text-[10px] bg-green-500/20 text-green-600 dark:text-green-400 border-0">Pass</Badge>
-                          ) : io.result === 'Failed' ? (
-                            <Badge className="text-[10px] bg-red-500/20 text-red-600 dark:text-red-400 border-0">Fail</Badge>
-                          ) : (
-                            <span className="text-muted-foreground/50">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
