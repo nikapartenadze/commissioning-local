@@ -37,6 +37,7 @@ interface PlcToolbarProps {
   passedIos: number
   failedIos: number
   notTestedIos: number
+  notInstalledIos?: number
   onToggleTesting: () => void
   onShowGraph: () => void
   onDownloadCsv: () => void
@@ -46,8 +47,8 @@ interface PlcToolbarProps {
   currentUser?: { isAdmin: boolean; fullName: string } | null
   onToggleSimulator?: () => void
   isSimulatorEnabled?: boolean
-  activeFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null
-  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null) => void
+  activeFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null
+  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null) => void
   tagStatus?: TagStatus | null
   onShowTagStatus?: () => void
   onShowChangeRequests?: () => void
@@ -70,6 +71,7 @@ export function PlcToolbar({
   passedIos,
   failedIos,
   notTestedIos,
+  notInstalledIos = 0,
   onToggleTesting,
   onShowGraph,
   onDownloadCsv,
@@ -172,6 +174,20 @@ export function PlcToolbar({
                 <span className="text-lg sm:text-2xl font-bold leading-none">{notTestedIos}</span>
                 <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Left</span>
               </button>
+              {notInstalledIos > 0 && (
+                <button
+                  onClick={() => onFilterChange?.(activeFilter === 'not-installed' ? null : 'not-installed')}
+                  className={cn(
+                    "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+                    activeFilter === 'not-installed'
+                      ? "bg-amber-600 text-white"
+                      : "bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400"
+                  )}
+                >
+                  <span className="text-lg sm:text-2xl font-bold leading-none">{notInstalledIos}</span>
+                  <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">No Inst.</span>
+                </button>
+              )}
             </>
           )}
 
