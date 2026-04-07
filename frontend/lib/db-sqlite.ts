@@ -30,6 +30,7 @@ try {
   const migrations = [
     'ALTER TABLE Ios ADD COLUMN InstallationStatus TEXT',
     'ALTER TABLE Ios ADD COLUMN InstallationPercent REAL',
+    'ALTER TABLE Ios ADD COLUMN PoweredUp INTEGER',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
@@ -74,7 +75,8 @@ export function initializeSchema() {
       Trade TEXT,
       ClarificationNote TEXT,
       InstallationStatus TEXT,
-      InstallationPercent REAL
+      InstallationPercent REAL,
+      PoweredUp INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_ios_subsystemid ON Ios(SubsystemId);
     CREATE INDEX IF NOT EXISTS idx_ios_result ON Ios(Result);
@@ -281,6 +283,7 @@ export interface Io {
   ClarificationNote: string | null
   InstallationStatus: string | null
   InstallationPercent: number | null
+  PoweredUp: number | null
 }
 
 export interface TestHistory {
@@ -347,6 +350,7 @@ export function ioToApi(row: Io) {
     clarificationNote: row.ClarificationNote,
     installationStatus: row.InstallationStatus,
     installationPercent: row.InstallationPercent,
+    poweredUp: row.PoweredUp === 1 ? true : row.PoweredUp === 0 ? false : null,
   }
 }
 
