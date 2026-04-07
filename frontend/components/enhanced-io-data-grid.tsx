@@ -28,6 +28,7 @@ type IoItem = {
   hasNetworkDevice?: boolean
   installationStatus?: string | null
   installationPercent?: number | null
+  poweredUp?: boolean | null
 }
 
 type TestHistory = {
@@ -52,7 +53,7 @@ interface EnhancedIoDataGridProps {
   onRowClick?: (io: IoItem) => void
   onShowFireOutputDialog?: (io: IoItem) => void
   onCommentChange?: (io: IoItem, comment: string) => void
-  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | null
+  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null
   punchlists?: Array<{ id: number; name: string; ioIds: number[] }>
   activePunchlistId?: number | null
   onRequestChange?: (io: IoItem) => void
@@ -443,6 +444,9 @@ export function EnhancedIoDataGrid({
       if (activeQuickFilter === 'my-ios') {
         if (!currentUser?.fullName || io.assignedTo !== currentUser.fullName) return false
       }
+      if (activeQuickFilter === 'not-installed') {
+        if (io.installationStatus === 'complete') return false
+      }
 
       // Apply keyword filters on description — include (AND): must match ALL; exclude: must match NONE
       const activeEntries = Object.entries(activeKeywordFilters)
@@ -758,18 +762,22 @@ export function EnhancedIoDataGrid({
                 State
               </div>
             )}
+            {COLUMN_WIDTHS.deviceStatus > 0 && (
             <div
-              className="px-2 py-3 text-center text-xs font-bold text-foreground uppercase flex-shrink-0"
+              className="px-1 py-3 text-center text-[10px] font-bold text-foreground uppercase flex-shrink-0 truncate"
               style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
             >
-              Net Device
+              Net
             </div>
+            )}
+            {COLUMN_WIDTHS.installStatus > 0 && (
             <div
-              className="px-2 py-3 text-center text-xs font-bold text-foreground uppercase flex-shrink-0"
+              className="px-1 py-3 text-center text-[10px] font-bold text-foreground uppercase flex-shrink-0 truncate"
               style={{ width: `${COLUMN_WIDTHS.installStatus}px` }}
             >
               Install
             </div>
+            )}
             {showResultColumn && (
               <div
                 className="px-4 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
@@ -918,34 +926,32 @@ export function EnhancedIoDataGrid({
                       {getStateDisplay(io.state)}
                     </div>
                   )}
-                  {/* Network Device Status — same style as State column */}
+                  {/* Network Device Status */}
+                  {COLUMN_WIDTHS.deviceStatus > 0 && (
                   <div
-                    className="px-2 py-3 text-center flex-shrink-0 flex items-center justify-center"
+                    className="px-1 py-3 text-center flex-shrink-0 flex items-center justify-center overflow-hidden"
                     style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
                   >
                     {rowDeviceName ? (() => {
-                      if (deviceStatus === 'red') return <div className="w-5 h-5 min-w-[20px] rounded-sm bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
-                      if (deviceStatus === 'green') return <div className="w-5 h-5 min-w-[20px] rounded-sm bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
-                      return <div className="w-5 h-5 min-w-[20px] rounded-sm bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
+                      if (deviceStatus === 'red') return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
+                      if (deviceStatus === 'green') return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
+                      return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
                     })() : null}
                   </div>
+                  )}
                   {/* Installation Status */}
+                  {COLUMN_WIDTHS.installStatus > 0 && (
                   <div
-                    className="px-2 py-3 text-center flex-shrink-0 flex items-center justify-center"
+                    className="px-1 py-3 text-center flex-shrink-0 flex items-center justify-center overflow-hidden"
                     style={{ width: `${COLUMN_WIDTHS.installStatus}px` }}
                   >
-                    {io.installationStatus === 'complete' && (
-                      <Badge variant="default" className="bg-green-600 text-white text-[10px] px-1.5">Installed</Badge>
-                    )}
-                    {io.installationStatus === 'in-progress' && (
-                      <Badge variant="secondary" className="bg-amber-500 text-white text-[10px] px-1.5">
-                        {Math.round((io.installationPercent ?? 0) * 100)}%
-                      </Badge>
-                    )}
-                    {io.installationStatus === 'not-started' && (
-                      <Badge variant="outline" className="text-muted-foreground text-[10px] px-1.5">Not Inst.</Badge>
+                    {io.installationPercent != null && (
+                      io.installationPercent >= 1.0
+                        ? <span className="text-green-600 text-[10px] font-semibold">Installed</span>
+                        : <span className={`text-[10px] font-medium ${io.installationPercent > 0.5 ? 'text-amber-500' : 'text-red-500'}`}>{Math.floor(io.installationPercent * 100)}%</span>
                     )}
                   </div>
+                  )}
                    {showResultColumn && (
                      <div
                        className="px-4 py-2 flex items-center justify-center flex-shrink-0"
