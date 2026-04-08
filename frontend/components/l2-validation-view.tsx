@@ -1,11 +1,11 @@
 "use client"
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { L2SheetGrid } from './l2-sheet-grid'
 import { Badge } from '@/components/ui/badge'
 import { authFetch } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X } from 'lucide-react'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 interface L2Sheet {
@@ -20,6 +20,7 @@ interface L2Column {
   Name: string
   ColumnType: string
   DisplayOrder: number
+  Description?: string | null
 }
 
 interface L2Device {
@@ -51,6 +52,24 @@ interface L2ValidationViewProps {
   subsystemId?: number
 }
 
+const COL_TYPE_STYLES: Record<string, string> = {
+  check: "bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300",
+  data: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900 dark:text-blue-300",
+  readonly: "bg-gray-100 text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400",
+  notes: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900 dark:text-amber-300",
+}
+
+const COL_TYPE_HINTS: Record<string, string> = {
+  check: "Tap to cycle: pass / fail / empty",
+  data: "Type a measured or observed value",
+  readonly: "Pre-filled (cannot edit)",
+  notes: "Free-text notes or comments",
+}
+
+const MIN_SIDEBAR_W = 240
+const MAX_SIDEBAR_W = 600
+const DEFAULT_SIDEBAR_W = 320
+
 export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
   const [data, setData] = useState<L2Data | null>(null)
   const [loading, setLoading] = useState(true)
@@ -58,6 +77,45 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
   const [activeSheet, setActiveSheet] = useState(0)
   const [showGuide, setShowGuide] = useState(false)
   const [cellValues, setCellValues] = useState<Map<string, { Value: string | null; Version: number }>>(new Map())
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_W)
+  const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
+  const [isNarrow, setIsNarrow] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Detect narrow viewport (tablet)
+  useEffect(() => {
+    const check = () => setIsNarrow(window.innerWidth < 1024)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
+
+  // Sidebar resize drag
+  useEffect(() => {
+    if (!resizingSidebar) return
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
+    const onMove = (e: MouseEvent | TouchEvent) => {
+      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
+      const delta = resizingSidebar.startX - clientX
+      setSidebarWidth(Math.max(MIN_SIDEBAR_W, Math.min(MAX_SIDEBAR_W, resizingSidebar.startW + delta)))
+    }
+    const onUp = () => setResizingSidebar(null)
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.addEventListener('touchmove', onMove)
+    document.addEventListener('touchend', onUp)
+    return () => {
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.removeEventListener('touchmove', onMove)
+      document.removeEventListener('touchend', onUp)
+    }
+  }, [resizingSidebar])
 
   const fetchData = useCallback(async () => {
     try {
@@ -68,7 +126,6 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
       const json: L2Data = await res.json()
       setData(json)
 
-      // Build cell values map keyed by "deviceId-columnId"
       const map = new Map<string, { Value: string | null; Version: number }>()
       for (const cv of json.cellValues) {
         map.set(`${cv.DeviceId}-${cv.ColumnId}`, { Value: cv.Value, Version: cv.Version })
@@ -81,22 +138,16 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
     }
   }, [])
 
-  useEffect(() => {
-    fetchData()
-  }, [fetchData])
+  useEffect(() => { fetchData() }, [fetchData])
 
   const handleCellChange = useCallback(async (deviceId: number, columnId: number, value: string | null) => {
     const key = `${deviceId}-${columnId}`
-
-    // Optimistic update
     setCellValues(prev => {
       const next = new Map(prev)
       const existing = prev.get(key)
       next.set(key, { Value: value, Version: (existing?.Version ?? 0) + 1 })
       return next
     })
-
-    // Persist to API
     try {
       await authFetch('/api/l2/cell', {
         method: 'POST',
@@ -118,11 +169,7 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
   }
 
   if (error) {
-    return (
-      <div className="flex items-center justify-center h-64 text-destructive">
-        {error}
-      </div>
-    )
+    return <div className="flex items-center justify-center h-64 text-destructive">{error}</div>
   }
 
   if (!data || !data.hasData || data.sheets.length === 0) {
@@ -134,11 +181,9 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
     )
   }
 
-  // Per-sheet stats
   const sheetStats = data.sheets.map(sheet => {
     const sheetDevices = data.devices.filter(d => d.SheetId === sheet.id)
     const sheetCols = data.columns.filter(c => c.SheetId === sheet.id && c.ColumnType === 'check')
-    // Count completed checks from cellValues map
     let completed = 0
     for (const dev of sheetDevices) {
       for (const col of sheetCols) {
@@ -150,7 +195,6 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
     return { total, completed, deviceCount: sheetDevices.length, colCount: sheetCols.length }
   })
 
-  // Overall progress
   const totalChecks = sheetStats.reduce((sum, s) => sum + s.total, 0)
   const completedChecks = sheetStats.reduce((sum, s) => sum + s.completed, 0)
   const overallPercent = totalChecks > 0 ? Math.round((completedChecks / totalChecks) * 100) : 0
@@ -162,10 +206,73 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
   const activeDevices = data.devices
     .filter(d => d.SheetId === activeSheetData.id)
     .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
+  const activeStats = sheetStats[activeSheet]
+
+  const guideContent = (
+    <>
+      {/* Sheet progress */}
+      <div className="px-4 py-3 border-b shrink-0">
+        <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5">
+          <span className="font-medium">{activeSheetData.DisplayName || activeSheetData.Name}</span>
+          <span className="tabular-nums">
+            {activeStats.completed}/{activeStats.total}
+            {activeStats.total > 0 && ` (${Math.round((activeStats.completed / activeStats.total) * 100)}%)`}
+          </span>
+        </div>
+        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+          <div
+            className="h-full bg-primary rounded-full transition-all"
+            style={{ width: `${activeStats.total > 0 ? Math.round((activeStats.completed / activeStats.total) * 100) : 0}%` }}
+          />
+        </div>
+        <div className="flex gap-3 mt-2 text-[11px] text-muted-foreground">
+          <span>{activeStats.deviceCount} devices</span>
+          <span>{activeStats.colCount} checks</span>
+        </div>
+      </div>
+
+      {/* Column list */}
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-3">
+          Columns ({activeColumns.length})
+        </p>
+        <div className="space-y-4">
+          {activeColumns.map(col => (
+            <div key={col.id}>
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={cn("shrink-0 text-[10px] px-1.5 py-0.5", COL_TYPE_STYLES[col.ColumnType])}
+                >
+                  {col.ColumnType}
+                </Badge>
+                <span className="text-sm font-medium text-foreground">{col.Name}</span>
+              </div>
+              {col.Description ? (
+                <p className="text-xs text-muted-foreground mt-1 pl-0.5 leading-relaxed">
+                  {col.Description}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground/60 mt-1 pl-0.5 italic">
+                  {COL_TYPE_HINTS[col.ColumnType] || "Enter the required value"}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="px-4 py-3 border-t bg-muted/30 shrink-0 text-xs text-muted-foreground leading-relaxed">
+        <strong>check</strong> = tap to cycle pass/fail &middot; <strong>data</strong> = type value &middot; <strong>readonly</strong> = pre-filled &middot; <strong>notes</strong> = free text
+        <p className="mt-1 italic text-[10px]">Right-click any column header for quick info.</p>
+      </div>
+    </>
+  )
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header bar with progress + tabs + guide */}
+    <div ref={containerRef} className="flex flex-col h-full">
+      {/* Header bar */}
       <div className="flex items-center gap-2 px-3 py-2 border-b shrink-0">
         <span className="text-xs font-medium text-muted-foreground whitespace-nowrap tabular-nums">
           {completedChecks}/{totalChecks} ({overallPercent}%)
@@ -211,51 +318,75 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
         })}
       </div>
 
-      {/* Guide panel (collapsible) */}
-      {showGuide && (
-        <div className="border-b bg-blue-50 dark:bg-blue-950/30 px-4 py-3 shrink-0">
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-sm font-semibold">Column Guide — {activeSheetData.DisplayName || activeSheetData.Name}</h4>
-            <button onClick={() => setShowGuide(false)} className="text-muted-foreground hover:text-foreground">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {activeColumns.map(col => (
-              <div key={col.id} className="flex items-start gap-2 text-xs">
-                <Badge variant="outline" className={cn(
-                  "shrink-0 text-[9px] px-1",
-                  col.ColumnType === 'check' && "bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300",
-                  col.ColumnType === 'data' && "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900 dark:text-blue-300",
-                  col.ColumnType === 'readonly' && "bg-gray-100 text-gray-600 border-gray-300",
-                  col.ColumnType === 'notes' && "bg-amber-100 text-amber-700 border-amber-300",
-                )}>
-                  {col.ColumnType}
-                </Badge>
-                <span className="text-foreground">{col.Name}</span>
-              </div>
-            ))}
-          </div>
-          <p className="text-[10px] text-muted-foreground mt-2">
-            <strong>check</strong> = tap to cycle pass/fail &nbsp; <strong>data</strong> = type value &nbsp; <strong>readonly</strong> = pre-filled &nbsp; <strong>notes</strong> = free text
-          </p>
+      {/* Main content: grid + guide panel */}
+      <div className="flex-1 min-h-0 flex relative">
+        {/* Grid */}
+        <div className="flex-1 min-w-0 min-h-0">
+          {activeDevices.length > 0 ? (
+            <L2SheetGrid
+              sheet={activeSheetData}
+              columns={activeColumns}
+              devices={activeDevices}
+              cellValues={cellValues}
+              onCellChange={handleCellChange}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              No devices in this sheet
+            </div>
+          )}
         </div>
-      )}
 
-      {/* Active sheet grid — takes all remaining space */}
-      <div className="flex-1 min-h-0">
-        {activeDevices.length > 0 ? (
-          <L2SheetGrid
-            sheet={activeSheetData}
-            columns={activeColumns}
-            devices={activeDevices}
-            cellValues={cellValues}
-            onCellChange={handleCellChange}
-          />
-        ) : (
-          <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-            No devices in this sheet
+        {/* Guide — Desktop: resizable right sidebar */}
+        {showGuide && !isNarrow && (
+          <div className="shrink-0 border-l bg-background flex flex-col min-h-0 relative" style={{ width: sidebarWidth }}>
+            {/* Resize handle on left edge */}
+            <div
+              className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-20 flex items-center justify-center hover:bg-primary/20 active:bg-primary/30 transition-colors"
+              onMouseDown={(e) => { e.preventDefault(); setResizingSidebar({ startX: e.clientX, startW: sidebarWidth }) }}
+              onTouchStart={(e) => { setResizingSidebar({ startX: e.touches[0].clientX, startW: sidebarWidth }) }}
+            >
+              <div className="w-[3px] h-8 rounded-full bg-border" />
+            </div>
+
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/40 shrink-0">
+              <h4 className="text-xs font-semibold">Column Guide</h4>
+              <button onClick={() => setShowGuide(false)} className="text-muted-foreground hover:text-foreground p-1">
+                <PanelRightClose className="h-4 w-4" />
+              </button>
+            </div>
+
+            {guideContent}
           </div>
+        )}
+
+        {/* Guide — Tablet/narrow: bottom sheet overlay */}
+        {showGuide && isNarrow && (
+          <>
+            {/* Backdrop */}
+            <div
+              className="absolute inset-0 bg-black/30 z-40"
+              onClick={() => setShowGuide(false)}
+            />
+            {/* Bottom sheet */}
+            <div className="absolute bottom-0 left-0 right-0 z-50 bg-background rounded-t-xl shadow-2xl border-t flex flex-col"
+              style={{ maxHeight: '70vh' }}
+            >
+              {/* Drag indicator + header */}
+              <div className="flex flex-col items-center pt-2 pb-1 shrink-0">
+                <div className="w-10 h-1 rounded-full bg-muted-foreground/30 mb-2" />
+                <div className="flex items-center justify-between w-full px-4">
+                  <h4 className="text-sm font-semibold">Column Guide</h4>
+                  <button onClick={() => setShowGuide(false)} className="text-muted-foreground hover:text-foreground p-1">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+
+              {guideContent}
+            </div>
+          </>
         )}
       </div>
     </div>
