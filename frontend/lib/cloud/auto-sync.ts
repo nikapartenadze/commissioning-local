@@ -326,8 +326,22 @@ class AutoSyncService {
     }
   }
 
+  private _lastManualPullAt = 0
+
+  /** Call after a manual Pull IOs to prevent auto-sync from overwriting with stale data */
+  markManualPull(): void {
+    this._lastManualPullAt = Date.now()
+  }
+
   private async pullFromCloud(): Promise<void> {
     if (this.isPulling) return
+
+    // Skip auto-pull if a manual pull just happened (within 30 seconds)
+    // The manual pull already has the correct data — auto-pull would race with stale config
+    if (Date.now() - this._lastManualPullAt < 30000) {
+      this._lastPullResult = 'skipped (recent manual pull)'
+      return
+    }
 
     this.isPulling = true
 
@@ -336,6 +350,16 @@ class AutoSyncService {
       const remoteUrl = config.remoteUrl
       const apiPassword = config.apiPassword
       const subsystemId = config.subsystemId
+
+      // Keep SSE client in sync with current config
+      const sseClient = getCloudSseClient()
+      if (sseClient && config.remoteUrl && config.subsystemId) {
+        sseClient.updateConfig({
+          remoteUrl: config.remoteUrl,
+          apiPassword: config.apiPassword || '',
+          subsystemId: config.subsystemId,
+        })
+      }
 
       if (!remoteUrl || !subsystemId) {
         this._lastPullResult = !remoteUrl ? 'no remote URL configured' : 'no subsystem configured'
