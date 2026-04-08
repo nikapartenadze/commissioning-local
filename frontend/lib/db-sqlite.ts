@@ -259,6 +259,65 @@ export function initializeSchema() {
       UNIQUE(PunchlistId, IoId)
     );
     CREATE INDEX IF NOT EXISTS idx_punchlistitems_punchlistid ON PunchlistItems(PunchlistId);
+
+    CREATE TABLE IF NOT EXISTS L2Sheets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      CloudId INTEGER,
+      Name TEXT NOT NULL,
+      DisplayName TEXT,
+      DisplayOrder INTEGER NOT NULL,
+      Discipline TEXT,
+      DeviceCount INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS L2Columns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      CloudId INTEGER,
+      SheetId INTEGER NOT NULL REFERENCES L2Sheets(id) ON DELETE CASCADE,
+      Name TEXT NOT NULL,
+      ColumnType TEXT NOT NULL,
+      DisplayOrder INTEGER NOT NULL,
+      IsRequired INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_l2columns_sheetid ON L2Columns(SheetId);
+
+    CREATE TABLE IF NOT EXISTS L2Devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      CloudId INTEGER,
+      SheetId INTEGER NOT NULL REFERENCES L2Sheets(id) ON DELETE CASCADE,
+      DeviceName TEXT NOT NULL,
+      Mcm TEXT,
+      Subsystem TEXT,
+      DisplayOrder INTEGER NOT NULL,
+      CompletedChecks INTEGER DEFAULT 0,
+      TotalChecks INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_l2devices_sheetid ON L2Devices(SheetId);
+
+    CREATE TABLE IF NOT EXISTS L2CellValues (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      CloudCellId INTEGER,
+      DeviceId INTEGER NOT NULL REFERENCES L2Devices(id) ON DELETE CASCADE,
+      ColumnId INTEGER NOT NULL REFERENCES L2Columns(id) ON DELETE CASCADE,
+      Value TEXT,
+      UpdatedBy TEXT,
+      UpdatedAt TEXT DEFAULT (datetime('now')),
+      Version INTEGER DEFAULT 0,
+      UNIQUE(DeviceId, ColumnId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_l2cells_deviceid ON L2CellValues(DeviceId);
+
+    CREATE TABLE IF NOT EXISTS L2PendingSyncs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      CloudDeviceId INTEGER NOT NULL,
+      CloudColumnId INTEGER NOT NULL,
+      Value TEXT,
+      UpdatedBy TEXT,
+      Version INTEGER DEFAULT 0,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      RetryCount INTEGER DEFAULT 0,
+      LastError TEXT
+    );
   `)
 }
 

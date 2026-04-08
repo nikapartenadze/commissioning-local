@@ -168,11 +168,28 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       }
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
-      // Clear ALL existing IOs before pulling fresh data
+      // Clear ALL existing data before pulling fresh — ensures no stale data from previous subsystem
       const deleteResult = db.prepare('DELETE FROM Ios').run()
       if (deleteResult.changes > 0) {
         console.log(`[CloudPull] Cleared ${deleteResult.changes} existing IOs`)
       }
+      db.exec('DELETE FROM EStopIoPoints')
+      db.exec('DELETE FROM EStopVfds')
+      db.exec('DELETE FROM EStopEpcs')
+      db.exec('DELETE FROM EStopZones')
+      db.exec('DELETE FROM SafetyZoneDrives')
+      db.exec('DELETE FROM SafetyZones')
+      db.exec('DELETE FROM SafetyOutputs')
+      db.exec('DELETE FROM NetworkPorts')
+      db.exec('DELETE FROM NetworkNodes')
+      db.exec('DELETE FROM NetworkRings')
+      db.exec('DELETE FROM Punchlists')
+      db.exec('DELETE FROM PunchlistItems')
+      db.exec('DELETE FROM L2CellValues')
+      db.exec('DELETE FROM L2Devices')
+      db.exec('DELETE FROM L2Columns')
+      db.exec('DELETE FROM L2Sheets')
+      console.log('[CloudPull] Cleared all related data (safety, network, punchlists, L2)')
 
       // Prepare the upsert statement
       const upsertStmt = db.prepare(`
@@ -426,7 +443,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (estopRes.ok) {
         const estopData = await estopRes.json()
         if (estopData.success && estopData.zones?.length > 0) {
-          db.prepare('DELETE FROM EStopZones').run()
+          // Already cleared at start of pull
           const insertZoneStmt = db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)')
           const insertEpcStmt = db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)')
           const insertIoPointStmt = db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)')
@@ -460,8 +477,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (safetyRes.ok) {
         const safetyData = await safetyRes.json()
         if (safetyData.success) {
-          db.prepare('DELETE FROM SafetyZones WHERE SubsystemId = ?').run(subsystemId)
-          db.prepare('DELETE FROM SafetyOutputs WHERE SubsystemId = ?').run(subsystemId)
+          // Already cleared at start of pull
 
           const insertZoneStmt = db.prepare(
             'INSERT INTO SafetyZones (SubsystemId, Name, StoSignal, BssTag) VALUES (?, ?, ?, ?)'
@@ -521,6 +537,60 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log('[CloudPull] Punchlist pull skipped or failed (non-blocking)')
     }
 
+    // Pull L2 Functional Validation data (non-blocking)
+    let l2Pulled = 0
+    try {
+      const l2Res = await fetch(`${remoteUrl}/api/sync/l2/${subsystemId}`, {
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+        signal: AbortSignal.timeout(15000),
+      })
+      if (l2Res.ok) {
+        const l2Data = await l2Res.json()
+        if (l2Data.success && l2Data.sheets?.length > 0) {
+          // Clear and re-insert L2 data
+          db.exec('DELETE FROM L2CellValues')
+          db.exec('DELETE FROM L2Devices')
+          db.exec('DELETE FROM L2Columns')
+          db.exec('DELETE FROM L2Sheets')
+
+          const sheetIdMap = new Map<number, number>()
+          const columnIdMap = new Map<number, number>()
+          const deviceIdMap = new Map<number, number>()
+
+          const insertSheet = db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)')
+          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired) VALUES (?, ?, ?, ?, ?, ?)')
+          const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          const insertCell = db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
+
+          for (const sheet of l2Data.sheets) {
+            const sr = insertSheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
+            sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
+            if (sheet.columns) {
+              for (const col of sheet.columns) {
+                const cr = insertCol.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0)
+                columnIdMap.set(col.id, cr.lastInsertRowid as number)
+              }
+            }
+          }
+          for (const dev of (l2Data.devices || [])) {
+            const localSheetId = sheetIdMap.get(dev.sheetId)
+            if (!localSheetId) continue
+            const dr = insertDev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
+            deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
+            l2Pulled++
+          }
+          for (const cell of (l2Data.cellValues || [])) {
+            const ld = deviceIdMap.get(cell.deviceId)
+            const lc = columnIdMap.get(cell.columnId)
+            if (ld && lc) insertCell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
+          }
+          console.log(`[CloudPull] Pulled L2 data: ${l2Data.sheets.length} sheets, ${l2Pulled} devices`)
+        }
+      }
+    } catch {
+      console.log('[CloudPull] L2 pull skipped or failed (non-blocking)')
+    }
+
     return NextResponse.json({
       success: true,
       message: `Successfully pulled ${result} IOs from cloud`,
@@ -529,6 +599,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       networkPulled,
       estopPulled,
       punchlistsPulled,
+      l2Pulled,
       historiesPulled,
       ...(pullWarning ? { warning: pullWarning } : {}),
       debug: {
