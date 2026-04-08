@@ -20,6 +20,7 @@ import { ChangeRequestsPanel } from "@/components/change-requests-panel"
 import NetworkTopologyView from "@/components/network-topology-view"
 import EStopCheckView from "@/components/estop-check-view"
 import SafetyIoView from "@/components/safety-io-view"
+import { L2ValidationView } from "@/components/l2-validation-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -85,9 +86,10 @@ interface ChartData {
 }
 
 function calculateTestResults(ios: IoItem[]): ChartData {
-  const total = ios.length
-  const passed = ios.filter(io => io.result === 'Passed').length
-  const failed = ios.filter(io => io.result === 'Failed').length
+  const nonSpare = ios.filter(io => !io.description?.toUpperCase().includes('SPARE'))
+  const total = nonSpare.length
+  const passed = nonSpare.filter(io => io.result === 'Passed').length
+  const failed = nonSpare.filter(io => io.result === 'Failed').length
   const notTested = total - passed - failed
 
   return {
@@ -150,7 +152,7 @@ export default function CommissioningPage() {
   const [isCloudConnected, setIsCloudConnected] = useState(false)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
-  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety'>('io')
+  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety' | 'l2'>('io')
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
 
   // Set tab from URL hash after mount (avoids hydration mismatch)
@@ -159,6 +161,7 @@ export default function CommissioningPage() {
     if (hash === '#network') setActiveTab('network')
     else if (hash === '#estop') setActiveTab('estop')
     else if (hash === '#safety') setActiveTab('safety')
+    else if (hash === '#l2') setActiveTab('l2')
   }, [])
   const [networkStats, setNetworkStats] = useState<{ healthy: number; faulted: number; unknown: number }>({ healthy: 0, faulted: 0, unknown: 0 })
   const [faultedDevices, setFaultedDevices] = useState<Set<string>>(new Set())
@@ -1626,6 +1629,22 @@ export default function CommissioningPage() {
               >
                 Safety
               </button>
+              <button
+                onClick={() => {
+                  if (plcStatus.isTesting) {
+                    wasTestingBeforeTabSwitch.current = true
+                    handleToggleTesting()
+                  }
+                  setActiveTab('l2'); window.location.hash = 'l2'
+                }}
+                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
+                  activeTab === 'l2'
+                    ? 'bg-[#C6941A] text-white shadow'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                L2
+              </button>
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
@@ -1668,6 +1687,10 @@ export default function CommissioningPage() {
         <div className="flex-1 min-h-0 overflow-auto px-4">
           <SafetyIoView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
         </div>
+      ) : activeTab === 'l2' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <L2ValidationView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
+        </div>
       ) : (
       <>
       {/* Main Toolbar - Full width */}
@@ -1677,10 +1700,10 @@ export default function CommissioningPage() {
           isPlcConnected={plcStatus.isConnected}
           isPlcReconnecting={plcStatus.isReconnecting}
           isCloudConnected={isCloudConnected}
-          totalIos={ios.length}
-          passedIos={ios.filter(io => io.result === 'Passed').length}
-          failedIos={ios.filter(io => io.result === 'Failed').length}
-          notTestedIos={ios.filter(io => !io.result).length}
+          totalIos={ios.filter(io => !io.description?.toUpperCase().includes('SPARE')).length}
+          passedIos={ios.filter(io => io.result === 'Passed' && !io.description?.toUpperCase().includes('SPARE')).length}
+          failedIos={ios.filter(io => io.result === 'Failed' && !io.description?.toUpperCase().includes('SPARE')).length}
+          notTestedIos={ios.filter(io => !io.result && !io.description?.toUpperCase().includes('SPARE')).length}
           notInstalledIos={ios.filter(io => io.installationStatus && io.installationStatus !== 'complete').length}
           onToggleTesting={handleToggleTesting}
           onShowGraph={() => setShowGraph(true)}
