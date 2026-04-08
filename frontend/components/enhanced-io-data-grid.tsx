@@ -883,8 +883,8 @@ export function EnhancedIoDataGrid({
                     isTesting ? "cursor-pointer" : "cursor-default",
                     getRowClassName(io),
                     currentTestIo?.id === io.id && "border-l-4 border-l-primary",
-                    isDeviceFaulted && "opacity-70 bg-neutral-200 dark:bg-neutral-800 dark:opacity-50",
-                    isNotInstalled && "opacity-70 bg-neutral-100 dark:bg-neutral-800/60 dark:opacity-40"
+                    isDeviceFaulted && "row-disabled",
+                    isNotInstalled && "row-disabled"
                   )}
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
