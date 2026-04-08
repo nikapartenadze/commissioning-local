@@ -350,10 +350,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.warn('[CloudPull] Failed to update sync service state:', e)
     }
 
-    // Auto-start background sync (SSE + push/pull loops) if not already running
+    // Mark manual pull so auto-sync doesn't overwrite with stale subsystem data
     try {
       const { startAutoSync, getAutoSyncService } = await import('@/lib/cloud/auto-sync')
-      if (!getAutoSyncService()?.running) {
+      const service = getAutoSyncService()
+      if (service) {
+        service.markManualPull()
+      }
+      if (!service?.running) {
         startAutoSync()
         console.log('[CloudPull] Auto-sync started after successful pull')
       }
