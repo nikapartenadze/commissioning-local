@@ -97,6 +97,15 @@ export async function PUT(
       return NextResponse.json({ error: 'IO not found' }, { status: 404 })
     }
 
+    // Block testing if device is not installed
+    // Allow if no installation data (null) — local slot modules, untracked devices
+    if (io.InstallationStatus && io.InstallationStatus !== 'complete') {
+      return NextResponse.json(
+        { error: 'Cannot test: device is not fully installed', installationStatus: io.InstallationStatus, installationPercent: io.InstallationPercent },
+        { status: 422 }
+      )
+    }
+
     // Get current PLC state
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)

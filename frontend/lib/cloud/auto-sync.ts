@@ -282,6 +282,41 @@ class AutoSyncService {
         }
       } catch { /* ignore change request sync errors */ }
 
+      // Push pending L2 cell value changes to cloud
+      try {
+        const l2Pending = db.prepare(
+          'SELECT * FROM L2PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+        ).all() as any[]
+
+        if (l2Pending.length > 0) {
+          const l2Updates = l2Pending.map((p: any) => ({
+            deviceId: p.CloudDeviceId,
+            columnId: p.CloudColumnId,
+            value: p.Value,
+            version: p.Version,
+            updatedBy: p.UpdatedBy,
+          }))
+
+          const l2Resp = await fetch(`${remoteUrl}/api/sync/l2/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+            body: JSON.stringify({ updates: l2Updates }),
+            signal: AbortSignal.timeout(15000),
+          })
+
+          if (l2Resp.ok) {
+            const l2Ids = l2Pending.map((p: any) => p.id)
+            const l2Placeholders = l2Ids.map(() => '?').join(',')
+            db.prepare(`DELETE FROM L2PendingSyncs WHERE id IN (${l2Placeholders})`).run(...l2Ids)
+            console.log(`[AutoSync] Pushed ${l2Ids.length} L2 cell updates to cloud`)
+          } else {
+            for (const p of l2Pending) {
+              try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status}`, p.id) } catch {}
+            }
+          }
+        }
+      } catch { /* ignore L2 sync errors */ }
+
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       this._lastPushResult = `error: ${msg}`

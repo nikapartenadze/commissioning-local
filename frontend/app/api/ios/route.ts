@@ -40,7 +40,7 @@ export async function GET(request: Request) {
         ...ioToApi(io),
         state: stateMap.get(io.id) ?? null,
         hasNetworkDevice: deviceName ? networkDevices.has(deviceName) : false,
-        isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO'),
+        isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO') || io.Name?.startsWith('STD_'),
         hasResult: !!io.Result,
         isPassed: io.Result === 'Passed',
         isFailed: io.Result === 'Failed'
