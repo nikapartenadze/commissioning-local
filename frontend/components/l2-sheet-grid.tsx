@@ -163,6 +163,9 @@ export function L2SheetGrid({
   onCellChange,
 }: L2SheetGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragStartX, setDragStartX] = useState(0)
+  const [dragScrollLeft, setDragScrollLeft] = useState(0)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; col: L2Column } | null>(null)
   const [containerWidth, setContainerWidth] = useState(0)
 
@@ -298,18 +301,55 @@ export function L2SheetGrid({
     setContextMenu({ x: e.clientX, y: e.clientY, col })
   }, [])
 
+  // ─── Drag-to-scroll (mouse + touch) ─────────────────────────────
+  const handleDragStart = (e: React.MouseEvent) => {
+    if (!scrollRef.current) return
+    const target = e.target as HTMLElement
+    if (target.closest('button') || target.closest('input') || target.closest('select') || target.closest('textarea')) return
+    setIsDragging(true)
+    setDragStartX(e.pageX - scrollRef.current.offsetLeft)
+    setDragScrollLeft(scrollRef.current.scrollLeft)
+  }
+  const handleDragMove = (e: React.MouseEvent) => {
+    if (!isDragging || !scrollRef.current) return
+    e.preventDefault()
+    const x = e.pageX - scrollRef.current.offsetLeft
+    scrollRef.current.scrollLeft = dragScrollLeft - (x - dragStartX) * 1.5
+  }
+  const handleDragEnd = () => setIsDragging(false)
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!scrollRef.current) return
+    setDragStartX(e.touches[0].pageX - scrollRef.current.offsetLeft)
+    setDragScrollLeft(scrollRef.current.scrollLeft)
+  }
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!scrollRef.current) return
+    const x = e.touches[0].pageX - scrollRef.current.offsetLeft
+    scrollRef.current.scrollLeft = dragScrollLeft - (x - dragStartX) * 1.2
+  }
+
   // ─── Render ────────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col h-full w-full bg-card">
       {/* Single scroll container */}
-      <div ref={scrollRef} className="flex-1 overflow-auto">
+      <div
+        ref={scrollRef}
+        className={cn("flex-1 overflow-auto", isDragging ? "cursor-grabbing select-none" : "cursor-grab")}
+        onMouseDown={handleDragStart}
+        onMouseMove={handleDragMove}
+        onMouseUp={handleDragEnd}
+        onMouseLeave={handleDragEnd}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+      >
         <div style={{ minWidth: totalContentWidth }}>
 
           {/* ── Sticky header ─────────────────────────────────── */}
-          <div className="sticky top-0 z-30 flex border-b bg-muted/50" style={{ height: ROW_HEIGHT }}>
+          <div className="sticky top-0 z-30 flex border-b bg-muted" style={{ height: ROW_HEIGHT }}>
             {/* Fixed header columns — sticky left */}
-            <div className="sticky left-0 z-40 flex bg-muted/50 shrink-0">
+            <div className="sticky left-0 z-40 flex bg-muted shrink-0 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]">
               {/* Device */}
               <div className="relative flex items-center px-3 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.deviceName }}>
                 Device
@@ -356,8 +396,8 @@ export function L2SheetGrid({
                   )}
                   style={{ top: virtualRow.start, height: ROW_HEIGHT, minWidth: totalContentWidth }}
                 >
-                  {/* Fixed columns — sticky left */}
-                  <div className="sticky left-0 z-10 flex shrink-0 bg-inherit">
+                  {/* Fixed columns — sticky left, opaque bg to hide scrolled content */}
+                  <div className={cn("sticky left-0 z-10 flex shrink-0", rowIdx % 2 === 0 ? "bg-card" : "bg-muted")}>
                     <div
                       className="flex items-center px-3 text-xs font-medium border-r truncate"
                       style={{ width: fixedW.deviceName }}
