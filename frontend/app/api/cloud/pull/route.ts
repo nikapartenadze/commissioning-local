@@ -559,7 +559,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
           const deviceIdMap = new Map<number, number>()
 
           const insertSheet = db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)')
-          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired) VALUES (?, ?, ?, ?, ?, ?)')
+          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)')
           const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
           const insertCell = db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
 
@@ -568,7 +568,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
             sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
             if (sheet.columns) {
               for (const col of sheet.columns) {
-                const cr = insertCol.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0)
+                const cr = insertCol.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
                 columnIdMap.set(col.id, cr.lastInsertRowid as number)
               }
             }

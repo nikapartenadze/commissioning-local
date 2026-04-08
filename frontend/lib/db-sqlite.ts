@@ -31,6 +31,7 @@ try {
     'ALTER TABLE Ios ADD COLUMN InstallationStatus TEXT',
     'ALTER TABLE Ios ADD COLUMN InstallationPercent REAL',
     'ALTER TABLE Ios ADD COLUMN PoweredUp INTEGER',
+    'ALTER TABLE L2Columns ADD COLUMN Description TEXT',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
@@ -277,7 +278,8 @@ export function initializeSchema() {
       Name TEXT NOT NULL,
       ColumnType TEXT NOT NULL,
       DisplayOrder INTEGER NOT NULL,
-      IsRequired INTEGER DEFAULT 0
+      IsRequired INTEGER DEFAULT 0,
+      Description TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_l2columns_sheetid ON L2Columns(SheetId);
 
