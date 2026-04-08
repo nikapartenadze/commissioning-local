@@ -1581,7 +1581,7 @@ export default function CommissioningPage() {
       {/* Compact Header Bar */}
       <header className="flex-shrink-0 z-50">
         {/* Top row: title + tabs + actions */}
-        <div className="flex items-center justify-between px-2 sm:px-4 h-10 sm:h-10 bg-card border-b border-[#C6941A]/20 border-t-2 border-t-[#C6941A]">
+        <div className="flex items-center justify-between px-2 sm:px-4 h-12 sm:h-10 bg-card border-b border-[#C6941A]/20 border-t-2 border-t-[#C6941A]">
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-visible md:overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo_autstand.svg" alt="Autstand" className="h-4 sm:h-5 shrink-0" />
