@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useParams, useRouter } from "next/navigation"
+import { cn } from "@/lib/utils"
 import { useUser } from "@/lib/user-context"
 import { PlcToolbar } from "@/components/plc-toolbar"
 import { EnhancedIoDataGrid } from "@/components/enhanced-io-data-grid"
