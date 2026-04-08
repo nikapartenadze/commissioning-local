@@ -269,28 +269,9 @@ export function L2SheetGrid({
   }, [cellValues, onCellChange])
 
   return (
-    <div className="flex flex-col h-full gap-2">
-      {/* Sheet progress */}
-      <div className="flex items-center gap-3 px-1">
-        <span className="text-xs font-medium text-muted-foreground whitespace-nowrap tabular-nums">
-          {completedChecks} / {totalChecks} checks ({percent}%)
-        </span>
-        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-          <div
-            className={cn(
-              "h-full rounded-full transition-all duration-300",
-              percent === 100 ? "bg-green-500" : "bg-primary"
-            )}
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-        <span className="text-xs text-muted-foreground">
-          {devices.length} devices
-        </span>
-      </div>
-
-      {/* Grid container */}
-      <div className="flex-1 min-h-0 border rounded-lg overflow-hidden bg-card">
+    <div className="flex flex-col h-full">
+      {/* Grid container — full height */}
+      <div className="flex-1 min-h-0 overflow-hidden bg-card">
         <div className="h-full flex flex-col">
           {/* Header */}
           <div className="flex border-b bg-muted/50 shrink-0">
