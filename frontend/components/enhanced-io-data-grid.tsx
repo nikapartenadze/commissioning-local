@@ -505,53 +505,82 @@ export function EnhancedIoDataGrid({
   // Virtual scrolling setup
   const parentRef = useRef<HTMLDivElement>(null)
 
-  // Drag-to-scroll state
+  // Drag-to-scroll state — use refs for real-time tracking (useState is too slow/batched)
   const [isDragging, setIsDragging] = useState(false)
-  const [startX, setStartX] = useState(0)
-  const [scrollLeft, setScrollLeft] = useState(0)
+  const dragState = useRef({ active: false, startX: 0, scrollLeft: 0 })
+  const touchState = useRef({ startX: 0, startY: 0, scrollLeft: 0, isHorizontal: null as boolean | null })
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!parentRef.current) return
-    // Don't start drag if clicking on interactive elements or text content
+    // Don't start drag if clicking on interactive elements
     const target = e.target as HTMLElement
     if (target.closest('button')) return
     if (target.closest('input')) return
-    // Allow text selection in data cells
     if (target.closest('[data-selectable]')) return
+    dragState.current = {
+      active: true,
+      startX: e.clientX,
+      scrollLeft: parentRef.current.scrollLeft,
+    }
     setIsDragging(true)
-    setStartX(e.pageX - parentRef.current.offsetLeft)
-    setScrollLeft(parentRef.current.scrollLeft)
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging || !parentRef.current) return
+    if (!dragState.current.active || !parentRef.current) return
     e.preventDefault()
-    const x = e.pageX - parentRef.current.offsetLeft
-    const walk = (x - startX) * 1.5 // Scroll speed multiplier
-    parentRef.current.scrollLeft = scrollLeft - walk
+    const dx = e.clientX - dragState.current.startX
+    parentRef.current.scrollLeft = dragState.current.scrollLeft - dx
   }
 
   const handleMouseUp = () => {
+    dragState.current.active = false
     setIsDragging(false)
   }
 
   const handleMouseLeave = () => {
+    dragState.current.active = false
     setIsDragging(false)
   }
 
   // Touch drag-to-scroll for tablets/phones
+  // Only handles horizontal dragging; vertical scrolling is left to the browser.
   const handleTouchStart = (e: React.TouchEvent) => {
     if (!parentRef.current) return
-    setStartX(e.touches[0].pageX - parentRef.current.offsetLeft)
-    setScrollLeft(parentRef.current.scrollLeft)
+    touchState.current = {
+      startX: e.touches[0].clientX,
+      startY: e.touches[0].clientY,
+      scrollLeft: parentRef.current.scrollLeft,
+      isHorizontal: null, // undecided until we see movement
+    }
   }
 
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!parentRef.current) return
-    const x = e.touches[0].pageX - parentRef.current.offsetLeft
-    const walk = (x - startX) * 1.2
-    parentRef.current.scrollLeft = scrollLeft - walk
-  }
+  // Attach touchmove with { passive: false } so preventDefault() works for horizontal drags.
+  // React's onTouchMove is passive by default and ignores preventDefault().
+  useEffect(() => {
+    const el = parentRef.current
+    if (!el) return
+
+    const onTouchMove = (e: TouchEvent) => {
+      const dx = e.touches[0].clientX - touchState.current.startX
+      const dy = e.touches[0].clientY - touchState.current.startY
+
+      // Decide scroll direction on first significant movement (10px threshold)
+      if (touchState.current.isHorizontal === null) {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
+        touchState.current.isHorizontal = Math.abs(dx) > Math.abs(dy)
+      }
+
+      // If vertical, let the browser handle native scroll
+      if (!touchState.current.isHorizontal) return
+
+      // Horizontal drag — prevent vertical scroll and move container
+      e.preventDefault()
+      el.scrollLeft = touchState.current.scrollLeft - dx
+    }
+
+    el.addEventListener('touchmove', onTouchMove, { passive: false })
+    return () => el.removeEventListener('touchmove', onTouchMove)
+  }, []) // parentRef is stable; touchState is a ref
 
   const virtualizer = useVirtualizer({
     count: filteredIos.length,
@@ -755,7 +784,6 @@ export function EnhancedIoDataGrid({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
         onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
       >
         <div style={{ minWidth: `${totalWidth}px`, width: '100%' }}>
           {/* Header - Sticky, bold, industrial */}
