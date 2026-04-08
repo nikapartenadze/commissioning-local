@@ -516,7 +516,6 @@ export function EnhancedIoDataGrid({
     const target = e.target as HTMLElement
     if (target.closest('button')) return
     if (target.closest('input')) return
-    if (target.closest('[data-selectable]')) return
     dragState.current = {
       active: true,
       startX: e.clientX,
