@@ -507,7 +507,7 @@ export function EnhancedIoDataGrid({
 
   // Drag-to-scroll state — use refs for real-time tracking (useState is too slow/batched)
   const [isDragging, setIsDragging] = useState(false)
-  const dragState = useRef({ active: false, startX: 0, scrollLeft: 0 })
+  const dragState = useRef({ active: false, startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0 })
   const touchState = useRef({ startX: 0, startY: 0, scrollLeft: 0, isHorizontal: null as boolean | null })
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -520,7 +520,9 @@ export function EnhancedIoDataGrid({
     dragState.current = {
       active: true,
       startX: e.clientX,
+      startY: e.clientY,
       scrollLeft: parentRef.current.scrollLeft,
+      scrollTop: parentRef.current.scrollTop,
     }
     setIsDragging(true)
   }
@@ -529,7 +531,9 @@ export function EnhancedIoDataGrid({
     if (!dragState.current.active || !parentRef.current) return
     e.preventDefault()
     const dx = e.clientX - dragState.current.startX
+    const dy = e.clientY - dragState.current.startY
     parentRef.current.scrollLeft = dragState.current.scrollLeft - dx
+    parentRef.current.scrollTop = dragState.current.scrollTop - dy
   }
 
   const handleMouseUp = () => {
@@ -995,8 +999,8 @@ export function EnhancedIoDataGrid({
                   >
                     {io.installationPercent != null && (
                       io.installationPercent >= 1.0
-                        ? <span className="text-green-600 text-[10px] font-semibold">Installed</span>
-                        : <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${io.installationPercent > 0.5 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'}`}>{Math.floor(io.installationPercent * 100)}%</span>
+                        ? <span className="bg-emerald-600 text-white px-2 py-0.5 rounded text-[10px] font-semibold">Installed</span>
+                        : <span className="bg-red-600 text-white px-2 py-0.5 rounded text-[10px] font-bold">{Math.floor(io.installationPercent * 100)}%</span>
                     )}
                   </div>
                   )}
