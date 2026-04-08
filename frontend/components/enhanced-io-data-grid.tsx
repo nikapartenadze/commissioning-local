@@ -539,6 +539,20 @@ export function EnhancedIoDataGrid({
     setIsDragging(false)
   }
 
+  // Touch drag-to-scroll for tablets/phones
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!parentRef.current) return
+    setStartX(e.touches[0].pageX - parentRef.current.offsetLeft)
+    setScrollLeft(parentRef.current.scrollLeft)
+  }
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!parentRef.current) return
+    const x = e.touches[0].pageX - parentRef.current.offsetLeft
+    const walk = (x - startX) * 1.2
+    parentRef.current.scrollLeft = scrollLeft - walk
+  }
+
   const virtualizer = useVirtualizer({
     count: filteredIos.length,
     getScrollElement: () => parentRef.current,
@@ -740,19 +754,21 @@ export function EnhancedIoDataGrid({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
       >
         <div style={{ minWidth: `${totalWidth}px`, width: '100%' }}>
           {/* Header - Sticky, bold, industrial */}
           <div className="bg-muted sticky top-0 z-10 flex border-b-2 border-[#C6941A]/40">
             <div
-              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
+              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 sticky left-0 z-20 bg-muted"
               style={{ width: `${COLUMN_WIDTHS.description}px` }}
             >
               Description
             </div>
             <div
-              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
-              style={{ width: `${COLUMN_WIDTHS.ioPoint}px` }}
+              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 sticky z-20 bg-muted"
+              style={{ width: `${COLUMN_WIDTHS.ioPoint}px`, left: `${COLUMN_WIDTHS.description}px` }}
             >
               I/O Point
             </div>
@@ -868,7 +884,7 @@ export function EnhancedIoDataGrid({
                      </div>
                    )}
                    <div
-                     className="px-4 py-2 text-sm font-medium flex-shrink-0 flex items-center select-text"
+                     className="px-4 py-2 text-sm font-medium flex-shrink-0 flex items-center select-text sticky left-0 z-[5] bg-background"
                      style={{ width: `${COLUMN_WIDTHS.description}px` }}
                      data-selectable
                    >
@@ -891,8 +907,8 @@ export function EnhancedIoDataGrid({
                      )}
                    </div>
                    <div
-                     className="px-4 py-2 text-xs font-mono font-medium flex-shrink-0 overflow-hidden text-ellipsis flex items-center gap-2 select-text"
-                     style={{ width: `${COLUMN_WIDTHS.ioPoint}px` }}
+                     className="px-4 py-2 text-xs font-mono font-medium flex-shrink-0 overflow-hidden text-ellipsis flex items-center gap-2 select-text sticky z-[5] bg-background"
+                     style={{ width: `${COLUMN_WIDTHS.ioPoint}px`, left: `${COLUMN_WIDTHS.description}px` }}
                      data-selectable
                    >
                      {/* Module health indicator */}
