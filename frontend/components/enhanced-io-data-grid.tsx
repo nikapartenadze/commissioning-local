@@ -795,7 +795,7 @@ export function EnhancedIoDataGrid({
               Description
             </div>
             <div
-              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 sticky z-20 bg-muted"
+              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 sticky z-20 bg-muted border-r border-border/50"
               style={{ width: `${COLUMN_WIDTHS.ioPoint}px`, left: `${COLUMN_WIDTHS.description}px` }}
             >
               I/O Point
@@ -912,7 +912,7 @@ export function EnhancedIoDataGrid({
                      </div>
                    )}
                    <div
-                     className="px-4 py-2 text-sm font-medium flex-shrink-0 flex items-center select-text sticky left-0 z-[5] bg-background"
+                     className="px-4 py-2 text-sm font-medium flex-shrink-0 flex items-center select-text sticky left-0 z-[5] bg-inherit"
                      style={{ width: `${COLUMN_WIDTHS.description}px` }}
                      data-selectable
                    >
@@ -935,7 +935,7 @@ export function EnhancedIoDataGrid({
                      )}
                    </div>
                    <div
-                     className="px-4 py-2 text-xs font-mono font-medium flex-shrink-0 overflow-hidden text-ellipsis flex items-center gap-2 select-text sticky z-[5] bg-background"
+                     className="px-4 py-2 text-xs font-mono font-medium flex-shrink-0 overflow-hidden text-ellipsis flex items-center gap-2 select-text sticky z-[5] bg-inherit border-r border-border/50"
                      style={{ width: `${COLUMN_WIDTHS.ioPoint}px`, left: `${COLUMN_WIDTHS.description}px` }}
                      data-selectable
                    >
