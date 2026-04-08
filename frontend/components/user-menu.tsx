@@ -14,8 +14,8 @@ export function UserMenu() {
 
   return (
     <div className="flex items-center gap-2">
-      <Badge variant="outline" className="flex items-center gap-2 px-3 py-2">
-        <User className="h-4 w-4" />
+      <Badge variant="outline" className="flex items-center gap-1.5 px-2 py-1 text-xs">
+        <User className="h-3.5 w-3.5" />
         <span className="font-medium">{currentUser.fullName}</span>
       </Badge>
       <Button
@@ -23,8 +23,9 @@ export function UserMenu() {
         size="sm"
         onClick={logout}
         title="Change tester name"
+        className="h-8 px-2"
       >
-        <RefreshCw className="h-4 w-4" />
+        <RefreshCw className="h-3.5 w-3.5" />
         <span className="hidden sm:inline ml-1">Change</span>
       </Button>
     </div>
