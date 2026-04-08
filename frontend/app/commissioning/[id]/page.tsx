@@ -1634,8 +1634,8 @@ export default function CommissioningPage() {
                       </button>
                     ))}
                   </div>
-                  {/* Mobile tab dropdown */}
-                  <div className="relative md:hidden">
+                  {/* Mobile tab dropdown — fixed position to avoid overflow clipping */}
+                  <div className="md:hidden">
                     <button
                       onClick={() => setMobileTabOpen(!mobileTabOpen)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#C6941A] text-white text-sm font-semibold shadow"
@@ -1644,17 +1644,16 @@ export default function CommissioningPage() {
                       <svg className={cn("w-3.5 h-3.5 transition-transform", mobileTabOpen && "rotate-180")} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                     </button>
                     {mobileTabOpen && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setMobileTabOpen(false)} />
-                        <div className="absolute top-full left-0 mt-1 z-50 bg-card border rounded-lg shadow-xl min-w-[160px] py-1 overflow-hidden">
+                      <div className="fixed inset-0 z-[9998]" onClick={() => setMobileTabOpen(false)}>
+                        <div className="fixed top-14 right-4 z-[9999] bg-card border rounded-lg shadow-2xl min-w-[180px] py-1.5" onClick={e => e.stopPropagation()}>
                           {tabs.map(tab => (
                             <button
                               key={tab.id}
                               onClick={() => switchTab(tab.id, tab.hash)}
                               className={cn(
-                                "w-full text-left px-4 py-2.5 text-sm font-medium transition-colors",
+                                "w-full text-left px-4 py-3 text-sm font-medium transition-colors",
                                 activeTab === tab.id
-                                  ? "bg-[#C6941A]/15 text-[#C6941A] font-semibold"
+                                  ? "bg-[#C6941A]/15 text-[#C6941A] font-semibold border-l-2 border-[#C6941A]"
                                   : "text-foreground hover:bg-muted"
                               )}
                             >
@@ -1662,7 +1661,7 @@ export default function CommissioningPage() {
                             </button>
                           ))}
                         </div>
-                      </>
+                      </div>
                     )}
                   </div>
                 </>
