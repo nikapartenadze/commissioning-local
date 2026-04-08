@@ -169,10 +169,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
       // Clear ALL existing data before pulling fresh — ensures no stale data from previous subsystem
+      const beforeCount = (db.prepare('SELECT COUNT(*) as cnt FROM Ios').get() as any).cnt
       const deleteResult = db.prepare('DELETE FROM Ios').run()
-      if (deleteResult.changes > 0) {
-        console.log(`[CloudPull] Cleared ${deleteResult.changes} existing IOs`)
-      }
+      console.log(`[CloudPull] DELETE FROM Ios: had ${beforeCount}, deleted ${deleteResult.changes}`)
+      const afterCount = (db.prepare('SELECT COUNT(*) as cnt FROM Ios').get() as any).cnt
+      console.log(`[CloudPull] After delete: ${afterCount} IOs remaining`)
       db.exec('DELETE FROM EStopIoPoints')
       db.exec('DELETE FROM EStopVfds')
       db.exec('DELETE FROM EStopEpcs')

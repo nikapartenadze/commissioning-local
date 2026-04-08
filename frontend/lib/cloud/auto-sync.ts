@@ -396,6 +396,14 @@ class AutoSyncService {
       `)
 
       const pullTransaction = db.transaction(() => {
+        // Check if subsystem changed — if so, clear all IOs first
+        const existingSubIds = db.prepare('SELECT DISTINCT SubsystemId FROM Ios').all() as { SubsystemId: number }[]
+        const hasOtherSubsystems = existingSubIds.some(s => s.SubsystemId !== subsystemIdNum)
+        if (hasOtherSubsystems) {
+          console.log(`[AutoSync] Subsystem changed (had ${existingSubIds.map(s => s.SubsystemId).join(',')}, now ${subsystemIdNum}) — clearing all IOs`)
+          db.exec('DELETE FROM Ios')
+        }
+
         for (const cloudIo of cloudIos) {
           if (!cloudIo.name || cloudIo.id <= 0) continue
 
