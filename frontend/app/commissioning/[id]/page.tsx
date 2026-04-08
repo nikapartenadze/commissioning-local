@@ -153,6 +153,7 @@ export default function CommissioningPage() {
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
   const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety' | 'l2'>('io')
+  const [mobileTabOpen, setMobileTabOpen] = useState(false)
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
 
   // Set tab from URL hash after mount (avoids hydration mismatch)
@@ -1590,91 +1591,82 @@ export default function CommissioningPage() {
                 : subsystemLabel || (ios.length > 0 && ios[0].subsystemName ? ios[0].subsystemName : `SUB ${plcConfig.subsystemId}`)}
             </span>
             <div className="h-5 w-px bg-border shrink-0" />
-            <div className="flex bg-muted rounded p-0.5 gap-0.5 overflow-x-auto max-w-[60vw] sm:max-w-none">
-              <button
-                onClick={() => {
-                  // Resuming IO tab — restart testing if it was active before we left
+            {/* Tab switcher — desktop: inline buttons, mobile: dropdown */}
+            {(() => {
+              const tabs: { id: typeof activeTab; label: string; hash: string }[] = [
+                { id: 'io', label: 'I/O', hash: '' },
+                { id: 'network', label: 'Network', hash: 'network' },
+                { id: 'estop', label: 'EStop', hash: 'estop' },
+                { id: 'safety', label: 'Safety', hash: 'safety' },
+                { id: 'l2', label: 'L2', hash: 'l2' },
+              ]
+              const switchTab = (tab: typeof activeTab, hash: string) => {
+                if (tab === 'io') {
                   if (activeTab !== 'io' && wasTestingBeforeTabSwitch.current && !plcStatus.isTesting) {
                     handleToggleTesting()
                   }
-                  setActiveTab('io'); window.location.hash = ''
-                }}
-                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
-                  activeTab === 'io'
-                    ? 'bg-[#C6941A] text-white shadow'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                I/O
-              </button>
-              <button
-                onClick={() => {
-                  // Leaving IO tab — pause testing to suppress pass/fail prompts
+                } else {
                   if (plcStatus.isTesting) {
                     wasTestingBeforeTabSwitch.current = true
                     handleToggleTesting()
                   }
-                  setActiveTab('network'); window.location.hash = 'network'
-                }}
-                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
-                  activeTab === 'network'
-                    ? 'bg-[#C6941A] text-white shadow'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                Network
-              </button>
-              <button
-                onClick={() => {
-                  // Leaving IO tab — pause testing to suppress pass/fail prompts
-                  if (plcStatus.isTesting) {
-                    wasTestingBeforeTabSwitch.current = true
-                    handleToggleTesting()
-                  }
-                  setActiveTab('estop'); window.location.hash = 'estop'
-                }}
-              className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
-                activeTab === 'estop'
-                  ? 'bg-background shadow text-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              EStop
-            </button>
-              <button
-                onClick={() => {
-                  // Leaving IO tab — pause testing to suppress pass/fail prompts
-                  if (plcStatus.isTesting) {
-                    wasTestingBeforeTabSwitch.current = true
-                    handleToggleTesting()
-                  }
-                  setActiveTab('safety'); window.location.hash = 'safety'
-                }}
-                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
-                  activeTab === 'safety'
-                    ? 'bg-[#C6941A] text-white shadow'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                Safety
-              </button>
-              <button
-                onClick={() => {
-                  if (plcStatus.isTesting) {
-                    wasTestingBeforeTabSwitch.current = true
-                    handleToggleTesting()
-                  }
-                  setActiveTab('l2'); window.location.hash = 'l2'
-                }}
-                className={`px-2 sm:px-3 py-1 text-[11px] sm:text-sm font-medium rounded transition-colors whitespace-nowrap ${
-                  activeTab === 'l2'
-                    ? 'bg-[#C6941A] text-white shadow'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                L2
-              </button>
-            </div>
+                }
+                setActiveTab(tab)
+                window.location.hash = hash
+                setMobileTabOpen(false)
+              }
+              return (
+                <>
+                  {/* Desktop tabs */}
+                  <div className="hidden md:flex bg-muted rounded p-0.5 gap-0.5">
+                    {tabs.map(tab => (
+                      <button
+                        key={tab.id}
+                        onClick={() => switchTab(tab.id, tab.hash)}
+                        className={`px-3 py-1 text-sm font-medium rounded transition-colors whitespace-nowrap ${
+                          activeTab === tab.id
+                            ? 'bg-[#C6941A] text-white shadow'
+                            : 'text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Mobile tab dropdown */}
+                  <div className="relative md:hidden">
+                    <button
+                      onClick={() => setMobileTabOpen(!mobileTabOpen)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#C6941A] text-white text-sm font-semibold shadow"
+                    >
+                      {tabs.find(t => t.id === activeTab)?.label}
+                      <svg className={cn("w-3.5 h-3.5 transition-transform", mobileTabOpen && "rotate-180")} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {mobileTabOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setMobileTabOpen(false)} />
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-card border rounded-lg shadow-xl min-w-[160px] py-1 overflow-hidden">
+                          {tabs.map(tab => (
+                            <button
+                              key={tab.id}
+                              onClick={() => switchTab(tab.id, tab.hash)}
+                              className={cn(
+                                "w-full text-left px-4 py-2.5 text-sm font-medium transition-colors",
+                                activeTab === tab.id
+                                  ? "bg-[#C6941A]/15 text-[#C6941A] font-semibold"
+                                  : "text-foreground hover:bg-muted"
+                              )}
+                            >
+                              {tab.label}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </>
+              )
+            })()}
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {process.env.NEXT_PUBLIC_BUILD_VERSION && (
