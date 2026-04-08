@@ -825,6 +825,7 @@ export function EnhancedIoDataGrid({
               const rowDeviceName = io.hasNetworkDevice ? io.networkDeviceName : null
               const deviceStatus = rowDeviceName ? deviceStatuses.get(rowDeviceName) : undefined
               const isDeviceFaulted = deviceStatus === 'red'
+              const isNotInstalled = !!(io.installationStatus && io.installationStatus !== 'complete')
               return (
                 <div
                   key={io.id}
@@ -835,7 +836,8 @@ export function EnhancedIoDataGrid({
                     isTesting ? "cursor-pointer" : "cursor-default",
                     getRowClassName(io),
                     currentTestIo?.id === io.id && "border-l-4 border-l-primary",
-                    isDeviceFaulted && "opacity-50"
+                    isDeviceFaulted && "opacity-50",
+                    isNotInstalled && "opacity-40 bg-muted/50"
                   )}
                   style={{
                     transform: `translateY(${virtualRow.start}px)`,
@@ -950,7 +952,7 @@ export function EnhancedIoDataGrid({
                     {io.installationPercent != null && (
                       io.installationPercent >= 1.0
                         ? <span className="text-green-600 text-[10px] font-semibold">Installed</span>
-                        : <span className={`text-[10px] font-medium ${io.installationPercent > 0.5 ? 'text-amber-500' : 'text-red-500'}`}>{Math.floor(io.installationPercent * 100)}%</span>
+                        : <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${io.installationPercent > 0.5 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'}`}>{Math.floor(io.installationPercent * 100)}%</span>
                     )}
                   </div>
                   )}
@@ -1038,7 +1040,7 @@ export function EnhancedIoDataGrid({
                   </div>
                   {/* Fail */}
                   <div className="px-1 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.failed}px` }}>
-                    <Button variant="ghost" size="icon" className="h-10 w-10 text-red-600 hover:text-red-700 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-30" onClick={(e) => { e.stopPropagation(); onMarkFailed?.(io) }} disabled={!isTesting} title="Mark Failed">
+                    <Button variant="ghost" size="icon" className="h-10 w-10 text-red-600 hover:text-red-700 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-30" onClick={(e) => { e.stopPropagation(); onMarkFailed?.(io) }} disabled={!isTesting || isNotInstalled} title={isNotInstalled ? "Device not installed" : "Mark Failed"}>
                       <AlertTriangle className="h-5 w-5" />
                     </Button>
                   </div>
