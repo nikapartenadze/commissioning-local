@@ -888,6 +888,15 @@ export default function CommissioningPage() {
               return updatedIo
             }
 
+            // Don't trigger dialog for IOs on devices that aren't fully installed
+            if (isTrigger && io.installationStatus && io.installationStatus !== 'complete') {
+              setPreviousStates(prev => ({
+                ...prev,
+                [io.id]: update.State
+              }))
+              return updatedIo
+            }
+
             if (isTrigger && isSpare) {
               // SPARE triggered — delay 500ms, add to dialog queue UNLESS paired non-SPARE fires first
               const portKey = getPortPairKey(io.name)
@@ -1109,6 +1118,16 @@ export default function CommissioningPage() {
   }
 
   const handleMarkPassed = async (io: IoItem) => {
+    // Block if device not fully installed
+    if (io.installationStatus && io.installationStatus !== 'complete') {
+      toast({
+        title: "Cannot test — device not installed",
+        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before testing.`,
+        variant: "destructive"
+      })
+      return
+    }
+
     // Block if parent device is faulted (only for IOs with real network devices)
     const deviceName = io.networkDeviceName || getDeviceName(io.name)
     if (io.hasNetworkDevice && deviceName && faultedDevices.has(deviceName)) {
@@ -1165,6 +1184,16 @@ export default function CommissioningPage() {
   }
 
   const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
+    // Block if device not fully installed
+    if (io.installationStatus && io.installationStatus !== 'complete') {
+      toast({
+        title: "Cannot test — device not installed",
+        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before testing.`,
+        variant: "destructive"
+      })
+      return
+    }
+
     // Block if parent device is faulted (only for IOs with real network devices)
     const failDeviceName = io.networkDeviceName || getDeviceName(io.name)
     if (io.hasNetworkDevice && failDeviceName && faultedDevices.has(failDeviceName)) {
@@ -1561,7 +1590,7 @@ export default function CommissioningPage() {
                 : subsystemLabel || (ios.length > 0 && ios[0].subsystemName ? ios[0].subsystemName : `SUB ${plcConfig.subsystemId}`)}
             </span>
             <div className="h-5 w-px bg-border shrink-0" />
-            <div className="flex bg-muted rounded p-0.5 gap-0.5 shrink-0">
+            <div className="flex bg-muted rounded p-0.5 gap-0.5 overflow-x-auto max-w-[60vw] sm:max-w-none">
               <button
                 onClick={() => {
                   // Resuming IO tab — restart testing if it was active before we left
@@ -1704,7 +1733,7 @@ export default function CommissioningPage() {
           passedIos={ios.filter(io => io.result === 'Passed' && !io.description?.toUpperCase().includes('SPARE')).length}
           failedIos={ios.filter(io => io.result === 'Failed' && !io.description?.toUpperCase().includes('SPARE')).length}
           notTestedIos={ios.filter(io => !io.result && !io.description?.toUpperCase().includes('SPARE')).length}
-          notInstalledIos={ios.filter(io => io.installationStatus && io.installationStatus !== 'complete').length}
+          notInstalledIos={ios.filter(io => io.installationStatus && io.installationStatus !== 'complete' && !io.description?.toUpperCase().includes('SPARE')).length}
           onToggleTesting={handleToggleTesting}
           onShowGraph={() => setShowGraph(true)}
           onDownloadCsv={handleDownloadCsv}
