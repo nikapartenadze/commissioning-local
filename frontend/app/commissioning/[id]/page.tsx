@@ -1582,7 +1582,7 @@ export default function CommissioningPage() {
       <header className="flex-shrink-0 z-50">
         {/* Top row: title + tabs + actions */}
         <div className="flex items-center justify-between px-2 sm:px-4 h-10 sm:h-10 bg-card border-b border-[#C6941A]/20 border-t-2 border-t-[#C6941A]">
-          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-hidden">
+          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-visible md:overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo_autstand.svg" alt="Autstand" className="h-5 hidden sm:block" />
             <div className="h-5 w-px bg-border shrink-0 hidden sm:block" />
@@ -1635,7 +1635,7 @@ export default function CommissioningPage() {
                     ))}
                   </div>
                   {/* Mobile tab dropdown — fixed position to avoid overflow clipping */}
-                  <div className="md:hidden">
+                  <div className="md:hidden ml-auto relative">
                     <button
                       onClick={() => setMobileTabOpen(!mobileTabOpen)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#C6941A] text-white text-sm font-semibold shadow"
@@ -1644,8 +1644,9 @@ export default function CommissioningPage() {
                       <svg className={cn("w-3.5 h-3.5 transition-transform", mobileTabOpen && "rotate-180")} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                     </button>
                     {mobileTabOpen && (
-                      <div className="fixed inset-0 z-[9998]" onClick={() => setMobileTabOpen(false)}>
-                        <div className="fixed top-14 right-4 z-[9999] bg-card border rounded-lg shadow-2xl min-w-[180px] py-1.5" onClick={e => e.stopPropagation()}>
+                      <>
+                        <div className="fixed inset-0 z-[9998]" onClick={() => setMobileTabOpen(false)} />
+                        <div className="absolute top-full right-0 mt-1 z-[9999] bg-card border rounded-lg shadow-2xl min-w-[180px] py-1.5" onClick={e => e.stopPropagation()}>
                           {tabs.map(tab => (
                             <button
                               key={tab.id}
@@ -1661,7 +1662,7 @@ export default function CommissioningPage() {
                             </button>
                           ))}
                         </div>
-                      </div>
+                      </>
                     )}
                   </div>
                 </>
