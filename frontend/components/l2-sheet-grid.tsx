@@ -1,9 +1,10 @@
 "use client"
 
-import { useState, useRef, useMemo, useCallback } from 'react'
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '@/lib/utils'
 import { Check, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 
 interface L2Sheet {
   id: number
@@ -16,6 +17,7 @@ interface L2Column {
   Name: string
   ColumnType: string
   DisplayOrder: number
+  Description?: string | null
 }
 
 interface L2Device {
@@ -36,25 +38,33 @@ interface L2SheetGridProps {
 }
 
 const ROW_HEIGHT = 44
-const FIXED_COL_WIDTHS = { deviceName: 180, mcm: 80, subsystem: 90 }
+const MIN_COL_WIDTH = 50
 
-function CheckCell({
-  value,
-  onChange,
-}: {
-  value: string | null
-  onChange: (value: string | null) => void
-}) {
-  const handleClick = () => {
-    if (!value) {
-      onChange('pass')
-    } else if (value === 'pass') {
-      onChange('fail')
-    } else {
-      onChange(null)
-    }
+// Default fixed column widths — wider MCM to avoid word wrap
+const DEFAULT_FIXED: Record<string, number> = {
+  deviceName: 200,
+  mcm: 140,
+  subsystem: 110,
+}
+
+function baseScrollWidth(colType: string): number {
+  switch (colType) {
+    case 'check': return 80
+    case 'notes': return 200
+    case 'data': return 130
+    case 'readonly': return 130
+    default: return 100
   }
+}
 
+// ─── Cell components ────────────────────────────────────────────────────
+
+function CheckCell({ value, onChange }: { value: string | null; onChange: (v: string | null) => void }) {
+  const handleClick = () => {
+    if (!value) onChange('pass')
+    else if (value === 'pass') onChange('fail')
+    else onChange(null)
+  }
   return (
     <button
       onClick={handleClick}
@@ -72,38 +82,23 @@ function CheckCell({
   )
 }
 
-function DataCell({
-  value,
-  onChange,
-}: {
-  value: string | null
-  onChange: (value: string | null) => void
+function EditableCell({ value, onChange, placeholder }: {
+  value: string | null; onChange: (v: string | null) => void; placeholder?: string
 }) {
   const [editing, setEditing] = useState(false)
   const [localValue, setLocalValue] = useState(value ?? '')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const handleFocus = () => {
-    setEditing(true)
-    setLocalValue(value ?? '')
-  }
-
+  const handleFocus = () => { setEditing(true); setLocalValue(value ?? '') }
   const handleBlur = () => {
     setEditing(false)
     const trimmed = localValue.trim()
     const newVal = trimmed === '' ? null : trimmed
-    if (newVal !== value) {
-      onChange(newVal)
-    }
+    if (newVal !== value) onChange(newVal)
   }
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      inputRef.current?.blur()
-    } else if (e.key === 'Escape') {
-      setLocalValue(value ?? '')
-      inputRef.current?.blur()
-    }
+    if (e.key === 'Enter') inputRef.current?.blur()
+    else if (e.key === 'Escape') { setLocalValue(value ?? ''); inputRef.current?.blur() }
   }
 
   return (
@@ -115,55 +110,7 @@ function DataCell({
       onFocus={handleFocus}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      className="w-full h-8 px-2 text-xs rounded-md border border-transparent bg-transparent hover:border-border focus:border-primary focus:bg-background focus:outline-none transition-colors"
-    />
-  )
-}
-
-function NotesCell({
-  value,
-  onChange,
-}: {
-  value: string | null
-  onChange: (value: string | null) => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [localValue, setLocalValue] = useState(value ?? '')
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  const handleFocus = () => {
-    setEditing(true)
-    setLocalValue(value ?? '')
-  }
-
-  const handleBlur = () => {
-    setEditing(false)
-    const trimmed = localValue.trim()
-    const newVal = trimmed === '' ? null : trimmed
-    if (newVal !== value) {
-      onChange(newVal)
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      inputRef.current?.blur()
-    } else if (e.key === 'Escape') {
-      setLocalValue(value ?? '')
-      inputRef.current?.blur()
-    }
-  }
-
-  return (
-    <input
-      ref={inputRef}
-      type="text"
-      value={editing ? localValue : (value ?? '')}
-      onChange={(e) => setLocalValue(e.target.value)}
-      onFocus={handleFocus}
-      onBlur={handleBlur}
-      onKeyDown={handleKeyDown}
-      placeholder="Notes..."
+      placeholder={placeholder}
       className="w-full h-8 px-2 text-xs rounded-md border border-transparent bg-transparent hover:border-border focus:border-primary focus:bg-background focus:outline-none transition-colors placeholder:text-muted-foreground/50"
     />
   )
@@ -177,6 +124,37 @@ function ReadonlyCell({ value }: { value: string | null }) {
   )
 }
 
+// ─── Resize handle ──────────────────────────────────────────────────────
+
+function ResizeHandle({ onResizeStart }: { onResizeStart: (e: React.MouseEvent) => void }) {
+  return (
+    <div
+      className="absolute right-0 top-0 bottom-0 w-[5px] cursor-col-resize z-10 group/handle flex items-center justify-center"
+      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onResizeStart(e) }}
+    >
+      <div className="w-[2px] h-3/5 rounded-full bg-border opacity-0 group-hover/handle:opacity-100 transition-opacity" />
+    </div>
+  )
+}
+
+// ─── Context menu constants ─────────────────────────────────────────────
+
+const COL_TYPE_STYLES: Record<string, string> = {
+  check: "bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300",
+  data: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900 dark:text-blue-300",
+  readonly: "bg-gray-100 text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400",
+  notes: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900 dark:text-amber-300",
+}
+
+const COL_TYPE_HINTS: Record<string, string> = {
+  check: "Tap to cycle: empty \u2192 pass \u2192 fail \u2192 empty",
+  data: "Type a measured or observed value",
+  readonly: "Pre-filled value (cannot edit)",
+  notes: "Free-text notes or comments",
+}
+
+// ─── Main grid ──────────────────────────────────────────────────────────
+
 export function L2SheetGrid({
   sheet,
   columns,
@@ -184,50 +162,117 @@ export function L2SheetGrid({
   cellValues,
   onCellChange,
 }: L2SheetGridProps) {
-  const parentRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; col: L2Column } | null>(null)
+  const [containerWidth, setContainerWidth] = useState(0)
+
+  // Width overrides — keyed by "fixed-{name}" or "col-{id}"
+  const [widthOverrides, setWidthOverrides] = useState<Map<string, number>>(new Map())
+
+  // Resize drag state (ref to avoid re-renders per pixel)
+  const [resizing, setResizing] = useState<{ key: string; startX: number; startW: number } | null>(null)
 
   const virtualizer = useVirtualizer({
     count: devices.length,
-    getScrollElement: () => parentRef.current,
+    getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 8,
   })
 
-  // Compute per-sheet progress
-  const { completedChecks, totalChecks, percent } = useMemo(() => {
-    let completed = 0
-    let total = 0
-    for (const d of devices) {
-      completed += d.CompletedChecks
-      total += d.TotalChecks
-    }
-    // Recount from cell values for accuracy
-    const checkCols = columns.filter(c => c.ColumnType === 'check')
-    let liveCompleted = 0
-    let liveTotal = 0
-    for (const d of devices) {
-      for (const col of checkCols) {
-        liveTotal++
-        const cv = cellValues.get(`${d.id}-${col.id}`)
-        if (cv?.Value) liveCompleted++
-      }
-    }
-    const pct = liveTotal > 0 ? Math.round((liveCompleted / liveTotal) * 100) : 0
-    return { completedChecks: liveCompleted, totalChecks: liveTotal, percent: pct }
-  }, [devices, columns, cellValues])
-
-  const getColumnWidth = useCallback((col: L2Column) => {
-    switch (col.ColumnType) {
-      case 'check': return 70
-      case 'notes': return 180
-      case 'data': return 120
-      case 'readonly': return 120
-      default: return 100
-    }
+  // Measure container width for auto-scaling
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) setContainerWidth(entry.contentRect.width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
   }, [])
 
-  const totalFixedWidth = FIXED_COL_WIDTHS.deviceName + FIXED_COL_WIDTHS.mcm + FIXED_COL_WIDTHS.subsystem
-  const totalScrollWidth = columns.reduce((sum, col) => sum + getColumnWidth(col), 0)
+  // Resize drag handlers
+  useEffect(() => {
+    if (!resizing) return
+
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
+    const onMove = (e: MouseEvent) => {
+      const delta = e.clientX - resizing.startX
+      const newW = Math.max(MIN_COL_WIDTH, resizing.startW + delta)
+      setWidthOverrides(prev => {
+        const next = new Map(prev)
+        next.set(resizing.key, newW)
+        return next
+      })
+    }
+    const onUp = () => setResizing(null)
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    return () => {
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+  }, [resizing])
+
+  // Close context menu on scroll or click outside
+  useEffect(() => {
+    if (!contextMenu) return
+    const close = () => setContextMenu(null)
+    document.addEventListener('click', close)
+    document.addEventListener('scroll', close, true)
+    return () => {
+      document.removeEventListener('click', close)
+      document.removeEventListener('scroll', close, true)
+    }
+  }, [contextMenu])
+
+  // ─── Compute effective widths ───────────────────────────────────────
+
+  const fixedW = useMemo(() => ({
+    deviceName: widthOverrides.get('fixed-deviceName') ?? DEFAULT_FIXED.deviceName,
+    mcm: widthOverrides.get('fixed-mcm') ?? DEFAULT_FIXED.mcm,
+    subsystem: widthOverrides.get('fixed-subsystem') ?? DEFAULT_FIXED.subsystem,
+  }), [widthOverrides])
+
+  const totalFixed = fixedW.deviceName + fixedW.mcm + fixedW.subsystem
+
+  // Scroll column widths: user override > auto-scaled > base default
+  const scrollColWidths = useMemo(() => {
+    const bases = columns.map(col => baseScrollWidth(col.ColumnType))
+    const baseTotalScroll = bases.reduce((sum, w) => sum + w, 0)
+    const available = containerWidth - totalFixed
+
+    // Scale up base widths if viewport is wider (only for columns without user overrides)
+    const hasAnyOverride = columns.some(col => widthOverrides.has(`col-${col.id}`))
+    const scale = (!hasAnyOverride && containerWidth > 0 && available > baseTotalScroll)
+      ? available / baseTotalScroll
+      : 1
+
+    return columns.map((col, i) => {
+      const override = widthOverrides.get(`col-${col.id}`)
+      if (override !== undefined) return override
+      return Math.floor(bases[i] * scale)
+    })
+  }, [columns, containerWidth, totalFixed, widthOverrides])
+
+  const totalScrollWidth = scrollColWidths.reduce((sum, w) => sum + w, 0)
+  const totalContentWidth = totalFixed + totalScrollWidth
+
+  // ─── Resize starters ───────────────────────────────────────────────
+
+  const startFixedResize = useCallback((e: React.MouseEvent, key: string, currentW: number) => {
+    setResizing({ key: `fixed-${key}`, startX: e.clientX, startW: currentW })
+  }, [])
+
+  const startColResize = useCallback((e: React.MouseEvent, colId: number, currentW: number) => {
+    setResizing({ key: `col-${colId}`, startX: e.clientX, startW: currentW })
+  }, [])
+
+  // ─── Cell renderer ─────────────────────────────────────────────────
 
   const renderCell = useCallback((device: L2Device, col: L2Column) => {
     const key = `${device.id}-${col.id}`
@@ -236,150 +281,145 @@ export function L2SheetGrid({
 
     switch (col.ColumnType) {
       case 'check':
-        return (
-          <CheckCell
-            value={value}
-            onChange={(v) => onCellChange(device.id, col.id, v)}
-          />
-        )
+        return <CheckCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} />
       case 'data':
-        return (
-          <DataCell
-            value={value}
-            onChange={(v) => onCellChange(device.id, col.id, v)}
-          />
-        )
+        return <EditableCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} />
       case 'notes':
-        return (
-          <NotesCell
-            value={value}
-            onChange={(v) => onCellChange(device.id, col.id, v)}
-          />
-        )
+        return <EditableCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} placeholder="Notes..." />
       case 'readonly':
         return <ReadonlyCell value={value} />
       default:
-        return (
-          <DataCell
-            value={value}
-            onChange={(v) => onCellChange(device.id, col.id, v)}
-          />
-        )
+        return <EditableCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} />
     }
   }, [cellValues, onCellChange])
 
+  const handleHeaderContextMenu = useCallback((e: React.MouseEvent, col: L2Column) => {
+    e.preventDefault()
+    setContextMenu({ x: e.clientX, y: e.clientY, col })
+  }, [])
+
+  // ─── Render ────────────────────────────────────────────────────────
+
   return (
-    <div className="flex flex-col h-full">
-      {/* Grid container — full height */}
-      <div className="flex-1 min-h-0 overflow-hidden bg-card">
-        <div className="h-full flex flex-col">
-          {/* Header */}
-          <div className="flex border-b bg-muted/50 shrink-0">
-            {/* Fixed header columns */}
-            <div className="flex shrink-0 sticky left-0 z-20 bg-muted/50">
-              <div
-                className="flex items-center px-3 text-xs font-semibold text-muted-foreground border-r"
-                style={{ width: FIXED_COL_WIDTHS.deviceName, height: ROW_HEIGHT }}
-              >
+    <div className="flex flex-col h-full w-full bg-card">
+      {/* Single scroll container */}
+      <div ref={scrollRef} className="flex-1 overflow-auto">
+        <div style={{ minWidth: totalContentWidth }}>
+
+          {/* ── Sticky header ─────────────────────────────────── */}
+          <div className="sticky top-0 z-30 flex border-b bg-muted/50" style={{ height: ROW_HEIGHT }}>
+            {/* Fixed header columns — sticky left */}
+            <div className="sticky left-0 z-40 flex bg-muted/50 shrink-0">
+              {/* Device */}
+              <div className="relative flex items-center px-3 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.deviceName }}>
                 Device
+                <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'deviceName', fixedW.deviceName)} />
               </div>
-              <div
-                className="flex items-center px-2 text-xs font-semibold text-muted-foreground border-r"
-                style={{ width: FIXED_COL_WIDTHS.mcm, height: ROW_HEIGHT }}
-              >
+              {/* MCM */}
+              <div className="relative flex items-center px-2 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.mcm }}>
                 MCM
+                <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'mcm', fixedW.mcm)} />
               </div>
-              <div
-                className="flex items-center px-2 text-xs font-semibold text-muted-foreground border-r"
-                style={{ width: FIXED_COL_WIDTHS.subsystem, height: ROW_HEIGHT }}
-              >
+              {/* Subsystem */}
+              <div className="relative flex items-center px-2 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.subsystem }}>
                 Subsystem
+                <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'subsystem', fixedW.subsystem)} />
               </div>
             </div>
 
             {/* Scrollable header columns */}
-            <div className="flex overflow-hidden">
-              {columns.map(col => (
-                <div
-                  key={col.id}
-                  className="flex items-center px-2 text-xs font-semibold text-muted-foreground border-r shrink-0"
-                  style={{ width: getColumnWidth(col), height: ROW_HEIGHT }}
-                  title={col.Name}
-                >
-                  <span className="truncate">{col.Name}</span>
-                </div>
-              ))}
-            </div>
+            {columns.map((col, colIdx) => (
+              <div
+                key={col.id}
+                className="relative flex items-center px-2 text-xs font-semibold text-muted-foreground border-r shrink-0 cursor-context-menu select-none"
+                style={{ width: scrollColWidths[colIdx] }}
+                title={`Right-click for info: ${col.Name}`}
+                onContextMenu={(e) => handleHeaderContextMenu(e, col)}
+              >
+                <span className="truncate">{col.Name}</span>
+                <ResizeHandle onResizeStart={(e) => startColResize(e, col.id, scrollColWidths[colIdx])} />
+              </div>
+            ))}
           </div>
 
-          {/* Virtualized body */}
-          <div
-            ref={parentRef}
-            className="flex-1 overflow-auto"
-          >
-            <div
-              style={{
-                height: virtualizer.getTotalSize(),
-                width: totalFixedWidth + totalScrollWidth,
-                position: 'relative',
-              }}
-            >
-              {virtualizer.getVirtualItems().map(virtualRow => {
-                const device = devices[virtualRow.index]
-                const rowIdx = virtualRow.index
-                return (
-                  <div
-                    key={device.id}
-                    className={cn(
-                      "absolute left-0 flex border-b",
-                      rowIdx % 2 === 0 ? "bg-card" : "bg-muted/20"
-                    )}
-                    style={{
-                      top: virtualRow.start,
-                      height: ROW_HEIGHT,
-                      width: totalFixedWidth + totalScrollWidth,
-                    }}
-                  >
-                    {/* Fixed columns (sticky) */}
-                    <div className="flex shrink-0 sticky left-0 z-10 bg-inherit">
-                      <div
-                        className="flex items-center px-3 text-xs font-medium border-r truncate"
-                        style={{ width: FIXED_COL_WIDTHS.deviceName }}
-                        title={device.DeviceName}
-                      >
-                        {device.DeviceName}
-                      </div>
-                      <div
-                        className="flex items-center px-2 text-xs text-muted-foreground border-r"
-                        style={{ width: FIXED_COL_WIDTHS.mcm }}
-                      >
-                        {device.Mcm}
-                      </div>
-                      <div
-                        className="flex items-center px-2 text-xs text-muted-foreground border-r"
-                        style={{ width: FIXED_COL_WIDTHS.subsystem }}
-                      >
-                        {device.Subsystem}
-                      </div>
+          {/* ── Virtualized rows ──────────────────────────────── */}
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualizer.getVirtualItems().map(virtualRow => {
+              const device = devices[virtualRow.index]
+              const rowIdx = virtualRow.index
+              return (
+                <div
+                  key={device.id}
+                  className={cn(
+                    "absolute left-0 flex border-b",
+                    rowIdx % 2 === 0 ? "bg-card" : "bg-muted/20"
+                  )}
+                  style={{ top: virtualRow.start, height: ROW_HEIGHT, minWidth: totalContentWidth }}
+                >
+                  {/* Fixed columns — sticky left */}
+                  <div className="sticky left-0 z-10 flex shrink-0 bg-inherit">
+                    <div
+                      className="flex items-center px-3 text-xs font-medium border-r truncate"
+                      style={{ width: fixedW.deviceName }}
+                      title={device.DeviceName}
+                    >
+                      {device.DeviceName}
                     </div>
-
-                    {/* Scrollable data columns */}
-                    {columns.map(col => (
-                      <div
-                        key={col.id}
-                        className="flex items-center px-1 border-r shrink-0"
-                        style={{ width: getColumnWidth(col) }}
-                      >
-                        {renderCell(device, col)}
-                      </div>
-                    ))}
+                    <div
+                      className="flex items-center px-2 text-xs text-muted-foreground border-r"
+                      style={{ width: fixedW.mcm }}
+                    >
+                      {device.Mcm}
+                    </div>
+                    <div
+                      className="flex items-center px-2 text-xs text-muted-foreground border-r"
+                      style={{ width: fixedW.subsystem }}
+                    >
+                      {device.Subsystem}
+                    </div>
                   </div>
-                )
-              })}
-            </div>
+
+                  {/* Scrollable data columns */}
+                  {columns.map((col, colIdx) => (
+                    <div
+                      key={col.id}
+                      className="flex items-center px-1 border-r shrink-0"
+                      style={{ width: scrollColWidths[colIdx] }}
+                    >
+                      {renderCell(device, col)}
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
           </div>
         </div>
       </div>
+
+      {/* Context menu popover */}
+      {contextMenu && (
+        <div
+          className="fixed z-[100] bg-popover border rounded-lg shadow-lg p-3 min-w-[220px] max-w-[360px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center gap-2 mb-1.5">
+            <Badge variant="outline" className={cn("text-[10px] px-1.5", COL_TYPE_STYLES[contextMenu.col.ColumnType])}>
+              {contextMenu.col.ColumnType}
+            </Badge>
+            <span className="text-sm font-semibold truncate">{contextMenu.col.Name}</span>
+          </div>
+          {contextMenu.col.Description ? (
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {contextMenu.col.Description}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground italic">
+              {COL_TYPE_HINTS[contextMenu.col.ColumnType] || "Enter the required value"}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
