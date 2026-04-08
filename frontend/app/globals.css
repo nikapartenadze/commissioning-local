@@ -149,6 +149,27 @@
   background-color: hsl(var(--muted)) !important;
 }
 
+/* Disabled rows — faulted device or not installed */
+.row-disabled {
+  background-color: #d4d4d4 !important;
+  color: #737373 !important;
+  opacity: 0.8;
+}
+
+.row-disabled:hover {
+  background-color: #c4c4c4 !important;
+}
+
+.dark .row-disabled {
+  background-color: #262626 !important;
+  color: #737373 !important;
+  opacity: 0.6;
+}
+
+.dark .row-disabled:hover {
+  background-color: #333333 !important;
+}
+
 /* Drag-to-scroll */
 .grab-scroll {
   cursor: grab;
