@@ -1634,42 +1634,61 @@ export default function CommissioningPage() {
                       </button>
                     ))}
                   </div>
-                  {/* Mobile tab dropdown — fixed position to avoid overflow clipping */}
-                  <div className="md:hidden ml-auto relative">
-                    <button
-                      onClick={() => setMobileTabOpen(!mobileTabOpen)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[#C6941A] text-white text-sm font-semibold shadow"
-                    >
-                      {tabs.find(t => t.id === activeTab)?.label}
-                      <svg className={cn("w-3.5 h-3.5 transition-transform", mobileTabOpen && "rotate-180")} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
-                    </button>
-                    {mobileTabOpen && (
-                      <>
-                        <div className="fixed inset-0 z-[9998]" onClick={() => setMobileTabOpen(false)} />
-                        <div className="absolute top-full right-0 mt-1 z-[9999] bg-card border rounded-lg shadow-2xl min-w-[180px] py-1.5" onClick={e => e.stopPropagation()}>
-                          {tabs.map(tab => (
-                            <button
-                              key={tab.id}
-                              onClick={() => switchTab(tab.id, tab.hash)}
-                              className={cn(
-                                "w-full text-left px-4 py-3 text-sm font-medium transition-colors",
-                                activeTab === tab.id
-                                  ? "bg-[#C6941A]/15 text-[#C6941A] font-semibold border-l-2 border-[#C6941A]"
-                                  : "text-foreground hover:bg-muted"
-                              )}
-                            >
-                              {tab.label}
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
                 </>
               )
             })()}
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {/* Mobile tab dropdown — in the right actions area */}
+            {(() => {
+              const tabs: { id: typeof activeTab; label: string; hash: string }[] = [
+                { id: 'io', label: 'I/O', hash: '' },
+                { id: 'network', label: 'Network', hash: 'network' },
+                { id: 'estop', label: 'EStop', hash: 'estop' },
+                { id: 'safety', label: 'Safety', hash: 'safety' },
+                { id: 'l2', label: 'L2', hash: 'l2' },
+              ]
+              const switchTab = (tab: typeof activeTab, hash: string) => {
+                if (tab === 'io') {
+                  if (activeTab !== 'io' && wasTestingBeforeTabSwitch.current && !plcStatus.isTesting) handleToggleTesting()
+                } else {
+                  if (plcStatus.isTesting) { wasTestingBeforeTabSwitch.current = true; handleToggleTesting() }
+                }
+                setActiveTab(tab); window.location.hash = hash; setMobileTabOpen(false)
+              }
+              return (
+                <div className="relative md:hidden">
+                  <button
+                    onClick={() => setMobileTabOpen(!mobileTabOpen)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#C6941A] text-white text-xs font-semibold shadow"
+                  >
+                    {tabs.find(t => t.id === activeTab)?.label}
+                    <svg className={cn("w-3 h-3 transition-transform", mobileTabOpen && "rotate-180")} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                  </button>
+                  {mobileTabOpen && (
+                    <>
+                      <div className="fixed inset-0 z-[9998]" onClick={() => setMobileTabOpen(false)} />
+                      <div className="absolute top-full right-0 mt-1 z-[9999] bg-card border rounded-lg shadow-2xl min-w-[160px] py-1" onClick={e => e.stopPropagation()}>
+                        {tabs.map(tab => (
+                          <button
+                            key={tab.id}
+                            onClick={() => switchTab(tab.id, tab.hash)}
+                            className={cn(
+                              "w-full text-left px-4 py-2.5 text-sm font-medium transition-colors",
+                              activeTab === tab.id
+                                ? "bg-[#C6941A]/15 text-[#C6941A] font-semibold border-l-2 border-[#C6941A]"
+                                : "text-foreground hover:bg-muted"
+                            )}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )
+            })()}
             {process.env.NEXT_PUBLIC_BUILD_VERSION && (
               <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${process.env.NEXT_PUBLIC_BUILD_VERSION} • ${process.env.NEXT_PUBLIC_BUILD_HASH} • ${process.env.NEXT_PUBLIC_BUILD_DATE}`}>
                 {process.env.NEXT_PUBLIC_BUILD_VERSION}
