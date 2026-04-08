@@ -1584,7 +1584,7 @@ export default function CommissioningPage() {
         <div className="flex items-center justify-between px-2 sm:px-4 h-10 sm:h-10 bg-card border-b border-[#C6941A]/20 border-t-2 border-t-[#C6941A]">
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-visible md:overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo_autstand.svg" alt="Autstand" className="h-5 hidden sm:block" />
+            <img src="/logo_autstand.svg" alt="Autstand" className="h-4 sm:h-5 shrink-0" />
             <div className="h-5 w-px bg-border shrink-0 hidden sm:block" />
             <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
               {projectName && subsystemLabel
@@ -1639,7 +1639,14 @@ export default function CommissioningPage() {
             })()}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {/* Mobile tab dropdown — in the right actions area */}
+            {process.env.NEXT_PUBLIC_BUILD_VERSION && (
+              <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${process.env.NEXT_PUBLIC_BUILD_VERSION} • ${process.env.NEXT_PUBLIC_BUILD_HASH} • ${process.env.NEXT_PUBLIC_BUILD_DATE}`}>
+                {process.env.NEXT_PUBLIC_BUILD_VERSION}
+              </span>
+            )}
+            <UserMenu />
+            <ThemeToggle />
+            {/* Mobile tab dropdown — far right */}
             {(() => {
               const tabs: { id: typeof activeTab; label: string; hash: string }[] = [
                 { id: 'io', label: 'I/O', hash: '' },
@@ -1660,7 +1667,7 @@ export default function CommissioningPage() {
                 <div className="relative md:hidden">
                   <button
                     onClick={() => setMobileTabOpen(!mobileTabOpen)}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#C6941A] text-white text-xs font-semibold shadow"
+                    className="flex items-center gap-1 px-2 py-1 rounded bg-[#C6941A] text-white text-xs font-semibold shadow"
                   >
                     {tabs.find(t => t.id === activeTab)?.label}
                     <svg className={cn("w-3 h-3 transition-transform", mobileTabOpen && "rotate-180")} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
@@ -1689,13 +1696,6 @@ export default function CommissioningPage() {
                 </div>
               )
             })()}
-            {process.env.NEXT_PUBLIC_BUILD_VERSION && (
-              <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${process.env.NEXT_PUBLIC_BUILD_VERSION} • ${process.env.NEXT_PUBLIC_BUILD_HASH} • ${process.env.NEXT_PUBLIC_BUILD_DATE}`}>
-                {process.env.NEXT_PUBLIC_BUILD_VERSION}
-              </span>
-            )}
-            <UserMenu />
-            <ThemeToggle />
           </div>
         </div>
       </header>
