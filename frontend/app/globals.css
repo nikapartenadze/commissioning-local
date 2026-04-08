@@ -181,7 +181,6 @@
   user-select: none;
 }
 
-.grab-scroll:active *,
 .grab-scroll.dragging * {
   cursor: grabbing !important;
   user-select: none;
