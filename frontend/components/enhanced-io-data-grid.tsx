@@ -115,13 +115,15 @@ function useColumnWidths() {
     }
   }
 
-  // Full desktop: all columns
+  // Full desktop: use available width proportionally
+  const dataWidth = available * 0.85 // 85% for data columns, 15% for actions
   return {
-    description: 300, ioPoint: 240, state: 80,
-    deviceStatus: 70, installStatus: 70, result: 100,
-    timestamp: 160, comments: 200,
-    history: actionW, help: actionW, failed: actionW, clear: actionW,
-    mute: actionW, output: fireW,
+    description: Math.floor(dataWidth * 0.22), ioPoint: Math.floor(dataWidth * 0.17),
+    state: Math.floor(dataWidth * 0.06), deviceStatus: Math.floor(dataWidth * 0.05),
+    installStatus: Math.floor(dataWidth * 0.05), result: Math.floor(dataWidth * 0.07),
+    timestamp: Math.floor(dataWidth * 0.12), comments: Math.floor(dataWidth * 0.16),
+    history: 50, help: 50, failed: 50, clear: 50,
+    mute: 50, output: 60,
   }
 }
 
@@ -764,7 +766,7 @@ export function EnhancedIoDataGrid({
             )}
             {COLUMN_WIDTHS.deviceStatus > 0 && (
             <div
-              className="px-1 py-3 text-center text-[10px] font-bold text-foreground uppercase flex-shrink-0 truncate"
+              className="px-2 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 truncate"
               style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
             >
               Net
@@ -772,7 +774,7 @@ export function EnhancedIoDataGrid({
             )}
             {COLUMN_WIDTHS.installStatus > 0 && (
             <div
-              className="px-1 py-3 text-center text-[10px] font-bold text-foreground uppercase flex-shrink-0 truncate"
+              className="px-2 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 truncate"
               style={{ width: `${COLUMN_WIDTHS.installStatus}px` }}
             >
               Install
@@ -802,12 +804,12 @@ export function EnhancedIoDataGrid({
               Notes
             </div>
             )}
-            <div className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history}px` }}>Hist</div>
-            <div className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.help}px` }}>Help</div>
-            <div className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.failed}px` }}>Fail</div>
-            <div className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.clear}px` }}>Clear</div>
-            <div className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.mute}px` }}>Mute</div>
-            <div className="px-2 py-3 text-center text-xs font-bold text-muted-foreground uppercase flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.output}px` }}>Fire</div>
+            <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history}px` }}>Hist</div>
+            <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.help}px` }}>Help</div>
+            <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.failed}px` }}>Fail</div>
+            <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.clear}px` }}>Clear</div>
+            <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.mute}px` }}>Mute</div>
+            <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.output}px` }}>Fire</div>
           </div>
 
           {/* Virtual Body */}
