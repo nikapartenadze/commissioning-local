@@ -19,17 +19,7 @@ import express from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createApiRouter } from './routes';
 
-// ============================================================================
-// Startup Backup — back up database before any writes
-// ============================================================================
-
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createStartupBackup } = require('./lib/startup-backup');
-  createStartupBackup();
-} catch (e: any) {
-  console.error('[Backup] Startup backup module failed:', e.message);
-}
+// Startup backup is deferred to after server starts listening (see httpServer.listen callback)
 
 // ============================================================================
 // Load .env file manually (production mode doesn't have Vite env loader)
@@ -402,6 +392,17 @@ httpServer.on('upgrade', (req, socket, head) => {
 httpServer.listen(PORT, HOSTNAME, () => {
   console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
   console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
+
+  // Deferred startup backup — runs after server is listening so it doesn't block startup
+  setTimeout(() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createStartupBackup } = require('./lib/startup-backup');
+      createStartupBackup();
+    } catch (e: any) {
+      console.error('[Backup] Startup backup module failed:', e.message);
+    }
+  }, 0);
 });
 
 // ============================================================================
