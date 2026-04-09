@@ -47,18 +47,9 @@ export * from "./libplctag";
 // Re-export types
 export * from "./types";
 
-// Re-export WebSocket client
-export {
-  usePlcWebSocket,
-  PlcWebSocketClient,
-  type IOUpdate,
-  type ConfigurationEvent,
-  type CommentUpdate,
-  type NetworkStatusUpdate,
-  type ErrorEvent,
-  type WebSocketConnectionOptions,
-  type WebSocketConnection
-} from './websocket-client';
+// NOTE: websocket-client is a browser-only React hook — import it directly
+// from '@/lib/plc/websocket-client' in client components, NOT from this barrel.
+// Keeping it out of the barrel prevents the server bundle from pulling in React.
 
 // Re-export Tag Reader Service
 export {

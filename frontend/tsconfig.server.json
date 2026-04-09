@@ -26,6 +26,11 @@
     "src",
     ".next",
     "__tests__",
-    "types"
+    "types",
+    "lib/plc/websocket-client.ts",
+    "lib/signalr-client.ts",
+    "lib/user-context.tsx",
+    "lib/plc-communication.ts",
+    "components/**"
   ]
 }
