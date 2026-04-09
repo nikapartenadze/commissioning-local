@@ -1,21 +1,16 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server';
+import { Request, Response } from 'express'
 import { verifyAuth } from '@/lib/auth/middleware';
 
-export async function GET(request: NextRequest) {
-  const result = verifyAuth(request);
+export async function GET(req: Request, res: Response) {
+  const result = verifyAuth(req as any);
 
   if (!result.success) {
-    return NextResponse.json(
-      { message: result.error },
-      { status: result.status || 401 }
-    );
+    return res.status(result.status || 401).json({ message: result.error });
   }
 
   const user = result.user!;
 
-  return NextResponse.json({
+  return res.json({
     id: user.sub,
     fullName: user.fullName,
     isAdmin: user.isAdmin,

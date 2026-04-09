@@ -1,24 +1,10 @@
-export const dynamic = 'force-dynamic';
+import { Request, Response } from 'express'
 
-import { NextResponse } from 'next/server'
-
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   try {
-    // Simple health check endpoint
-    return NextResponse.json({ 
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      service: 'commissioning-sync-api'
-    })
+    return res.json({ status: 'healthy', timestamp: new Date().toISOString(), service: 'commissioning-sync-api' })
   } catch (error) {
     console.error('Health check error:', error)
-    return NextResponse.json(
-      { 
-        status: 'unhealthy',
-        error: 'Health check failed',
-        timestamp: new Date().toISOString()
-      },
-      { status: 500 }
-    )
+    return res.status(500).json({ status: 'unhealthy', error: 'Health check failed', timestamp: new Date().toISOString() })
   }
 }
