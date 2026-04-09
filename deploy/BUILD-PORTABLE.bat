@@ -172,6 +172,13 @@ for %%P in (
     acorn webpack-sources neo-async tapable
     @next\swc-win32-x64-msvc
     @types
+    react react-dom
+    recharts date-fns lucide-react
+    @radix-ui @tanstack
+    react-joyride react-markdown react-router react-router-dom
+    clsx tailwind-merge tailwindcss-animate
+    zustand class-variance-authority
+    rxjs popper.js @floating-ui
     prettier @babel .cache jiti
 ) do (
     if exist "%OUTPUT_DIR%\app\dist-server\node_modules\%%P" (
