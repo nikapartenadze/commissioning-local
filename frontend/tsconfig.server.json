@@ -24,6 +24,8 @@
     "node_modules",
     "dist",
     "src",
-    ".next"
+    ".next",
+    "__tests__",
+    "types"
   ]
 }
