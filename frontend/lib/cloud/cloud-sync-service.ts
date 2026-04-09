@@ -53,6 +53,7 @@ export class CloudSyncService {
     state: 'disconnected',
   }
   private offlineQueue: Map<number, PendingSync> = new Map()
+  private readonly MAX_OFFLINE_QUEUE = 5000
   private connectionStateListeners: Set<(status: CloudConnectionStatus) => void> = new Set()
 
   constructor(config: Partial<CloudSyncConfig> = {}) {
@@ -602,6 +603,11 @@ export class CloudSyncService {
       retryCount: 0,
     }
 
+    // Evict oldest if queue is full (items are also persisted in SQLite PendingSyncs)
+    if (this.offlineQueue.size >= this.MAX_OFFLINE_QUEUE) {
+      const oldest = this.offlineQueue.keys().next().value
+      if (oldest !== undefined) this.offlineQueue.delete(oldest)
+    }
     this.offlineQueue.set(update.id, pendingSync)
     log.info(`Added IO ${update.id} to offline queue with version ${update.version}`)
   }

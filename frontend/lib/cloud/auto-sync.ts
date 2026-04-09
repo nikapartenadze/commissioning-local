@@ -42,6 +42,7 @@ class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
   private networkStatusTimer: NodeJS.Timeout | null = null
   private estopStatusTimer: NodeJS.Timeout | null = null
+  private sseUnsubscribe: (() => void) | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
@@ -94,7 +95,8 @@ class AutoSyncService {
             subsystemId: config.subsystemId,
           })
           // When SSE (re)connects, push pending items + pull to catch missed events
-          sseClient.onConnect(() => {
+          if (this.sseUnsubscribe) this.sseUnsubscribe()
+          this.sseUnsubscribe = sseClient.onConnect(() => {
             console.log('[AutoSync] Cloud SSE connected — pushing pending + pulling to catch up')
             this.pushToCloud()
             this.pullFromCloud()
@@ -241,7 +243,7 @@ class AutoSyncService {
       // Also push pending change requests to cloud
       try {
         const pendingRequests = db.prepare(
-          'SELECT * FROM ChangeRequests WHERE Status = ? AND CloudId IS NULL'
+          'SELECT * FROM ChangeRequests WHERE Status = ? AND CloudId IS NULL LIMIT 100'
         ).all('pending') as any[]
 
         if (pendingRequests.length > 0 && remoteUrl) {
@@ -508,7 +510,7 @@ class AutoSyncService {
       // Pull back change request status updates from cloud
       try {
         const syncedRequests = db.prepare(
-          "SELECT * FROM ChangeRequests WHERE CloudId IS NOT NULL AND Status = 'synced'"
+          "SELECT * FROM ChangeRequests WHERE CloudId IS NOT NULL AND Status = 'synced' LIMIT 100"
         ).all() as any[]
 
         if (syncedRequests.length > 0 && remoteUrl) {

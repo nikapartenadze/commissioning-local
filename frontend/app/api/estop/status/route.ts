@@ -4,6 +4,12 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
 
+// Prepared statements — created once, reused per request
+const selectZones = db.prepare('SELECT * FROM EStopZones')
+const selectEpcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?')
+const selectIoPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?')
+const selectVfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?')
+
 // Track which tags we've already created handles for — reset on PLC reconnect
 let createdTags = new Set<string>()
 let failedTags = new Set<string>()
@@ -31,12 +37,12 @@ export async function GET() {
     // Query all zones with nested data
     let zones: any[]
     try {
-      zones = db.prepare('SELECT * FROM EStopZones').all() as any[]
+      zones = selectZones.all() as any[]
       for (const zone of zones) {
-        zone.epcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?').all(zone.id) as any[]
+        zone.epcs = selectEpcs.all(zone.id) as any[]
         for (const epc of zone.epcs) {
-          epc.ioPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?').all(epc.id) as any[]
-          epc.vfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?').all(epc.id) as any[]
+          epc.ioPoints = selectIoPoints.all(epc.id) as any[]
+          epc.vfds = selectVfds.all(epc.id) as any[]
           // Convert MustStop from 0/1 integer to boolean
           for (const vfd of epc.vfds) {
             vfd.mustStop = !!vfd.MustStop

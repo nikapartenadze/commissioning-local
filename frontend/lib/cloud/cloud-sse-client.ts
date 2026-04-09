@@ -31,15 +31,16 @@ class CloudSseClient {
   private _lastEventAt: Date | null = null
   private _intentionalDisconnect = false
   private recentPushedIds = new Set<number>() // Skip echoes of our own pushes
-  private _onConnectCallbacks: Array<() => void> = []
+  private _onConnectCallbacks = new Set<() => void>()
 
   constructor(config: CloudSseConfig) {
     this.config = config
   }
 
-  /** Register a callback to fire when SSE (re)connects — used to trigger immediate push */
-  onConnect(callback: () => void): void {
-    this._onConnectCallbacks.push(callback)
+  /** Register a callback to fire when SSE (re)connects. Returns unsubscribe function. */
+  onConnect(callback: () => void): () => void {
+    this._onConnectCallbacks.add(callback)
+    return () => { this._onConnectCallbacks.delete(callback) }
   }
 
   get connectionState(): SseConnectionState { return this._connectionState }
@@ -140,9 +141,9 @@ class CloudSseClient {
       console.log('[CloudSSE] Connected — receiving real-time updates')
 
       // Fire onConnect callbacks (e.g., trigger immediate pending sync push)
-      for (const cb of this._onConnectCallbacks) {
+      Array.from(this._onConnectCallbacks).forEach(cb => {
         try { cb() } catch {}
-      }
+      })
 
       // Parse SSE stream
       const reader = response.body.getReader()
