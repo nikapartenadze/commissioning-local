@@ -235,13 +235,9 @@ echo HOSTNAME=0.0.0.0
 echo NODE_ENV=production
 ) > "%OUTPUT_DIR%\app\dist-server\.env"
 
-REM ── Initialize database with schema ──
-echo   Initializing database...
-cd /d "%FRONTEND_DIR%"
-set "DATABASE_URL=file:%OUTPUT_DIR%\app\database.db"
-call !NPX_CMD! prisma db push --skip-generate
-if %errorlevel% neq 0 ( echo WARNING: Database init failed — will retry on first START & set "DATABASE_URL=" )
-set "DATABASE_URL="
+REM ── Database ──
+REM Schema is created automatically by db-sqlite.ts on first server start.
+REM No need for prisma db push — the Express server handles it.
 
 REM ══════════════════════════════════════════════════════════════
 REM  Generate runtime scripts that use bundled Node.js
