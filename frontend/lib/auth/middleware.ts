@@ -40,4 +40,4 @@ export function getAuthUser(_request: any): DecodedToken | null {
   return ANONYMOUS_USER;
 }
 
-export { DecodedToken };
+export type { DecodedToken };

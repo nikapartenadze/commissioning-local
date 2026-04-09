@@ -95,58 +95,65 @@
 }
 
 /* Row styling for test results - Bold industrial colors */
+
+/* ── Light mode ── */
 .row-passed {
   background-color: #22c55e !important;
   color: #052e16 !important;
+}
+.row-passed:hover {
+  background-color: #16a34a !important;
 }
 
 .row-failed {
   background-color: #ef4444 !important;
   color: #450a0a !important;
 }
-
-.row-default {
-  background-color: hsl(var(--card)) !important;
-}
-
-/* Hover states - subtle darkening */
-.row-passed:hover {
-  background-color: #16a34a !important;
-}
-
 .row-failed:hover {
   background-color: #dc2626 !important;
 }
 
+.row-default {
+  background-color: hsl(var(--card)) !important;
+}
 .row-default:hover {
   background-color: hsl(var(--muted)) !important;
 }
 
-/* Dark mode row colors */
+/* ── Dark mode — lighter text for contrast on darker backgrounds ── */
 .dark .row-passed {
   background-color: #166534 !important;
-  color: #bbf7d0 !important;
+  color: #dcfce7 !important;  /* green-100: light green, reads as "green = passed" */
+}
+.dark .row-passed:hover {
+  background-color: #15803d !important;
 }
 
 .dark .row-failed {
   background-color: #991b1b !important;
-  color: #fecaca !important;
+  color: #fee2e2 !important;  /* red-100: light red/pink, reads as "red = failed" */
+}
+.dark .row-failed:hover {
+  background-color: #b91c1c !important;
 }
 
 .dark .row-default {
   background-color: hsl(var(--card)) !important;
 }
-
-.dark .row-passed:hover {
-  background-color: #15803d !important;
-}
-
-.dark .row-failed:hover {
-  background-color: #b91c1c !important;
-}
-
 .dark .row-default:hover {
   background-color: hsl(var(--muted)) !important;
+}
+
+/* Secondary text on colored rows — slightly subdued but still readable */
+.row-passed .text-muted-foreground,
+.row-failed .text-muted-foreground {
+  color: inherit !important;
+  opacity: 0.7;
+}
+.dark .row-passed .text-muted-foreground,
+.dark .row-failed .text-muted-foreground {
+  color: inherit !important;
+  opacity: 0.75;
 }
 
 /* Disabled rows — faulted device or not installed */
