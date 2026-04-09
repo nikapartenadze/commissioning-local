@@ -1,54 +1,31 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
-import { requireAuth } from '@/lib/auth/middleware'
 
 /**
- * GET /api/ios/[id]/state
- * Get the current PLC state for an IO and broadcast to sync all clients
+ * GET /api/ios/:id/state
  */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const authError = requireAuth(request)
-  if (authError) return authError
-
+export async function GET(req: Request, res: Response) {
   try {
-    const { id } = await params
-    const ioId = parseInt(id, 10)
+    const ioId = parseInt(req.params.id as string, 10)
 
     if (isNaN(ioId)) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid IO ID' },
-        { status: 400 }
-      )
+      return res.status(400).json({ success: false, error: 'Invalid IO ID' })
     }
 
-    // Get the IO from database
     const io = db.prepare('SELECT id, Name, TagType FROM Ios WHERE id = ?').get(ioId) as Pick<Io, 'id' | 'Name' | 'TagType'> | undefined
 
     if (!io || !io.Name) {
-      return NextResponse.json(
-        { success: false, error: 'IO not found' },
-        { status: 404 }
-      )
+      return res.status(404).json({ success: false, error: 'IO not found' })
     }
 
-    // Get PLC client and read current state
     const client = getPlcClient()
 
     if (!client.isConnected) {
-      return NextResponse.json(
-        { success: false, error: 'PLC not connected' },
-        { status: 503 }
-      )
+      return res.status(503).json({ success: false, error: 'PLC not connected' })
     }
 
-    // Read current tag value (per-tag handle, multi-user safe)
     const readResult = client.readOutputBit({
       id: io.id,
       name: io.Name,
@@ -56,15 +33,11 @@ export async function GET(
     })
 
     if (!readResult.success) {
-      return NextResponse.json(
-        { success: false, error: readResult.error || 'Failed to read tag' },
-        { status: 500 }
-      )
+      return res.status(500).json({ success: false, error: readResult.error || 'Failed to read tag' })
     }
 
     const state = readResult.currentState
 
-    // Broadcast the state to all WebSocket clients to sync UIs
     try {
       await fetch(getWsBroadcastUrl(), {
         method: 'POST',
@@ -79,7 +52,7 @@ export async function GET(
       // WebSocket server might not be running
     }
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       ioId,
       state,
@@ -87,9 +60,9 @@ export async function GET(
     })
   } catch (error) {
     console.error('[IO State] Error:', error)
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Failed to read state' },
-      { status: 500 }
-    )
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to read state'
+    })
   }
 }
