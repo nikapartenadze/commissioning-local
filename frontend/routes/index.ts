@@ -71,6 +71,7 @@ import * as syncUpdate from '@/app/api/sync/update/route'
 import * as syncSubsystem from '@/app/api/sync/subsystem/[subsystemId]/route'
 import * as l2 from '@/app/api/l2/route'
 import * as l2Cell from '@/app/api/l2/cell/route'
+import * as l2Overview from '@/app/api/l2/overview/route'
 import * as punchlists from '@/app/api/punchlists/route'
 import * as projectIos from '@/app/api/project/[id]/ios/route'
 import * as projectHistory from '@/app/api/project/[id]/history/route'
@@ -200,6 +201,7 @@ export function createApiRouter(): Router {
 
   // ── L2 Functional Validation ───────────────────────────────────
   router.get('/api/l2', asyncHandler(l2.GET))
+  router.get('/api/l2/overview', asyncHandler(l2Overview.GET))
   router.post('/api/l2/cell', asyncHandler(l2Cell.POST))
 
   // ── Punchlists ─────────────────────────────────────────────────
