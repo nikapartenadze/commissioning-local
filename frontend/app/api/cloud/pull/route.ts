@@ -6,6 +6,66 @@ import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
 import type { CloudPullResponse } from '@/lib/cloud/types'
 
+// ── Prepared statements (created once at module load) ──────────────────
+const pullStmts = {
+  pendingCount: db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs'),
+  ioCount: db.prepare('SELECT COUNT(*) as cnt FROM Ios'),
+  getProject: db.prepare('SELECT id FROM Projects WHERE id = ?'),
+  insertProject: db.prepare('INSERT INTO Projects (id, Name) VALUES (?, ?)'),
+  getSubsystem: db.prepare('SELECT id FROM Subsystems WHERE id = ?'),
+  insertSubsystem: db.prepare('INSERT INTO Subsystems (id, ProjectId, Name) VALUES (?, ?, ?)'),
+  deleteAllIos: db.prepare('DELETE FROM Ios'),
+  upsertIo: db.prepare(`
+    INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus)
+    VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus)
+    ON CONFLICT(id) DO UPDATE SET
+      Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
+      Result = CASE WHEN Ios.Result IS NOT NULL AND Ios.Result != '' THEN Ios.Result ELSE @Result END,
+      Comments = CASE WHEN Ios.Comments IS NOT NULL AND Ios.Comments != '' THEN Ios.Comments ELSE @Comments END,
+      Timestamp = CASE WHEN Ios.Timestamp IS NOT NULL THEN Ios.Timestamp ELSE @Timestamp END,
+      TestedBy = CASE WHEN Ios.TestedBy IS NOT NULL AND Ios.TestedBy != '' THEN Ios.TestedBy ELSE @TestedBy END,
+      IoNumber = @IoNumber, InstallationStatus = @InstallationStatus,
+      InstallationPercent = @InstallationPercent, PoweredUp = @PoweredUp,
+      TagType = CASE WHEN @TagType IS NOT NULL THEN @TagType ELSE Ios.TagType END,
+      Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
+      NetworkDeviceName = @NetworkDeviceName,
+      PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END
+  `),
+  getIosWithoutDevice: db.prepare('SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL'),
+  updateDeviceName: db.prepare('UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?'),
+  deleteHistories: db.prepare('DELETE FROM TestHistories'),
+  insertHistory: db.prepare(`INSERT OR IGNORE INTO TestHistories (IoId, Result, TestedBy, Comments, FailureMode, State, Timestamp, Source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+  getUntypedIos: db.prepare('SELECT id, Description FROM Ios WHERE TagType IS NULL AND Description IS NOT NULL'),
+  updateTagType: db.prepare('UPDATE Ios SET TagType = ? WHERE id = ?'),
+  updateProjectName: db.prepare('UPDATE Projects SET Name = ? WHERE id = (SELECT ProjectId FROM Subsystems WHERE id = ?)'),
+  updateSubsystemName: db.prepare('UPDATE Subsystems SET Name = ? WHERE id = ?'),
+  // Network
+  deleteNetworkRings: db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?'),
+  insertRing: db.prepare('INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)'),
+  insertNode: db.prepare('INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+  insertPort: db.prepare('INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+  updatePortParent: db.prepare('UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?'),
+  // EStop
+  insertEStopZone: db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)'),
+  insertEpc: db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)'),
+  insertIoPoint: db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)'),
+  insertVfd: db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)'),
+  // Safety
+  insertSafetyZone: db.prepare('INSERT INTO SafetyZones (SubsystemId, BssTag, StoSignal, ZoneName) VALUES (?, ?, ?, ?)'),
+  insertSafetyDrive: db.prepare('INSERT INTO SafetyZoneDrives (ZoneId, DriveName) VALUES (?, ?)'),
+  // Punchlists
+  deletePunchlists: db.prepare('DELETE FROM Punchlists WHERE SubsystemId = ?'),
+  cleanOrphanPunchlistItems: db.prepare('DELETE FROM PunchlistItems WHERE PunchlistId NOT IN (SELECT id FROM Punchlists)'),
+  insertPunchlist: db.prepare('INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)'),
+  insertPunchlistItem: db.prepare('INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)'),
+  // L2
+  insertL2Sheet: db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)'),
+  insertL2Col: db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  insertL2Dev: db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+  insertL2Cell: db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+}
+
 /** Classify IO description into a tagType for diagnostic steps */
 function classifyDescription(desc: string | null): string | null {
   if (!desc) return null
@@ -66,7 +126,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
     // Check for un-synced data
-    const pendingRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }
+    const pendingRow = pullStmts.pendingCount.get() as { cnt: number }
     const pendingCount = pendingRow.cnt
     const forceFlag = body.force === true
     if (pendingCount > 0 && !forceFlag) {
@@ -140,7 +200,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
 
     // Safety check: warn if cloud has significantly fewer IOs than local
-    const localCountRow = db.prepare('SELECT COUNT(*) as cnt FROM Ios').get() as { cnt: number }
+    const localCountRow = pullStmts.ioCount.get() as { cnt: number }
     const localIoCount = localCountRow.cnt
     let pullWarning: string | undefined
     if (localIoCount > 0 && cloudIos.length < localIoCount) {
@@ -154,25 +214,25 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     // Upsert IOs in a transaction
     const result = db.transaction(() => {
       // Ensure default project exists
-      const existingProject = db.prepare('SELECT id FROM Projects WHERE id = ?').get(1)
+      const existingProject = pullStmts.getProject.get(1)
       if (!existingProject) {
-        db.prepare('INSERT INTO Projects (id, Name) VALUES (?, ?)').run(1, 'Default Project')
+        pullStmts.insertProject.run(1, 'Default Project')
       }
 
       // Ensure subsystem exists
-      const existingSubsystem = db.prepare('SELECT id FROM Subsystems WHERE id = ?').get(subsystemId)
+      const existingSubsystem = pullStmts.getSubsystem.get(subsystemId)
       if (!existingSubsystem) {
-        db.prepare('INSERT INTO Subsystems (id, ProjectId, Name) VALUES (?, ?, ?)').run(
+        pullStmts.insertSubsystem.run(
           subsystemId, 1, `Subsystem ${subsystemId}`
         )
       }
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
       // Clear ALL existing data before pulling fresh — ensures no stale data from previous subsystem
-      const beforeCount = (db.prepare('SELECT COUNT(*) as cnt FROM Ios').get() as any).cnt
-      const deleteResult = db.prepare('DELETE FROM Ios').run()
+      const beforeCount = (pullStmts.ioCount.get() as any).cnt
+      const deleteResult = pullStmts.deleteAllIos.run()
       console.log(`[CloudPull] DELETE FROM Ios: had ${beforeCount}, deleted ${deleteResult.changes}`)
-      const afterCount = (db.prepare('SELECT COUNT(*) as cnt FROM Ios').get() as any).cnt
+      const afterCount = (pullStmts.ioCount.get() as any).cnt
       console.log(`[CloudPull] After delete: ${afterCount} IOs remaining`)
       db.exec('DELETE FROM EStopIoPoints')
       db.exec('DELETE FROM EStopVfds')
@@ -193,10 +253,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log('[CloudPull] Cleared all related data (safety, network, punchlists, L2)')
 
       // Prepare the upsert statement
-      const upsertStmt = db.prepare(`
-        INSERT OR REPLACE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments, NetworkDeviceName, InstallationStatus, InstallationPercent, PoweredUp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
+      const upsertStmt = pullStmts.upsertIo
 
       let upsertedCount = 0
 
@@ -231,11 +288,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
       // Auto-populate networkDeviceName from tag name for any IOs still missing it
       // extractDeviceName imported at top of file
-      const iosWithoutDevice = db.prepare(
-        'SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL AND Name IS NOT NULL'
-      ).all() as { id: number; Name: string }[]
+      const iosWithoutDevice = pullStmts.getIosWithoutDevice.all() as { id: number; Name: string }[]
 
-      const updateDeviceStmt = db.prepare('UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?')
+      const updateDeviceStmt = pullStmts.updateDeviceName
       for (const io of iosWithoutDevice) {
         const deviceName = extractDeviceName(io.Name)
         if (deviceName) {
@@ -257,11 +312,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       try {
         db.transaction(() => {
           // Clear existing test histories for the pulled IOs
-          db.prepare('DELETE FROM TestHistories').run()
+          pullStmts.deleteHistories.run()
 
-          const insertHistoryStmt = db.prepare(
-            'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, TestedBy, State) VALUES (?, ?, ?, ?, ?, ?)'
-          )
+          const insertHistoryStmt = pullStmts.insertHistory
 
           for (const h of cloudHistories) {
             if (!h.ioId || !h.timestamp) continue
@@ -288,12 +341,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
     // Auto-assign tagType from descriptions for IOs that don't have one
     try {
-      const untyped = db.prepare(
-        'SELECT id, Description FROM Ios WHERE TagType IS NULL'
-      ).all() as { id: number; Description: string | null }[]
+      const untyped = pullStmts.getUntypedIos.all() as { id: number; Description: string | null }[]
 
       let assigned = 0
-      const updateTagTypeStmt = db.prepare('UPDATE Ios SET TagType = ? WHERE id = ?')
+      const updateTagTypeStmt = pullStmts.updateTagType
       for (const io of untyped) {
         const tagType = classifyDescription(io.Description)
         if (tagType) {
@@ -330,10 +381,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (infoRes.ok) {
         const info = await infoRes.json()
         if (info.projectName) {
-          db.prepare('UPDATE Projects SET Name = ? WHERE id = (SELECT ProjectId FROM Subsystems WHERE id = ?)').run(info.projectName, subsystemId)
+          pullStmts.updateProjectName.run(info.projectName, subsystemId)
         }
         if (info.subsystemName) {
-          db.prepare('UPDATE Subsystems SET Name = ? WHERE id = ?').run(info.subsystemName, subsystemId)
+          pullStmts.updateSubsystemName.run(info.subsystemName, subsystemId)
         }
         console.log(`[CloudPull] Updated names: ${info.projectName} / ${info.subsystemName}`)
       }
@@ -398,11 +449,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         console.log(`[CloudPull] Network data: success=${netData.success}, rings=${netData.rings?.length || 0}`)
         if (netData.success && netData.rings?.length > 0) {
           // Clear existing network data for this subsystem
-          db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?').run(subsystemId)
+          pullStmts.deleteNetworkRings.run(subsystemId)
 
-          const insertRingStmt = db.prepare('INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)')
-          const insertNodeStmt = db.prepare('INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          const insertPortStmt = db.prepare('INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          const insertRingStmt = pullStmts.insertRing
+          const insertNodeStmt = pullStmts.insertNode
+          const insertPortStmt = pullStmts.insertPort
 
           for (const ring of netData.rings) {
             const ringResult = insertRingStmt.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
@@ -425,7 +476,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
                   const childId = portIdMap.get(port.deviceName)
                   const parentId = portIdMap.get(port.parentDeviceName)
                   if (childId && parentId) {
-                    db.prepare('UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?').run(parentId, childId)
+                    pullStmts.updatePortParent.run(parentId, childId)
                   }
                 }
               }
@@ -449,10 +500,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         const estopData = await estopRes.json()
         if (estopData.success && estopData.zones?.length > 0) {
           // Already cleared at start of pull
-          const insertZoneStmt = db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)')
-          const insertEpcStmt = db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)')
-          const insertIoPointStmt = db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)')
-          const insertVfdStmt = db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)')
+          const insertZoneStmt = pullStmts.insertEStopZone
+          const insertEpcStmt = pullStmts.insertEpc
+          const insertIoPointStmt = pullStmts.insertIoPoint
+          const insertVfdStmt = pullStmts.insertVfd
 
           for (const zone of estopData.zones) {
             const zoneResult = insertZoneStmt.run(subsystemId, zone.name)
@@ -484,12 +535,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         if (safetyData.success) {
           // Already cleared at start of pull
 
-          const insertZoneStmt = db.prepare(
-            'INSERT INTO SafetyZones (SubsystemId, Name, StoSignal, BssTag) VALUES (?, ?, ?, ?)'
-          )
-          const insertDriveStmt = db.prepare(
-            'INSERT INTO SafetyZoneDrives (ZoneId, Name) VALUES (?, ?)'
-          )
+          const insertZoneStmt = pullStmts.insertSafetyZone
+          const insertDriveStmt = pullStmts.insertSafetyDrive
           for (const zone of (safetyData.zones || [])) {
             const zoneResult = insertZoneStmt.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
             const zoneId = zoneResult.lastInsertRowid
@@ -523,11 +570,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (plRes.ok) {
         const plData = await plRes.json()
         if (plData.punchlists && plData.punchlists.length > 0) {
-          db.prepare('DELETE FROM Punchlists WHERE SubsystemId = ?').run(subsystemId)
+          pullStmts.deletePunchlists.run(subsystemId)
           // Also clean up orphaned PunchlistItems for deleted punchlists
-          db.prepare('DELETE FROM PunchlistItems WHERE PunchlistId NOT IN (SELECT id FROM Punchlists)').run()
-          const insertPl = db.prepare('INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)')
-          const insertItem = db.prepare('INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)')
+          pullStmts.cleanOrphanPunchlistItems.run()
+          const insertPl = pullStmts.insertPunchlist
+          const insertItem = pullStmts.insertPunchlistItem
           for (const pl of plData.punchlists) {
             insertPl.run(pl.id, pl.name, subsystemId)
             for (const ioId of pl.ioIds) {
@@ -562,10 +609,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
           const columnIdMap = new Map<number, number>()
           const deviceIdMap = new Map<number, number>()
 
-          const insertSheet = db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)')
-          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          const insertCell = db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          const insertSheet = pullStmts.insertL2Sheet
+          const insertCol = pullStmts.insertL2Col
+          const insertDev = pullStmts.insertL2Dev
+          const insertCell = pullStmts.insertL2Cell
 
           for (const sheet of l2Data.sheets) {
             const sr = insertSheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
