@@ -23,7 +23,7 @@ if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
 REM ══════════════════════════════════════════════════════════════
 REM  Step 1: Ensure Node.js is available for building
 REM ══════════════════════════════════════════════════════════════
-echo [1/7] Checking Node.js for build...
+echo [1/8] Checking Node.js for build...
 
 where node >nul 2>nul
 if %errorlevel% equ 0 (
@@ -46,7 +46,7 @@ if %errorlevel% equ 0 (
 REM ══════════════════════════════════════════════════════════════
 REM  Step 2: Download libplctag DLL
 REM ══════════════════════════════════════════════════════════════
-echo [2/7] Checking libplctag native library...
+echo [2/8] Checking libplctag native library...
 
 if exist "%FRONTEND_DIR%\plctag.dll" (
     echo   plctag.dll found
@@ -78,35 +78,40 @@ if exist "%FRONTEND_DIR%\plctag.dll" (
 REM ══════════════════════════════════════════════════════════════
 REM  Step 3: Clean previous build
 REM ══════════════════════════════════════════════════════════════
-echo [3/7] Cleaning previous build...
+echo [3/8] Cleaning previous build...
 if exist "%OUTPUT_DIR%" rmdir /s /q "%OUTPUT_DIR%"
 mkdir "%OUTPUT_DIR%"
-REM Clear Next.js build cache to ensure fresh compilation
-if exist "%FRONTEND_DIR%\.next" rmdir /s /q "%FRONTEND_DIR%\.next"
+REM Clear previous build outputs to ensure fresh compilation
+if exist "%FRONTEND_DIR%\dist" rmdir /s /q "%FRONTEND_DIR%\dist"
+if exist "%FRONTEND_DIR%\dist-server" rmdir /s /q "%FRONTEND_DIR%\dist-server"
 
 REM ══════════════════════════════════════════════════════════════
 REM  Step 4: Install dependencies + Prisma
 REM ══════════════════════════════════════════════════════════════
-echo [4/7] Installing dependencies...
+echo [4/8] Installing dependencies...
 cd /d "%FRONTEND_DIR%"
 call !NPM_CMD! ci --production=false
 if %errorlevel% neq 0 ( echo ERROR: npm ci failed & pause & exit /b 1 )
 
-echo [5/7] Generating Prisma client...
+echo [5/8] Generating Prisma client...
 call !NPX_CMD! prisma generate
 if %errorlevel% neq 0 ( echo ERROR: Prisma generate failed & pause & exit /b 1 )
 
 REM ══════════════════════════════════════════════════════════════
-REM  Step 5: Build Next.js
+REM  Step 5: Build Vite (client) + TypeScript (server)
 REM ══════════════════════════════════════════════════════════════
-echo [6/7] Building Next.js (standalone)...
+echo [6/8] Building Vite client bundle...
 call !NPM_CMD! run build
-if %errorlevel% neq 0 ( echo ERROR: Build failed & pause & exit /b 1 )
+if %errorlevel% neq 0 ( echo ERROR: Vite build failed & pause & exit /b 1 )
+
+echo [7/8] Compiling Express server...
+call !NPM_CMD! run build:server
+if %errorlevel% neq 0 ( echo ERROR: Server compilation failed & pause & exit /b 1 )
 
 REM ══════════════════════════════════════════════════════════════
 REM  Step 6: Download portable Node.js for distribution
 REM ══════════════════════════════════════════════════════════════
-echo [7/7] Assembling portable distribution...
+echo [8/8] Assembling portable distribution...
 
 REM Download portable Node.js to bundle
 if not exist "%TEMP_DIR%\%NODE_DIR_NAME%\node.exe" (
@@ -123,30 +128,49 @@ copy "%TEMP_DIR%\%NODE_DIR_NAME%\npm.cmd" "%OUTPUT_DIR%\node\" >nul
 copy "%TEMP_DIR%\%NODE_DIR_NAME%\npx.cmd" "%OUTPUT_DIR%\node\" >nul
 xcopy /E /I /Q /Y "%TEMP_DIR%\%NODE_DIR_NAME%\node_modules" "%OUTPUT_DIR%\node\node_modules"
 
-REM ── Copy app ──
-echo   Copying application files...
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\.next\standalone" "%OUTPUT_DIR%\app"
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\.next\static" "%OUTPUT_DIR%\app\.next\static"
-if exist "%FRONTEND_DIR%\public" xcopy /E /I /Q /Y "%FRONTEND_DIR%\public" "%OUTPUT_DIR%\app\public"
+REM ── Copy compiled server (dist-server/) ──
+echo   Copying compiled server...
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\dist-server" "%OUTPUT_DIR%\app\dist-server"
+
+REM ── Copy Vite static output into dist-server/dist/ (server uses __dirname/dist) ──
+echo   Copying Vite client bundle...
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\dist" "%OUTPUT_DIR%\app\dist-server\dist"
+
+REM ── Copy startup-backup.js (plain JS, not compiled by tsc) ──
+if not exist "%OUTPUT_DIR%\app\dist-server\lib" mkdir "%OUTPUT_DIR%\app\dist-server\lib"
+copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\dist-server\lib\" >nul 2>nul
+
+REM ── Copy all node_modules (then strip dev-only packages) ──
+echo   Copying node_modules (this may take a moment)...
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules" "%OUTPUT_DIR%\app\dist-server\node_modules"
 
 REM Remove dev artifacts that shouldn't be in portable
-if exist "%OUTPUT_DIR%\app\backups" rmdir /s /q "%OUTPUT_DIR%\app\backups"
-if exist "%OUTPUT_DIR%\app\logs" rmdir /s /q "%OUTPUT_DIR%\app\logs"
-if exist "%OUTPUT_DIR%\app\test-instance-b" rmdir /s /q "%OUTPUT_DIR%\app\test-instance-b"
-del "%OUTPUT_DIR%\app\database.db" 2>nul
-del "%OUTPUT_DIR%\app\database.db-wal" 2>nul
-del "%OUTPUT_DIR%\app\database.db-shm" 2>nul
+if exist "%OUTPUT_DIR%\app\dist-server\backups" rmdir /s /q "%OUTPUT_DIR%\app\dist-server\backups"
+if exist "%OUTPUT_DIR%\app\dist-server\logs" rmdir /s /q "%OUTPUT_DIR%\app\dist-server\logs"
+del "%OUTPUT_DIR%\app\dist-server\database.db" 2>nul
+del "%OUTPUT_DIR%\app\dist-server\database.db-wal" 2>nul
+del "%OUTPUT_DIR%\app\dist-server\database.db-shm" 2>nul
 
-REM ── Strip build-only packages from standalone (saves ~60-80MB disk + RAM) ──
+REM ── Strip build-only packages (saves ~100MB+ disk + RAM) ──
 echo   Stripping build-only packages...
 for %%P in (
     typescript
     @typescript-eslint
-    eslint eslint-config-next
+    eslint eslint-scope eslint-visitor-keys
     tailwindcss postcss autoprefixer
     prisma
-    webpack terser terser-webpack-plugin
     @esbuild esbuild
+    @swc
+    @next next
+    caniuse-lite
+    @remotion remotion
+    playwright playwright-core
+    vite @vitejs
+    concurrently
+    tsx
+    vitest
+    @vitest
+    webpack terser terser-webpack-plugin
     @webassemblyjs
     watchpack
     jest-worker
@@ -154,33 +178,21 @@ for %%P in (
     webpack-sources
     neo-async
     tapable
-    @swc
     @next\swc-win32-x64-msvc
-    caniuse-lite
-    @remotion remotion
-    playwright playwright-core
+    react react-dom
+    @types
 ) do (
-    if exist "%OUTPUT_DIR%\app\node_modules\%%P" (
-        rmdir /s /q "%OUTPUT_DIR%\app\node_modules\%%P" 2>nul
+    if exist "%OUTPUT_DIR%\app\dist-server\node_modules\%%P" (
+        rmdir /s /q "%OUTPUT_DIR%\app\dist-server\node_modules\%%P" 2>nul
     )
 )
 
-REM Preserve standalone server before overwriting with custom server
-if exist "%OUTPUT_DIR%\app\server.js" (
-    copy "%OUTPUT_DIR%\app\server.js" "%OUTPUT_DIR%\app\next-server.js" >nul
-)
-
-REM Production server (WebSocket server is merged in)
-copy "%FRONTEND_DIR%\server.js" "%OUTPUT_DIR%\app\" >nul
-
-REM PLC native library
+REM PLC native library (at app/ level where cwd is set + inside dist-server/ for __dirname search)
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\" >nul
+copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\dist-server\" >nul
 
-REM Prisma schema (kept for seed scripts, not used at runtime)
+REM Prisma schema (needed by @prisma/client at runtime)
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\prisma" "%OUTPUT_DIR%\app\prisma"
-
-REM ws module
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\ws" "%OUTPUT_DIR%\app\node_modules\ws"
 
 REM better-sqlite3 (native module — must be built for bundled Node.js ABI)
 echo   Installing better-sqlite3 for Node.js %NODE_VER%...
@@ -199,27 +211,16 @@ REM Verify it works with bundled Node
 "%PORTABLE_NODE%" -e "require('better-sqlite3')" 2>nul
 if %errorlevel% neq 0 (
     echo   WARNING: better-sqlite3 build failed for Node.js %NODE_VER% — copying from dev...
-    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\node_modules\better-sqlite3"
+    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\dist-server\node_modules\better-sqlite3"
 ) else (
     echo   better-sqlite3 compiled successfully for Node.js %NODE_VER%
-    xcopy /E /I /Q /Y "%TEMP_DIR%\sqlite-build\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\node_modules\better-sqlite3"
+    xcopy /E /I /Q /Y "%TEMP_DIR%\sqlite-build\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\dist-server\node_modules\better-sqlite3"
 )
 popd
 REM Copy bindings dependency (needed by better-sqlite3 to find .node file)
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\bindings" "%OUTPUT_DIR%\app\node_modules\bindings"
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\file-uri-to-path" "%OUTPUT_DIR%\app\node_modules\file-uri-to-path" 2>nul
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\bindings" "%OUTPUT_DIR%\app\dist-server\node_modules\bindings"
+xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\file-uri-to-path" "%OUTPUT_DIR%\app\dist-server\node_modules\file-uri-to-path" 2>nul
 rmdir /s /q "%TEMP_DIR%\sqlite-build" 2>nul
-
-REM http-proxy module (for standalone WebSocket upgrade proxy)
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\http-proxy" "%OUTPUT_DIR%\app\node_modules\http-proxy"
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\eventemitter3" "%OUTPUT_DIR%\app\node_modules\eventemitter3" 2>nul
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\requires-port" "%OUTPUT_DIR%\app\node_modules\requires-port" 2>nul
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\follow-redirects" "%OUTPUT_DIR%\app\node_modules\follow-redirects" 2>nul
-
-REM Startup backup module
-copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\lib\" 2>nul
-if not exist "%OUTPUT_DIR%\app\lib" mkdir "%OUTPUT_DIR%\app\lib"
-copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\lib\" 2>nul
 
 REM Seed scripts
 copy "%FRONTEND_DIR%\prisma\seed-diagnostics.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
@@ -230,14 +231,14 @@ copy "%PROJECT_DIR%\TEST-PLAN.xlsx" "%OUTPUT_DIR%\" 2>nul
 copy "%PROJECT_DIR%\TEST-PLAN.html" "%OUTPUT_DIR%\" 2>nul
 copy "%PROJECT_DIR%\TEST-PLAN.md" "%OUTPUT_DIR%\" 2>nul
 
-REM ── Create .env ──
+REM ── Create .env (inside dist-server/ where server-express.js reads it) ──
 (
 echo DATABASE_URL=file:../database.db
 echo JWT_SECRET_KEY=io-checkout-%RANDOM%%RANDOM%%RANDOM%
 echo PORT=3000
 echo HOSTNAME=0.0.0.0
 echo NODE_ENV=production
-) > "%OUTPUT_DIR%\app\.env"
+) > "%OUTPUT_DIR%\app\dist-server\.env"
 
 REM ── Initialize database with schema ──
 echo   Initializing database...
@@ -301,7 +302,7 @@ echo echo   Press Ctrl+C to stop.
 echo echo ============================================================
 echo.
 echo cd /d "%%APP%%"
-echo "%%NODE%%" --max-old-space-size=256 --optimize-for-size server.js
+echo "%%NODE%%" --max-old-space-size=256 --optimize-for-size dist-server\server-express.js
 echo echo.
 echo echo Server stopped unexpectedly.
 echo pause
