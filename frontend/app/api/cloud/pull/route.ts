@@ -5,58 +5,68 @@ import { createBackup } from '@/lib/db/backup'
 import type { CloudPullResponse } from '@/lib/cloud/types'
 
 // ── Prepared statements (created once at module load) ──────────────────
-const pullStmts = {
-  pendingCount: db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs'),
-  ioCount: db.prepare('SELECT COUNT(*) as cnt FROM Ios'),
-  getProject: db.prepare('SELECT id FROM Projects WHERE id = ?'),
-  insertProject: db.prepare('INSERT INTO Projects (id, Name) VALUES (?, ?)'),
-  getSubsystem: db.prepare('SELECT id FROM Subsystems WHERE id = ?'),
-  insertSubsystem: db.prepare('INSERT INTO Subsystems (id, ProjectId, Name) VALUES (?, ?, ?)'),
-  deleteAllIos: db.prepare('DELETE FROM Ios'),
-  upsertIo: db.prepare(`
-    INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus)
-    VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus)
-    ON CONFLICT(id) DO UPDATE SET
-      Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
-      Result = CASE WHEN Ios.Result IS NOT NULL AND Ios.Result != '' THEN Ios.Result ELSE @Result END,
-      Comments = CASE WHEN Ios.Comments IS NOT NULL AND Ios.Comments != '' THEN Ios.Comments ELSE @Comments END,
-      Timestamp = CASE WHEN Ios.Timestamp IS NOT NULL THEN Ios.Timestamp ELSE @Timestamp END,
-      TestedBy = CASE WHEN Ios.TestedBy IS NOT NULL AND Ios.TestedBy != '' THEN Ios.TestedBy ELSE @TestedBy END,
-      IoNumber = @IoNumber, InstallationStatus = @InstallationStatus,
-      InstallationPercent = @InstallationPercent, PoweredUp = @PoweredUp,
-      TagType = CASE WHEN @TagType IS NOT NULL THEN @TagType ELSE Ios.TagType END,
-      Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
-      NetworkDeviceName = @NetworkDeviceName,
-      PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END
-  `),
-  getIosWithoutDevice: db.prepare('SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL'),
-  updateDeviceName: db.prepare('UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?'),
-  deleteHistories: db.prepare('DELETE FROM TestHistories'),
-  insertHistory: db.prepare(`INSERT OR IGNORE INTO TestHistories (IoId, Result, TestedBy, Comments, FailureMode, State, Timestamp, Source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
-  getUntypedIos: db.prepare('SELECT id, Description FROM Ios WHERE TagType IS NULL AND Description IS NOT NULL'),
-  updateTagType: db.prepare('UPDATE Ios SET TagType = ? WHERE id = ?'),
-  updateProjectName: db.prepare('UPDATE Projects SET Name = ? WHERE id = (SELECT ProjectId FROM Subsystems WHERE id = ?)'),
-  updateSubsystemName: db.prepare('UPDATE Subsystems SET Name = ? WHERE id = ?'),
-  deleteNetworkRings: db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?'),
-  insertRing: db.prepare('INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)'),
-  insertNode: db.prepare('INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
-  insertPort: db.prepare('INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
-  updatePortParent: db.prepare('UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?'),
-  insertEStopZone: db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)'),
-  insertEpc: db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)'),
-  insertIoPoint: db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)'),
-  insertVfd: db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)'),
-  insertSafetyZone: db.prepare('INSERT INTO SafetyZones (SubsystemId, BssTag, StoSignal, ZoneName) VALUES (?, ?, ?, ?)'),
-  insertSafetyDrive: db.prepare('INSERT INTO SafetyZoneDrives (ZoneId, DriveName) VALUES (?, ?)'),
-  deletePunchlists: db.prepare('DELETE FROM Punchlists WHERE SubsystemId = ?'),
-  cleanOrphanPunchlistItems: db.prepare('DELETE FROM PunchlistItems WHERE PunchlistId NOT IN (SELECT id FROM Punchlists)'),
-  insertPunchlist: db.prepare('INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)'),
-  insertPunchlistItem: db.prepare('INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)'),
-  insertL2Sheet: db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)'),
-  insertL2Col: db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)'),
-  insertL2Dev: db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
-  insertL2Cell: db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+// Lazy-initialized prepared statements — created on first use, not at import time.
+// This prevents crashes when the database schema is older than the SQL expects
+// (e.g., dev databases missing columns that production databases have).
+let _pullStmts: ReturnType<typeof createPullStmts> | null = null
+function getPullStmts() {
+  if (!_pullStmts) _pullStmts = createPullStmts()
+  return _pullStmts
+}
+function createPullStmts() {
+  return {
+    pendingCount: db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs'),
+    ioCount: db.prepare('SELECT COUNT(*) as cnt FROM Ios'),
+    getProject: db.prepare('SELECT id FROM Projects WHERE id = ?'),
+    insertProject: db.prepare('INSERT INTO Projects (id, Name) VALUES (?, ?)'),
+    getSubsystem: db.prepare('SELECT id FROM Subsystems WHERE id = ?'),
+    insertSubsystem: db.prepare('INSERT INTO Subsystems (id, ProjectId, Name) VALUES (?, ?, ?)'),
+    deleteAllIos: db.prepare('DELETE FROM Ios'),
+    upsertIo: db.prepare(`
+      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus)
+      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus)
+      ON CONFLICT(id) DO UPDATE SET
+        Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
+        Result = CASE WHEN Ios.Result IS NOT NULL AND Ios.Result != '' THEN Ios.Result ELSE @Result END,
+        Comments = CASE WHEN Ios.Comments IS NOT NULL AND Ios.Comments != '' THEN Ios.Comments ELSE @Comments END,
+        Timestamp = CASE WHEN Ios.Timestamp IS NOT NULL THEN Ios.Timestamp ELSE @Timestamp END,
+        TestedBy = CASE WHEN Ios.TestedBy IS NOT NULL AND Ios.TestedBy != '' THEN Ios.TestedBy ELSE @TestedBy END,
+        IoNumber = @IoNumber, InstallationStatus = @InstallationStatus,
+        InstallationPercent = @InstallationPercent, PoweredUp = @PoweredUp,
+        TagType = CASE WHEN @TagType IS NOT NULL THEN @TagType ELSE Ios.TagType END,
+        Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
+        NetworkDeviceName = @NetworkDeviceName,
+        PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END
+    `),
+    getIosWithoutDevice: db.prepare('SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL'),
+    updateDeviceName: db.prepare('UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?'),
+    deleteHistories: db.prepare('DELETE FROM TestHistories'),
+    insertHistory: db.prepare(`INSERT OR IGNORE INTO TestHistories (IoId, Result, TestedBy, Comments, FailureMode, State, Timestamp, Source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+    getUntypedIos: db.prepare('SELECT id, Description FROM Ios WHERE TagType IS NULL AND Description IS NOT NULL'),
+    updateTagType: db.prepare('UPDATE Ios SET TagType = ? WHERE id = ?'),
+    updateProjectName: db.prepare('UPDATE Projects SET Name = ? WHERE id = (SELECT ProjectId FROM Subsystems WHERE id = ?)'),
+    updateSubsystemName: db.prepare('UPDATE Subsystems SET Name = ? WHERE id = ?'),
+    deleteNetworkRings: db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?'),
+    insertRing: db.prepare('INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)'),
+    insertNode: db.prepare('INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+    insertPort: db.prepare('INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+    updatePortParent: db.prepare('UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?'),
+    insertEStopZone: db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)'),
+    insertEpc: db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)'),
+    insertIoPoint: db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)'),
+    insertVfd: db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)'),
+    insertSafetyZone: db.prepare('INSERT INTO SafetyZones (SubsystemId, BssTag, StoSignal, ZoneName) VALUES (?, ?, ?, ?)'),
+    insertSafetyDrive: db.prepare('INSERT INTO SafetyZoneDrives (ZoneId, DriveName) VALUES (?, ?)'),
+    deletePunchlists: db.prepare('DELETE FROM Punchlists WHERE SubsystemId = ?'),
+    cleanOrphanPunchlistItems: db.prepare('DELETE FROM PunchlistItems WHERE PunchlistId NOT IN (SELECT id FROM Punchlists)'),
+    insertPunchlist: db.prepare('INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)'),
+    insertPunchlistItem: db.prepare('INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)'),
+    insertL2Sheet: db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)'),
+    insertL2Col: db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+    insertL2Dev: db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+    insertL2Cell: db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  }
 }
 
 function classifyDescription(desc: string | null): string | null {
@@ -106,7 +116,7 @@ export async function POST(req: Request, res: Response) {
     console.log(`[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
-    const pendingRow = pullStmts.pendingCount.get() as { cnt: number }
+    const pendingRow = getPullStmts().pendingCount.get() as { cnt: number }
     const pendingCount = pendingRow.cnt
     const forceFlag = body.force === true
     if (pendingCount > 0 && !forceFlag) {
@@ -169,7 +179,7 @@ export async function POST(req: Request, res: Response) {
 
     console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
 
-    const localCountRow = pullStmts.ioCount.get() as { cnt: number }
+    const localCountRow = getPullStmts().ioCount.get() as { cnt: number }
     const localIoCount = localCountRow.cnt
     let pullWarning: string | undefined
     if (localIoCount > 0 && cloudIos.length < localIoCount) {
@@ -181,21 +191,21 @@ export async function POST(req: Request, res: Response) {
     }
 
     const result = db.transaction(() => {
-      const existingProject = pullStmts.getProject.get(1)
+      const existingProject = getPullStmts().getProject.get(1)
       if (!existingProject) {
-        pullStmts.insertProject.run(1, 'Default Project')
+        getPullStmts().insertProject.run(1, 'Default Project')
       }
 
-      const existingSubsystem = pullStmts.getSubsystem.get(subsystemId)
+      const existingSubsystem = getPullStmts().getSubsystem.get(subsystemId)
       if (!existingSubsystem) {
-        pullStmts.insertSubsystem.run(subsystemId, 1, `Subsystem ${subsystemId}`)
+        getPullStmts().insertSubsystem.run(subsystemId, 1, `Subsystem ${subsystemId}`)
       }
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
-      const beforeCount = (pullStmts.ioCount.get() as any).cnt
-      const deleteResult = pullStmts.deleteAllIos.run()
+      const beforeCount = (getPullStmts().ioCount.get() as any).cnt
+      const deleteResult = getPullStmts().deleteAllIos.run()
       console.log(`[CloudPull] DELETE FROM Ios: had ${beforeCount}, deleted ${deleteResult.changes}`)
-      const afterCount = (pullStmts.ioCount.get() as any).cnt
+      const afterCount = (getPullStmts().ioCount.get() as any).cnt
       console.log(`[CloudPull] After delete: ${afterCount} IOs remaining`)
       db.exec('DELETE FROM EStopIoPoints')
       db.exec('DELETE FROM EStopVfds')
@@ -215,7 +225,7 @@ export async function POST(req: Request, res: Response) {
       db.exec('DELETE FROM L2Sheets')
       console.log('[CloudPull] Cleared all related data (safety, network, punchlists, L2)')
 
-      const upsertStmt = pullStmts.upsertIo
+      const upsertStmt = getPullStmts().upsertIo
       let upsertedCount = 0
 
       for (const cloudIo of cloudIos) {
@@ -247,8 +257,8 @@ export async function POST(req: Request, res: Response) {
         }
       }
 
-      const iosWithoutDevice = pullStmts.getIosWithoutDevice.all() as { id: number; Name: string }[]
-      const updateDeviceStmt = pullStmts.updateDeviceName
+      const iosWithoutDevice = getPullStmts().getIosWithoutDevice.all() as { id: number; Name: string }[]
+      const updateDeviceStmt = getPullStmts().updateDeviceName
       for (const io of iosWithoutDevice) {
         const deviceName = extractDeviceName(io.Name)
         if (deviceName) {
@@ -266,8 +276,8 @@ export async function POST(req: Request, res: Response) {
     if (cloudHistories.length > 0) {
       try {
         db.transaction(() => {
-          pullStmts.deleteHistories.run()
-          const insertHistoryStmt = pullStmts.insertHistory
+          getPullStmts().deleteHistories.run()
+          const insertHistoryStmt = getPullStmts().insertHistory
 
           for (const h of cloudHistories) {
             if (!h.ioId || !h.timestamp) continue
@@ -293,9 +303,9 @@ export async function POST(req: Request, res: Response) {
     }
 
     try {
-      const untyped = pullStmts.getUntypedIos.all() as { id: number; Description: string | null }[]
+      const untyped = getPullStmts().getUntypedIos.all() as { id: number; Description: string | null }[]
       let assigned = 0
-      const updateTagTypeStmt = pullStmts.updateTagType
+      const updateTagTypeStmt = getPullStmts().updateTagType
       for (const io of untyped) {
         const tagType = classifyDescription(io.Description)
         if (tagType) {
@@ -330,10 +340,10 @@ export async function POST(req: Request, res: Response) {
       if (infoRes.ok) {
         const info = await infoRes.json()
         if (info.projectName) {
-          pullStmts.updateProjectName.run(info.projectName, subsystemId)
+          getPullStmts().updateProjectName.run(info.projectName, subsystemId)
         }
         if (info.subsystemName) {
-          pullStmts.updateSubsystemName.run(info.subsystemName, subsystemId)
+          getPullStmts().updateSubsystemName.run(info.subsystemName, subsystemId)
         }
         console.log(`[CloudPull] Updated names: ${info.projectName} / ${info.subsystemName}`)
       }
@@ -393,19 +403,19 @@ export async function POST(req: Request, res: Response) {
         const netData = await netRes.json()
         console.log(`[CloudPull] Network data: success=${netData.success}, rings=${netData.rings?.length || 0}`)
         if (netData.success && netData.rings?.length > 0) {
-          pullStmts.deleteNetworkRings.run(subsystemId)
+          getPullStmts().deleteNetworkRings.run(subsystemId)
 
           for (const ring of netData.rings) {
-            const ringResult = pullStmts.insertRing.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
+            const ringResult = getPullStmts().insertRing.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
             const ringId = ringResult.lastInsertRowid
 
             for (const node of (ring.nodes || [])) {
-              const nodeResult = pullStmts.insertNode.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
+              const nodeResult = getPullStmts().insertNode.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
               const nodeId = nodeResult.lastInsertRowid
 
               const portIdMap = new Map<string, number>()
               for (const port of (node.ports || [])) {
-                const portResult = pullStmts.insertPort.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceType || null, port.deviceIp || null, port.statusTag || null, null)
+                const portResult = getPullStmts().insertPort.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceType || null, port.deviceIp || null, port.statusTag || null, null)
                 if (port.deviceName) portIdMap.set(port.deviceName, Number(portResult.lastInsertRowid))
               }
 
@@ -414,7 +424,7 @@ export async function POST(req: Request, res: Response) {
                   const childId = portIdMap.get(port.deviceName)
                   const parentId = portIdMap.get(port.parentDeviceName)
                   if (childId && parentId) {
-                    pullStmts.updatePortParent.run(parentId, childId)
+                    getPullStmts().updatePortParent.run(parentId, childId)
                   }
                 }
               }
@@ -438,16 +448,16 @@ export async function POST(req: Request, res: Response) {
         const estopData = await estopRes.json()
         if (estopData.success && estopData.zones?.length > 0) {
           for (const zone of estopData.zones) {
-            const zoneResult = pullStmts.insertEStopZone.run(subsystemId, zone.name)
+            const zoneResult = getPullStmts().insertEStopZone.run(subsystemId, zone.name)
             const zoneId = zoneResult.lastInsertRowid
             for (const epc of (zone.epcs || [])) {
-              const epcResult = pullStmts.insertEpc.run(zoneId, epc.name, epc.checkTag)
+              const epcResult = getPullStmts().insertEpc.run(zoneId, epc.name, epc.checkTag)
               const epcId = epcResult.lastInsertRowid
               for (const io of (epc.ioPoints || [])) {
-                pullStmts.insertIoPoint.run(epcId, io.tag)
+                getPullStmts().insertIoPoint.run(epcId, io.tag)
               }
               for (const vfd of (epc.vfds || [])) {
-                pullStmts.insertVfd.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
+                getPullStmts().insertVfd.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
               }
             }
           }
@@ -466,10 +476,10 @@ export async function POST(req: Request, res: Response) {
         const safetyData = await safetyRes.json()
         if (safetyData.success) {
           for (const zone of (safetyData.zones || [])) {
-            const zoneResult = pullStmts.insertSafetyZone.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
+            const zoneResult = getPullStmts().insertSafetyZone.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
             const zoneId = zoneResult.lastInsertRowid
             for (const d of (zone.drives || [])) {
-              pullStmts.insertSafetyDrive.run(zoneId, d.name)
+              getPullStmts().insertSafetyDrive.run(zoneId, d.name)
             }
           }
 
@@ -498,12 +508,12 @@ export async function POST(req: Request, res: Response) {
       if (plRes.ok) {
         const plData = await plRes.json()
         if (plData.punchlists && plData.punchlists.length > 0) {
-          pullStmts.deletePunchlists.run(subsystemId)
-          pullStmts.cleanOrphanPunchlistItems.run()
+          getPullStmts().deletePunchlists.run(subsystemId)
+          getPullStmts().cleanOrphanPunchlistItems.run()
           for (const pl of plData.punchlists) {
-            pullStmts.insertPunchlist.run(pl.id, pl.name, subsystemId)
+            getPullStmts().insertPunchlist.run(pl.id, pl.name, subsystemId)
             for (const ioId of pl.ioIds) {
-              pullStmts.insertPunchlistItem.run(pl.id, ioId)
+              getPullStmts().insertPunchlistItem.run(pl.id, ioId)
             }
             punchlistsPulled++
           }
@@ -534,11 +544,11 @@ export async function POST(req: Request, res: Response) {
           const deviceIdMap = new Map<number, number>()
 
           for (const sheet of l2Data.sheets) {
-            const sr = pullStmts.insertL2Sheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
+            const sr = getPullStmts().insertL2Sheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
             sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
             if (sheet.columns) {
               for (const col of sheet.columns) {
-                const cr = pullStmts.insertL2Col.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
+                const cr = getPullStmts().insertL2Col.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
                 columnIdMap.set(col.id, cr.lastInsertRowid as number)
               }
             }
@@ -546,14 +556,14 @@ export async function POST(req: Request, res: Response) {
           for (const dev of (l2Data.devices || [])) {
             const localSheetId = sheetIdMap.get(dev.sheetId)
             if (!localSheetId) continue
-            const dr = pullStmts.insertL2Dev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
+            const dr = getPullStmts().insertL2Dev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
             deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
             l2Pulled++
           }
           for (const cell of (l2Data.cellValues || [])) {
             const ld = deviceIdMap.get(cell.deviceId)
             const lc = columnIdMap.get(cell.columnId)
-            if (ld && lc) pullStmts.insertL2Cell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
+            if (ld && lc) getPullStmts().insertL2Cell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
           }
           console.log(`[CloudPull] Pulled L2 data: ${l2Data.sheets.length} sheets, ${l2Pulled} devices`)
         }
