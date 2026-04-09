@@ -1,6 +1,4 @@
-export const dynamic = 'force-dynamic';
-
-import { NextResponse } from 'next/server';
+import { Request, Response } from 'express'
 import { getPlcStatus, getPlcPerformanceStats } from '@/lib/plc-client-manager';
 import { configService } from '@/lib/config';
 import { db } from '@/lib/db-sqlite';
@@ -10,7 +8,6 @@ const globalForTesting = globalThis as unknown as {
   isTestingUsers: Set<string> | undefined;
 };
 
-// Try to get library status safely
 async function getLibraryStatus() {
   try {
     const plc = await import('@/lib/plc');
@@ -27,7 +24,7 @@ async function getLibraryStatus() {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   try {
     const status = getPlcStatus();
     const performanceStats = getPlcPerformanceStats();
@@ -35,7 +32,7 @@ export async function GET() {
     const ioCount = (db.prepare('SELECT COUNT(*) as count FROM Ios').get() as { count: number }).count;
     const libraryStatus = await getLibraryStatus();
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       connected: status.connected,
       plcConnected: status.connected,
@@ -48,7 +45,6 @@ export async function GET() {
             path: status.connectionConfig.path,
           }
         : null,
-      // Add fields expected by plc-config-dialog
       plcIp: status.connectionConfig?.ip || config.ip || '',
       plcPath: status.connectionConfig?.path || config.path || '1,0',
       subsystemId: config.subsystemId || '',
@@ -62,24 +58,21 @@ export async function GET() {
     });
   } catch (error) {
     console.error('PLC status error:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : 'Internal server error',
-        connected: false,
-        plcConnected: false,
-        status: 'error',
-        tagCount: 0,
-        totalIos: 0,
-        plcIp: '',
-        plcPath: '1,0',
-        subsystemId: '',
-        apiPassword: '',
-        remoteUrl: '',
-        isTesting: false,
-        isTestingUsers: [],
-      },
-      { status: 500 }
-    );
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+      connected: false,
+      plcConnected: false,
+      status: 'error',
+      tagCount: 0,
+      totalIos: 0,
+      plcIp: '',
+      plcPath: '1,0',
+      subsystemId: '',
+      apiPassword: '',
+      remoteUrl: '',
+      isTesting: false,
+      isTestingUsers: [],
+    });
   }
 }

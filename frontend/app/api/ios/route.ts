@@ -1,6 +1,4 @@
-export const dynamic = 'force-dynamic';
-
-import { NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db, ioToApi } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '@/lib/plc-client-manager'
@@ -9,12 +7,10 @@ import { getPlcTags } from '@/lib/plc-client-manager'
  * GET /api/ios
  * Returns all IOs with current PLC state
  */
-export async function GET(request: Request) {
+export async function GET(req: Request, res: Response) {
   try {
-    const { searchParams } = new URL(request.url)
-    const subsystemId = searchParams.get('subsystemId')
+    const subsystemId = req.query.subsystemId as string | undefined
 
-    // Fetch IOs from database
     let ios: Io[]
     if (subsystemId) {
       ios = db.prepare('SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC').all(parseInt(subsystemId)) as Io[]
@@ -22,18 +18,15 @@ export async function GET(request: Request) {
       ios = db.prepare('SELECT * FROM Ios ORDER BY "Order" ASC').all() as Io[]
     }
 
-    // Get current PLC states
     const { tags, count } = getPlcTags()
     console.log(`[IOs API] Got ${count} tags from PLC client`)
     const stateMap = new Map(tags.map(t => [t.id, t.state]))
 
-    // Get actual network device names from topology data
     const networkDevices = new Set(
       (db.prepare('SELECT DISTINCT DeviceName FROM NetworkPorts WHERE DeviceName IS NOT NULL').all() as { DeviceName: string }[])
         .map(r => r.DeviceName)
     )
 
-    // Merge PLC states with IO data
     const iosWithState = ios.map(io => {
       const deviceName = io.NetworkDeviceName
       return {
@@ -47,7 +40,6 @@ export async function GET(request: Request) {
       }
     })
 
-    // Get project and subsystem names for header
     let projectName: string | null = null
     let subsystemName: string | null = null
     const lookupSubId = subsystemId || (ios.length > 0 ? String(ios[0].SubsystemId) : null)
@@ -61,12 +53,9 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({ ios: iosWithState, projectName, subsystemName })
+    return res.json({ ios: iosWithState, projectName, subsystemName })
   } catch (error) {
     console.error('Error fetching IOs:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch IOs' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to fetch IOs' })
   }
 }

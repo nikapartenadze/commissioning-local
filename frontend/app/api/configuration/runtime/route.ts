@@ -1,13 +1,11 @@
-export const dynamic = 'force-dynamic';
-
-import { NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { configService } from '@/lib/config'
 
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   try {
     const config = await configService.getConfig()
 
-    return NextResponse.json({
+    return res.json({
       subsystemId: config.subsystemId || '',
       ip: config.ip || '',
       path: config.path || '1,0',
@@ -17,7 +15,7 @@ export async function GET() {
     })
   } catch (error) {
     console.error('Failed to load runtime config:', error)
-    return NextResponse.json({
+    return res.json({
       subsystemId: '',
       ip: '',
       path: '1,0',

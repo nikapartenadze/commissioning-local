@@ -1,6 +1,4 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server';
+import { Request, Response } from 'express'
 import { generateToken } from '@/lib/auth/jwt';
 import { verifyPin } from '@/lib/auth/password';
 import { db } from '@/lib/db-sqlite';
@@ -74,47 +72,37 @@ interface UserRow {
   LastUsedAt: string | null;
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(req: Request, res: Response) {
   try {
-    const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-      || request.headers.get('x-real-ip')
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+      || req.headers['x-real-ip'] as string
       || 'unknown';
 
     const rateLimit = checkRateLimit(clientIp);
 
     if (!rateLimit.allowed) {
       const retryAfter = Math.ceil((rateLimit.resetAt - Date.now()) / 1000);
-      return NextResponse.json(
-        { message: 'Too many login attempts. Please try again later.' },
-        {
-          status: 429,
-          headers: {
-            'Retry-After': retryAfter.toString(),
-            'X-RateLimit-Limit': RATE_LIMIT_MAX_ATTEMPTS.toString(),
-            'X-RateLimit-Remaining': '0',
-            'X-RateLimit-Reset': Math.ceil(rateLimit.resetAt / 1000).toString(),
-          },
-        }
-      );
+      return res
+        .status(429)
+        .set({
+          'Retry-After': retryAfter.toString(),
+          'X-RateLimit-Limit': RATE_LIMIT_MAX_ATTEMPTS.toString(),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': Math.ceil(rateLimit.resetAt / 1000).toString(),
+        })
+        .json({ message: 'Too many login attempts. Please try again later.' });
     }
 
-    let body: LoginRequest;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json(
-        { message: 'Invalid request body' },
-        { status: 400 }
-      );
+    const body: LoginRequest = req.body;
+
+    if (!body || !body.pin) {
+      return res.status(400).json({ message: 'Invalid request body' });
     }
 
     const { fullName, pin } = body;
 
     if (!pin?.trim()) {
-      return NextResponse.json(
-        { message: 'PIN is required' },
-        { status: 400 }
-      );
+      return res.status(400).json({ message: 'PIN is required' });
     }
 
     // Ensure default data exists on first login attempt
@@ -128,18 +116,12 @@ export async function POST(request: NextRequest) {
       const row = db.prepare('SELECT * FROM Users WHERE FullName = ?').get(fullName.trim()) as UserRow | undefined;
 
       if (!row || !row.IsActive) {
-        return NextResponse.json(
-          { message: 'Invalid credentials' },
-          { status: 401 }
-        );
+        return res.status(401).json({ message: 'Invalid credentials' });
       }
 
       const pinValid = await verifyPin(pin, row.Pin);
       if (!pinValid) {
-        return NextResponse.json(
-          { message: 'Invalid PIN' },
-          { status: 401 }
-        );
+        return res.status(401).json({ message: 'Invalid PIN' });
       }
 
       user = { id: row.id, fullName: row.FullName, isAdmin: !!row.IsAdmin, isActive: !!row.IsActive, pin: row.Pin };
@@ -156,10 +138,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (!user) {
-        return NextResponse.json(
-          { message: 'Invalid PIN' },
-          { status: 401 }
-        );
+        return res.status(401).json({ message: 'Invalid PIN' });
       }
     }
 
@@ -177,27 +156,21 @@ export async function POST(request: NextRequest) {
 
     console.info(`User logged in: ${user.fullName}`);
 
-    return NextResponse.json(
-      {
+    return res
+      .status(200)
+      .set({
+        'X-RateLimit-Limit': RATE_LIMIT_MAX_ATTEMPTS.toString(),
+        'X-RateLimit-Remaining': rateLimit.remaining.toString(),
+        'X-RateLimit-Reset': Math.ceil(rateLimit.resetAt / 1000).toString(),
+      })
+      .json({
         fullName: user.fullName,
         isAdmin: user.isAdmin,
         loginTime: new Date().toISOString().replace('T', ' ').substring(0, 19),
         token,
-      },
-      {
-        status: 200,
-        headers: {
-          'X-RateLimit-Limit': RATE_LIMIT_MAX_ATTEMPTS.toString(),
-          'X-RateLimit-Remaining': rateLimit.remaining.toString(),
-          'X-RateLimit-Reset': Math.ceil(rateLimit.resetAt / 1000).toString(),
-        },
-      }
-    );
+      });
   } catch (error) {
     console.error('Error during login:', error);
-    return NextResponse.json(
-      { message: 'An error occurred during login' },
-      { status: 500 }
-    );
+    return res.status(500).json({ message: 'An error occurred during login' });
   }
 }

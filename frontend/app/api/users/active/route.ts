@@ -1,8 +1,5 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-import { requireAuth } from '@/lib/auth/middleware'
 
 interface UserRow {
   id: number;
@@ -11,10 +8,7 @@ interface UserRow {
   LastUsedAt: string | null;
 }
 
-export async function GET(request: NextRequest) {
-  const authError = await requireAuth(request)
-  if (authError) return authError
-
+export async function GET(req: Request, res: Response) {
   try {
     const rows = db.prepare(
       'SELECT id, FullName, IsAdmin, LastUsedAt FROM Users ORDER BY LastUsedAt DESC'
@@ -27,9 +21,9 @@ export async function GET(request: NextRequest) {
       lastUsedAt: r.LastUsedAt,
     }))
 
-    return NextResponse.json(users)
+    return res.json(users)
   } catch (error) {
     console.error('Failed to get active users:', error)
-    return NextResponse.json([])
+    return res.json([])
   }
 }

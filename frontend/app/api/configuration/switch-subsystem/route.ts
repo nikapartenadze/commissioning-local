@@ -1,31 +1,25 @@
-export const dynamic = 'force-dynamic'
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { configService } from '@/lib/config'
 
-// POST — Switch to a different subsystem profile
-// This saves the config. The UI then calls pull + connect separately for progress feedback.
-export async function POST(request: NextRequest) {
+export async function POST(req: Request, res: Response) {
   try {
-    const body = await request.json()
+    const body = req.body
     const { profileName, subsystemId, plcIp, plcPath } = body
 
     if (!subsystemId || !plcIp) {
-      return NextResponse.json({ error: 'subsystemId and plcIp are required' }, { status: 400 })
+      return res.status(400).json({ error: 'subsystemId and plcIp are required' })
     }
 
-    // Save the new config
     const config = await configService.getConfig()
     await configService.saveConfig({
       ip: plcIp,
       path: plcPath || '1,0',
       subsystemId: String(subsystemId),
-      // Preserve cloud settings (remoteUrl, apiPassword)
       remoteUrl: config.remoteUrl,
       apiPassword: config.apiPassword,
     })
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       message: `Switched to ${profileName || subsystemId}`,
       config: {
@@ -36,6 +30,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ error: msg }, { status: 500 })
+    return res.status(500).json({ error: msg })
   }
 }
