@@ -1,6 +1,6 @@
 "use client"
 
-import Link from "next/link"
+import { Link } from "react-router-dom"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -68,14 +68,14 @@ export function ProjectList({ projects }: { projects: ProjectWithSubsystems[] })
           
           <CardFooter className="flex flex-col gap-2 pt-3">
                 <div className="flex gap-2 w-full">
-                  <Link href={`/project/${project.id}`} className="flex-1">
+                  <Link to={`/project/${project.id}`} className="flex-1">
                     <Button variant="default" className="w-full" size="sm">
                       <Eye className="mr-2 h-4 w-4" />
                       Dashboard
                     </Button>
                   </Link>
                   
-                  <Link href={`/commissioning/${project.id}`} className="flex-1">
+                  <Link to={`/commissioning/${project.id}`} className="flex-1">
                     <Button variant="secondary" className="w-full" size="sm">
                       <TestTube className="mr-2 h-4 w-4" />
                       Test

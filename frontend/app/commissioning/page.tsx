@@ -1,10 +1,10 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from "react-router-dom"
 
 export default function CommissioningIndex() {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -14,17 +14,17 @@ export default function CommissioningIndex() {
       .then(data => {
         if (data.subsystemId && data.subsystemId !== '') {
           // Redirect to the subsystem page
-          router.replace(`/commissioning/${data.subsystemId}`)
+          navigate(`/commissioning/${data.subsystemId}`, { replace: true })
         } else {
           // No subsystem configured - go to placeholder page where user can configure
-          router.replace('/commissioning/_')
+          navigate('/commissioning/_', { replace: true })
         }
       })
       .catch(() => {
-        router.replace('/commissioning/_')
+        navigate('/commissioning/_', { replace: true })
       })
       .finally(() => setLoading(false))
-  }, [router])
+  }, [navigate])
 
   return (
     <div className="min-h-screen flex items-center justify-center">
