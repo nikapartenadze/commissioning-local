@@ -23,8 +23,8 @@ function createPullStmts() {
     insertSubsystem: db.prepare('INSERT INTO Subsystems (id, ProjectId, Name) VALUES (?, ?, ?)'),
     deleteAllIos: db.prepare('DELETE FROM Ios'),
     upsertIo: db.prepare(`
-      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus)
-      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus)
+      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, CloudSyncedAt, "Order")
+      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @CloudSyncedAt, @Order)
       ON CONFLICT(id) DO UPDATE SET
         Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
         Result = CASE WHEN Ios.Result IS NOT NULL AND Ios.Result != '' THEN Ios.Result ELSE @Result END,
@@ -36,7 +36,9 @@ function createPullStmts() {
         TagType = CASE WHEN @TagType IS NOT NULL THEN @TagType ELSE Ios.TagType END,
         Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
         NetworkDeviceName = @NetworkDeviceName,
-        PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END
+        PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END,
+        CloudSyncedAt = @CloudSyncedAt,
+        "Order" = @Order
     `),
     getIosWithoutDevice: db.prepare('SELECT id, Name FROM Ios WHERE NetworkDeviceName IS NULL'),
     updateDeviceName: db.prepare('UPDATE Ios SET NetworkDeviceName = ? WHERE id = ?'),
@@ -254,6 +256,8 @@ export async function POST(req: Request, res: Response) {
             ClarificationNote: cloudIo.clarificationNote ?? null,
             NetworkDeviceName: cloudIo.networkDeviceName ?? null,
             PunchlistStatus: cloudIo.punchlistStatus ?? null,
+            CloudSyncedAt: new Date().toISOString(),
+            Order: cloudIo.order ?? null,
           })
           upsertedCount++
         } catch (error) {
