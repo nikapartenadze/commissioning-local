@@ -1,6 +1,4 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
@@ -40,33 +38,27 @@ const pullStmts = {
   updateTagType: db.prepare('UPDATE Ios SET TagType = ? WHERE id = ?'),
   updateProjectName: db.prepare('UPDATE Projects SET Name = ? WHERE id = (SELECT ProjectId FROM Subsystems WHERE id = ?)'),
   updateSubsystemName: db.prepare('UPDATE Subsystems SET Name = ? WHERE id = ?'),
-  // Network
   deleteNetworkRings: db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?'),
   insertRing: db.prepare('INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)'),
   insertNode: db.prepare('INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   insertPort: db.prepare('INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   updatePortParent: db.prepare('UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?'),
-  // EStop
   insertEStopZone: db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)'),
   insertEpc: db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)'),
   insertIoPoint: db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)'),
   insertVfd: db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)'),
-  // Safety
   insertSafetyZone: db.prepare('INSERT INTO SafetyZones (SubsystemId, BssTag, StoSignal, ZoneName) VALUES (?, ?, ?, ?)'),
   insertSafetyDrive: db.prepare('INSERT INTO SafetyZoneDrives (ZoneId, DriveName) VALUES (?, ?)'),
-  // Punchlists
   deletePunchlists: db.prepare('DELETE FROM Punchlists WHERE SubsystemId = ?'),
   cleanOrphanPunchlistItems: db.prepare('DELETE FROM PunchlistItems WHERE PunchlistId NOT IN (SELECT id FROM Punchlists)'),
   insertPunchlist: db.prepare('INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)'),
   insertPunchlistItem: db.prepare('INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)'),
-  // L2
   insertL2Sheet: db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)'),
   insertL2Col: db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   insertL2Dev: db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   insertL2Cell: db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'),
 }
 
-/** Classify IO description into a tagType for diagnostic steps */
 function classifyDescription(desc: string | null): string | null {
   if (!desc) return null
   const dl = desc.toLowerCase()
@@ -94,58 +86,43 @@ function classifyDescription(desc: string | null): string | null {
 
 /**
  * POST /api/cloud/pull
- *
- * Pull IOs from cloud PostgreSQL server and store in local SQLite.
- * Uses upsert to preserve existing test data (results, timestamps, comments).
- * Auto-backs up the database before making changes.
  */
-export async function POST(request: NextRequest): Promise<NextResponse<CloudPullResponse>> {
+export async function POST(req: Request, res: Response) {
   try {
-    const body = await request.json()
+    const body = req.body
     const { remoteUrl, apiPassword } = body
     const subsystemId = typeof body.subsystemId === 'string'
       ? parseInt(body.subsystemId, 10)
       : body.subsystemId
 
-    // Validate required fields
     if (!remoteUrl) {
-      return NextResponse.json(
-        { success: false, error: 'Remote URL is required' },
-        { status: 400 }
-      )
+      return res.status(400).json({ success: false, error: 'Remote URL is required' } as CloudPullResponse)
     }
 
     if (!subsystemId || isNaN(subsystemId) || subsystemId <= 0) {
-      return NextResponse.json(
-        { success: false, error: 'Valid subsystem ID is required' },
-        { status: 400 }
-      )
+      return res.status(400).json({ success: false, error: 'Valid subsystem ID is required' } as CloudPullResponse)
     }
 
     console.log(`[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
-    // Check for un-synced data
     const pendingRow = pullStmts.pendingCount.get() as { cnt: number }
     const pendingCount = pendingRow.cnt
     const forceFlag = body.force === true
     if (pendingCount > 0 && !forceFlag) {
-      return NextResponse.json(
-        { success: false, error: `${pendingCount} test results have not been synced to cloud yet. Sync first, or use force=true to proceed anyway.` },
-        { status: 409 }
-      )
+      return res.status(409).json({
+        success: false,
+        error: `${pendingCount} test results have not been synced to cloud yet. Sync first, or use force=true to proceed anyway.`
+      } as CloudPullResponse)
     }
 
-    // Auto-backup before destructive operation
     try {
       const backup = await createBackup('pre-pull')
       console.log(`[CloudPull] Auto-backup created: ${backup.filename}`)
     } catch (backupErr) {
       console.error('[CloudPull] Backup failed:', backupErr)
-      // Continue anyway — backup failure shouldn't block the pull
     }
 
-    // Direct fetch to cloud API
     const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`
     console.log(`[CloudPull] Fetching from: ${cloudUrl}`)
 
@@ -160,30 +137,23 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     console.log(`[CloudPull] Cloud response status: ${cloudResponse.status}`)
 
     if (cloudResponse.status === 401) {
-      return NextResponse.json(
-        { success: false, error: 'Cloud authentication failed - check API password' },
-        { status: 403 }
-      )
+      return res.status(403).json({ success: false, error: 'Cloud authentication failed - check API password' } as CloudPullResponse)
     }
 
     if (!cloudResponse.ok) {
       const errorText = await cloudResponse.text()
       console.log(`[CloudPull] Cloud error: ${errorText}`)
-      return NextResponse.json(
-        { success: false, error: `Cloud server error: ${cloudResponse.status}` },
-        { status: 502 }
-      )
+      return res.status(502).json({ success: false, error: `Cloud server error: ${cloudResponse.status}` } as CloudPullResponse)
     }
 
     const cloudData = await cloudResponse.json()
     console.log(`[CloudPull] Cloud response keys: ${Object.keys(cloudData)}`)
 
-    // Extract IOs from response (handle both ios and Ios)
     const cloudIos = cloudData.ios || cloudData.Ios || []
     console.log(`[CloudPull] IOs extracted: ${cloudIos.length}`)
 
     if (!cloudIos || cloudIos.length === 0) {
-      return NextResponse.json({
+      return res.json({
         success: true,
         message: `No IOs found for subsystem ${subsystemId}`,
         iosCount: 0,
@@ -199,7 +169,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
 
     console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
 
-    // Safety check: warn if cloud has significantly fewer IOs than local
     const localCountRow = pullStmts.ioCount.get() as { cnt: number }
     const localIoCount = localCountRow.cnt
     let pullWarning: string | undefined
@@ -211,24 +180,18 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       }
     }
 
-    // Upsert IOs in a transaction
     const result = db.transaction(() => {
-      // Ensure default project exists
       const existingProject = pullStmts.getProject.get(1)
       if (!existingProject) {
         pullStmts.insertProject.run(1, 'Default Project')
       }
 
-      // Ensure subsystem exists
       const existingSubsystem = pullStmts.getSubsystem.get(subsystemId)
       if (!existingSubsystem) {
-        pullStmts.insertSubsystem.run(
-          subsystemId, 1, `Subsystem ${subsystemId}`
-        )
+        pullStmts.insertSubsystem.run(subsystemId, 1, `Subsystem ${subsystemId}`)
       }
       console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
 
-      // Clear ALL existing data before pulling fresh — ensures no stale data from previous subsystem
       const beforeCount = (pullStmts.ioCount.get() as any).cnt
       const deleteResult = pullStmts.deleteAllIos.run()
       console.log(`[CloudPull] DELETE FROM Ios: had ${beforeCount}, deleted ${deleteResult.changes}`)
@@ -252,9 +215,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       db.exec('DELETE FROM L2Sheets')
       console.log('[CloudPull] Cleared all related data (safety, network, punchlists, L2)')
 
-      // Prepare the upsert statement
       const upsertStmt = pullStmts.upsertIo
-
       let upsertedCount = 0
 
       for (const cloudIo of cloudIos) {
@@ -286,10 +247,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         }
       }
 
-      // Auto-populate networkDeviceName from tag name for any IOs still missing it
-      // extractDeviceName imported at top of file
       const iosWithoutDevice = pullStmts.getIosWithoutDevice.all() as { id: number; Name: string }[]
-
       const updateDeviceStmt = pullStmts.updateDeviceName
       for (const io of iosWithoutDevice) {
         const deviceName = extractDeviceName(io.Name)
@@ -298,22 +256,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         }
       }
 
-      // Don't delete PendingSyncs — they should persist until actually synced
-
       return upsertedCount
     })()
 
     console.log(`[CloudPull] Successfully upserted ${result} IOs to local database`)
 
-    // Pull test histories from cloud response
     const cloudHistories = cloudData.testHistories || []
     let historiesPulled = 0
     if (cloudHistories.length > 0) {
       try {
         db.transaction(() => {
-          // Clear existing test histories for the pulled IOs
           pullStmts.deleteHistories.run()
-
           const insertHistoryStmt = pullStmts.insertHistory
 
           for (const h of cloudHistories) {
@@ -329,7 +282,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
               )
               historiesPulled++
             } catch {
-              // Skip individual history records that fail (e.g. FK constraint if IO was filtered)
+              // Skip individual history records that fail
             }
           }
         })()
@@ -339,10 +292,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       }
     }
 
-    // Auto-assign tagType from descriptions for IOs that don't have one
     try {
       const untyped = pullStmts.getUntypedIos.all() as { id: number; Description: string | null }[]
-
       let assigned = 0
       const updateTagTypeStmt = pullStmts.updateTagType
       for (const io of untyped) {
@@ -359,7 +310,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.error('[CloudPull] Error assigning tag types:', error)
     }
 
-    // Persist cloud config to disk so it survives restarts
     try {
       const { configService } = await import('@/lib/config')
       await configService.saveConfig({
@@ -372,7 +322,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.warn('[CloudPull] Failed to save config:', e)
     }
 
-    // Fetch real project + subsystem names from cloud and update local DB
     try {
       const infoUrl = `${remoteUrl}/api/sync/subsystem-info/${subsystemId}`
       const infoRes = await fetch(infoUrl, {
@@ -389,10 +338,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         console.log(`[CloudPull] Updated names: ${info.projectName} / ${info.subsystemName}`)
       }
     } catch (e) {
-      // Non-critical — names just stay as placeholders
+      // Non-critical
     }
 
-    // Mark CloudSyncService as connected (it reads config from configService on demand)
     try {
       const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
       const syncService = getCloudSyncService()
@@ -401,7 +349,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.warn('[CloudPull] Failed to update sync service state:', e)
     }
 
-    // Mark manual pull so auto-sync doesn't overwrite with stale subsystem data
     try {
       const { startAutoSync, getAutoSyncService } = await import('@/lib/cloud/auto-sync')
       const service = getAutoSyncService()
@@ -416,7 +363,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.warn('[CloudPull] Failed to start auto-sync:', e)
     }
 
-    // Broadcast to all clients to reload their IO data
     console.log('[CloudPull] Broadcasting IO update to WebSocket clients...')
     try {
       await fetch(getWsBroadcastUrl(), {
@@ -431,7 +377,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     }
 
     console.log('[CloudPull] Starting network/estop/safety/punchlist pull...')
-    // Also pull network + estop data alongside IOs (non-blocking, direct DB writes — no self-referential HTTP)
     let networkPulled = 0
     let estopPulled = 0
 
@@ -448,29 +393,22 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         const netData = await netRes.json()
         console.log(`[CloudPull] Network data: success=${netData.success}, rings=${netData.rings?.length || 0}`)
         if (netData.success && netData.rings?.length > 0) {
-          // Clear existing network data for this subsystem
           pullStmts.deleteNetworkRings.run(subsystemId)
 
-          const insertRingStmt = pullStmts.insertRing
-          const insertNodeStmt = pullStmts.insertNode
-          const insertPortStmt = pullStmts.insertPort
-
           for (const ring of netData.rings) {
-            const ringResult = insertRingStmt.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
+            const ringResult = pullStmts.insertRing.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
             const ringId = ringResult.lastInsertRowid
 
             for (const node of (ring.nodes || [])) {
-              const nodeResult = insertNodeStmt.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
+              const nodeResult = pullStmts.insertNode.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
               const nodeId = nodeResult.lastInsertRowid
 
-              // First pass: insert ports without parentPortId
               const portIdMap = new Map<string, number>()
               for (const port of (node.ports || [])) {
-                const portResult = insertPortStmt.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceType || null, port.deviceIp || null, port.statusTag || null, null)
+                const portResult = pullStmts.insertPort.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceType || null, port.deviceIp || null, port.statusTag || null, null)
                 if (port.deviceName) portIdMap.set(port.deviceName, Number(portResult.lastInsertRowid))
               }
 
-              // Second pass: link sub-ports to parent FIOM ports
               for (const port of (node.ports || [])) {
                 if (port.parentDeviceName && portIdMap.has(port.parentDeviceName)) {
                   const childId = portIdMap.get(port.deviceName)
@@ -499,23 +437,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (estopRes.ok) {
         const estopData = await estopRes.json()
         if (estopData.success && estopData.zones?.length > 0) {
-          // Already cleared at start of pull
-          const insertZoneStmt = pullStmts.insertEStopZone
-          const insertEpcStmt = pullStmts.insertEpc
-          const insertIoPointStmt = pullStmts.insertIoPoint
-          const insertVfdStmt = pullStmts.insertVfd
-
           for (const zone of estopData.zones) {
-            const zoneResult = insertZoneStmt.run(subsystemId, zone.name)
+            const zoneResult = pullStmts.insertEStopZone.run(subsystemId, zone.name)
             const zoneId = zoneResult.lastInsertRowid
             for (const epc of (zone.epcs || [])) {
-              const epcResult = insertEpcStmt.run(zoneId, epc.name, epc.checkTag)
+              const epcResult = pullStmts.insertEpc.run(zoneId, epc.name, epc.checkTag)
               const epcId = epcResult.lastInsertRowid
               for (const io of (epc.ioPoints || [])) {
-                insertIoPointStmt.run(epcId, io.tag)
+                pullStmts.insertIoPoint.run(epcId, io.tag)
               }
               for (const vfd of (epc.vfds || [])) {
-                insertVfdStmt.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
+                pullStmts.insertVfd.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
               }
             }
           }
@@ -533,15 +465,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (safetyRes.ok) {
         const safetyData = await safetyRes.json()
         if (safetyData.success) {
-          // Already cleared at start of pull
-
-          const insertZoneStmt = pullStmts.insertSafetyZone
-          const insertDriveStmt = pullStmts.insertSafetyDrive
           for (const zone of (safetyData.zones || [])) {
-            const zoneResult = insertZoneStmt.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
+            const zoneResult = pullStmts.insertSafetyZone.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
             const zoneId = zoneResult.lastInsertRowid
             for (const d of (zone.drives || [])) {
-              insertDriveStmt.run(zoneId, d.name)
+              pullStmts.insertSafetyDrive.run(zoneId, d.name)
             }
           }
 
@@ -560,7 +488,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log('[Pull] Safety data pull failed (non-blocking)')
     }
 
-    // Pull punchlists (non-blocking)
+    // Pull punchlists
     let punchlistsPulled = 0
     try {
       const plRes = await fetch(`${remoteUrl}/api/sync/punchlists?subsystemId=${subsystemId}`, {
@@ -571,14 +499,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
         const plData = await plRes.json()
         if (plData.punchlists && plData.punchlists.length > 0) {
           pullStmts.deletePunchlists.run(subsystemId)
-          // Also clean up orphaned PunchlistItems for deleted punchlists
           pullStmts.cleanOrphanPunchlistItems.run()
-          const insertPl = pullStmts.insertPunchlist
-          const insertItem = pullStmts.insertPunchlistItem
           for (const pl of plData.punchlists) {
-            insertPl.run(pl.id, pl.name, subsystemId)
+            pullStmts.insertPunchlist.run(pl.id, pl.name, subsystemId)
             for (const ioId of pl.ioIds) {
-              insertItem.run(pl.id, ioId)
+              pullStmts.insertPunchlistItem.run(pl.id, ioId)
             }
             punchlistsPulled++
           }
@@ -589,7 +514,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log('[CloudPull] Punchlist pull skipped or failed (non-blocking)')
     }
 
-    // Pull L2 Functional Validation data (non-blocking)
+    // Pull L2 data
     let l2Pulled = 0
     try {
       const l2Res = await fetch(`${remoteUrl}/api/sync/l2/${subsystemId}`, {
@@ -599,7 +524,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       if (l2Res.ok) {
         const l2Data = await l2Res.json()
         if (l2Data.success && l2Data.sheets?.length > 0) {
-          // Clear and re-insert L2 data
           db.exec('DELETE FROM L2CellValues')
           db.exec('DELETE FROM L2Devices')
           db.exec('DELETE FROM L2Columns')
@@ -609,17 +533,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
           const columnIdMap = new Map<number, number>()
           const deviceIdMap = new Map<number, number>()
 
-          const insertSheet = pullStmts.insertL2Sheet
-          const insertCol = pullStmts.insertL2Col
-          const insertDev = pullStmts.insertL2Dev
-          const insertCell = pullStmts.insertL2Cell
-
           for (const sheet of l2Data.sheets) {
-            const sr = insertSheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
+            const sr = pullStmts.insertL2Sheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
             sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
             if (sheet.columns) {
               for (const col of sheet.columns) {
-                const cr = insertCol.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
+                const cr = pullStmts.insertL2Col.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
                 columnIdMap.set(col.id, cr.lastInsertRowid as number)
               }
             }
@@ -627,14 +546,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
           for (const dev of (l2Data.devices || [])) {
             const localSheetId = sheetIdMap.get(dev.sheetId)
             if (!localSheetId) continue
-            const dr = insertDev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
+            const dr = pullStmts.insertL2Dev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
             deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
             l2Pulled++
           }
           for (const cell of (l2Data.cellValues || [])) {
             const ld = deviceIdMap.get(cell.deviceId)
             const lc = columnIdMap.get(cell.columnId)
-            if (ld && lc) insertCell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
+            if (ld && lc) pullStmts.insertL2Cell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
           }
           console.log(`[CloudPull] Pulled L2 data: ${l2Data.sheets.length} sheets, ${l2Pulled} devices`)
         }
@@ -643,7 +562,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
       console.log('[CloudPull] L2 pull skipped or failed (non-blocking)')
     }
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       message: `Successfully pulled ${result} IOs from cloud`,
       iosCount: result,
@@ -667,15 +586,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<CloudPull
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
 
     if (errorMessage.includes('Authentication failed') || errorMessage.includes('401')) {
-      return NextResponse.json(
-        { success: false, error: 'Cloud authentication failed - check API password' },
-        { status: 403 }
-      )
+      return res.status(403).json({ success: false, error: 'Cloud authentication failed - check API password' } as CloudPullResponse)
     }
 
-    return NextResponse.json(
-      { success: false, error: errorMessage },
-      { status: 500 }
-    )
+    return res.status(500).json({ success: false, error: errorMessage } as CloudPullResponse)
   }
 }

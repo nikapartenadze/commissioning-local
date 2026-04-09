@@ -1,32 +1,24 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { listBackups, createBackup } from '@/lib/db/backup'
 
-/**
- * GET /api/backups — List all backups
- */
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   try {
     const backups = await listBackups()
-    return NextResponse.json({ success: true, backups })
+    return res.json({ success: true, backups })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ success: false, error: message }, { status: 500 })
+    return res.status(500).json({ success: false, error: message })
   }
 }
 
-/**
- * POST /api/backups — Create a manual backup
- */
-export async function POST(request: NextRequest) {
+export async function POST(req: Request, res: Response) {
   try {
-    const body = await request.json().catch(() => ({}))
+    const body = req.body || {}
     const reason = body.reason || 'manual'
     const backup = await createBackup(reason)
-    return NextResponse.json({ success: true, backup })
+    return res.json({ success: true, backup })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ success: false, error: message }, { status: 500 })
+    return res.status(500).json({ success: false, error: message })
   }
 }

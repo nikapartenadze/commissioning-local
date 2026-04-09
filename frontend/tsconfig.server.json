@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "outDir": "./dist-server",
+    "rootDir": ".",
+    "strict": false,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "baseUrl": "."
+  },
+  "include": [
+    "server-express.ts",
+    "routes/**/*.ts",
+    "lib/**/*.ts",
+    "app/api/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src",
+    ".next"
+  ]
+}

@@ -1,20 +1,13 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io, TestHistory } from '@/lib/db-sqlite'
-import { requireAuth } from '@/lib/auth/middleware'
 
-export const dynamic = 'force-dynamic'
-
-export async function GET(request: NextRequest) {
-  const authError = requireAuth(request)
-  if (authError) return authError
-
+export async function GET(req: Request, res: Response) {
   try {
-    const { searchParams } = new URL(request.url)
-    const subsystemId = searchParams.get('subsystemId')
+    const subsystemId = req.query.subsystemId as string | undefined
 
     if (!subsystemId) {
-      return NextResponse.json({ error: 'subsystemId is required' }, { status: 400 })
+      return res.status(400).json({ error: 'subsystemId is required' })
     }
 
     const subId = parseInt(subsystemId, 10)
@@ -29,7 +22,6 @@ export async function GET(request: NextRequest) {
 
     const failedIos = ios.filter(io => io.Result === 'Failed' || io.Result === 'Fail')
 
-    // Get latest test history for ALL IOs (to get failure reasons)
     const ioIds = ios.map(io => io.id)
     let allHistories: TestHistory[] = []
     if (ioIds.length > 0) {
@@ -39,10 +31,8 @@ export async function GET(request: NextRequest) {
       ).all(...ioIds) as TestHistory[]
     }
 
-    // Get latest test history for failed IOs specifically
     const failedHistories = allHistories.filter(h => h.Result === 'Failed' || h.Result === 'Fail')
 
-    // Map ioId -> latest failure info
     const failureMap = new Map<number, { failureMode: string | null; testedBy: string | null }>()
     for (const h of failedHistories) {
       if (!failureMap.has(h.IoId)) {
@@ -50,7 +40,6 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Map ioId -> latest test info (for the main table's reason + testedBy columns)
     const latestTestMap = new Map<number, { failureMode: string | null; testedBy: string | null }>()
     for (const h of allHistories) {
       if (!latestTestMap.has(h.IoId)) {
@@ -206,11 +195,9 @@ ${failedIos.length > 0 ? `
 </body>
 </html>`
 
-    return new NextResponse(html, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
-    })
+    return res.set('Content-Type', 'text/html; charset=utf-8').send(html)
   } catch (error) {
     console.error('Failed to generate report:', error)
-    return NextResponse.json({ error: 'Failed to generate report' }, { status: 500 })
+    return res.status(500).json({ error: 'Failed to generate report' })
   }
 }
