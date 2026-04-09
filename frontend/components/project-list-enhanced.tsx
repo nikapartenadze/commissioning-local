@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -51,7 +51,7 @@ export function ProjectListEnhanced({
   onConnectToSubsystem,
   onConfigureSubsystem 
 }: ProjectListEnhancedProps) {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [configDialogOpen, setConfigDialogOpen] = useState(false)
   const [selectedSubsystem, setSelectedSubsystem] = useState<{
@@ -62,7 +62,7 @@ export function ProjectListEnhanced({
   const [connecting, setConnecting] = useState<number | null>(null)
 
   const handleViewDashboard = (projectId: number) => {
-    router.push(`/project/${projectId}`)
+    navigate(`/project/${projectId}`)
   }
 
   const handleConnectToSubsystem = async (project: Project, subsystem: Subsystem) => {
@@ -70,7 +70,7 @@ export function ProjectListEnhanced({
     try {
       // For now, just navigate directly if it's the Test project (ID 6)
       if (project.id === 6) {
-        router.push(`/commissioning/${subsystem.id}`)
+        navigate(`/commissioning/${subsystem.id}`)
       } else {
         // For other projects, show alert that they need configuration
         alert('Please configure this subsystem first by clicking the gear icon')

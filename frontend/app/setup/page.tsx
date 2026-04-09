@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { CloudDownload, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 
 export default function SetupPage() {
-  const router = useRouter()
+  const navigate = useNavigate()
   const [remoteUrl, setRemoteUrl] = useState("")
   const [subsystemId, setSubsystemId] = useState("")
   const [apiPassword, setApiPassword] = useState("")
@@ -63,7 +63,7 @@ export default function SetupPage() {
 
       // Redirect to commissioning page after 1.5 seconds
       setTimeout(() => {
-        router.push(`/commissioning/${subsystemId}`)
+        navigate(`/commissioning/${subsystemId}`)
       }, 1500)
 
     } catch (err) {
