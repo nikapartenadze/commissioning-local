@@ -77,7 +77,7 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   File "app.ico"
 
   ; ── Create .env pointing to data directory ──
-  FileOpen $0 "$INSTDIR\app\.env" w
+  FileOpen $0 "$INSTDIR\app\dist-server\.env" w
   FileWrite $0 "DATABASE_URL=file:$DATA_DIR\database.db$\r$\n"
   FileWrite $0 "JWT_SECRET_KEY=io-checkout-svc-$HWNDPARENT$\r$\n"
   FileWrite $0 "PORT=3000$\r$\n"
@@ -108,7 +108,7 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   Sleep 1000
 
   ; Install service
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" install ${SERVICE_NAME} "$INSTDIR\node\node.exe" "server.js"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" install ${SERVICE_NAME} "$INSTDIR\node\node.exe" "--max-old-space-size=256 --optimize-for-size dist-server\server-express.js"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppDirectory "$INSTDIR\app"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} DisplayName "${SERVICE_DISPLAY}"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} Description "Industrial I/O commissioning tool — PLC testing and validation"'
