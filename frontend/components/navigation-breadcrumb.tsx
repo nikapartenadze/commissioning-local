@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { ChevronRight, Home, TestTube, Settings } from "lucide-react"
-import Link from "next/link"
+import { Link } from "react-router-dom"
 
 interface BreadcrumbItem {
   label: string
@@ -25,7 +25,7 @@ export function NavigationBreadcrumb({ items, className = "" }: NavigationBreadc
           )}
           
           {item.href ? (
-            <Link href={item.href}>
+            <Link to={item.href}>
               <Button
                 variant="ghost"
                 size="sm"

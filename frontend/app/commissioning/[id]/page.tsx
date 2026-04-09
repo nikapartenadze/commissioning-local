@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { useParams, useRouter } from "next/navigation"
+import { useParams, useNavigate } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { useUser } from "@/lib/user-context"
 import { PlcToolbar } from "@/components/plc-toolbar"
@@ -106,7 +106,7 @@ function calculateTestResults(ios: IoItem[]): ChartData {
 
 export default function CommissioningPage() {
   const params = useParams()
-  const router = useRouter()
+  const navigate = useNavigate()
   const { currentUser, setCurrentUser, isLoading: userLoading } = useUser()
   const paramId = params.id as string
   const projectId = paramId === '_' ? 0 : parseInt(paramId)
@@ -372,7 +372,7 @@ export default function CommissioningPage() {
       // 2. Trigger a reconnection to the new subsystem
       // 3. Navigate to the new subsystem's testing page
       
-      router.push(`/commissioning/${subsystemId}`)
+      navigate(`/commissioning/${subsystemId}`)
     } catch (error) {
       logger.error('Failed to switch subsystem:', error)
     }
@@ -1639,9 +1639,9 @@ export default function CommissioningPage() {
             })()}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {process.env.NEXT_PUBLIC_BUILD_VERSION && (
-              <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${process.env.NEXT_PUBLIC_BUILD_VERSION} • ${process.env.NEXT_PUBLIC_BUILD_HASH} • ${process.env.NEXT_PUBLIC_BUILD_DATE}`}>
-                {process.env.NEXT_PUBLIC_BUILD_VERSION}
+            {import.meta.env.VITE_BUILD_VERSION && (
+              <span className="text-[10px] font-mono text-muted-foreground hidden sm:inline px-1.5 py-0.5 rounded bg-muted" title={`${import.meta.env.VITE_BUILD_VERSION} • ${import.meta.env.VITE_BUILD_HASH} • ${import.meta.env.VITE_BUILD_DATE}`}>
+                {import.meta.env.VITE_BUILD_VERSION}
               </span>
             )}
             <UserMenu />
