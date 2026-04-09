@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+// Next.js Metadata type removed — metadata is set in index.html for Vite
 // import { Inter } from "next/font/google"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -9,13 +9,11 @@ import { ErrorBoundary } from "@/components/error-boundary"
 
 // const inter = Inter({ subsets: ["latin"] })
 
-export const metadata: Metadata = {
-  title: "IO Checkout Tool - Commissioning",
-  description: "Modern IO Checkout and Testing Platform",
-  icons: {
-    icon: '/favicon.ico',
-  },
-}
+// Metadata is now in index.html (Vite entry point)
+// export const metadata = {
+//   title: "IO Checkout Tool - Commissioning",
+//   description: "Modern IO Checkout and Testing Platform",
+// }
 
 export default function RootLayout({
   children,
