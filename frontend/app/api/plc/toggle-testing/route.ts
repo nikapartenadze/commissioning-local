@@ -1,8 +1,5 @@
-export const dynamic = 'force-dynamic';
+import { Request, Response } from 'express'
 
-import { NextRequest, NextResponse } from 'next/server'
-
-// Use globalThis to persist testing state across requests
 const globalForTesting = globalThis as unknown as {
   isTestingUsers: Set<string> | undefined;
 };
@@ -11,26 +8,24 @@ if (globalForTesting.isTestingUsers === undefined) {
   globalForTesting.isTestingUsers = new Set<string>();
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(req: Request, res: Response) {
   try {
     let userName: string | undefined;
     let explicitEnabled: boolean | undefined;
 
     try {
-      const body = await request.json();
-      userName = body.userName;
-      if (typeof body.enabled === 'boolean') {
-        explicitEnabled = body.enabled;
+      if (req.body) {
+        userName = req.body.userName;
+        if (typeof req.body.enabled === 'boolean') {
+          explicitEnabled = req.body.enabled;
+        }
       }
     } catch {
       // No body or invalid JSON
     }
 
     if (!userName) {
-      return NextResponse.json(
-        { success: false, error: 'userName is required' },
-        { status: 400 }
-      );
+      return res.status(400).json({ success: false, error: 'userName is required' });
     }
 
     const users = globalForTesting.isTestingUsers!;
@@ -44,7 +39,6 @@ export async function POST(request: NextRequest) {
       }
       userIsTesting = explicitEnabled;
     } else {
-      // Toggle
       if (users.has(userName)) {
         users.delete(userName);
         userIsTesting = false;
@@ -54,9 +48,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log(`🔄 Testing mode for ${userName}: ${userIsTesting ? 'ON' : 'OFF'} (active users: ${Array.from(users).join(', ') || 'none'})`)
+    console.log(`Testing mode for ${userName}: ${userIsTesting ? 'ON' : 'OFF'} (active users: ${Array.from(users).join(', ') || 'none'})`)
 
-    // Broadcast to WebSocket clients
     try {
       const { getWsBroadcastUrl } = await import('@/lib/plc-client-manager')
       await fetch(getWsBroadcastUrl(), {
@@ -73,7 +66,7 @@ export async function POST(request: NextRequest) {
       // WebSocket server might not be running
     }
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       isTesting: userIsTesting,
       isTestingUsers: Array.from(users),
@@ -81,16 +74,13 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Failed to toggle testing mode:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to toggle testing mode' },
-      { status: 500 }
-    )
+    return res.status(500).json({ success: false, error: 'Failed to toggle testing mode' })
   }
 }
 
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   const users = globalForTesting.isTestingUsers || new Set<string>();
-  return NextResponse.json({
+  return res.json({
     success: true,
     isTesting: users.size > 0,
     isTestingUsers: Array.from(users),

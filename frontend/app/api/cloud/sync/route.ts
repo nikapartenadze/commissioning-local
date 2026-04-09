@@ -1,6 +1,4 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { ioRepository } from '@/lib/db/repositories/io-repository'
@@ -8,42 +6,18 @@ import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 import type { IoUpdateDto, SyncResult } from '@/lib/cloud/types'
 
-/**
- * POST /api/cloud/sync
- *
- * Sync pending test results to cloud.
- * Processes the offline queue (PendingSyncs table) and syncs to cloud server.
- *
- * Request body (optional):
- * {
- *   remoteUrl?: string,     // Cloud server URL (uses stored config if not provided)
- *   apiPassword?: string,   // API authentication password
- *   batchSize?: number,     // Number of records per batch (default: 50)
- *   force?: boolean         // Force sync even if recently attempted
- * }
- *
- * Response:
- * {
- *   success: boolean,
- *   syncedCount: number,
- *   failedCount: number,
- *   errors?: string[]
- * }
- */
-export async function POST(request: NextRequest): Promise<NextResponse<SyncResult>> {
+export async function POST(req: Request, res: Response) {
   try {
-    const body = await request.json().catch(() => ({}))
+    const body = req.body || {}
     const { remoteUrl, apiPassword, batchSize = 50, force = false } = body
 
     console.log('[CloudSync] Starting pending sync processing...')
 
-    // Get pending syncs from database
     const pendingSyncs = await pendingSyncRepository.getAll()
 
     if (pendingSyncs.length === 0) {
       console.log('[CloudSync] No pending syncs to process')
 
-      // Still validate cloud connection
       const syncService = getCloudSyncService()
       const config = await syncService.getConfig()
       const serverUrl = remoteUrl || config.remoteUrl
@@ -59,23 +33,17 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
             syncService.setConnectionState('connected')
           }
         } catch {
-          // Server unreachable, but that's ok — no pending syncs anyway
+          // Server unreachable
         }
       }
 
-      return NextResponse.json({
-        success: true,
-        syncedCount: 0,
-        failedCount: 0,
-      })
+      return res.json({ success: true, syncedCount: 0, failedCount: 0 } as SyncResult)
     }
 
     console.log(`[CloudSync] Found ${pendingSyncs.length} pending syncs`)
 
-    // Initialize cloud sync service (reads config from configService on demand)
     const cloudSyncService = getCloudSyncService()
 
-    // Update config if provided in request
     if (remoteUrl || apiPassword) {
       await cloudSyncService.updateConfig({
         ...(remoteUrl && { remoteUrl }),
@@ -84,21 +52,19 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
       })
     }
 
-    // Check cloud availability — trust SSE if connected, otherwise health check
     const sseClient = getCloudSseClient()
     const sseConnected = sseClient?.isConnected ?? false
     const isAvailable = sseConnected || await cloudSyncService.isCloudAvailable()
     if (!isAvailable && !force) {
       console.warn('[CloudSync] Cloud not available, keeping items in queue')
-      return NextResponse.json({
+      return res.json({
         success: false,
         syncedCount: 0,
         failedCount: pendingSyncs.length,
         errors: ['Cloud server is not reachable'],
-      })
+      } as SyncResult)
     }
 
-    // Process pending syncs with version control
     const result = await cloudSyncService.syncPendingUpdatesWithVersionControl(
       async (ioId: number) => {
         const io = await ioRepository.getById(ioId)
@@ -118,8 +84,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
       }
     )
 
-    // Also process any pending syncs that weren't in the in-memory queue
-    // (could happen if service was restarted)
     const remainingPending = await pendingSyncRepository.getAll()
     const processedIds = new Set([
       ...result.successfulIds,
@@ -149,17 +113,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
 
         if (synced) {
           result.successfulIds.push(ioId)
-          // Remove from database
           await pendingSyncRepository.delete(pending.id)
         } else {
           result.failedIds.push(ioId)
-          // Increment retry count
           await pendingSyncRepository.recordFailure(pending.id, 'Sync failed')
         }
       }
     }
 
-    // Remove synced items from database
     if (result.successfulIds.length > 0) {
       const rows = db.prepare(
         `SELECT id FROM PendingSyncs WHERE IoId IN (${result.successfulIds.map(() => '?').join(',')})`
@@ -169,7 +130,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
       }
     }
 
-    // Remove rejected items from database
     if (result.rejectedIds.length > 0) {
       const rows = db.prepare(
         `SELECT id FROM PendingSyncs WHERE IoId IN (${result.rejectedIds.map(() => '?').join(',')})`
@@ -183,46 +143,35 @@ export async function POST(request: NextRequest): Promise<NextResponse<SyncResul
       `[CloudSync] Sync complete: ${result.successfulIds.length} synced, ${result.failedIds.length} failed, ${result.rejectedIds.length} rejected`
     )
 
-    // Collect errors for response
     const errors: string[] = []
     result.errors.forEach((error, ioId) => {
       errors.push(`IO ${ioId}: ${error}`)
     })
 
-    return NextResponse.json({
+    return res.json({
       success: result.failedIds.length === 0,
       syncedCount: result.successfulIds.length,
       failedCount: result.failedIds.length + result.rejectedIds.length,
       errors: errors.length > 0 ? errors : undefined,
-    })
+    } as SyncResult)
   } catch (error) {
     console.error('[CloudSync] Error processing pending syncs:', error)
-
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred'
-
-    return NextResponse.json(
-      {
-        success: false,
-        syncedCount: 0,
-        failedCount: 0,
-        errors: [errorMessage],
-      },
-      { status: 500 }
-    )
+    return res.status(500).json({
+      success: false,
+      syncedCount: 0,
+      failedCount: 0,
+      errors: [errorMessage],
+    } as SyncResult)
   }
 }
 
-/**
- * GET /api/cloud/sync
- *
- * Get sync status and statistics.
- */
-export async function GET(): Promise<NextResponse> {
+export async function GET(req: Request, res: Response) {
   try {
     const stats = await pendingSyncRepository.getStats()
     const cloudSyncService = getCloudSyncService()
 
-    return NextResponse.json({
+    return res.json({
       pendingCount: stats.total,
       failedCount: stats.failed,
       maxRetries: stats.maxRetries,
@@ -232,9 +181,6 @@ export async function GET(): Promise<NextResponse> {
     })
   } catch (error) {
     console.error('[CloudSync] Error getting sync status:', error)
-    return NextResponse.json(
-      { error: 'Failed to get sync status' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to get sync status' })
   }
 }

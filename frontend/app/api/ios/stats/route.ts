@@ -1,6 +1,4 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { TEST_CONSTANTS } from '@/lib/services/io-test-service'
 
@@ -14,10 +12,9 @@ const stmts = {
   failedAll: db.prepare('SELECT COUNT(*) as count FROM Ios WHERE Result = ?'),
 }
 
-export async function GET(request: NextRequest) {
+export async function GET(req: Request, res: Response) {
   try {
-    const { searchParams } = new URL(request.url)
-    const subsystemIdParam = searchParams.get('subsystemId')
+    const subsystemIdParam = req.query.subsystemId as string | undefined
     const subsystemId = subsystemIdParam ? parseInt(subsystemIdParam) : undefined
 
     let total: number, passed: number, failed: number
@@ -38,7 +35,7 @@ export async function GET(request: NextRequest) {
     const failedPercent = total > 0 ? Math.round((failed / total) * 100) : 0
     const untestedPercent = total > 0 ? Math.round((untested / total) * 100) : 0
 
-    return NextResponse.json({
+    return res.json({
       total,
       passed,
       failed,
@@ -50,9 +47,6 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error fetching IO stats:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch IO statistics' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to fetch IO statistics' })
   }
 }

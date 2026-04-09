@@ -1,8 +1,7 @@
-import { NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 
-// Prepared statements — created once, reused on every request
 const stmts = {
   getCell: db.prepare('SELECT id, Value, Version FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
   updateCell: db.prepare('UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = datetime("now"), Version = ? WHERE id = ?'),
@@ -11,27 +10,22 @@ const stmts = {
   getColumnCloudId: db.prepare('SELECT CloudId FROM L2Columns WHERE id = ?'),
   insertPendingSync: db.prepare('INSERT INTO L2PendingSyncs (CloudDeviceId, CloudColumnId, Value, UpdatedBy, Version) VALUES (?, ?, ?, ?, ?)'),
   getCheckColumns: db.prepare('SELECT id FROM L2Columns WHERE SheetId = (SELECT SheetId FROM L2Devices WHERE id = ?) AND ColumnType = "check"'),
-  countCompleted: db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv
-    JOIN L2Columns lc ON cv.ColumnId = lc.id
-    WHERE cv.DeviceId = ? AND lc.ColumnType = 'check'
-    AND cv.Value IS NOT NULL AND cv.Value != ''`),
+  countCompleted: db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.ColumnType = 'check' AND cv.Value IS NOT NULL AND cv.Value != ''`),
   updateDeviceChecks: db.prepare('UPDATE L2Devices SET CompletedChecks = ? WHERE id = ?'),
   deletePendingSync: db.prepare('DELETE FROM L2PendingSyncs WHERE id = ?'),
 }
 
-export async function POST(request: Request) {
+export async function POST(req: Request, res: Response) {
   try {
-    const { deviceId, columnId, value, updatedBy } = await request.json()
+    const { deviceId, columnId, value, updatedBy } = req.body
 
     if (!deviceId || !columnId) {
-      return NextResponse.json({ error: 'deviceId and columnId required' }, { status: 400 })
+      return res.status(400).json({ error: 'deviceId and columnId required' })
     }
 
     const result = db.transaction(() => {
       const existing = stmts.getCell.get(deviceId, columnId) as { id: number; Value: string | null; Version: number } | undefined
-
-      let cellId: number
-      let newVersion: number
+      let cellId: number, newVersion: number
 
       if (existing) {
         newVersion = existing.Version + 1
@@ -55,66 +49,29 @@ export async function POST(request: Request) {
       const completedCount = stmts.countCompleted.get(deviceId) as { cnt: number }
       stmts.updateDeviceChecks.run(completedCount?.cnt || 0, deviceId)
 
-      return {
-        cellId,
-        version: newVersion,
-        completedChecks: completedCount?.cnt || 0,
-        cloudDeviceId: device?.CloudId,
-        cloudColumnId: column?.CloudId,
-        pendingSyncId,
-      }
+      return { cellId, version: newVersion, completedChecks: completedCount?.cnt || 0, cloudDeviceId: device?.CloudId, cloudColumnId: column?.CloudId, pendingSyncId }
     })()
 
-    // Instant push to cloud (non-blocking)
     if (result.cloudDeviceId && result.cloudColumnId) {
-      tryInstantL2Push(
-        result.cloudDeviceId,
-        result.cloudColumnId,
-        value ?? null,
-        result.version - 1,
-        updatedBy,
-        result.pendingSyncId
-      )
+      tryInstantL2Push(result.cloudDeviceId, result.cloudColumnId, value ?? null, result.version - 1, updatedBy, result.pendingSyncId)
     }
 
-    return NextResponse.json({ success: true, cellId: result.cellId, version: result.version, completedChecks: result.completedChecks })
+    return res.json({ success: true, cellId: result.cellId, version: result.version, completedChecks: result.completedChecks })
   } catch (error) {
     console.error('[L2 Cell] Error:', error)
-    return NextResponse.json({ error: 'Failed to save cell' }, { status: 500 })
+    return res.status(500).json({ error: 'Failed to save cell' })
   }
 }
 
-async function tryInstantL2Push(
-  cloudDeviceId: number,
-  cloudColumnId: number,
-  value: string | null,
-  version: number,
-  updatedBy: string | null,
-  pendingSyncId: number | null,
-) {
+async function tryInstantL2Push(cloudDeviceId: number, cloudColumnId: number, value: string | null, version: number, updatedBy: string | null, pendingSyncId: number | null) {
   try {
     const config = await configService.getConfig()
     if (!config.remoteUrl) return
-
     const resp = await fetch(`${config.remoteUrl}/api/sync/l2/update`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': config.apiPassword || '' },
-      body: JSON.stringify({
-        updates: [{
-          deviceId: cloudDeviceId,
-          columnId: cloudColumnId,
-          value,
-          version,
-          updatedBy: updatedBy || 'unknown',
-        }]
-      }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.apiPassword || '' },
+      body: JSON.stringify({ updates: [{ deviceId: cloudDeviceId, columnId: cloudColumnId, value, version, updatedBy: updatedBy || 'unknown' }] }),
       signal: AbortSignal.timeout(8000),
     })
-
-    if (resp.ok && pendingSyncId) {
-      try { stmts.deletePendingSync.run(pendingSyncId) } catch { /* ignore */ }
-    }
-  } catch {
-    // Failed — auto-sync will retry from the queue
-  }
+    if (resp.ok && pendingSyncId) { try { stmts.deletePendingSync.run(pendingSyncId) } catch {} }
+  } catch {}
 }
