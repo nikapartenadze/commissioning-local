@@ -1,66 +1,49 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import fs from 'fs'
 import path from 'path'
 import { getBackupDbPath, deleteBackup } from '@/lib/db/backup'
 
-interface RouteParams {
-  params: Promise<{ filename: string }>
-}
-
-/**
- * GET /api/backups/[filename] — Download a backup file
- */
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(req: Request, res: Response) {
   try {
-    const { filename } = await params
+    const filename = req.params.filename as string
 
-    // Validate filename
     if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
-      return NextResponse.json({ success: false, error: 'Invalid filename' }, { status: 400 })
+      return res.status(400).json({ success: false, error: 'Invalid filename' })
     }
 
     const backupsDir = getBackupDbPath()
     const filePath = path.join(backupsDir, filename)
 
-    // Verify path is within backups dir
     const resolved = path.resolve(filePath)
     if (!resolved.startsWith(path.resolve(backupsDir))) {
-      return NextResponse.json({ success: false, error: 'Invalid filename' }, { status: 400 })
+      return res.status(400).json({ success: false, error: 'Invalid filename' })
     }
 
     if (!fs.existsSync(filePath)) {
-      return NextResponse.json({ success: false, error: 'Backup not found' }, { status: 404 })
+      return res.status(404).json({ success: false, error: 'Backup not found' })
     }
 
-    const fileBuffer = fs.readFileSync(filePath)
     const stats = fs.statSync(filePath)
 
-    return new NextResponse(fileBuffer, {
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length': stats.size.toString(),
-      },
-    })
+    return res
+      .set('Content-Type', 'application/octet-stream')
+      .set('Content-Disposition', `attachment; filename="${filename}"`)
+      .set('Content-Length', stats.size.toString())
+      .sendFile(resolved)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ success: false, error: message }, { status: 500 })
+    return res.status(500).json({ success: false, error: message })
   }
 }
 
-/**
- * DELETE /api/backups/[filename] — Delete a backup
- */
-export async function DELETE(_request: NextRequest, { params }: RouteParams) {
+export async function DELETE(req: Request, res: Response) {
   try {
-    const { filename } = await params
+    const filename = req.params.filename as string
     await deleteBackup(filename)
-    return NextResponse.json({ success: true })
+    return res.json({ success: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     const status = message === 'Backup not found' ? 404 : message.includes('Invalid') ? 400 : 500
-    return NextResponse.json({ success: false, error: message }, { status })
+    return res.status(status).json({ success: false, error: message })
   }
 }
