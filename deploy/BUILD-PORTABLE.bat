@@ -90,30 +90,27 @@ if exist "%FRONTEND_DIR%\dist-server" rmdir /s /q "%FRONTEND_DIR%\dist-server"
 REM ══════════════════════════════════════════════════════════════
 REM  Step 4: Install dependencies + Prisma
 REM ══════════════════════════════════════════════════════════════
-echo [4/8] Installing dependencies...
+echo [4/7] Installing dependencies...
 cd /d "%FRONTEND_DIR%"
-call !NPM_CMD! ci --production=false
-if %errorlevel% neq 0 ( echo ERROR: npm ci failed & pause & exit /b 1 )
-
-echo [5/8] Generating Prisma client...
-call !NPX_CMD! prisma generate
-if %errorlevel% neq 0 ( echo ERROR: Prisma generate failed & pause & exit /b 1 )
+REM Use npm install (not ci) — reuses existing node_modules if deps unchanged
+call !NPM_CMD! install
+if %errorlevel% neq 0 ( echo ERROR: npm install failed & pause & exit /b 1 )
 
 REM ══════════════════════════════════════════════════════════════
 REM  Step 5: Build Vite (client) + TypeScript (server)
 REM ══════════════════════════════════════════════════════════════
-echo [6/8] Building Vite client bundle...
+echo [5/7] Building Vite client bundle...
 call !NPM_CMD! run build
 if %errorlevel% neq 0 ( echo ERROR: Vite build failed & pause & exit /b 1 )
 
-echo [7/8] Compiling Express server...
+echo [6/7] Compiling Express server...
 call !NPM_CMD! run build:server
 if %errorlevel% neq 0 ( echo ERROR: Server compilation failed & pause & exit /b 1 )
 
 REM ══════════════════════════════════════════════════════════════
 REM  Step 6: Download portable Node.js for distribution
 REM ══════════════════════════════════════════════════════════════
-echo [8/8] Assembling portable distribution...
+echo [7/7] Assembling portable distribution...
 
 REM Download portable Node.js to bundle
 if not exist "%TEMP_DIR%\%NODE_DIR_NAME%\node.exe" (
@@ -149,42 +146,32 @@ del "%OUTPUT_DIR%\app\dist-server\database.db" 2>nul
 del "%OUTPUT_DIR%\app\dist-server\database.db-wal" 2>nul
 del "%OUTPUT_DIR%\app\dist-server\database.db-shm" 2>nul
 
-REM ── Copy node_modules using robocopy (handles long paths unlike xcopy) ──
-echo   Copying node_modules (this may take a moment)...
-robocopy "%FRONTEND_DIR%\node_modules" "%OUTPUT_DIR%\app\dist-server\node_modules" /E /NFL /NDL /NJH /NJS /NC /NS /NP /R:0 /W:0 >nul 2>nul
-REM robocopy exit codes 0-7 are success/info, 8+ are errors
-if %errorlevel% geq 8 ( echo WARNING: robocopy had errors copying node_modules )
-
-REM ── Strip build-only + heavy packages not needed at runtime ──
-echo   Stripping build-only packages...
+REM ── Copy only runtime node_modules (selective, not copy-then-delete) ──
+echo   Copying runtime dependencies...
+set "NM_SRC=%FRONTEND_DIR%\node_modules"
+set "NM_DST=%OUTPUT_DIR%\app\dist-server\node_modules"
+mkdir "%NM_DST%" 2>nul
+REM Core runtime packages only — everything else is build-time
 for %%P in (
-    typescript @typescript-eslint
-    eslint eslint-scope eslint-visitor-keys @eslint eslint-config-next
-    tailwindcss postcss autoprefixer lightningcss-win32-x64-msvc lightningcss
-    prisma @prisma\engines @prisma\fetch-engine @prisma\get-platform @prisma\engines-version @prisma\debug
-    @esbuild esbuild
-    @swc @next next next-auth
-    caniuse-lite
-    @remotion remotion playwright playwright-core
-    vite @vitejs @rolldown @rspack
-    @mediabunny mediabunny
-    concurrently tsx
-    vitest @vitest
-    webpack terser terser-webpack-plugin @webassemblyjs watchpack jest-worker
-    acorn webpack-sources neo-async tapable
-    @next\swc-win32-x64-msvc
-    @types
-    react react-dom
-    recharts date-fns lucide-react
-    @radix-ui @tanstack
-    react-joyride react-markdown react-router react-router-dom
-    clsx tailwind-merge tailwindcss-animate
-    zustand class-variance-authority
-    rxjs popper.js @floating-ui
-    prettier @babel .cache jiti
+    express body-parser cookie-parser cors helmet morgan serve-static
+    accepts array-flatten content-disposition content-type
+    depd destroy ee-first encodeurl escape-html etag
+    finalhandler fresh http-errors inherits ipaddr.js
+    media-typer merge-descriptors methods mime mime-types mime-db
+    ms negotiator on-finished once parseurl path-to-regexp
+    proxy-addr qs range-parser raw-body safe-buffer safer-buffer
+    send setprototypeof statuses toidentifier type-is
+    unpipe utils-merge vary wrappy bytes router
+    better-sqlite3 bindings file-uri-to-path node-addon-api prebuild-install
+    ws http-proxy eventemitter3 requires-port follow-redirects
+    ffi-rs @aspect-build @aspect-build\rules_js
+    @yuuang @emnapi @aspect-build
+    bcryptjs jsonwebtoken
+    @prisma\client .prisma
+    dotenv tsconfig-paths
 ) do (
-    if exist "%OUTPUT_DIR%\app\dist-server\node_modules\%%P" (
-        rmdir /s /q "%OUTPUT_DIR%\app\dist-server\node_modules\%%P" 2>nul
+    if exist "%NM_SRC%\%%P" (
+        robocopy "%NM_SRC%\%%P" "%NM_DST%\%%P" /E /NFL /NDL /NJH /NJS /NC /NS /NP /R:0 /W:0 >nul 2>nul
     )
 )
 
