@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { L2SheetGrid } from './l2-sheet-grid'
+import { L2OverviewMatrix } from './l2-overview-matrix'
 import { Badge } from '@/components/ui/badge'
 import { authFetch } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical } from 'lucide-react'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useUser } from '@/lib/user-context'
 
 interface L2Sheet {
   id: number
@@ -71,11 +73,13 @@ const MAX_SIDEBAR_W = 600
 const DEFAULT_SIDEBAR_W = 320
 
 export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
+  const { currentUser } = useUser()
   const [data, setData] = useState<L2Data | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeSheet, setActiveSheet] = useState(0)
   const [showGuide, setShowGuide] = useState(false)
+  const [viewMode, setViewMode] = useState<'sheets' | 'overview'>('sheets')
   const [cellValues, setCellValues] = useState<Map<string, { Value: string | null; Version: number }>>(new Map())
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_W)
   const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
@@ -152,7 +156,7 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
       await authFetch('/api/l2/cell', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId, columnId, value }),
+        body: JSON.stringify({ deviceId, columnId, value, updatedBy: currentUser?.fullName || localStorage.getItem('tester-name') || 'unknown' }),
       })
     } catch (err) {
       console.error('Failed to save L2 cell value:', err)
@@ -280,17 +284,39 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
         <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
           <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${overallPercent}%` }} />
         </div>
-        <Button
-          variant={showGuide ? "default" : "outline"}
-          size="sm"
-          className="h-7 text-xs gap-1"
-          onClick={() => setShowGuide(!showGuide)}
-        >
-          <Info className="h-3 w-3" />
-          Guide
-        </Button>
+        <div className="flex items-center border rounded-md overflow-hidden">
+          <button
+            className={cn("px-2 py-1 text-xs font-medium transition-colors", viewMode === 'sheets' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            onClick={() => setViewMode('sheets')}
+          >
+            <Table2 className="h-3 w-3 inline mr-1" />Sheets
+          </button>
+          <button
+            className={cn("px-2 py-1 text-xs font-medium transition-colors", viewMode === 'overview' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            onClick={() => setViewMode('overview')}
+          >
+            <LayoutGrid className="h-3 w-3 inline mr-1" />Overview
+          </button>
+        </div>
+        {viewMode === 'sheets' && (
+          <Button
+            variant={showGuide ? "default" : "outline"}
+            size="sm"
+            className="h-7 text-xs gap-1"
+            onClick={() => setShowGuide(!showGuide)}
+          >
+            <Info className="h-3 w-3" />
+            Guide
+          </Button>
+        )}
       </div>
 
+      {viewMode === 'overview' ? (
+        <div className="flex-1 min-h-0">
+          <L2OverviewMatrix />
+        </div>
+      ) : (
+      <>
       {/* Sheet tabs */}
       <div className="flex gap-1 overflow-x-auto px-3 py-1.5 border-b shrink-0 bg-muted/30">
         {data.sheets.map((sheet, idx) => {
@@ -389,6 +415,8 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
           </>
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }

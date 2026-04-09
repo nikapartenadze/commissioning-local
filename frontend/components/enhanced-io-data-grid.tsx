@@ -8,7 +8,7 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 
@@ -125,6 +125,30 @@ function useColumnWidths() {
     history: 50, help: 50, failed: 50, clear: 50,
     mute: 50, output: 60,
   }
+}
+
+// Small copy button with check feedback
+function CopyButton({ text, title }: { text: string; title: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <button
+      className={cn(
+        "ml-1 shrink-0 transition-opacity",
+        copied ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        copied ? "text-green-400" : "text-muted-foreground hover:text-foreground"
+      )}
+      onClick={handleCopy}
+      title={copied ? "Copied!" : title}
+    >
+      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+    </button>
+  )
 }
 
 // Row height for better touch targets
@@ -922,6 +946,9 @@ export function EnhancedIoDataGrid({
                      <div className="line-clamp-2 leading-tight flex-1">
                        {io.description || <span className="text-muted-foreground">—</span>}
                      </div>
+                     {io.description && (
+                       <CopyButton text={io.description} title="Copy description" />
+                     )}
                      {mutedIos.has(io.id) && (
                        <span className="ml-1.5 shrink-0" title="Muted — dialog triggers suppressed">
                          <VolumeX className="h-3.5 w-3.5 text-orange-400" />
@@ -960,6 +987,7 @@ export function EnhancedIoDataGrid({
                        )
                      })()}
                      <div className="truncate">{io.name}</div>
+                     <CopyButton text={io.name} title="Copy IO point" />
                      {io.assignedTo && (
                        <span
                          className="ml-1 shrink-0 inline-flex items-center justify-center h-5 min-w-[20px] px-1 rounded-full bg-primary/10 dark:bg-primary/20 text-primary dark:text-primary text-[10px] font-bold uppercase"
