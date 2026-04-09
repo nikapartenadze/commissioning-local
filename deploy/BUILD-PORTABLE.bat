@@ -137,6 +137,34 @@ del "%OUTPUT_DIR%\app\database.db" 2>nul
 del "%OUTPUT_DIR%\app\database.db-wal" 2>nul
 del "%OUTPUT_DIR%\app\database.db-shm" 2>nul
 
+REM ── Strip build-only packages from standalone (saves ~60-80MB disk + RAM) ──
+echo   Stripping build-only packages...
+for %%P in (
+    typescript
+    @typescript-eslint
+    eslint eslint-config-next
+    tailwindcss postcss autoprefixer
+    prisma
+    webpack terser terser-webpack-plugin
+    @esbuild esbuild
+    @webassemblyjs
+    watchpack
+    jest-worker
+    acorn
+    webpack-sources
+    neo-async
+    tapable
+    @swc
+    @next\swc-win32-x64-msvc
+    caniuse-lite
+    @remotion remotion
+    playwright playwright-core
+) do (
+    if exist "%OUTPUT_DIR%\app\node_modules\%%P" (
+        rmdir /s /q "%OUTPUT_DIR%\app\node_modules\%%P" 2>nul
+    )
+)
+
 REM Preserve standalone server before overwriting with custom server
 if exist "%OUTPUT_DIR%\app\server.js" (
     copy "%OUTPUT_DIR%\app\server.js" "%OUTPUT_DIR%\app\next-server.js" >nul
@@ -273,7 +301,7 @@ echo echo   Press Ctrl+C to stop.
 echo echo ============================================================
 echo.
 echo cd /d "%%APP%%"
-echo "%%NODE%%" server.js
+echo "%%NODE%%" --max-old-space-size=256 --optimize-for-size server.js
 echo echo.
 echo echo Server stopped unexpectedly.
 echo pause

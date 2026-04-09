@@ -14,6 +14,10 @@ function createDb(): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = ON')
+  db.pragma('synchronous = NORMAL')    // Safe with WAL, 2-3x faster writes
+  db.pragma('cache_size = -8000')      // 8MB page cache (default was 2MB)
+  db.pragma('temp_store = MEMORY')     // Temp tables in RAM, not disk
+  db.pragma('mmap_size = 30000000')    // 30MB memory-mapped I/O for faster reads
 
   return db
 }
@@ -36,6 +40,10 @@ try {
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
+  // Indexes for L2 query performance
+  try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_l2cells_device_column ON L2CellValues(DeviceId, ColumnId)') } catch { /* already exists */ }
+  // Update query planner statistics
+  try { db.pragma('analysis_limit = 400'); db.exec('ANALYZE') } catch { /* non-critical */ }
 } catch (e) {
   console.warn('[DB] Schema init warning:', (e as Error).message)
 }
