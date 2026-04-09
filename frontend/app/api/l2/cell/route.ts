@@ -4,12 +4,12 @@ import { configService } from '@/lib/config'
 
 const stmts = {
   getCell: db.prepare('SELECT id, Value, Version FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
-  updateCell: db.prepare('UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = datetime("now"), Version = ? WHERE id = ?'),
-  insertCell: db.prepare('INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, datetime("now"), ?)'),
+  updateCell: db.prepare(`UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = datetime('now'), Version = ? WHERE id = ?`),
+  insertCell: db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, datetime('now'), ?)`),
   getDeviceCloudId: db.prepare('SELECT CloudId FROM L2Devices WHERE id = ?'),
   getColumnCloudId: db.prepare('SELECT CloudId FROM L2Columns WHERE id = ?'),
   insertPendingSync: db.prepare('INSERT INTO L2PendingSyncs (CloudDeviceId, CloudColumnId, Value, UpdatedBy, Version) VALUES (?, ?, ?, ?, ?)'),
-  getCheckColumns: db.prepare('SELECT id FROM L2Columns WHERE SheetId = (SELECT SheetId FROM L2Devices WHERE id = ?) AND ColumnType = "check"'),
+  getCheckColumns: db.prepare(`SELECT id FROM L2Columns WHERE SheetId = (SELECT SheetId FROM L2Devices WHERE id = ?) AND ColumnType = 'check'`),
   countCompleted: db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.ColumnType = 'check' AND cv.Value IS NOT NULL AND cv.Value != ''`),
   updateDeviceChecks: db.prepare('UPDATE L2Devices SET CompletedChecks = ? WHERE id = ?'),
   deletePendingSync: db.prepare('DELETE FROM L2PendingSyncs WHERE id = ?'),
