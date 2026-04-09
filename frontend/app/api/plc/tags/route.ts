@@ -9,9 +9,9 @@ export async function GET(req: Request, res: Response) {
     const config = await configService.getConfig();
 
     const totalTags = tagsResult.count || 0;
-    const successfulTags = totalTags;
-    const failedTags = 0;
-    const successRate = totalTags > 0 ? 100 : 0;
+    const successfulTags = tagsResult.tags ? tagsResult.tags.filter((t: any) => t.state !== undefined && t.state !== null).length : 0;
+    const failedTags = totalTags - successfulTags;
+    const successRate = totalTags > 0 ? Math.round((successfulTags / totalTags) * 100) : 0;
 
     return res.json({
       success: true,
