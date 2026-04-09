@@ -1,65 +1,39 @@
-export const dynamic = 'force-dynamic'
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 
-// GET /api/network/fiom-ports?fiomName=NCP1_17_FIOM1&subsystemId=47
-// Returns FIOM port data derived from IO tag names matching {fiomName}_X{n}.PIN{n}_{type}
-export async function GET(request: NextRequest) {
+export async function GET(req: Request, res: Response) {
   try {
-    const fiomName = request.nextUrl.searchParams.get('fiomName')
-    const subsystemId = request.nextUrl.searchParams.get('subsystemId')
+    const fiomName = req.query.fiomName as string | undefined
+    const subsystemId = req.query.subsystemId as string | undefined
 
     if (!fiomName) {
-      return NextResponse.json({ error: 'fiomName required' }, { status: 400 })
+      return res.status(400).json({ error: 'fiomName required' })
     }
 
     const prefix = `${fiomName}_X%`
     let ios: { Name: string; Description: string | null }[]
 
     if (subsystemId) {
-      ios = db.prepare(
-        'SELECT Name, Description FROM Ios WHERE Name LIKE ? AND SubsystemId = ? ORDER BY Name ASC'
-      ).all(prefix, parseInt(subsystemId, 10)) as any[]
+      ios = db.prepare('SELECT Name, Description FROM Ios WHERE Name LIKE ? AND SubsystemId = ? ORDER BY Name ASC').all(prefix, parseInt(subsystemId, 10)) as any[]
     } else {
-      ios = db.prepare(
-        'SELECT Name, Description FROM Ios WHERE Name LIKE ? ORDER BY Name ASC'
-      ).all(prefix) as any[]
+      ios = db.prepare('SELECT Name, Description FROM Ios WHERE Name LIKE ? ORDER BY Name ASC').all(prefix) as any[]
     }
 
-    // Parse IO names into port structure
-    // Pattern: {fiomName}_X{portNum}.PIN{pinNum}_{DI/DO}
     const portMap = new Map<number, { portNum: number; pins: { pin: number; type: string; ioName: string; description: string }[] }>()
 
     for (const io of ios) {
       const match = (io.Name ?? '').match(/_X(\d+)\.PIN(\d+)_(D[IO])$/)
       if (!match) continue
-
-      const portNum = parseInt(match[1])
-      const pinNum = parseInt(match[2])
-      const pinType = match[3] // DI or DO
-
-      if (!portMap.has(portNum)) {
-        portMap.set(portNum, { portNum, pins: [] })
-      }
-      portMap.get(portNum)!.pins.push({
-        pin: pinNum,
-        type: pinType,
-        ioName: io.Name ?? '',
-        description: io.Description || 'SPARE',
-      })
+      const portNum = parseInt(match[1]), pinNum = parseInt(match[2]), pinType = match[3]
+      if (!portMap.has(portNum)) portMap.set(portNum, { portNum, pins: [] })
+      portMap.get(portNum)!.pins.push({ pin: pinNum, type: pinType, ioName: io.Name ?? '', description: io.Description || 'SPARE' })
     }
 
     const ports = Array.from(portMap.values()).sort((a, b) => a.portNum - b.portNum)
 
-    return NextResponse.json({
-      success: true,
-      fiomName,
-      totalPorts: ports.length,
-      ports,
-    })
+    return res.json({ success: true, fiomName, totalPorts: ports.length, ports })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ success: false, error: message }, { status: 500 })
+    return res.status(500).json({ success: false, error: message })
   }
 }

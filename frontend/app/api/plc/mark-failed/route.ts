@@ -1,14 +1,12 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { markTestFailedAsync } from '@/lib/services/io-test-service'
 import { getAuthUser } from '@/lib/auth/middleware'
 
-export async function POST(request: NextRequest) {
+export async function POST(req: Request, res: Response) {
   try {
-    const { ioId, comments, failureMode } = await request.json()
+    const { ioId, comments, failureMode } = req.body
 
-    const authUser = await getAuthUser(request)
+    const authUser = await getAuthUser(req as any)
     const currentUser = authUser?.fullName ?? 'Unknown'
 
     const result = await markTestFailedAsync(ioId, {
@@ -18,21 +16,15 @@ export async function POST(request: NextRequest) {
     })
 
     if (!result.success) {
-      return NextResponse.json(
-        { success: false, error: result.error },
-        { status: 400 }
-      )
+      return res.status(400).json({ success: false, error: result.error })
     }
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       message: `Test marked as failed for IO ${ioId}`,
     })
   } catch (error) {
     console.error('Failed to mark test as failed:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to mark test as failed' },
-      { status: 500 }
-    )
+    return res.status(500).json({ success: false, error: 'Failed to mark test as failed' })
   }
 }

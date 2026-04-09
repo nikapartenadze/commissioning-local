@@ -2,11 +2,13 @@ import { Request, Response, NextFunction, RequestHandler } from 'express'
 import { verifyAuth } from '@/lib/auth/middleware'
 import type { DecodedToken } from '@/lib/auth/jwt'
 
-// Extend Express Request to carry auth user
+// Extend Express Request to carry auth user and fix param types
 declare global {
   namespace Express {
     interface Request {
       user?: DecodedToken
+      // Override params to always be Record<string, string> (Router guarantees this)
+      params: Record<string, string>
     }
   }
 }

@@ -1,58 +1,29 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 
-export async function POST(request: NextRequest) {
+export async function POST(req: Request, res: Response) {
   try {
-    const body = await request.json()
+    const body = req.body
 
-    // Handle single IO update
     if (body.Id) {
       const { Id, Result, State, Timestamp, Comments } = body
-
-      const stmt = db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ? WHERE id = ?'
-      )
-      stmt.run(Result, Timestamp, Comments, Id)
-
+      db.prepare('UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ? WHERE id = ?').run(Result, Timestamp, Comments, Id)
       const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(Id)
-
-      return NextResponse.json({ success: true, io: updatedIo })
+      return res.json({ success: true, io: updatedIo })
     }
 
-    // Handle batch IO updates
     if (body.Ios && Array.isArray(body.Ios)) {
-      const stmt = db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ? WHERE id = ?'
-      )
-
+      const stmt = db.prepare('UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ? WHERE id = ?')
       let updatedCount = 0
-      const totalCount = body.Ios.length
-
       for (const io of body.Ios) {
-        try {
-          const result = stmt.run(io.Result, io.Timestamp, io.Comments, io.Id)
-          if (result.changes > 0) updatedCount++
-        } catch (error) {
-          console.error(`Failed to update IO ${io.Id}:`, error)
-        }
+        try { const result = stmt.run(io.Result, io.Timestamp, io.Comments, io.Id); if (result.changes > 0) updatedCount++ } catch (error) { console.error(`Failed to update IO ${io.Id}:`, error) }
       }
-
-      return NextResponse.json({
-        success: true,
-        updatedCount,
-        totalCount
-      })
+      return res.json({ success: true, updatedCount, totalCount: body.Ios.length })
     }
 
-    return NextResponse.json({ error: 'Invalid request format' }, { status: 400 })
-
+    return res.status(400).json({ error: 'Invalid request format' })
   } catch (error) {
     console.error('Error updating IOs:', error)
-    return NextResponse.json(
-      { error: 'Failed to update IOs' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to update IOs' })
   }
 }

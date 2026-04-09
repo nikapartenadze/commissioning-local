@@ -1,29 +1,20 @@
-export const dynamic = 'force-dynamic'
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
 
-// Track which tags we've already created handles for — reset on PLC reconnect
 let createdTags = new Set<string>()
 let failedTags = new Set<string>()
 let lastConnectedState = false
 
-/**
- * GET /api/network/status?subsystemId=45
- * Returns cached ConnectionFaulted values from the 75ms polling loop.
- * On first call, creates tag handles for any missing network status tags.
- */
-export async function GET(request: NextRequest) {
+export async function GET(req: Request, res: Response) {
   try {
-    const subsystemId = parseInt(request.nextUrl.searchParams.get('subsystemId') || '')
+    const subsystemId = parseInt(req.query.subsystemId as string || '')
 
     if (!hasPlcClient() || !getPlcClient().isConnected) {
       lastConnectedState = false
-      return NextResponse.json({ success: true, connected: false, tags: {} })
+      return res.json({ success: true, connected: false, tags: {} })
     }
 
-    // Reset tag tracking when PLC reconnects (old handles are destroyed)
     if (!lastConnectedState) {
       createdTags = new Set<string>()
       failedTags = new Set<string>()
@@ -31,7 +22,6 @@ export async function GET(request: NextRequest) {
       console.log('[NetworkStatus] PLC (re)connected, resetting tag handles')
     }
 
-    // Query rings, nodes, ports
     const rings = !isNaN(subsystemId)
       ? db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(subsystemId) as any[]
       : db.prepare('SELECT * FROM NetworkRings').all() as any[]
@@ -43,7 +33,6 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Collect all unique status tags
     const statusTags = new Set<string>()
     for (const ring of rings) {
       if (ring.McmTag) statusTags.add(ring.McmTag)
@@ -56,12 +45,11 @@ export async function GET(request: NextRequest) {
     }
 
     if (statusTags.size === 0) {
-      return NextResponse.json({ success: true, connected: true, tags: {} })
+      return res.json({ success: true, connected: true, tags: {} })
     }
 
     const client = getPlcClient()
 
-    // Create handles for tags not yet in the reader (first call only)
     const tagArray = Array.from(statusTags)
     const tagsToCreate: string[] = []
     for (const tagName of tagArray) {
@@ -81,19 +69,15 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Read cached values from the 75ms polling loop — no fresh PLC reads
     const results: Record<string, boolean | null> = {}
     for (const tagName of tagArray) {
-      if (failedTags.has(tagName)) {
-        results[tagName] = null
-        continue
-      }
+      if (failedTags.has(tagName)) { results[tagName] = null; continue }
       results[tagName] = client.readTagCached(tagName)
     }
 
-    return NextResponse.json({ success: true, connected: true, tags: results })
+    return res.json({ success: true, connected: true, tags: results })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    return NextResponse.json({ success: false, error: message }, { status: 500 })
+    return res.status(500).json({ success: false, error: message })
   }
 }

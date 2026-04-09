@@ -1,27 +1,22 @@
-export const dynamic = 'force-dynamic';
-
 /**
  * Configuration API Routes
  *
  * GET: Return current configuration
  * PUT: Update configuration
- *
- * Ported from C# backend/Controllers/ConfigurationController.cs
  */
 
-import { NextResponse } from 'next/server';
+import { Request, Response } from 'express'
 import { configService } from '@/lib/config/config-service';
 import { ConfigUpdateRequest } from '@/lib/config/types';
 
 /**
  * GET /api/configuration
- * Returns the current application configuration.
  */
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   try {
     const config = await configService.getConfig();
 
-    return NextResponse.json({
+    return res.json({
       ip: config.ip,
       path: config.path,
       remoteUrl: config.remoteUrl,
@@ -38,40 +33,25 @@ export async function GET() {
     });
   } catch (error) {
     console.error('[Configuration API] Error getting config:', error);
-    return NextResponse.json(
-      { error: 'Failed to retrieve configuration' },
-      { status: 500 }
-    );
+    return res.status(500).json({ error: 'Failed to retrieve configuration' });
   }
 }
 
 /**
  * PUT /api/configuration
- * Updates the application configuration.
- *
- * Request body: ConfigUpdateRequest (partial config)
- * Response: Updated configuration
  */
-export async function PUT(request: Request) {
+export async function PUT(req: Request, res: Response) {
   try {
-    const body = await request.json() as ConfigUpdateRequest;
+    const body = req.body as ConfigUpdateRequest;
 
-    // Validate required fields if this is a full config update
     if (body.ip !== undefined && !body.ip) {
-      return NextResponse.json(
-        { error: 'IP address is required' },
-        { status: 400 }
-      );
+      return res.status(400).json({ error: 'IP address is required' });
     }
 
     if (body.path !== undefined && !body.path) {
-      return NextResponse.json(
-        { error: 'Path is required' },
-        { status: 400 }
-      );
+      return res.status(400).json({ error: 'Path is required' });
     }
 
-    // Save the updated configuration
     const updatedConfig = await configService.saveConfig(body);
 
     console.log('[Configuration API] Configuration updated:', {
@@ -79,7 +59,7 @@ export async function PUT(request: Request) {
       subsystemId: updatedConfig.subsystemId,
     });
 
-    return NextResponse.json({
+    return res.json({
       message: 'Configuration updated successfully',
       config: {
         ip: updatedConfig.ip,
@@ -99,9 +79,6 @@ export async function PUT(request: Request) {
     });
   } catch (error) {
     console.error('[Configuration API] Error updating config:', error);
-    return NextResponse.json(
-      { error: 'Failed to update configuration' },
-      { status: 500 }
-    );
+    return res.status(500).json({ error: 'Failed to update configuration' });
   }
 }

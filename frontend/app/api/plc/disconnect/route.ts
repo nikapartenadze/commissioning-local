@@ -1,16 +1,13 @@
-export const dynamic = 'force-dynamic';
-
-import { NextResponse } from 'next/server';
+import { Request, Response } from 'express'
 import { disconnectPlc, getWsBroadcastUrl } from '@/lib/plc-client-manager';
 
-export async function POST() {
+export async function POST(req: Request, res: Response) {
   try {
     console.log('Disconnecting from PLC');
 
     const result = await disconnectPlc();
 
     if (result.success) {
-      // Broadcast PLC disconnection to all WebSocket clients
       try {
         await fetch(getWsBroadcastUrl(), {
           method: 'POST',
@@ -24,29 +21,23 @@ export async function POST() {
         // WebSocket server might not be running
       }
 
-      return NextResponse.json({
+      return res.json({
         success: true,
         message: 'Disconnected from PLC',
         status: result.status,
       });
     } else {
-      return NextResponse.json(
-        {
-          success: false,
-          error: result.error || 'Failed to disconnect from PLC',
-          status: result.status,
-        },
-        { status: 500 }
-      );
+      return res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to disconnect from PLC',
+        status: result.status,
+      });
     }
   } catch (error) {
     console.error('PLC disconnect error:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : 'Internal server error',
-      },
-      { status: 500 }
-    );
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
   }
 }

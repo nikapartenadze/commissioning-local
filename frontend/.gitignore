@@ -42,3 +42,7 @@ next-env.d.ts
 /prisma/migrations
 
 .jwt-secret
+
+# Build outputs
+dist/
+dist-server/
