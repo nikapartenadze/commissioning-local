@@ -100,8 +100,8 @@ export async function POST(req: Request, res: Response) {
       ).run(normalizedResult, timestamp, combinedComment || null, newVersion, ioId)
 
       const histResult = db.prepare(
-        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(ioId, normalizedResult, timestamp, oldComment, plcState ?? null, currentUser ?? 'Unknown', failureMode || null)
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(ioId, normalizedResult, timestamp, oldComment, plcState ?? null, currentUser ?? 'Unknown', failureMode || null, 'local')
       testHistoryId = histResult.lastInsertRowid
     })
     txn()

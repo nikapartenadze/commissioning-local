@@ -45,8 +45,10 @@ try {
   }
   // Indexes for L2 query performance
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_l2cells_device_column ON L2CellValues(DeviceId, ColumnId)') } catch { /* already exists */ }
-  // Update query planner statistics
-  try { db.pragma('analysis_limit = 400'); db.exec('ANALYZE') } catch { /* non-critical */ }
+  // Update query planner statistics (deferred to avoid blocking startup)
+  setTimeout(() => {
+    try { db.pragma('analysis_limit = 400'); db.exec('ANALYZE') } catch { /* non-critical */ }
+  }, 10_000)
 } catch (e) {
   console.warn('[DB] Schema init warning:', (e as Error).message)
 }
@@ -103,7 +105,8 @@ export function initializeSchema() {
       Comments TEXT,
       TestedBy TEXT,
       State TEXT,
-      FailureMode TEXT
+      FailureMode TEXT,
+      Source TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_testhistories_ioid ON TestHistories(IoId);
     CREATE INDEX IF NOT EXISTS idx_testhistories_timestamp ON TestHistories(Timestamp);
@@ -358,6 +361,8 @@ export interface Io {
   InstallationStatus: string | null
   InstallationPercent: number | null
   PoweredUp: number | null
+  TestedBy: string | null
+  IoNumber: string | null
 }
 
 export interface TestHistory {
@@ -369,6 +374,7 @@ export interface TestHistory {
   TestedBy: string | null
   State: string | null
   FailureMode: string | null
+  Source: string | null
 }
 
 export interface User {
@@ -425,6 +431,8 @@ export function ioToApi(row: Io) {
     installationStatus: row.InstallationStatus,
     installationPercent: row.InstallationPercent,
     poweredUp: row.PoweredUp === 1 ? true : row.PoweredUp === 0 ? false : null,
+    testedBy: row.TestedBy ?? null,
+    ioNumber: row.IoNumber ?? null,
   }
 }
 
