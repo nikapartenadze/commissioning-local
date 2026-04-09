@@ -305,6 +305,14 @@ const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerRespo
   res.end();
 });
 
+broadcastHttpServer.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.warn(`[WS] Broadcast port ${HTTP_PORT} in use, retrying in 2s...`);
+    setTimeout(() => broadcastHttpServer.listen(HTTP_PORT, '127.0.0.1'), 2000);
+  } else {
+    console.error('[WS] Broadcast server error:', err);
+  }
+});
 broadcastHttpServer.listen(HTTP_PORT, '127.0.0.1', () => {
   console.log(`[WS] Broadcast API on http://127.0.0.1:${HTTP_PORT}/broadcast`);
 });
