@@ -1,8 +1,5 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-import { requireAdmin } from '@/lib/auth/middleware'
 import { revokeTokensForUser } from '@/lib/auth/jwt'
 
 interface UserRow {
@@ -12,26 +9,20 @@ interface UserRow {
   IsActive: number;
 }
 
-// PUT /api/users/[id]/toggle-active — toggle user active status (admin only)
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const authError = requireAdmin(request)
-  if (authError) return authError
-
-  const id = parseInt(params.id, 10)
+// PUT /api/users/:id/toggle-active — toggle user active status (admin only)
+export async function PUT(req: Request, res: Response) {
+  const id = parseInt(req.params.id as string, 10)
   if (isNaN(id)) {
-    return NextResponse.json({ message: 'Invalid user ID' }, { status: 400 })
+    return res.status(400).json({ message: 'Invalid user ID' })
   }
 
   const target = db.prepare('SELECT id, FullName, IsAdmin, IsActive FROM Users WHERE id = ?').get(id) as UserRow | undefined
   if (!target) {
-    return NextResponse.json({ message: 'User not found' }, { status: 404 })
+    return res.status(404).json({ message: 'User not found' })
   }
 
   if (target.IsAdmin) {
-    return NextResponse.json({ message: 'Cannot deactivate admin users' }, { status: 403 })
+    return res.status(403).json({ message: 'Cannot deactivate admin users' })
   }
 
   const newIsActive = target.IsActive ? 0 : 1
@@ -43,10 +34,9 @@ export async function PUT(
     isActive: !!newIsActive,
   }
 
-  // Revoke active tokens when user is deactivated
   if (!updated.isActive) {
     revokeTokensForUser(id.toString())
   }
 
-  return NextResponse.json(updated)
+  return res.json(updated)
 }
