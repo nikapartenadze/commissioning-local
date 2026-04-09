@@ -8,8 +8,12 @@ let gitTag = ''
 let buildDate = new Date().toISOString()
 try {
   gitHash = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim()
-  gitTag = execSync('git describe --tags --abbrev=0 2>/dev/null || echo ""', { encoding: 'utf8' }).trim()
 } catch {}
+try {
+  gitTag = execSync('git describe --tags --abbrev=0', { encoding: 'utf8', shell: true }).trim()
+} catch {
+  gitTag = '' // No tags found — will fall back to build-{hash}
+}
 
 export default defineConfig({
   plugins: [react()],
