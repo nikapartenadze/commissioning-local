@@ -1,8 +1,5 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-import { requireAdmin } from '@/lib/auth/middleware'
 
 interface UserRow {
   id: number;
@@ -11,29 +8,23 @@ interface UserRow {
   IsActive: number;
 }
 
-// DELETE /api/users/[id] — delete a user (admin only, cannot delete admins)
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const authError = requireAdmin(request)
-  if (authError) return authError
-
-  const id = parseInt(params.id, 10)
+// DELETE /api/users/:id — delete a user (admin only, cannot delete admins)
+export async function DELETE(req: Request, res: Response) {
+  const id = parseInt(req.params.id as string, 10)
   if (isNaN(id)) {
-    return NextResponse.json({ message: 'Invalid user ID' }, { status: 400 })
+    return res.status(400).json({ message: 'Invalid user ID' })
   }
 
   const target = db.prepare('SELECT id, FullName, IsAdmin, IsActive FROM Users WHERE id = ?').get(id) as UserRow | undefined
   if (!target) {
-    return NextResponse.json({ message: 'User not found' }, { status: 404 })
+    return res.status(404).json({ message: 'User not found' })
   }
 
   if (target.IsAdmin) {
-    return NextResponse.json({ message: 'Cannot delete admin users' }, { status: 403 })
+    return res.status(403).json({ message: 'Cannot delete admin users' })
   }
 
   db.prepare('DELETE FROM Users WHERE id = ?').run(id)
 
-  return NextResponse.json({ success: true })
+  return res.json({ success: true })
 }
