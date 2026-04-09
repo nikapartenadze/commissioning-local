@@ -267,12 +267,7 @@ echo         echo Firewall rules added.
 echo     ^)
 echo ^)
 echo.
-echo REM ── Check database ──
-echo if not exist "%%APP%%\database.db" ^(
-echo     echo ERROR: database.db is missing. Please re-run BUILD-PORTABLE.bat.
-echo     pause
-echo     exit /b 1
-echo ^)
+echo REM Database is created automatically on first start
 echo.
 echo echo ============================================================
 echo echo  IO Checkout Tool
