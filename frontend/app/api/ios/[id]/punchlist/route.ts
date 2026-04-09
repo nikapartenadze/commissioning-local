@@ -1,36 +1,25 @@
-export const dynamic = 'force-dynamic'
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
-import { requireAuth } from '@/lib/auth/middleware'
 
 const VALID_STATUS = [null, 'ADDRESSED', 'CLARIFICATION']
 const VALID_TRADE = [null, 'electrical', 'controls', 'mechanical']
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const authError = requireAuth(request)
-  if (authError) return authError
-
+export async function PATCH(req: Request, res: Response) {
   try {
-    const { id } = await params
-    const ioId = parseInt(id)
-    if (isNaN(ioId)) return NextResponse.json({ error: 'Invalid ID' }, { status: 400 })
+    const ioId = parseInt(req.params.id as string)
+    if (isNaN(ioId)) return res.status(400).json({ error: 'Invalid ID' })
 
-    const body = await request.json()
+    const body = req.body
     const { punchlistStatus, trade, clarificationNote } = body
 
     if (punchlistStatus !== undefined && !VALID_STATUS.includes(punchlistStatus)) {
-      return NextResponse.json({ error: 'Invalid punchlistStatus' }, { status: 400 })
+      return res.status(400).json({ error: 'Invalid punchlistStatus' })
     }
     if (trade !== undefined && !VALID_TRADE.includes(trade)) {
-      return NextResponse.json({ error: 'Invalid trade' }, { status: 400 })
+      return res.status(400).json({ error: 'Invalid trade' })
     }
 
-    // Build dynamic SET clause
     const setClauses: string[] = []
     const values: unknown[] = []
 
@@ -48,7 +37,7 @@ export async function PATCH(
     }
 
     if (setClauses.length === 0) {
-      return NextResponse.json({ error: 'No fields to update' }, { status: 400 })
+      return res.status(400).json({ error: 'No fields to update' })
     }
 
     values.push(ioId)
@@ -56,7 +45,7 @@ export async function PATCH(
 
     const updated = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       io: {
         id: updated.id,
@@ -77,6 +66,6 @@ export async function PATCH(
       }
     })
   } catch (error) {
-    return NextResponse.json({ error: 'Failed to update punchlist' }, { status: 500 })
+    return res.status(500).json({ error: 'Failed to update punchlist' })
   }
 }

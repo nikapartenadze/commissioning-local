@@ -1,6 +1,4 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
@@ -10,84 +8,55 @@ import {
   TEST_CONSTANTS
 } from '@/lib/services/io-test-service'
 
-interface RouteParams {
-  params: Promise<{ id: string }>
-}
-
 /**
- * POST /api/ios/[id]/test
- * Record a test result for an IO
- *
- * Request body:
- * {
- *   result: 'Pass' | 'Fail',
- *   comments?: string,
- *   currentUser?: string,
- *   failureMode?: string
- * }
+ * POST /api/ios/:id/test
  */
-export async function POST(
-  request: NextRequest,
-  { params }: RouteParams
-) {
+export async function POST(req: Request, res: Response) {
   try {
-    const { id } = await params
-    const ioId = parseInt(id)
+    const ioId = parseInt(req.params.id as string)
 
     if (isNaN(ioId)) {
-      return NextResponse.json({ error: 'Invalid IO ID' }, { status: 400 })
+      return res.status(400).json({ error: 'Invalid IO ID' })
     }
 
-    const body = await request.json()
+    const body = req.body
     const { result, comments, currentUser, failureMode } = body
 
-    // Validate result
     if (!result || !['Pass', 'Fail', 'Passed', 'Failed'].includes(result)) {
-      return NextResponse.json(
-        { error: 'Invalid result. Must be "Pass" or "Fail"' },
-        { status: 400 }
-      )
+      return res.status(400).json({ error: 'Invalid result. Must be "Pass" or "Fail"' })
     }
 
     const normalizedResult = result === 'Pass' || result === 'Passed'
       ? TEST_CONSTANTS.RESULT_PASSED
       : TEST_CONSTANTS.RESULT_FAILED
 
-    // Validate comment length
     if (comments && comments.length > 500) {
-      return NextResponse.json(
-        { error: 'Comment must be 500 characters or fewer' },
-        { status: 400 }
-      )
+      return res.status(400).json({ error: 'Comment must be 500 characters or fewer' })
     }
 
-    // Block testing if PLC is not connected
     const plcClient = getPlcTags()
     if (!plcClient.tags || plcClient.count === 0) {
-      return NextResponse.json({ error: 'PLC not connected — connect to PLC before testing' }, { status: 400 })
+      return res.status(400).json({ error: 'PLC not connected — connect to PLC before testing' })
     }
 
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
-      return NextResponse.json({ error: 'IO not found' }, { status: 404 })
+      return res.status(404).json({ error: 'IO not found' })
     }
 
-    // Block testing if device is not installed
     if (io.InstallationStatus && io.InstallationStatus !== 'complete') {
-      return NextResponse.json(
-        { error: 'Cannot test: device is not fully installed', installationStatus: io.InstallationStatus, installationPercent: io.InstallationPercent },
-        { status: 422 }
-      )
+      return res.status(422).json({
+        error: 'Cannot test: device is not fully installed',
+        installationStatus: io.InstallationStatus,
+        installationPercent: io.InstallationPercent
+      })
     }
 
-    // Block SPARE IOs from being passed (can only be failed)
     if (io.Description?.toUpperCase().includes('SPARE') && normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
-      return NextResponse.json({ error: 'SPARE IOs cannot be passed' }, { status: 400 })
+      return res.status(400).json({ error: 'SPARE IOs cannot be passed' })
     }
 
-    // Block testing if parent device is faulted (ConnectionFaulted = true)
-    // Only check for IOs that have a real network device (exists in NetworkPorts table)
     {
       const deviceName = io.NetworkDeviceName
       if (deviceName) {
@@ -99,16 +68,14 @@ export async function POST(
           const faultTag = `${deviceName}:I.ConnectionFaulted`
           const faultState = client.tags.find(t => t.name === faultTag)
           if (faultState && faultState.state === 'TRUE') {
-            return NextResponse.json(
-              { error: `Cannot test — parent device ${deviceName} has a connection fault. Fix the fault first.` },
-              { status: 400 }
-            )
+            return res.status(400).json({
+              error: `Cannot test — parent device ${deviceName} has a connection fault. Fix the fault first.`
+            })
           }
         }
       }
     }
 
-    // Get current PLC state
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)
     const plcState = tag?.state
@@ -116,8 +83,6 @@ export async function POST(
     const sanitizedComments = sanitizeComment(comments)
     const timestamp = createTimestamp()
 
-    // Combine failure mode + comment for the IO record (syncs to cloud)
-    // "Other" means user typed the reason themselves — don't prepend "Other"
     let combinedComment = ''
     if (failureMode && failureMode !== 'Other') {
       combinedComment = sanitizedComments ? `${failureMode} — ${sanitizedComments}` : failureMode
@@ -125,11 +90,9 @@ export async function POST(
       combinedComment = sanitizedComments || ''
     }
 
-    // Store old comment for history before updating
     const oldComment = io.Comments
     const newVersion = (io.Version ?? 0) + 1
 
-    // Update IO and create history in transaction
     let testHistoryId: number | bigint = 0
     const txn = db.transaction(() => {
       db.prepare(
@@ -145,7 +108,6 @@ export async function POST(
 
     const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
-    // Create PendingSync entry as fallback, then attempt immediate cloud sync
     try {
       const syncResult = db.prepare(
         'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -156,17 +118,15 @@ export async function POST(
         combinedComment || null,
         plcState ?? null,
         new Date().toISOString(),
-        newVersion - 1 // Pre-increment version to match cloud
+        newVersion - 1
       )
       const pendingSyncId = syncResult.lastInsertRowid
 
-      // Track this IO so SSE doesn't echo it back
       try {
         const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
         getCloudSseClient()?.trackPushedId(ioId)
       } catch {}
 
-      // Attempt immediate sync — if it succeeds, remove from queue
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
         const syncService = getCloudSyncService()
@@ -193,7 +153,6 @@ export async function POST(
       console.error('[Test] Failed to create PendingSync:', syncError)
     }
 
-    // Broadcast to all connected browsers via WebSocket
     try {
       await fetch(getWsBroadcastUrl(), {
         method: 'POST',
@@ -213,7 +172,7 @@ export async function POST(
 
     console.log(`Test recorded for IO ${ioId}: ${normalizedResult} by ${currentUser ?? 'Unknown'}`)
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       message: `IO marked as ${normalizedResult.toLowerCase()}`,
       io: {
@@ -238,9 +197,6 @@ export async function POST(
     })
   } catch (error) {
     console.error('Error recording test result:', error)
-    return NextResponse.json(
-      { error: 'Failed to record test result' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to record test result' })
   }
 }
