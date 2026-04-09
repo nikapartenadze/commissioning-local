@@ -235,22 +235,26 @@ export async function POST(req: Request, res: Response) {
         }
 
         try {
-          upsertStmt.run(
-            cloudIo.id,
-            subsystemId,
-            cloudIo.name,
-            cloudIo.description ?? null,
-            cloudIo.order ?? null,
-            Number(cloudIo.version) || 0,
-            cloudIo.tagType ?? null,
-            cloudIo.result ?? null,
-            cloudIo.timestamp ?? null,
-            cloudIo.comments ?? null,
-            cloudIo.networkDeviceName ?? null,
-            cloudIo.installationStatus ?? null,
-            cloudIo.installationPercent ?? null,
-            cloudIo.poweredUp === true ? 1 : cloudIo.poweredUp === false ? 0 : null,
-          )
+          upsertStmt.run({
+            id: cloudIo.id,
+            Name: cloudIo.name,
+            Description: cloudIo.description ?? null,
+            SubsystemId: subsystemId,
+            Result: cloudIo.result ?? null,
+            Comments: cloudIo.comments ?? null,
+            Timestamp: cloudIo.timestamp ?? null,
+            TestedBy: cloudIo.testedBy ?? null,
+            IoNumber: cloudIo.order ?? null,
+            InstallationStatus: cloudIo.installationStatus ?? null,
+            InstallationPercent: cloudIo.installationPercent ?? null,
+            PoweredUp: cloudIo.poweredUp === true ? 1 : cloudIo.poweredUp === false ? 0 : null,
+            TagType: cloudIo.tagType ?? null,
+            Version: Number(cloudIo.version) || 0,
+            Trade: cloudIo.trade ?? null,
+            ClarificationNote: cloudIo.clarificationNote ?? null,
+            NetworkDeviceName: cloudIo.networkDeviceName ?? null,
+            PunchlistStatus: cloudIo.punchlistStatus ?? null,
+          })
           upsertedCount++
         } catch (error) {
           console.error(`[CloudPull] Failed to upsert IO ${cloudIo.id}:`, error)
