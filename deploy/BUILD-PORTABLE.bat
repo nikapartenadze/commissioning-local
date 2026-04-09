@@ -140,10 +140,6 @@ REM ── Copy startup-backup.js (plain JS, not compiled by tsc) ──
 if not exist "%OUTPUT_DIR%\app\dist-server\lib" mkdir "%OUTPUT_DIR%\app\dist-server\lib"
 copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\dist-server\lib\" >nul 2>nul
 
-REM ── Copy all node_modules (then strip dev-only packages) ──
-echo   Copying node_modules (this may take a moment)...
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules" "%OUTPUT_DIR%\app\dist-server\node_modules"
-
 REM Remove dev artifacts that shouldn't be in portable
 if exist "%OUTPUT_DIR%\app\dist-server\backups" rmdir /s /q "%OUTPUT_DIR%\app\dist-server\backups"
 if exist "%OUTPUT_DIR%\app\dist-server\logs" rmdir /s /q "%OUTPUT_DIR%\app\dist-server\logs"
@@ -151,36 +147,32 @@ del "%OUTPUT_DIR%\app\dist-server\database.db" 2>nul
 del "%OUTPUT_DIR%\app\dist-server\database.db-wal" 2>nul
 del "%OUTPUT_DIR%\app\dist-server\database.db-shm" 2>nul
 
-REM ── Strip build-only packages (saves ~100MB+ disk + RAM) ──
+REM ── Copy node_modules using robocopy (handles long paths unlike xcopy) ──
+echo   Copying node_modules (this may take a moment)...
+robocopy "%FRONTEND_DIR%\node_modules" "%OUTPUT_DIR%\app\dist-server\node_modules" /E /NFL /NDL /NJH /NJS /NC /NS /NP /R:0 /W:0 >nul 2>nul
+REM robocopy exit codes 0-7 are success/info, 8+ are errors
+if %errorlevel% geq 8 ( echo WARNING: robocopy had errors copying node_modules )
+
+REM ── Strip build-only + heavy packages not needed at runtime ──
 echo   Stripping build-only packages...
 for %%P in (
-    typescript
-    @typescript-eslint
-    eslint eslint-scope eslint-visitor-keys
-    tailwindcss postcss autoprefixer
-    prisma
+    typescript @typescript-eslint
+    eslint eslint-scope eslint-visitor-keys @eslint eslint-config-next
+    tailwindcss postcss autoprefixer lightningcss-win32-x64-msvc lightningcss
+    prisma @prisma\engines @prisma\fetch-engine @prisma\get-platform @prisma\engines-version @prisma\debug
     @esbuild esbuild
-    @swc
-    @next next
+    @swc @next next next-auth
     caniuse-lite
-    @remotion remotion
-    playwright playwright-core
-    vite @vitejs
-    concurrently
-    tsx
-    vitest
-    @vitest
-    webpack terser terser-webpack-plugin
-    @webassemblyjs
-    watchpack
-    jest-worker
-    acorn
-    webpack-sources
-    neo-async
-    tapable
+    @remotion remotion playwright playwright-core
+    vite @vitejs @rolldown @rspack
+    @mediabunny mediabunny
+    concurrently tsx
+    vitest @vitest
+    webpack terser terser-webpack-plugin @webassemblyjs watchpack jest-worker
+    acorn webpack-sources neo-async tapable
     @next\swc-win32-x64-msvc
-    react react-dom
     @types
+    prettier @babel .cache jiti
 ) do (
     if exist "%OUTPUT_DIR%\app\dist-server\node_modules\%%P" (
         rmdir /s /q "%OUTPUT_DIR%\app\dist-server\node_modules\%%P" 2>nul
@@ -194,33 +186,31 @@ copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\dist-server\" >nul
 REM Prisma schema (needed by @prisma/client at runtime)
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\prisma" "%OUTPUT_DIR%\app\prisma"
 
-REM better-sqlite3 (native module — must be built for bundled Node.js ABI)
-echo   Installing better-sqlite3 for Node.js %NODE_VER%...
-set "PORTABLE_NODE=%OUTPUT_DIR%\node\node.exe"
-set "PORTABLE_NPM=%OUTPUT_DIR%\node\node_modules\npm\bin\npm-cli.js"
-REM Build in isolated temp dir to avoid polluting portable node_modules
-if exist "%TEMP_DIR%\sqlite-build" rmdir /s /q "%TEMP_DIR%\sqlite-build"
-mkdir "%TEMP_DIR%\sqlite-build"
-pushd "%TEMP_DIR%\sqlite-build"
-set "npm_config_nodedir=%OUTPUT_DIR%\node"
-set "PATH=%OUTPUT_DIR%\node;%PATH%"
-"%PORTABLE_NODE%" "%PORTABLE_NPM%" init -y >nul 2>nul
-"%PORTABLE_NODE%" "%PORTABLE_NPM%" install better-sqlite3 --no-save 2>nul
-set "npm_config_nodedir="
-REM Verify it works with bundled Node
-"%PORTABLE_NODE%" -e "require('better-sqlite3')" 2>nul
-if %errorlevel% neq 0 (
-    echo   WARNING: better-sqlite3 build failed for Node.js %NODE_VER% — copying from dev...
-    xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\dist-server\node_modules\better-sqlite3"
+REM better-sqlite3 — download prebuilt native binary for bundled Node.js
+echo   Downloading prebuilt better-sqlite3 for Node.js %NODE_VER%...
+set "SQLITE3_VER="
+for /f "tokens=*" %%v in ('"%OUTPUT_DIR%\node\node.exe" -e "process.stdout.write(require('%OUTPUT_DIR:\=/%/app/dist-server/node_modules/better-sqlite3/package.json').version)"') do set "SQLITE3_VER=%%v"
+set "NODE_ABI="
+for /f "tokens=*" %%a in ('"%OUTPUT_DIR%\node\node.exe" -e "process.stdout.write(String(process.versions.modules))"') do set "NODE_ABI=%%a"
+echo   better-sqlite3 v!SQLITE3_VER!, Node ABI !NODE_ABI!
+set "PREBUILT_URL=https://github.com/WiseLibs/better-sqlite3/releases/download/v!SQLITE3_VER!/better-sqlite3-v!SQLITE3_VER!-node-v!NODE_ABI!-win32-x64.tar.gz"
+set "PREBUILT_TAR=%TEMP_DIR%\sqlite3-prebuilt.tar.gz"
+powershell -NoProfile -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '!PREBUILT_URL!' -OutFile '!PREBUILT_TAR!' }" 2>nul
+if exist "!PREBUILT_TAR!" (
+    pushd "%TEMP_DIR%"
+    tar xzf sqlite3-prebuilt.tar.gz 2>nul
+    if exist "build\Release\better_sqlite3.node" (
+        copy /Y "build\Release\better_sqlite3.node" "%OUTPUT_DIR%\app\dist-server\node_modules\better-sqlite3\build\Release\better_sqlite3.node" >nul
+        echo   Prebuilt binary installed for Node.js %NODE_VER%
+    ) else (
+        echo   WARNING: Failed to extract prebuilt binary
+    )
+    rmdir /s /q build 2>nul
+    del /q sqlite3-prebuilt.tar.gz 2>nul
+    popd
 ) else (
-    echo   better-sqlite3 compiled successfully for Node.js %NODE_VER%
-    xcopy /E /I /Q /Y "%TEMP_DIR%\sqlite-build\node_modules\better-sqlite3" "%OUTPUT_DIR%\app\dist-server\node_modules\better-sqlite3"
+    echo   WARNING: Failed to download prebuilt binary
 )
-popd
-REM Copy bindings dependency (needed by better-sqlite3 to find .node file)
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\bindings" "%OUTPUT_DIR%\app\dist-server\node_modules\bindings"
-xcopy /E /I /Q /Y "%FRONTEND_DIR%\node_modules\file-uri-to-path" "%OUTPUT_DIR%\app\dist-server\node_modules\file-uri-to-path" 2>nul
-rmdir /s /q "%TEMP_DIR%\sqlite-build" 2>nul
 
 REM Seed scripts
 copy "%FRONTEND_DIR%\prisma\seed-diagnostics.ts" "%OUTPUT_DIR%\app\prisma\" 2>nul
