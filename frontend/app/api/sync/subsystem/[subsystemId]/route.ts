@@ -1,49 +1,25 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { subsystemId: string } }
-) {
+export async function GET(req: Request, res: Response) {
   try {
-    const subsystemId = parseInt(params.subsystemId)
+    const subsystemId = parseInt(req.params.subsystemId as string)
 
     if (isNaN(subsystemId)) {
-      return NextResponse.json({ error: 'Invalid subsystem ID' }, { status: 400 })
+      return res.status(400).json({ error: 'Invalid subsystem ID' })
     }
 
-    // Get IOs for the specified subsystem
-    const ios = db.prepare(
-      'SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC, Name ASC'
-    ).all(subsystemId) as any[]
+    const ios = db.prepare('SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC, Name ASC').all(subsystemId) as any[]
 
-    // Transform to match C# expected format
-    // Note: state is a runtime PLC value, not stored in database
-    // Real-time state values come from SignalR/PLC connections
     const transformedIos = ios.map(io => ({
-      Id: io.id,
-      Name: io.Name,
-      Description: io.Description,
-      State: null, // State is runtime value from PLC, not in database
-      Result: io.Result,
-      Timestamp: io.Timestamp,
-      Comments: io.Comments,
-      Order: io.Order,
-      Version: io.Version,
-      SubsystemId: io.SubsystemId
+      Id: io.id, Name: io.Name, Description: io.Description, State: null,
+      Result: io.Result, Timestamp: io.Timestamp, Comments: io.Comments,
+      Order: io.Order, Version: io.Version, SubsystemId: io.SubsystemId
     }))
 
-    return NextResponse.json({
-      Ios: transformedIos
-    })
-
+    return res.json({ Ios: transformedIos })
   } catch (error) {
     console.error('Error fetching subsystem IOs:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch subsystem IOs' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to fetch subsystem IOs' })
   }
 }

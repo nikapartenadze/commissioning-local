@@ -1,38 +1,26 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { sanitizeComment, createTimestamp } from '@/lib/services/io-test-service'
 
-interface RouteParams {
-  params: Promise<{ id: string }>
-}
-
 /**
- * GET /api/ios/[id]
- * Get single IO by ID with current PLC state
+ * GET /api/ios/:id
  */
-export async function GET(
-  request: NextRequest,
-  { params }: RouteParams
-) {
+export async function GET(req: Request, res: Response) {
   try {
-    const { id } = await params
-    const ioId = parseInt(id)
+    const ioId = parseInt(req.params.id as string)
 
     if (isNaN(ioId)) {
-      return NextResponse.json({ error: 'Invalid IO ID' }, { status: 400 })
+      return res.status(400).json({ error: 'Invalid IO ID' })
     }
 
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
-      return NextResponse.json({ error: 'IO not found' }, { status: 404 })
+      return res.status(404).json({ error: 'IO not found' })
     }
 
-    // Get current PLC state
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)
 
@@ -54,59 +42,45 @@ export async function GET(
       isFailed: io.Result === 'Failed'
     }
 
-    return NextResponse.json(ioWithState)
+    return res.json(ioWithState)
   } catch (error) {
     console.error('Error fetching IO:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch IO' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to fetch IO' })
   }
 }
 
 /**
- * PUT /api/ios/[id]
- * Update IO result and/or comments
+ * PUT /api/ios/:id
  */
-export async function PUT(
-  request: NextRequest,
-  { params }: RouteParams
-) {
+export async function PUT(req: Request, res: Response) {
   try {
-    const { id } = await params
-    const ioId = parseInt(id)
+    const ioId = parseInt(req.params.id as string)
 
     if (isNaN(ioId)) {
-      return NextResponse.json({ error: 'Invalid IO ID' }, { status: 400 })
+      return res.status(400).json({ error: 'Invalid IO ID' })
     }
 
-    const body = await request.json()
+    const body = req.body
     const { result, comments, currentUser } = body
 
-    // Validate comment length
     if (comments && comments.length > 500) {
-      return NextResponse.json(
-        { error: 'Comment must be 500 characters or fewer' },
-        { status: 400 }
-      )
+      return res.status(400).json({ error: 'Comment must be 500 characters or fewer' })
     }
 
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
-      return NextResponse.json({ error: 'IO not found' }, { status: 404 })
+      return res.status(404).json({ error: 'IO not found' })
     }
 
-    // Block testing if device is not installed
-    // Allow if no installation data (null) — local slot modules, untracked devices
     if (io.InstallationStatus && io.InstallationStatus !== 'complete') {
-      return NextResponse.json(
-        { error: 'Cannot test: device is not fully installed', installationStatus: io.InstallationStatus, installationPercent: io.InstallationPercent },
-        { status: 422 }
-      )
+      return res.status(422).json({
+        error: 'Cannot test: device is not fully installed',
+        installationStatus: io.InstallationStatus,
+        installationPercent: io.InstallationPercent
+      })
     }
 
-    // Get current PLC state
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)
     const plcState = tag?.state
@@ -114,7 +88,6 @@ export async function PUT(
     const sanitizedComments = sanitizeComment(comments)
     const timestamp = createTimestamp()
 
-    // Update IO and create history in transaction
     const newVersion = (io.Version ?? 0) + 1
     const updatedResult = result !== undefined ? result : io.Result
     const updatedComments = sanitizedComments !== undefined ? sanitizedComments : io.Comments
@@ -132,7 +105,6 @@ export async function PUT(
 
     const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
-    // Queue for cloud sync + attempt immediate sync
     try {
       const syncResult = db.prepare(
         'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -143,11 +115,10 @@ export async function PUT(
         (sanitizedComments !== undefined ? sanitizedComments : io.Comments) || null,
         plcState ?? null,
         new Date().toISOString(),
-        newVersion - 1 // Pre-increment version to match cloud
+        newVersion - 1
       )
       const pendingSyncId = syncResult.lastInsertRowid
 
-      // Track this IO so SSE doesn't echo it back
       try {
         const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
         getCloudSseClient()?.trackPushedId(ioId)
@@ -162,7 +133,7 @@ export async function PUT(
           comments: (sanitizedComments !== undefined ? sanitizedComments : io.Comments) || null,
           testedBy: currentUser || null,
           state: plcState ?? null,
-          version: newVersion - 1, // Send pre-increment version to match cloud
+          version: newVersion - 1,
           timestamp: new Date().toISOString(),
         })
         if (synced) {
@@ -175,7 +146,6 @@ export async function PUT(
       console.error('[IO Update] Failed to create PendingSync:', syncError)
     }
 
-    // Broadcast to all connected browsers via WebSocket
     try {
       await fetch(getWsBroadcastUrl(), {
         method: 'POST',
@@ -193,7 +163,7 @@ export async function PUT(
       // WebSocket broadcast is best-effort
     }
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       io: {
         id: updatedIo.id,
@@ -210,9 +180,6 @@ export async function PUT(
     })
   } catch (error) {
     console.error('Error updating IO:', error)
-    return NextResponse.json(
-      { error: 'Failed to update IO' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to update IO' })
   }
 }

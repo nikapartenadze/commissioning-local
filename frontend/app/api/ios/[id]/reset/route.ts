@@ -1,45 +1,24 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
-import { requireAuth } from '@/lib/auth/middleware'
-
-interface RouteParams {
-  params: Promise<{ id: string }>
-}
 
 /**
- * POST /api/ios/[id]/reset
- * Reset/clear IO test result to null
- *
- * Request body (optional):
- * {
- *   currentUser?: string
- * }
+ * POST /api/ios/:id/reset
  */
-export async function POST(
-  request: NextRequest,
-  { params }: RouteParams
-) {
-  const authError = requireAuth(request)
-  if (authError) return authError
-
+export async function POST(req: Request, res: Response) {
   try {
-    const { id } = await params
-    const ioId = parseInt(id)
+    const ioId = parseInt(req.params.id as string)
 
     if (isNaN(ioId)) {
-      return NextResponse.json({ error: 'Invalid IO ID' }, { status: 400 })
+      return res.status(400).json({ error: 'Invalid IO ID' })
     }
 
     let currentUser = 'Unknown'
     try {
-      const body = await request.json()
-      if (body.currentUser) {
-        currentUser = body.currentUser
+      if (req.body && req.body.currentUser) {
+        currentUser = req.body.currentUser
       }
     } catch {
       // Empty body is OK
@@ -48,16 +27,14 @@ export async function POST(
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
-      return NextResponse.json({ error: 'IO not found' }, { status: 404 })
+      return res.status(404).json({ error: 'IO not found' })
     }
 
-    // Check if already cleared
     const hadComments = !!io.Comments
     const hadResult = !!io.Result
 
     if (!hadComments && !hadResult) {
-      // Already cleared, nothing to do
-      return NextResponse.json({
+      return res.json({
         success: true,
         message: 'IO already cleared',
         io: {
@@ -75,12 +52,10 @@ export async function POST(
       })
     }
 
-    // Get current PLC state
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)
     const plcState = tag?.state
 
-    // Build history comment
     let historyComment: string | null = null
     if (hadResult && hadComments) {
       historyComment = io.Comments
@@ -93,7 +68,6 @@ export async function POST(
     const timestamp = createTimestamp()
     const newVersion = (io.Version ?? 0) + 1
 
-    // Clear IO and create history in transaction
     let testHistoryId: number | bigint = 0
     const txn = db.transaction(() => {
       db.prepare(
@@ -107,7 +81,6 @@ export async function POST(
     })
     txn()
 
-    // Create PendingSync entry as fallback, then attempt immediate cloud sync
     try {
       const syncResult = db.prepare(
         'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -118,17 +91,15 @@ export async function POST(
         historyComment || null,
         plcState ?? null,
         new Date().toISOString(),
-        newVersion - 1 // Pre-increment version to match cloud
+        newVersion - 1
       )
       const pendingSyncId = syncResult.lastInsertRowid
 
-      // Track this IO so SSE doesn't echo it back
       try {
         const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
         getCloudSseClient()?.trackPushedId(ioId)
       } catch {}
 
-      // Attempt immediate sync
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
         const syncService = getCloudSyncService()
@@ -155,7 +126,6 @@ export async function POST(
       console.error('[Reset] Failed to create PendingSync:', syncError)
     }
 
-    // Broadcast to all connected browsers via WebSocket
     try {
       await fetch(getWsBroadcastUrl(), {
         method: 'POST',
@@ -175,7 +145,7 @@ export async function POST(
 
     console.log(`Test result cleared for IO ${ioId} by ${currentUser}`)
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       message: 'IO result cleared',
       io: {
@@ -200,9 +170,6 @@ export async function POST(
     })
   } catch (error) {
     console.error('Error resetting IO:', error)
-    return NextResponse.json(
-      { error: 'Failed to reset IO' },
-      { status: 500 }
-    )
+    return res.status(500).json({ error: 'Failed to reset IO' })
   }
 }
