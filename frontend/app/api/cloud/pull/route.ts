@@ -289,10 +289,12 @@ export async function POST(req: Request, res: Response) {
               insertHistoryStmt.run(
                 h.ioId,
                 h.result ?? null,
-                h.timestamp,
-                h.comments ?? null,
                 h.testedBy ?? null,
+                h.comments ?? null,
+                h.failureMode ?? null,
                 h.state ?? null,
+                h.timestamp,
+                h.source ?? 'cloud',
               )
               historiesPulled++
             } catch {
