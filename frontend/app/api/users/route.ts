@@ -1,8 +1,5 @@
-export const dynamic = 'force-dynamic';
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-import { withAdmin } from '@/lib/auth/middleware'
 import { hashPin } from '@/lib/auth/password'
 
 interface UserRow {
@@ -15,7 +12,7 @@ interface UserRow {
 }
 
 // GET /api/users — list all users (admin only)
-export const GET = withAdmin(async () => {
+export async function GET(req: Request, res: Response) {
   const rows = db.prepare(
     'SELECT id, FullName, IsAdmin, IsActive, CreatedAt, LastUsedAt FROM Users ORDER BY FullName ASC'
   ).all() as UserRow[]
@@ -29,26 +26,25 @@ export const GET = withAdmin(async () => {
     lastUsedAt: r.LastUsedAt,
   }))
 
-  return NextResponse.json(users)
-})
+  return res.json(users)
+}
 
 // POST /api/users — create a new user (admin only)
-export const POST = withAdmin(async (request: NextRequest) => {
-  const body = await request.json()
+export async function POST(req: Request, res: Response) {
+  const body = req.body
   const { fullName, pin } = body
 
   if (!fullName || typeof fullName !== 'string' || !fullName.trim()) {
-    return NextResponse.json({ message: 'Full name is required' }, { status: 400 })
+    return res.status(400).json({ message: 'Full name is required' })
   }
 
   if (!pin || typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
-    return NextResponse.json({ message: 'PIN must be exactly 6 digits' }, { status: 400 })
+    return res.status(400).json({ message: 'PIN must be exactly 6 digits' })
   }
 
-  // Check for duplicate name
   const existing = db.prepare('SELECT id FROM Users WHERE FullName = ?').get(fullName.trim())
   if (existing) {
-    return NextResponse.json({ message: 'A user with this name already exists' }, { status: 409 })
+    return res.status(409).json({ message: 'A user with this name already exists' })
   }
 
   const hashedPin = await hashPin(pin)
@@ -66,5 +62,5 @@ export const POST = withAdmin(async (request: NextRequest) => {
     createdAt: now,
   }
 
-  return NextResponse.json(user, { status: 201 })
-})
+  return res.status(201).json(user)
+}

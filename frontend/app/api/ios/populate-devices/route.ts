@@ -1,9 +1,7 @@
-export const dynamic = 'force-dynamic'
-
-import { NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 
-export async function POST() {
+export async function POST(req: Request, res: Response) {
   try {
     const ios = db.prepare(
       "SELECT id, Name FROM Ios WHERE Name IS NOT NULL"
@@ -33,16 +31,13 @@ export async function POST() {
     })
     txn()
 
-    return NextResponse.json({
+    return res.json({
       success: true,
       updatedCount,
       deviceGroups: groups.size,
     })
   } catch (error) {
     console.error('Failed to populate device names:', error)
-    return NextResponse.json(
-      { success: false, error: 'Failed to populate device names' },
-      { status: 500 }
-    )
+    return res.status(500).json({ success: false, error: 'Failed to populate device names' })
   }
 }

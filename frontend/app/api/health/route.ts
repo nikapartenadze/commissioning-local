@@ -1,16 +1,14 @@
-import { NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-
-export const dynamic = 'force-dynamic'
 
 const SERVER_START_TIME = Date.now().toString()
 
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   try {
     // Check database connectivity
     db.prepare('SELECT 1').get()
 
-    return NextResponse.json({
+    return res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
       database: 'connected',
@@ -18,14 +16,11 @@ export async function GET() {
     })
   } catch (error) {
     console.error('Health check failed:', error)
-    return NextResponse.json(
-      {
-        status: 'unhealthy',
-        timestamp: new Date().toISOString(),
-        database: 'disconnected',
-        error: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 503 }
-    )
+    return res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      database: 'disconnected',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    })
   }
 }

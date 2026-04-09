@@ -1,12 +1,5 @@
-export const dynamic = 'force-dynamic';
+import { Request, Response } from 'express'
 
-import { NextResponse } from 'next/server'
-
-export async function GET() {
-  // Return empty modules list - network diagnostics not yet implemented in Node.js
-  return NextResponse.json({
-    success: true,
-    modules: [],
-    timestamp: new Date().toISOString(),
-  })
+export async function GET(req: Request, res: Response) {
+  return res.json({ success: true, modules: [], timestamp: new Date().toISOString() })
 }

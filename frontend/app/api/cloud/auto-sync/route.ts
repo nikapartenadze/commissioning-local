@@ -1,26 +1,17 @@
-/**
- * Auto-Sync API Route
- *
- * POST   - Start auto-sync
- * DELETE - Stop auto-sync
- * GET    - Get auto-sync status
- */
-
-import { NextRequest, NextResponse } from 'next/server'
+import { Request, Response } from 'express'
 import { startAutoSync, stopAutoSync, getAutoSyncService } from '@/lib/cloud/auto-sync'
 import type { AutoSyncConfig } from '@/lib/cloud/auto-sync'
 
-// POST /api/cloud/auto-sync — start auto-sync
-export async function POST(request: NextRequest) {
+export async function POST(req: Request, res: Response) {
   try {
     let config: Partial<AutoSyncConfig> = {}
 
-    // Allow optional config override in request body
     try {
-      const body = await request.json()
-      if (body.pushIntervalMs) config.pushIntervalMs = body.pushIntervalMs
-      if (body.enabled !== undefined) config.enabled = body.enabled
-      if (body.maxRetries) config.maxRetries = body.maxRetries
+      if (req.body) {
+        if (req.body.pushIntervalMs) config.pushIntervalMs = req.body.pushIntervalMs
+        if (req.body.enabled !== undefined) config.enabled = req.body.enabled
+        if (req.body.maxRetries) config.maxRetries = req.body.maxRetries
+      }
     } catch {
       // No body or invalid JSON — use defaults
     }
@@ -28,30 +19,28 @@ export async function POST(request: NextRequest) {
     const service = startAutoSync(config)
     const status = await service.getStatus()
 
-    return NextResponse.json({ success: true, message: 'Auto-sync started', status })
+    return res.json({ success: true, message: 'Auto-sync started', status })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
-    return NextResponse.json({ success: false, error: msg }, { status: 500 })
+    return res.status(500).json({ success: false, error: msg })
   }
 }
 
-// DELETE /api/cloud/auto-sync — stop auto-sync
-export async function DELETE() {
+export async function DELETE(req: Request, res: Response) {
   try {
     stopAutoSync()
-    return NextResponse.json({ success: true, message: 'Auto-sync stopped' })
+    return res.json({ success: true, message: 'Auto-sync stopped' })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
-    return NextResponse.json({ success: false, error: msg }, { status: 500 })
+    return res.status(500).json({ success: false, error: msg })
   }
 }
 
-// GET /api/cloud/auto-sync — get status
-export async function GET() {
+export async function GET(req: Request, res: Response) {
   try {
     const service = getAutoSyncService()
     if (!service) {
-      return NextResponse.json({
+      return res.json({
         running: false,
         config: null,
         lastPushAt: null,
@@ -63,9 +52,9 @@ export async function GET() {
     }
 
     const status = await service.getStatus()
-    return NextResponse.json(status)
+    return res.json(status)
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
-    return NextResponse.json({ success: false, error: msg }, { status: 500 })
+    return res.status(500).json({ success: false, error: msg })
   }
 }
