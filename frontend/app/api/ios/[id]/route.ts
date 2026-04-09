@@ -91,15 +91,17 @@ export async function PUT(req: Request, res: Response) {
     const newVersion = (io.Version ?? 0) + 1
     const updatedResult = result !== undefined ? result : io.Result
     const updatedComments = sanitizedComments !== undefined ? sanitizedComments : io.Comments
+    // Preserve original test timestamp on comment-only updates
+    const updatedTimestamp = result !== undefined ? timestamp : (io.Timestamp || timestamp)
 
     const txn = db.transaction(() => {
       db.prepare(
         'UPDATE Ios SET Result = ?, Comments = ?, Timestamp = ?, Version = ? WHERE id = ?'
-      ).run(updatedResult, updatedComments, timestamp, newVersion, ioId)
+      ).run(updatedResult, updatedComments, updatedTimestamp, newVersion, ioId)
 
       db.prepare(
-        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(ioId, result ?? io.Result ?? 'Updated', timestamp, io.Comments, plcState ?? null, currentUser ?? 'Unknown')
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(ioId, result ?? io.Result ?? 'Updated', timestamp, updatedComments, plcState ?? null, currentUser ?? 'Unknown', null, 'local')
     })
     txn()
 
