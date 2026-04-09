@@ -54,6 +54,7 @@
     "react-dom": "^18.3.1",
     "react-joyride": "^2.9.3",
     "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.14.0",
     "recharts": "^2.12.7",
     "tailwind-merge": "^2.5.2",
     "tailwindcss-animate": "^1.0.7",
@@ -61,6 +62,11 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@remotion/cli": "^4.0.438",
+    "@remotion/google-fonts": "^4.0.438",
+    "@remotion/layout-utils": "^4.0.438",
+    "@remotion/media": "^4.0.438",
+    "@remotion/transitions": "^4.0.438",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.5.0",
@@ -71,18 +77,14 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^8.2.2",
     "eslint": "^9.37.0",
+    "playwright": "^1.58.2",
     "postcss": "^8.4.41",
     "prisma": "^5.19.0",
+    "remotion": "^4.0.438",
     "tailwindcss": "^3.4.10",
     "tsx": "^4.21.0",
     "typescript": "^5.5.4",
-    "vitest": "^4.1.0",
-    "@remotion/cli": "^4.0.438",
-    "@remotion/google-fonts": "^4.0.438",
-    "@remotion/layout-utils": "^4.0.438",
-    "@remotion/media": "^4.0.438",
-    "@remotion/transitions": "^4.0.438",
-    "remotion": "^4.0.438",
-    "playwright": "^1.58.2"
+    "vite": "^8.0.8",
+    "vitest": "^4.1.0"
   }
 }
