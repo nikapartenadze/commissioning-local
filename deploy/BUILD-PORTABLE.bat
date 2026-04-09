@@ -15,6 +15,8 @@ set "TEMP_DIR=%PROJECT_DIR%\temp_build"
 set "NODE_VER=v20.20.1"
 set "NODE_DIR_NAME=node-%NODE_VER%-win-x64"
 set "NODE_URL=https://nodejs.org/dist/%NODE_VER%/%NODE_DIR_NAME%.zip"
+set "SQLITE3_VER=12.8.0"
+set "NODE_ABI=115"
 set "PLCTAG_VER=v2.6.15"
 set "PLCTAG_URL=https://github.com/libplctag/libplctag/releases/download/%PLCTAG_VER%/libplctag_%PLCTAG_VER:~1%_windows_x64.zip"
 
@@ -194,16 +196,12 @@ REM Prisma schema (needed by @prisma/client at runtime)
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\prisma" "%OUTPUT_DIR%\app\prisma"
 
 REM better-sqlite3 — download prebuilt native binary for bundled Node.js
-echo   Downloading prebuilt better-sqlite3 for Node.js %NODE_VER%...
-set "SQLITE3_VER="
-for /f "tokens=*" %%v in ('"%OUTPUT_DIR%\node\node.exe" -e "process.stdout.write(require('%OUTPUT_DIR:\=/%/app/dist-server/node_modules/better-sqlite3/package.json').version)"') do set "SQLITE3_VER=%%v"
-set "NODE_ABI="
-for /f "tokens=*" %%a in ('"%OUTPUT_DIR%\node\node.exe" -e "process.stdout.write(String(process.versions.modules))"') do set "NODE_ABI=%%a"
-echo   better-sqlite3 v!SQLITE3_VER!, Node ABI !NODE_ABI!
-set "PREBUILT_URL=https://github.com/WiseLibs/better-sqlite3/releases/download/v!SQLITE3_VER!/better-sqlite3-v!SQLITE3_VER!-node-v!NODE_ABI!-win32-x64.tar.gz"
+REM SQLITE3_VER and NODE_ABI are set at the top of this script
+echo   Downloading prebuilt better-sqlite3 v%SQLITE3_VER% for Node.js %NODE_VER% (ABI %NODE_ABI%)...
+set "PREBUILT_URL=https://github.com/WiseLibs/better-sqlite3/releases/download/v%SQLITE3_VER%/better-sqlite3-v%SQLITE3_VER%-node-v%NODE_ABI%-win32-x64.tar.gz"
 set "PREBUILT_TAR=%TEMP_DIR%\sqlite3-prebuilt.tar.gz"
-powershell -NoProfile -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '!PREBUILT_URL!' -OutFile '!PREBUILT_TAR!' }" 2>nul
-if exist "!PREBUILT_TAR!" (
+powershell -NoProfile -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%PREBUILT_URL%' -OutFile '%PREBUILT_TAR%' }" 2>nul
+if exist "%PREBUILT_TAR%" (
     pushd "%TEMP_DIR%"
     tar xzf sqlite3-prebuilt.tar.gz 2>nul
     if exist "build\Release\better_sqlite3.node" (
