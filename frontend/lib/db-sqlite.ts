@@ -35,7 +35,10 @@ try {
     'ALTER TABLE Ios ADD COLUMN InstallationStatus TEXT',
     'ALTER TABLE Ios ADD COLUMN InstallationPercent REAL',
     'ALTER TABLE Ios ADD COLUMN PoweredUp INTEGER',
+    'ALTER TABLE Ios ADD COLUMN TestedBy TEXT',
+    'ALTER TABLE Ios ADD COLUMN IoNumber TEXT',
     'ALTER TABLE L2Columns ADD COLUMN Description TEXT',
+    'ALTER TABLE TestHistories ADD COLUMN Source TEXT',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
@@ -85,7 +88,9 @@ export function initializeSchema() {
       ClarificationNote TEXT,
       InstallationStatus TEXT,
       InstallationPercent REAL,
-      PoweredUp INTEGER
+      PoweredUp INTEGER,
+      TestedBy TEXT,
+      IoNumber TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_ios_subsystemid ON Ios(SubsystemId);
     CREATE INDEX IF NOT EXISTS idx_ios_result ON Ios(Result);
