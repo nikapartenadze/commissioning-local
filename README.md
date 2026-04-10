@@ -14,7 +14,7 @@ Industrial I/O commissioning application for testing and validating PLC Input/Ou
 
 ## Prerequisites
 
-**For factory deployment:** None — the portable build bundles everything (Node.js, plctag.dll).
+**For factory deployment:** Node.js (any recent version) — [download from nodejs.org](https://nodejs.org). Install once on the server PC, tablets need nothing.
 
 **For development:** Node.js 20+ ([download](https://nodejs.org)) and `libplctag.so` on Linux ([releases](https://github.com/libplctag/libplctag/releases)).
 
@@ -110,38 +110,41 @@ Requires `PLC_IP` and `PLC_PATH` environment variables or a running PLC on the n
 
 ## Production Deployment (Windows Factory PCs)
 
-The app is deployed as a **portable folder** — copy to the server, double-click `START.bat`. No installs required on the target machine. Node.js, plctag.dll, and all dependencies are bundled.
+The app is deployed as a **portable folder** (~10 MB zipped). Node.js must be installed on the server PC; tablets just connect via browser.
 
 ### Building the Portable Distribution
 
-On any Windows PC with internet access (or Node.js installed):
+On any Windows PC with Node.js installed:
 
 ```
 deploy\BUILD-PORTABLE.bat
 ```
 
-The script automatically downloads and bundles:
-- **Node.js runtime** (portable, no installer)
-- **plctag.dll** (PLC native library)
-- All npm dependencies, Prisma client, Next.js standalone build
+The script compiles the app, bundles plctag.dll, and installs production dependencies with native modules compiled for the current Node.js version. Output: `portable/` folder.
 
 ### Deploying to the Factory Server
 
-1. Download the release zip and unzip it to any folder (e.g., `C:\IOCheckout`)
-2. Double-click `START.bat`
+1. Install Node.js on the factory PC from [nodejs.org](https://nodejs.org) (any recent version)
+2. Copy the `portable/` folder to the PC (e.g., `C:\IOCheckout`)
+3. Double-click **SETUP.bat** once (compiles native modules for that PC's Node.js + sets up firewall)
+4. Double-click **START.bat**
+5. Tablets open `http://SERVER_IP:3000` in their browser — nothing else needed
 
-That's it. Each technician can run their own copy — no dedicated server needed. On first run, START.bat automatically:
-- Opens firewall port 3000 (prompts for admin permission once)
-- Starts the app (database, admin user, and diagnostic data are created on first login)
+### Updating the App
+
+1. Stop the running app (Ctrl+C)
+2. Replace the `app/` folder with the new version
+3. Run **SETUP.bat** again (recompiles native modules if needed)
+4. Run **START.bat**
 
 ### Running in Production
 
 | Script | What it does |
 |--------|-------------|
-| `START.bat` | Starts the app (close the window to stop) |
+| `START.bat` | Starts the app (Ctrl+C to stop) |
+| `SETUP.bat` | First-time setup: npm install + firewall (run once per update) |
 | `STATUS.bat` | Shows if running, prints tablet access URLs |
 | `SETUP-FIREWALL.bat` | Open firewall ports (auto-runs on first start) |
-| `SEED-NETWORK.bat` | Load network topology test data (optional) |
 
 Technicians open `http://SERVER_IP:3000` on their tablets (run `STATUS.bat` to see the IP).
 
