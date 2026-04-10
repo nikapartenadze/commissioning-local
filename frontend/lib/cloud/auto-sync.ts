@@ -307,16 +307,35 @@ class AutoSyncService {
           })
 
           if (l2Resp.ok) {
+            const l2Data = await l2Resp.json()
+
+            // All records can be deleted — both successful and conflicted.
+            // Conflicts: cloud version wins; the next pull will bring correct data.
             const l2Ids = l2Pending.map((p: any) => p.id)
             const l2Placeholders = l2Ids.map(() => '?').join(',')
             db.prepare(`DELETE FROM L2PendingSyncs WHERE id IN (${l2Placeholders})`).run(...l2Ids)
-            console.log(`[AutoSync] Pushed ${l2Ids.length} L2 cell updates to cloud`)
+
+            const updatedCount = l2Data.updatedCount ?? l2Ids.length
+            const conflictCount = l2Data.conflictCount ?? 0
+            if (conflictCount > 0) {
+              console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud (${conflictCount} conflicts — cloud version wins, will pull correct data)`)
+            } else {
+              console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud`)
+            }
           } else {
             for (const p of l2Pending) {
               try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status}`, p.id) } catch {}
             }
           }
         }
+
+        // Clean up permanently failed L2PendingSync entries (retryCount > 100)
+        try {
+          const l2StaleResult = db.prepare('DELETE FROM L2PendingSyncs WHERE RetryCount > 100').run()
+          if (l2StaleResult.changes > 0) {
+            console.warn(`[AutoSync] Cleaned up ${l2StaleResult.changes} permanently failed L2PendingSync entries (retryCount > 100)`)
+          }
+        } catch { /* ignore cleanup errors */ }
       } catch { /* ignore L2 sync errors */ }
 
     } catch (error) {
