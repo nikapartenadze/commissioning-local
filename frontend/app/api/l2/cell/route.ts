@@ -64,14 +64,44 @@ export async function POST(req: Request, res: Response) {
 }
 
 async function tryInstantL2Push(cloudDeviceId: number, cloudColumnId: number, value: string | null, version: number, updatedBy: string | null, pendingSyncId: number | null) {
+  const MAX_ATTEMPTS = 3
+
   try {
     const config = await configService.getConfig()
     if (!config.remoteUrl) return
-    const resp = await fetch(`${config.remoteUrl}/api/sync/l2/update`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.apiPassword || '' },
-      body: JSON.stringify({ updates: [{ deviceId: cloudDeviceId, columnId: cloudColumnId, value, version, updatedBy: updatedBy || 'unknown' }] }),
-      signal: AbortSignal.timeout(8000),
-    })
-    if (resp.ok && pendingSyncId) { try { stmts.deletePendingSync.run(pendingSyncId) } catch {} }
-  } catch {}
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        const resp = await fetch(`${config.remoteUrl}/api/sync/l2/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': config.apiPassword || '' },
+          body: JSON.stringify({ updates: [{ deviceId: cloudDeviceId, columnId: cloudColumnId, value, version, updatedBy: updatedBy || 'unknown' }] }),
+          signal: AbortSignal.timeout(10000),
+        })
+
+        if (resp.ok) {
+          if (pendingSyncId) { try { stmts.deletePendingSync.run(pendingSyncId) } catch {} }
+          return
+        }
+
+        if (resp.status === 401) {
+          console.warn(`[L2 Sync] Auth failure (401) pushing device ${cloudDeviceId} col ${cloudColumnId} — skipping retries`)
+          return
+        }
+
+        console.warn(`[L2 Sync] Attempt ${attempt + 1}/${MAX_ATTEMPTS} failed (HTTP ${resp.status}) for device ${cloudDeviceId} col ${cloudColumnId}`)
+      } catch (err) {
+        console.warn(`[L2 Sync] Attempt ${attempt + 1}/${MAX_ATTEMPTS} error for device ${cloudDeviceId} col ${cloudColumnId}:`, err instanceof Error ? err.message : err)
+      }
+
+      // Exponential backoff: 1s, 2s between retries
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)))
+      }
+    }
+
+    console.warn(`[L2 Sync] All ${MAX_ATTEMPTS} attempts exhausted for device ${cloudDeviceId} col ${cloudColumnId} — background sync will retry`)
+  } catch (err) {
+    console.warn('[L2 Sync] Unexpected error in instant push:', err instanceof Error ? err.message : err)
+  }
 }
