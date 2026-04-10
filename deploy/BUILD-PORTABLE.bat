@@ -5,28 +5,22 @@ echo ============================================================
 echo  IO Checkout Tool - Build Portable Distribution
 echo ============================================================
 echo.
-echo  Requires: Node.js installed on the target PC
-echo  Download: https://nodejs.org (any recent version)
-echo.
 
 set "PROJECT_DIR=%~dp0.."
 set "FRONTEND_DIR=%PROJECT_DIR%\frontend"
 set "OUTPUT_DIR=%PROJECT_DIR%\portable"
-set "TEMP_DIR=%PROJECT_DIR%\temp_build"
 
 set "PLCTAG_VER=v2.6.15"
 set "PLCTAG_URL=https://github.com/libplctag/libplctag/releases/download/%PLCTAG_VER%/libplctag_%PLCTAG_VER:~1%_windows_x64.zip"
 
 REM ══════════════════════════════════════════════════════════════
-REM  Step 1: Verify Node.js available for building
+REM  Step 1: Verify Node.js
 REM ══════════════════════════════════════════════════════════════
 echo [1/5] Checking Node.js...
 where node >nul 2>nul
 if %errorlevel% neq 0 (
-    echo.
-    echo   ERROR: Node.js is not installed.
-    echo   Download from https://nodejs.org and install it first.
-    echo.
+    echo   ERROR: Node.js is not installed on this build machine.
+    echo   Install from https://nodejs.org then re-run this script.
     pause
     exit /b 1
 )
@@ -37,19 +31,20 @@ REM ═════════════════════════�
 REM  Step 2: Download plctag.dll if missing
 REM ══════════════════════════════════════════════════════════════
 echo [2/5] Checking plctag.dll...
-if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
 if exist "%FRONTEND_DIR%\plctag.dll" (
     echo   Found
 ) else (
     echo   Downloading...
-    set "PLCTAG_ZIP=%TEMP_DIR%\libplctag.zip"
+    set "TEMP_DIR=%PROJECT_DIR%\temp_build"
+    if not exist "!TEMP_DIR!" mkdir "!TEMP_DIR!"
+    set "PLCTAG_ZIP=!TEMP_DIR!\libplctag.zip"
     curl -sL -o "!PLCTAG_ZIP!" "%PLCTAG_URL%"
     if exist "!PLCTAG_ZIP!" (
-        powershell -NoProfile -Command "Expand-Archive -Path '!PLCTAG_ZIP!' -DestinationPath '%TEMP_DIR%\plctag_extract' -Force" 2>nul
-        for /r "%TEMP_DIR%\plctag_extract" %%f in (plctag.dll) do (
+        powershell -NoProfile -Command "Expand-Archive -Path '!PLCTAG_ZIP!' -DestinationPath '!TEMP_DIR!\plctag_extract' -Force" 2>nul
+        for /r "!TEMP_DIR!\plctag_extract" %%f in (plctag.dll) do (
             copy "%%f" "%FRONTEND_DIR%\plctag.dll" >nul
         )
-        rmdir /s /q "%TEMP_DIR%\plctag_extract" 2>nul
+        rmdir /s /q "!TEMP_DIR!\plctag_extract" 2>nul
         del /q "!PLCTAG_ZIP!" 2>nul
     )
     if not exist "%FRONTEND_DIR%\plctag.dll" (
@@ -85,6 +80,11 @@ if exist "%OUTPUT_DIR%" rmdir /s /q "%OUTPUT_DIR%"
 mkdir "%OUTPUT_DIR%"
 mkdir "%OUTPUT_DIR%\app"
 
+REM ── Bundle node.exe from this machine (same binary = ABI match) ──
+echo   Bundling node.exe %NODE_VER%...
+for /f "tokens=*" %%p in ('where node') do set "NODE_EXE=%%p"
+copy "!NODE_EXE!" "%OUTPUT_DIR%\node.exe" >nul
+
 REM ── Compiled server + Vite output ──
 echo   Copying compiled app...
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\dist-server" "%OUTPUT_DIR%\app\dist-server"
@@ -106,13 +106,11 @@ del "%OUTPUT_DIR%\app\dist-server\database.db-wal" 2>nul
 del "%OUTPUT_DIR%\app\dist-server\database.db-shm" 2>nul
 
 REM ══════════════════════════════════════════════════════════════
-REM  Production node_modules — native modules compiled for
-REM  whatever Node.js version is installed (no ABI mismatch)
+REM  Production node_modules — native modules match bundled node
 REM ══════════════════════════════════════════════════════════════
 echo   Installing production dependencies...
 set "NM_DST=%OUTPUT_DIR%\app\dist-server"
 
-REM Create a minimal package.json with only runtime deps
 (
 echo {
 echo   "name": "io-checkout-runtime",
@@ -130,16 +128,13 @@ echo   }
 echo }
 ) > "%NM_DST%\package.json.runtime"
 
-REM Save original, swap in runtime-only version
 if exist "%NM_DST%\package.json" copy "%NM_DST%\package.json" "%NM_DST%\package.json.bak" >nul
 copy "%NM_DST%\package.json.runtime" "%NM_DST%\package.json" >nul
 
-REM npm install compiles native modules for the current Node.js
 pushd "%NM_DST%"
 call npm install --omit=dev
 popd
 
-REM Restore original package.json
 if exist "%NM_DST%\package.json.bak" (
     copy "%NM_DST%\package.json.bak" "%NM_DST%\package.json" >nul
     del "%NM_DST%\package.json.runtime" 2>nul
@@ -148,11 +143,14 @@ if exist "%NM_DST%\package.json.bak" (
     del "%NM_DST%\package.json.runtime" 2>nul
 )
 
-REM Verify better-sqlite3 works
-node -e "require('%NM_DST:\=/%/node_modules/better-sqlite3')" 2>nul
+REM Verify native modules work with bundled node
+"%OUTPUT_DIR%\node.exe" -e "require('%NM_DST:\=/%/node_modules/better-sqlite3')" 2>nul
 if %errorlevel% neq 0 (
-    echo   ERROR: better-sqlite3 failed to load. Run SETUP.bat on the target PC to fix.
+    echo   ERROR: better-sqlite3 does not load with bundled node.exe
+    pause
+    exit /b 1
 )
+echo   Native modules verified
 
 REM ── Create .env ──
 (
@@ -172,16 +170,19 @@ REM ── START.bat ──
 echo @echo off
 echo setlocal
 echo set "ROOT=%%~dp0"
+echo set "NODE=%%ROOT%%node.exe"
 echo set "APP=%%ROOT%%app"
 echo.
-echo REM ── Check Node.js ──
-echo where node ^>nul 2^>^&1
-echo if %%errorlevel%% neq 0 ^(
-echo     echo ERROR: Node.js is not installed.
-echo     echo Download from https://nodejs.org and install it first.
-echo     echo Then run SETUP.bat, then START.bat.
+echo if not exist "%%NODE%%" ^(
+echo     echo ERROR: node.exe not found. Re-extract the portable folder.
 echo     pause
 echo     exit /b 1
+echo ^)
+echo.
+echo REM ── Kill orphaned process on port 3000 ──
+echo for /f "tokens=5" %%%%p in ^('netstat -ano ^^^| findstr ":3000 " ^^^| findstr "LISTENING"'^) do ^(
+echo     echo Stopping previous instance ^(PID %%%%p^)...
+echo     taskkill /F /PID %%%%p ^>nul 2^>^&1
 echo ^)
 echo.
 echo REM ── Auto-setup firewall ──
@@ -215,63 +216,26 @@ echo echo   Press Ctrl+C to stop.
 echo echo ============================================================
 echo.
 echo cd /d "%%APP%%"
-echo node --max-old-space-size=256 --optimize-for-size dist-server\server-express.js
+echo "%%NODE%%" --max-old-space-size=256 --optimize-for-size dist-server\server-express.js
 echo echo.
 echo echo Server stopped.
 echo pause
 ) > "%OUTPUT_DIR%\START.bat"
 
-REM ── SETUP.bat — Run once on new PC to compile native modules ──
+REM ── STOP.bat ──
 (
 echo @echo off
-echo setlocal
-echo echo ============================================================
-echo echo  IO Checkout Tool - First-Time Setup
-echo echo ============================================================
-echo echo.
-echo.
-echo where node ^>nul 2^>^&1
-echo if %%errorlevel%% neq 0 ^(
-echo     echo ERROR: Node.js is not installed.
-echo     echo Download from https://nodejs.org and install it first.
-echo     pause
-echo     exit /b 1
+echo echo Stopping IO Checkout Tool...
+echo for /f "tokens=5" %%%%p in ^('netstat -ano ^^^| findstr ":3000 " ^^^| findstr "LISTENING"'^) do ^(
+echo     taskkill /F /PID %%%%p ^>nul 2^>^&1
+echo     echo   Stopped ^(PID %%%%p^)
 echo ^)
-echo.
-echo for /f "tokens=*" %%%%v in ^('node --version'^) do echo   Node.js: %%%%v
-echo echo.
-echo.
-echo echo [1/2] Installing native modules for this PC...
-echo cd /d "%%~dp0app\dist-server"
-echo call npm install --omit=dev
-echo if %%errorlevel%% neq 0 ^(
-echo     echo ERROR: npm install failed.
-echo     pause
-echo     exit /b 1
+echo for /f "tokens=5" %%%%p in ^('netstat -ano ^^^| findstr ":3102 " ^^^| findstr "LISTENING"'^) do ^(
+echo     taskkill /F /PID %%%%p ^>nul 2^>^&1
 echo ^)
-echo echo.
-echo.
-echo echo [2/2] Setting up firewall...
-echo netsh advfirewall firewall show rule name="IO Checkout - App" ^>nul 2^>^&1
-echo if %%errorlevel%% neq 0 ^(
-echo     net session ^>nul 2^>^&1
-echo     if %%errorlevel%% neq 0 ^(
-echo         powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%%~dp0SETUP-FIREWALL.bat'" 2^>nul
-echo     ^) else ^(
-echo         netsh advfirewall firewall add rule name="IO Checkout - App" dir=in action=allow protocol=tcp localport=3000 ^>nul
-echo     ^)
-echo     echo   Firewall rule added.
-echo ^) else ^(
-echo     echo   Firewall already configured.
-echo ^)
-echo echo.
-echo.
-echo echo ============================================================
-echo echo  Setup complete! Run START.bat to launch.
-echo echo ============================================================
-echo echo.
+echo echo Done.
 echo pause
-) > "%OUTPUT_DIR%\SETUP.bat"
+) > "%OUTPUT_DIR%\STOP.bat"
 
 REM ── STATUS.bat ──
 (
@@ -301,43 +265,28 @@ REM ── README.txt ──
 echo IO Checkout Tool
 echo ================
 echo.
-echo PREREQUISITES:
-echo   Install Node.js from https://nodejs.org ^(any recent version^)
+echo FIRST TIME:  Double-click START.bat
+echo DAILY USE:   START.bat to launch, Ctrl+C to stop
+echo STATUS:      Run STATUS.bat to check if running
 echo.
-echo FIRST TIME ON A NEW PC:
-echo   1. Install Node.js
-echo   2. Double-click SETUP.bat  ^(compiles native modules + firewall^)
-echo   3. Double-click START.bat
-echo.
-echo DAILY USE:
-echo   START.bat    - Launch the app
-echo   STATUS.bat   - Check if running + show tablet URLs
-echo   Ctrl+C       - Stop the app
-echo.
-echo UPDATING:
-echo   1. Stop the app ^(Ctrl+C^)
-echo   2. Replace the app\ folder with the new version
-echo   3. Run SETUP.bat again ^(recompiles native modules^)
-echo   4. Run START.bat
+echo No installation needed. Just extract and run START.bat.
 echo.
 echo Access: http://localhost:3000 ^(or your IP on tablets^)
-echo Port:   3000 ^(app + WebSocket on /ws^)
 ) > "%OUTPUT_DIR%\README.txt"
+
+REM ── Show final size ──
+set "TOTAL_SIZE=0"
+for /f "tokens=3" %%s in ('dir /s "%OUTPUT_DIR%" ^| findstr "File(s)"') do set "TOTAL_SIZE=%%s"
 
 echo.
 echo ============================================================
 echo  BUILD COMPLETE
 echo ============================================================
 echo.
-echo Output: %OUTPUT_DIR%
+echo Output:  %OUTPUT_DIR%
+echo Node.js: %NODE_VER%
 echo.
-echo Deployment steps:
-echo   1. Install Node.js on factory PC ^(https://nodejs.org^)
-echo   2. Copy the portable\ folder to the PC
-echo   3. Run SETUP.bat once ^(compiles native modules^)
-echo   4. Run START.bat to launch
-echo.
-echo Tablets just open http://^<PC-IP^>:3000 in their browser.
+echo No setup needed on target PC. Extract and run START.bat.
 echo.
 pause
 exit /b 0
