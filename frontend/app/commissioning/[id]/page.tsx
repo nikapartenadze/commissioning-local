@@ -1413,7 +1413,7 @@ export default function CommissioningPage() {
       const response = await authFetch(API_ENDPOINTS.ioComment(io.id), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ comments: comment })
+        body: JSON.stringify({ comments: comment, currentUser: currentUser?.fullName || 'Unknown' })
       })
 
       if (response.ok) {
