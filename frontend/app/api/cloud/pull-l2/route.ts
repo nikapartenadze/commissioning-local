@@ -26,7 +26,6 @@ export async function POST(req: Request, res: Response) {
     }
 
     const result = db.transaction(() => {
-      db.exec('DELETE FROM L2PendingSyncs')
       db.exec('DELETE FROM L2CellValues')
       db.exec('DELETE FROM L2Devices')
       db.exec('DELETE FROM L2Columns')
@@ -43,9 +42,9 @@ export async function POST(req: Request, res: Response) {
         sheetIdMap.set(sheet.id, result.lastInsertRowid as number)
         sheetsCount++
         if (sheet.columns) {
-          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired) VALUES (?, ?, ?, ?, ?, ?)')
+          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)')
           for (const col of sheet.columns) {
-            const colResult = insertCol.run(col.id, result.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0)
+            const colResult = insertCol.run(col.id, result.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
             columnIdMap.set(col.id, colResult.lastInsertRowid as number)
           }
         }

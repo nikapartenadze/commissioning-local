@@ -6,7 +6,7 @@ import { L2OverviewMatrix } from './l2-overview-matrix'
 import { Badge } from '@/components/ui/badge'
 import { authFetch } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2 } from 'lucide-react'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
 
@@ -163,6 +163,50 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
     }
   }, [])
 
+  const handleExport = useCallback(async () => {
+    if (!data || data.sheets.length === 0) return
+    const XLSX = await import('xlsx')
+    const wb = XLSX.utils.book_new()
+
+    for (const sheet of data.sheets) {
+      const sheetCols = data.columns
+        .filter(c => c.SheetId === sheet.id)
+        .sort((a, b) => a.DisplayOrder - b.DisplayOrder)
+      const sheetDevices = data.devices
+        .filter(d => d.SheetId === sheet.id)
+        .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
+
+      const headers = ['Device Name', 'MCM', 'Subsystem', ...sheetCols.map(c => c.Name)]
+      const rows = sheetDevices.map(device => {
+        const row: (string | null)[] = [device.DeviceName, device.Mcm, device.Subsystem]
+        for (const col of sheetCols) {
+          const cv = cellValues.get(`${device.id}-${col.id}`)
+          if (!cv?.Value || cv.Value === '') {
+            row.push('')
+          } else if (col.ColumnType === 'check') {
+            row.push(cv.Value === 'pass' ? 'Pass' : cv.Value === 'fail' ? 'Fail' : cv.Value)
+          } else {
+            row.push(cv.Value)
+          }
+        }
+        return row
+      })
+
+      const wsData = [headers, ...rows]
+      const ws = XLSX.utils.aoa_to_sheet(wsData)
+      ws['!cols'] = [
+        { wch: 25 }, { wch: 12 }, { wch: 15 },
+        ...sheetCols.map(c => ({
+          wch: c.ColumnType === 'check' ? 10 : c.ColumnType === 'notes' ? 20 : c.ColumnType === 'data' ? 15 : 15
+        }))
+      ]
+      XLSX.utils.book_append_sheet(wb, ws, (sheet.DisplayName || sheet.Name).slice(0, 31))
+    }
+
+    const date = new Date().toISOString().split('T')[0]
+    XLSX.writeFile(wb, `L2-Validation-${date}.xlsx`)
+  }, [data, cellValues])
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
@@ -298,6 +342,16 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
             <LayoutGrid className="h-3 w-3 inline mr-1" />Overview
           </button>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs gap-1"
+          onClick={handleExport}
+          disabled={!data || data.sheets.length === 0}
+        >
+          <Download className="h-3 w-3" />
+          Export
+        </Button>
         {viewMode === 'sheets' && (
           <Button
             variant={showGuide ? "default" : "outline"}
