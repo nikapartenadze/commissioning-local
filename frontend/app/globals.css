@@ -156,7 +156,7 @@
   opacity: 0.75;
 }
 
-/* Disabled rows — faulted device or not installed */
+/* Disabled rows — faulted device or not installed (no result) */
 .row-disabled {
   background-color: #d4d4d4 !important;
   color: #737373 !important;
@@ -175,6 +175,48 @@
 
 .dark .row-disabled:hover {
   background-color: #333333 !important;
+}
+
+/* Passed but not installed — green background, grayed out */
+.row-passed.row-disabled {
+  background-color: #22c55e !important;
+  color: #052e16 !important;
+  opacity: 0.45;
+}
+
+.row-passed.row-disabled:hover {
+  background-color: #16a34a !important;
+}
+
+.dark .row-passed.row-disabled {
+  background-color: #166534 !important;
+  color: #dcfce7 !important;
+  opacity: 0.4;
+}
+
+.dark .row-passed.row-disabled:hover {
+  background-color: #15803d !important;
+}
+
+/* Failed but not installed — red background, grayed out */
+.row-failed.row-disabled {
+  background-color: #ef4444 !important;
+  color: #450a0a !important;
+  opacity: 0.45;
+}
+
+.row-failed.row-disabled:hover {
+  background-color: #dc2626 !important;
+}
+
+.dark .row-failed.row-disabled {
+  background-color: #991b1b !important;
+  color: #fee2e2 !important;
+  opacity: 0.4;
+}
+
+.dark .row-failed.row-disabled:hover {
+  background-color: #b91c1c !important;
 }
 
 /* Drag-to-scroll */
