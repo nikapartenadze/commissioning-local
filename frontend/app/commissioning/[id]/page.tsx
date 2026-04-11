@@ -849,6 +849,14 @@ export default function CommissioningPage() {
             const isStateOnlyUpdate = update.Result === 'Not Tested' && !update.Timestamp && !update.Comments
 
             let updatedIo
+
+            // Skip state-only WebSocket updates while output is being fired —
+            // the 75ms tag reader would overwrite the fire command's state
+            const currentOutputFiringCheck = outputFiringInProgressRef.current
+            if (isStateOnlyUpdate && currentOutputFiringCheck[io.id]) {
+              return io // Keep current state, don't overwrite
+            }
+
             if (isStateOnlyUpdate) {
               // State-only update: only update the state, preserve result/timestamp/comments
               updatedIo = {
@@ -995,7 +1003,9 @@ export default function CommissioningPage() {
                 io.timestamp !== updated.timestamp || io.name !== updated.name ||
                 io.description !== updated.description) {
               changed = true
-              return { ...io, ...updated }
+              // Preserve WebSocket-delivered state if DB state is null/empty
+              const mergedState = updated.state || io.state
+              return { ...io, ...updated, state: mergedState }
             }
             return io
           })
@@ -1307,6 +1317,15 @@ export default function CommissioningPage() {
 
 
   const handleShowFireOutputDialog = (io: IoItem) => {
+    // Block if device not fully installed
+    if (io.installationStatus && io.installationStatus !== 'complete') {
+      toast({
+        title: "Cannot fire — device not installed",
+        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before firing outputs.`,
+        variant: "destructive"
+      })
+      return
+    }
     // Unmute the IO if it was muted — firing means the user wants to interact with it
     if (mutedIos.has(io.id)) {
       toggleMuteIo(io.id)
@@ -1466,8 +1485,27 @@ export default function CommissioningPage() {
       signalR.connect()
     }
 
-    // Reload IOs with PLC states after tag reader completes first cycle
-    setTimeout(() => loadIos(), 3000)
+    // Reload IOs with PLC states — retry until tag reader has cached states
+    const loadWithStates = async (attempt: number) => {
+      if (attempt > 5) return
+      try {
+        const response = await authFetch(`${API_ENDPOINTS.ios}?subsystemId=${subsystemId}`)
+        if (response.ok) {
+          const json = await response.json()
+          const data = (Array.isArray(json) ? json : json.ios) as IoItem[]
+          const hasStates = data.some(io => io.state === 'TRUE' || io.state === 'FALSE')
+          if (hasStates || attempt >= 5) {
+            // States available — update ios with fresh data including states
+            setIos(data)
+            setFilteredIos(data)
+          } else {
+            // Tag reader hasn't populated states yet — retry
+            setTimeout(() => loadWithStates(attempt + 1), 1500)
+          }
+        }
+      } catch {}
+    }
+    setTimeout(() => loadWithStates(1), 2000)
   }
 
   const handleTestConnection = async (): Promise<boolean> => {

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
+import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 
 const stmts = {
   getCell: db.prepare('SELECT id, Value, Version FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
@@ -13,6 +14,8 @@ const stmts = {
   countCompleted: db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.ColumnType = 'check' AND cv.Value IS NOT NULL AND cv.Value != ''`),
   updateDeviceChecks: db.prepare('UPDATE L2Devices SET CompletedChecks = ? WHERE id = ?'),
   deletePendingSync: db.prepare('DELETE FROM L2PendingSyncs WHERE id = ?'),
+  getCellForPush: db.prepare('SELECT Value, Version, UpdatedBy FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
+  getLatestPendingForCell: db.prepare('SELECT id FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ? ORDER BY id DESC LIMIT 1'),
 }
 
 export async function POST(req: Request, res: Response) {
@@ -53,7 +56,73 @@ export async function POST(req: Request, res: Response) {
     })()
 
     if (result.cloudDeviceId && result.cloudColumnId) {
-      tryInstantL2Push(result.cloudDeviceId, result.cloudColumnId, value ?? null, result.version - 1, updatedBy, result.pendingSyncId)
+      const cloudDeviceId = result.cloudDeviceId
+      const cloudColumnId = result.cloudColumnId
+      const key = `l2cell:${deviceId}-${columnId}`
+
+      enqueueSyncPush(key, async () => {
+        // Read the LATEST local state at push time — this is what makes rapid edits safe
+        const cell = stmts.getCellForPush.get(deviceId, columnId) as { Value: string | null; Version: number; UpdatedBy: string | null } | undefined
+        if (!cell) return
+
+        const config = await configService.getConfig()
+        if (!config.remoteUrl) return
+
+        let resp: globalThis.Response
+        try {
+          resp = await fetch(`${config.remoteUrl}/api/sync/l2/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': config.apiPassword || '' },
+            body: JSON.stringify({
+              updates: [{
+                deviceId: cloudDeviceId,
+                columnId: cloudColumnId,
+                value: cell.Value,
+                version: cell.Version - 1,
+                updatedBy: cell.UpdatedBy || 'unknown',
+              }],
+            }),
+            signal: AbortSignal.timeout(10000),
+          })
+        } catch (err) {
+          // Network error / timeout — background sync will retry
+          console.warn(`[L2 Sync] Network error pushing device ${cloudDeviceId} col ${cloudColumnId}:`, err instanceof Error ? err.message : err)
+          return
+        }
+
+        if (resp.status === 401) {
+          console.warn(`[L2 Sync] Auth failure (401) pushing device ${cloudDeviceId} col ${cloudColumnId}`)
+          return
+        }
+
+        if (!resp.ok) {
+          console.warn(`[L2 Sync] HTTP ${resp.status} pushing device ${cloudDeviceId} col ${cloudColumnId} — background sync will retry`)
+          return
+        }
+
+        const data = await resp.json().catch(() => null) as any
+        const wasUpdated = data?.updates?.some((u: any) => u.deviceId === cloudDeviceId && u.columnId === cloudColumnId)
+
+        if (wasUpdated) {
+          // Track this push so the SSE echo from cloud doesn't get re-applied locally
+          try {
+            const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
+            getCloudSseClient()?.trackPushedL2Id(cloudDeviceId, cloudColumnId)
+          } catch {}
+
+          // Cloud accepted our update — drop the latest pendingSync row for this cell
+          try {
+            const pending = stmts.getLatestPendingForCell.get(cloudDeviceId, cloudColumnId) as { id: number } | undefined
+            if (pending) stmts.deletePendingSync.run(pending.id)
+          } catch (err) {
+            console.warn(`[L2 Sync] Failed to clear pendingSync for device ${cloudDeviceId} col ${cloudColumnId}:`, err instanceof Error ? err.message : err)
+          }
+          return
+        }
+
+        // Conflict (or unknown shape) — leave pendingSync, background sync will retry
+        console.warn(`[L2 Sync] Push for device ${cloudDeviceId} col ${cloudColumnId} not in updates response — leaving pendingSync for background retry`)
+      })
     }
 
     return res.json({ success: true, cellId: result.cellId, version: result.version, completedChecks: result.completedChecks })
@@ -61,17 +130,4 @@ export async function POST(req: Request, res: Response) {
     console.error('[L2 Cell] Error:', error)
     return res.status(500).json({ error: 'Failed to save cell' })
   }
-}
-
-async function tryInstantL2Push(cloudDeviceId: number, cloudColumnId: number, value: string | null, version: number, updatedBy: string | null, pendingSyncId: number | null) {
-  try {
-    const config = await configService.getConfig()
-    if (!config.remoteUrl) return
-    const resp = await fetch(`${config.remoteUrl}/api/sync/l2/update`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.apiPassword || '' },
-      body: JSON.stringify({ updates: [{ deviceId: cloudDeviceId, columnId: cloudColumnId, value, version, updatedBy: updatedBy || 'unknown' }] }),
-      signal: AbortSignal.timeout(8000),
-    })
-    if (resp.ok && pendingSyncId) { try { stmts.deletePendingSync.run(pendingSyncId) } catch {} }
-  } catch {}
 }
