@@ -12,7 +12,8 @@ import type {
   UpdateIOMessage,
   CommentUpdateMessage,
   NetworkStatusChangedMessage,
-  ErrorEventMessage
+  ErrorEventMessage,
+  L2CellUpdatedMessage
 } from './types'
 
 // ============================================================================
@@ -58,6 +59,17 @@ export interface ErrorEvent {
   timestamp: Date
 }
 
+export interface L2CellUpdate {
+  cloudDeviceId: number
+  cloudColumnId: number
+  localDeviceId: number
+  localColumnId: number
+  value: string | null
+  version: number
+  updatedBy: string | null
+  updatedAt: string
+}
+
 export interface WebSocketConnectionOptions {
   url?: string
   reconnectInterval?: number
@@ -97,6 +109,8 @@ export interface WebSocketConnection {
   offCloudConnectionChange: (callback: (connected: boolean) => void) => void
   onDeviceFaultChanged: (callback: (tagName: string, faulted: boolean) => void) => void
   offDeviceFaultChanged: (callback: (tagName: string, faulted: boolean) => void) => void
+  onL2CellUpdate: (callback: (update: L2CellUpdate) => void) => void
+  offL2CellUpdate: (callback: (update: L2CellUpdate) => void) => void
 }
 
 // ============================================================================
@@ -156,6 +170,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const reconnectedCallbacksRef = useRef<Set<() => void>>(new Set())
   const cloudConnectionCallbacksRef = useRef<Set<(connected: boolean) => void>>(new Set())
   const deviceFaultCallbacksRef = useRef<Set<(tagName: string, faulted: boolean) => void>>(new Set())
+  const l2CellCallbacksRef = useRef<Set<(update: L2CellUpdate) => void>>(new Set())
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
@@ -341,6 +356,28 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
               cb(dfMsg.tagName, dfMsg.faulted)
             } catch (error) {
               console.error('[PlcWebSocket] Error in device fault callback:', error)
+            }
+          })
+          break
+        }
+
+        case 'L2CellUpdated': {
+          const l2Msg = message as L2CellUpdatedMessage
+          const update: L2CellUpdate = {
+            cloudDeviceId: l2Msg.cloudDeviceId,
+            cloudColumnId: l2Msg.cloudColumnId,
+            localDeviceId: l2Msg.localDeviceId,
+            localColumnId: l2Msg.localColumnId,
+            value: l2Msg.value,
+            version: l2Msg.version,
+            updatedBy: l2Msg.updatedBy,
+            updatedAt: l2Msg.updatedAt,
+          }
+          l2CellCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(update)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in L2 cell callback:', error)
             }
           })
           break
@@ -593,6 +630,14 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     deviceFaultCallbacksRef.current.delete(callback)
   }, [])
 
+  const onL2CellUpdate = useCallback((callback: (update: L2CellUpdate) => void) => {
+    l2CellCallbacksRef.current.add(callback)
+  }, [])
+
+  const offL2CellUpdate = useCallback((callback: (update: L2CellUpdate) => void) => {
+    l2CellCallbacksRef.current.delete(callback)
+  }, [])
+
   const onError = useCallback((callback: (event: ErrorEvent) => void) => {
     errorCallbacksRef.current.add(callback)
   }, [])
@@ -671,6 +716,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     offCloudConnectionChange,
     onDeviceFaultChanged,
     offDeviceFaultChanged,
+    onL2CellUpdate,
+    offL2CellUpdate,
   }
 }
 
