@@ -1,11 +1,11 @@
 import { Request, Response } from 'express'
 import fs from 'fs'
 import path from 'path'
-import { PrismaClient } from '@prisma/client'
+import Database from 'better-sqlite3'
 import { getBackupDbPath } from '@/lib/db/backup'
 
 export async function POST(req: Request, res: Response) {
-  let backupPrisma: PrismaClient | null = null
+  let backupDb: Database.Database | null = null
 
   try {
     const filename = req.params.filename as string
@@ -32,14 +32,16 @@ export async function POST(req: Request, res: Response) {
       return res.status(404).json({ success: false, error: 'Backup not found' })
     }
 
-    backupPrisma = new PrismaClient({ datasourceUrl: `file:${resolved}` })
+    backupDb = new Database(resolved, { readonly: true })
 
-    const pendingSyncs = await backupPrisma.pendingSync.findMany()
+    const pendingSyncs = backupDb.prepare('SELECT * FROM PendingSync').all() as any[]
     console.log(`[BackupSync] Found ${pendingSyncs.length} pending syncs in backup`)
 
-    const testHistories = await backupPrisma.testHistory.findMany({
-      include: { io: { select: { id: true, name: true, subsystemId: true } } },
-    })
+    const testHistories = backupDb.prepare(`
+      SELECT th.*, io.Id as ioId, io.Name as ioName, io.SubsystemId as ioSubsystemId
+      FROM TestHistory th
+      LEFT JOIN Io io ON th.IoId = io.Id
+    `).all() as any[]
     console.log(`[BackupSync] Found ${testHistories.length} test histories in backup`)
 
     let syncedPending = 0, syncedHistories = 0
@@ -48,8 +50,8 @@ export async function POST(req: Request, res: Response) {
     if (pendingSyncs.length > 0) {
       try {
         const updates = pendingSyncs.map(ps => ({
-          id: ps.ioId, testedBy: ps.inspectorName, result: ps.testResult, comments: ps.comments,
-          state: ps.state, version: Number(ps.version), timestamp: ps.timestamp?.toISOString(),
+          id: ps.IoId, testedBy: ps.InspectorName, result: ps.TestResult, comments: ps.Comments,
+          state: ps.State, version: Number(ps.Version), timestamp: ps.Timestamp,
         }))
 
         const response = await fetch(`${remoteUrl}/api/sync/update`, {
@@ -72,8 +74,8 @@ export async function POST(req: Request, res: Response) {
     if (testHistories.length > 0 && subsystemId) {
       try {
         const histories = testHistories.map(th => ({
-          ioId: th.ioId, result: th.result, timestamp: th.timestamp, comments: th.comments,
-          testedBy: th.testedBy, state: th.state, failureMode: th.failureMode,
+          ioId: th.IoId, result: th.Result, timestamp: th.Timestamp, comments: th.Comments,
+          testedBy: th.TestedBy, state: th.State, failureMode: th.FailureMode,
         }))
 
         const response = await fetch(`${remoteUrl}/api/sync/test-histories`, {
@@ -105,6 +107,6 @@ export async function POST(req: Request, res: Response) {
     console.error('[BackupSync] Error:', error)
     return res.status(500).json({ success: false, error: message })
   } finally {
-    if (backupPrisma) { await backupPrisma.$disconnect().catch(() => {}) }
+    if (backupDb) { try { backupDb.close() } catch {} }
   }
 }
