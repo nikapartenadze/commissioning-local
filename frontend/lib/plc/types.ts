@@ -353,6 +353,18 @@ export interface CloudConnectionChangedMessage {
   state: 'connected' | 'reconnecting' | 'disconnected'
 }
 
+export interface L2CellUpdatedMessage {
+  type: 'L2CellUpdated'
+  cloudDeviceId: number
+  cloudColumnId: number
+  localDeviceId: number
+  localColumnId: number
+  value: string | null
+  version: number
+  updatedBy: string | null
+  updatedAt: string
+}
+
 export type PlcWebSocketMessage =
   | UpdateStateMessage
   | UpdateIOMessage
@@ -363,3 +375,4 @@ export type PlcWebSocketMessage =
   | ConfigReloadMessage
   | TagStatusUpdateMessage
   | CloudConnectionChangedMessage
+  | L2CellUpdatedMessage

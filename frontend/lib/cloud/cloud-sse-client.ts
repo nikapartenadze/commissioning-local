@@ -31,6 +31,7 @@ class CloudSseClient {
   private _lastEventAt: Date | null = null
   private _intentionalDisconnect = false
   private recentPushedIds = new Set<number>() // Skip echoes of our own pushes
+  private recentPushedL2Keys = new Set<string>() // Key format: "deviceId-columnId"
   private _onConnectCallbacks = new Set<() => void>()
 
   constructor(config: CloudSseConfig) {
@@ -51,6 +52,13 @@ class CloudSseClient {
   trackPushedId(ioId: number): void {
     this.recentPushedIds.add(ioId)
     setTimeout(() => this.recentPushedIds.delete(ioId), 30000)
+  }
+
+  /** Track an L2 cell we just pushed so we skip the echo from SSE */
+  trackPushedL2Id(cloudDeviceId: number, cloudColumnId: number): void {
+    const key = `${cloudDeviceId}-${cloudColumnId}`
+    this.recentPushedL2Keys.add(key)
+    setTimeout(() => this.recentPushedL2Keys.delete(key), 30000)
   }
 
   async connect(): Promise<void> {
@@ -230,6 +238,13 @@ class CloudSseClient {
         break
       }
 
+      case 'l2-cell-updated':
+      case 'l2_cell_updated': {
+        const l2Data = event.data || event
+        this.handleL2CellUpdated(l2Data).catch(() => {})
+        break
+      }
+
       default:
         // Unknown event type — ignore
         break
@@ -298,6 +313,70 @@ class CloudSseClient {
 
     } catch (error) {
       // Skip individual IO update errors
+    }
+  }
+
+  private async handleL2CellUpdated(data: {
+    deviceId: number,
+    columnId: number,
+    value: string | null,
+    version: number,
+    updatedBy: string | null,
+    updatedAt: string
+  }): Promise<void> {
+    if (!data || typeof data.deviceId !== 'number' || typeof data.columnId !== 'number') return
+
+    const key = `${data.deviceId}-${data.columnId}`
+    if (this.recentPushedL2Keys.has(key)) return // Echo — skip
+
+    try {
+      // Look up local IDs via CloudId columns
+      const localDev = db.prepare('SELECT id FROM L2Devices WHERE CloudId = ?').get(data.deviceId) as { id: number } | undefined
+      const localCol = db.prepare('SELECT id FROM L2Columns WHERE CloudId = ?').get(data.columnId) as { id: number } | undefined
+      if (!localDev || !localCol) return // Cell not in local DB (different subsystem)
+
+      // Find existing cell value
+      const existing = db.prepare('SELECT id, Version FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?').get(localDev.id, localCol.id) as { id: number; Version: number } | undefined
+
+      // Apply only if cloud version is newer (or local doesn't have it)
+      if (existing && existing.Version >= data.version) return // Local is newer or equal — skip
+
+      if (existing) {
+        db.prepare(`UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = ?, Version = ? WHERE id = ?`)
+          .run(data.value, data.updatedBy, data.updatedAt, data.version, existing.id)
+      } else {
+        db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(localDev.id, localCol.id, data.value, data.updatedBy, data.updatedAt, data.version)
+      }
+
+      // Recount completed checks for the device
+      const completedCount = db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.ColumnType = 'check' AND cv.Value IS NOT NULL AND cv.Value != ''`).get(localDev.id) as { cnt: number } | undefined
+      if (completedCount) {
+        db.prepare('UPDATE L2Devices SET CompletedChecks = ? WHERE id = ?').run(completedCount.cnt, localDev.id)
+      }
+
+      // Broadcast to browser tabs via local WebSocket
+      try {
+        await fetch(WS_BROADCAST_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'L2CellUpdated',
+            cloudDeviceId: data.deviceId,
+            cloudColumnId: data.columnId,
+            localDeviceId: localDev.id,
+            localColumnId: localCol.id,
+            value: data.value,
+            version: data.version,
+            updatedBy: data.updatedBy,
+            updatedAt: data.updatedAt,
+          }),
+        })
+      } catch {}
+
+      console.log(`[SSE] L2 cell update applied: device ${localDev.id} col ${localCol.id} = "${data.value}" (v${data.version})`)
+    } catch (error) {
+      // Skip individual L2 cell update errors
     }
   }
 }

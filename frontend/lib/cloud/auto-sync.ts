@@ -285,38 +285,115 @@ class AutoSyncService {
       } catch { /* ignore change request sync errors */ }
 
       // Push pending L2 cell value changes to cloud
+      // Strategy: re-read current local cell state for each pending sync to handle
+      // rapid edits (e.g. Pass→Fail). The pendingSync was queued with the version
+      // at edit time, but if more edits happened, we need to push the latest value.
       try {
         const l2Pending = db.prepare(
           'SELECT * FROM L2PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
         ).all() as any[]
 
         if (l2Pending.length > 0) {
-          const l2Updates = l2Pending.map((p: any) => ({
-            deviceId: p.CloudDeviceId,
-            columnId: p.CloudColumnId,
-            value: p.Value,
-            version: p.Version,
-            updatedBy: p.UpdatedBy,
-          }))
+          // Deduplicate: if multiple pending syncs exist for the same cell, only push
+          // the latest one (delete the older ones).
+          const cellMap = new Map<string, any>()
+          const stalePendingIds: number[] = []
+          for (const p of l2Pending) {
+            const key = `${p.CloudDeviceId}-${p.CloudColumnId}`
+            const existing = cellMap.get(key)
+            if (!existing || p.id > existing.id) {
+              if (existing) stalePendingIds.push(existing.id)
+              cellMap.set(key, p)
+            } else {
+              stalePendingIds.push(p.id)
+            }
+          }
+          if (stalePendingIds.length > 0) {
+            const placeholders = stalePendingIds.map(() => '?').join(',')
+            db.prepare(`DELETE FROM L2PendingSyncs WHERE id IN (${placeholders})`).run(...stalePendingIds)
+          }
+
+          const dedupedPending = Array.from(cellMap.values())
+
+          // For each pending sync, look up the current local cell state by cloud IDs
+          // → local IDs → fetch current Value and Version. This ensures we always push
+          // the latest local state, not stale snapshots from the queue.
+          const getLocalCell = db.prepare(`
+            SELECT cv.Value, cv.Version
+            FROM L2CellValues cv
+            JOIN L2Devices d ON d.id = cv.DeviceId
+            JOIN L2Columns c ON c.id = cv.ColumnId
+            WHERE d.CloudId = ? AND c.CloudId = ?
+          `)
+
+          const l2Updates = dedupedPending.map((p: any) => {
+            const local = getLocalCell.get(p.CloudDeviceId, p.CloudColumnId) as { Value: string | null; Version: number } | undefined
+            return {
+              pendingId: p.id,
+              deviceId: p.CloudDeviceId,
+              columnId: p.CloudColumnId,
+              value: local ? local.Value : p.Value,
+              version: local ? local.Version - 1 : p.Version,
+              updatedBy: p.UpdatedBy,
+            }
+          })
 
           const l2Resp = await fetch(`${remoteUrl}/api/sync/l2/update`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
-            body: JSON.stringify({ updates: l2Updates }),
+            body: JSON.stringify({ updates: l2Updates.map(({ pendingId, ...rest }) => rest) }),
             signal: AbortSignal.timeout(15000),
           })
 
           if (l2Resp.ok) {
-            const l2Ids = l2Pending.map((p: any) => p.id)
-            const l2Placeholders = l2Ids.map(() => '?').join(',')
-            db.prepare(`DELETE FROM L2PendingSyncs WHERE id IN (${l2Placeholders})`).run(...l2Ids)
-            console.log(`[AutoSync] Pushed ${l2Ids.length} L2 cell updates to cloud`)
+            const l2Data = await l2Resp.json()
+
+            // Build set of (deviceId, columnId) keys that succeeded
+            const updatedKeys = new Set(
+              (l2Data.updates || []).map((u: any) => `${u.deviceId}-${u.columnId}`)
+            )
+
+            // Delete pendingSyncs for cells that succeeded
+            const successfulPendingIds = l2Updates
+              .filter(u => updatedKeys.has(`${u.deviceId}-${u.columnId}`))
+              .map(u => u.pendingId)
+
+            if (successfulPendingIds.length > 0) {
+              const placeholders = successfulPendingIds.map(() => '?').join(',')
+              db.prepare(`DELETE FROM L2PendingSyncs WHERE id IN (${placeholders})`).run(...successfulPendingIds)
+            }
+
+            // For conflicts: increment retry count so they retry on next loop
+            // (the next iteration will re-read latest local state)
+            const conflictedPendingIds = l2Updates
+              .filter(u => !updatedKeys.has(`${u.deviceId}-${u.columnId}`))
+              .map(u => u.pendingId)
+
+            for (const id of conflictedPendingIds) {
+              try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run('version conflict', id) } catch {}
+            }
+
+            const updatedCount = l2Data.updatedCount ?? successfulPendingIds.length
+            const conflictCount = l2Data.conflictCount ?? conflictedPendingIds.length
+            if (conflictCount > 0) {
+              console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud (${conflictCount} conflicts — will retry with latest local state)`)
+            } else if (updatedCount > 0) {
+              console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud`)
+            }
           } else {
-            for (const p of l2Pending) {
+            for (const p of dedupedPending) {
               try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status}`, p.id) } catch {}
             }
           }
         }
+
+        // Clean up permanently failed L2PendingSync entries (retryCount > 100)
+        try {
+          const l2StaleResult = db.prepare('DELETE FROM L2PendingSyncs WHERE RetryCount > 100').run()
+          if (l2StaleResult.changes > 0) {
+            console.warn(`[AutoSync] Cleaned up ${l2StaleResult.changes} permanently failed L2PendingSync entries (retryCount > 100)`)
+          }
+        } catch { /* ignore cleanup errors */ }
       } catch { /* ignore L2 sync errors */ }
 
     } catch (error) {
