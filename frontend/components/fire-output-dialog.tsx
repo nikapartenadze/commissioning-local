@@ -2,7 +2,6 @@
 
 import { useState, useRef, useCallback, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Zap } from "lucide-react"
 import { authFetch } from "@/lib/api-config"
@@ -36,6 +35,7 @@ export function FireOutputDialog({
   const [isHolding, setIsHolding] = useState(false)
   const ioRef = useRef(io)
   const isPressedRef = useRef(false)
+  const startPromiseRef = useRef<Promise<void> | null>(null)
 
   useEffect(() => { ioRef.current = io }, [io])
 
@@ -46,7 +46,7 @@ export function FireOutputDialog({
         .then(res => res.ok ? res.json() : null)
         .then(data => {
           if (data?.state !== undefined) {
-            console.log(`🔥 Fire dialog synced state for ${io.name}: ${data.state}`)
+            console.log(`[Fire] Synced state for ${io.name}: ${data.state}`)
           }
         })
         .catch(() => {})
@@ -61,53 +61,68 @@ export function FireOutputDialog({
     }
   }, [open])
 
-  const closeDialog = useCallback(() => {
-    onOpenChange(false)
-  }, [onOpenChange])
-
-  // Press down: fire immediately
-  const handlePressStart = useCallback(() => {
+  // Press down: fire ON immediately
+  const handlePressStart = useCallback((e: React.PointerEvent) => {
     if (!ioRef.current || isPressedRef.current) return
+    e.preventDefault()
+    // Capture pointer so we get pointerup even if finger moves off button
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
 
     isPressedRef.current = true
     setIsHolding(true)
-    onFireOutput(ioRef.current, 'start') // Turn ON instantly
+    // Fire start, keep promise so stop can wait for it
+    startPromiseRef.current = Promise.resolve(onFireOutput(ioRef.current, 'start'))
   }, [onFireOutput])
 
-  // Release: turn OFF (and auto-close if in testing mode)
-  const handlePressEnd = useCallback(() => {
+  // Release: wait for start to finish, then fire OFF
+  const handlePressEnd = useCallback(async (e: React.PointerEvent) => {
     if (!isPressedRef.current || !ioRef.current) return
+    e.preventDefault()
 
     const currentIo = ioRef.current
     isPressedRef.current = false
     setIsHolding(false)
-    onFireOutput(currentIo, 'stop') // Turn OFF on release
+
+    // Wait for start to complete before sending stop
+    if (startPromiseRef.current) {
+      await startPromiseRef.current
+      startPromiseRef.current = null
+    }
+    onFireOutput(currentIo, 'stop')
+
     if (autoCloseOnRelease) {
-      // Small delay to ensure state updates propagate before closing
-      setTimeout(() => onOpenChange(false), 100)
+      setTimeout(() => onOpenChange(false), 150)
     }
   }, [onFireOutput, autoCloseOnRelease, onOpenChange])
 
-  // Handle pointer leaving button while pressed — turn OFF
-  const handlePressCancel = useCallback(() => {
+  // Handle pointer cancel (e.g. system gesture)
+  const handlePressCancel = useCallback(async () => {
     if (!isPressedRef.current) return
-
-    if (ioRef.current) {
-      onFireOutput(ioRef.current, 'stop')
-    }
 
     isPressedRef.current = false
     setIsHolding(false)
+
+    if (startPromiseRef.current) {
+      await startPromiseRef.current
+      startPromiseRef.current = null
+    }
+    if (ioRef.current) {
+      onFireOutput(ioRef.current, 'stop')
+    }
   }, [onFireOutput])
 
-  // Also close on dialog dismiss (clicking outside / ESC)
-  const handleOpenChange = useCallback((isOpen: boolean) => {
+  // Close dialog — ensure output turns OFF
+  const handleOpenChange = useCallback(async (isOpen: boolean) => {
     if (!isOpen) {
       if (isPressedRef.current && ioRef.current) {
+        isPressedRef.current = false
+        setIsHolding(false)
+        if (startPromiseRef.current) {
+          await startPromiseRef.current
+          startPromiseRef.current = null
+        }
         onFireOutput(ioRef.current, 'stop')
       }
-      isPressedRef.current = false
-      setIsHolding(false)
       onOpenChange(false)
     } else {
       onOpenChange(true)
@@ -118,7 +133,7 @@ export function FireOutputDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>Fire Output</DialogTitle>
         </DialogHeader>
@@ -149,29 +164,27 @@ export function FireOutputDialog({
           {/* Instructions */}
           <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
             <span className="text-sm text-amber-700 dark:text-amber-300">
-              <strong>TAP</strong> = pulse ON→OFF &nbsp;|&nbsp; <strong>HOLD</strong> = stays ON while held
+              <strong>TAP</strong> = pulse ON then OFF &nbsp;|&nbsp; <strong>HOLD</strong> = stays ON while held
             </span>
           </div>
 
-          {/* Fire Button */}
+          {/* Fire Button — uses pointer events for unified mouse+touch */}
           <div className="flex flex-col items-center gap-3">
-            <Button
-              size="lg"
-              className={`w-48 h-24 text-xl font-bold select-none touch-none transition-transform ${
+            <button
+              type="button"
+              className={`w-48 h-24 text-xl font-bold select-none rounded-lg flex items-center justify-center transition-transform ${
                 isHolding
-                  ? 'bg-red-600 hover:bg-red-600 text-white ring-4 ring-red-300 animate-pulse scale-105'
-                  : 'bg-orange-500 hover:bg-orange-600 text-white'
+                  ? 'bg-red-600 text-white ring-4 ring-red-300 animate-pulse scale-105'
+                  : 'bg-orange-500 hover:bg-orange-600 text-white active:scale-95'
               }`}
-              onMouseDown={handlePressStart}
-              onMouseUp={handlePressEnd}
-              onMouseLeave={handlePressCancel}
-              onTouchStart={handlePressStart}
-              onTouchEnd={handlePressEnd}
-              onTouchCancel={handlePressCancel}
+              style={{ touchAction: 'none' }}
+              onPointerDown={handlePressStart}
+              onPointerUp={handlePressEnd}
+              onPointerCancel={handlePressCancel}
             >
               <Zap className="w-6 h-6 mr-2" />
               {isHolding ? 'FIRING...' : 'FIRE'}
-            </Button>
+            </button>
             {isHolding && (
               <span className="text-sm text-red-600 font-medium animate-pulse">
                 Output ON — release to stop

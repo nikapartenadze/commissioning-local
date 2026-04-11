@@ -301,22 +301,36 @@ export function L2SheetGrid({
     setContextMenu({ x: e.clientX, y: e.clientY, col })
   }, [])
 
-  // ─── Drag-to-scroll (mouse + touch) ─────────────────────────────
+  // ─── Drag-to-scroll (mouse only, with dead-zone to avoid hijacking clicks/selection) ───
+  const dragPendingRef = useRef(false)
   const handleDragStart = (e: React.MouseEvent) => {
     if (!scrollRef.current) return
     const target = e.target as HTMLElement
+    // Skip interactive elements entirely
     if (target.closest('button') || target.closest('input') || target.closest('select') || target.closest('textarea')) return
-    setIsDragging(true)
+    // Start tracking but don't activate drag yet — wait for movement threshold
+    dragPendingRef.current = true
+    setIsDragging(false)
     setDragStartX(e.pageX - scrollRef.current.offsetLeft)
     setDragScrollLeft(scrollRef.current.scrollLeft)
   }
   const handleDragMove = (e: React.MouseEvent) => {
-    if (!isDragging || !scrollRef.current) return
-    e.preventDefault()
+    if (!scrollRef.current) return
     const x = e.pageX - scrollRef.current.offsetLeft
+    const distance = Math.abs(x - dragStartX)
+    // Require 8px of horizontal movement before activating drag (avoids hijacking clicks/text selection)
+    if (dragPendingRef.current && !isDragging) {
+      if (distance > 8) {
+        setIsDragging(true)
+        e.preventDefault()
+      }
+      return
+    }
+    if (!isDragging) return
+    e.preventDefault()
     scrollRef.current.scrollLeft = dragScrollLeft - (x - dragStartX) * 1.5
   }
-  const handleDragEnd = () => setIsDragging(false)
+  const handleDragEnd = () => { setIsDragging(false); dragPendingRef.current = false }
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (!scrollRef.current) return
@@ -336,7 +350,7 @@ export function L2SheetGrid({
       {/* Single scroll container */}
       <div
         ref={scrollRef}
-        className={cn("flex-1 overflow-auto", isDragging ? "cursor-grabbing select-none" : "cursor-grab")}
+        className={cn("flex-1 overflow-auto", isDragging && "cursor-grabbing select-none")}
         onMouseDown={handleDragStart}
         onMouseMove={handleDragMove}
         onMouseUp={handleDragEnd}
