@@ -80,6 +80,25 @@ async function tryInstantL2Push(cloudDeviceId: number, cloudColumnId: number, va
         })
 
         if (resp.ok) {
+          // Parse the response — cloud returns 200 even on conflicts
+          const data = await resp.json().catch(() => null) as any
+          const wasUpdated = data?.updates?.some((u: any) => u.deviceId === cloudDeviceId && u.columnId === cloudColumnId)
+          const wasConflict = data?.conflicts?.some((c: any) => c.deviceId === cloudDeviceId && c.columnId === cloudColumnId)
+
+          if (wasUpdated) {
+            // Successfully updated — delete pendingSync
+            if (pendingSyncId) { try { stmts.deletePendingSync.run(pendingSyncId) } catch {} }
+            return
+          }
+
+          if (wasConflict) {
+            // Version conflict — leave pendingSync for background retry.
+            // The background sync will re-read the latest local state and retry.
+            console.warn(`[L2 Sync] Version conflict for device ${cloudDeviceId} col ${cloudColumnId} — will retry via background sync`)
+            return
+          }
+
+          // Unknown response shape — treat as success to avoid infinite retry
           if (pendingSyncId) { try { stmts.deletePendingSync.run(pendingSyncId) } catch {} }
           return
         }
