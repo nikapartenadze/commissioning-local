@@ -104,6 +104,12 @@ export async function POST(req: Request, res: Response) {
         const wasUpdated = data?.updates?.some((u: any) => u.deviceId === cloudDeviceId && u.columnId === cloudColumnId)
 
         if (wasUpdated) {
+          // Track this push so the SSE echo from cloud doesn't get re-applied locally
+          try {
+            const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
+            getCloudSseClient()?.trackPushedL2Id(cloudDeviceId, cloudColumnId)
+          } catch {}
+
           // Cloud accepted our update — drop the latest pendingSync row for this cell
           try {
             const pending = stmts.getLatestPendingForCell.get(cloudDeviceId, cloudColumnId) as { id: number } | undefined
