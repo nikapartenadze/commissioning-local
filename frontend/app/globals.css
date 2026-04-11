@@ -6,26 +6,26 @@
 
 @layer base {
   :root {
-    /* Autstand Light Theme - Warm white, gold accents */
-    --background: 40 10% 97%;
+    /* Autstand Light Theme - Softer, less blinding */
+    --background: 40 6% 93%;
     --foreground: 225 20% 10%;
-    --card: 0 0% 100%;
+    --card: 40 6% 96%;
     --card-foreground: 225 20% 10%;
-    --popover: 0 0% 100%;
+    --popover: 0 0% 98%;
     --popover-foreground: 225 20% 10%;
-    --primary: 43 79% 44%;
+    --primary: 43 79% 38%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 40 8% 92%;
+    --secondary: 40 6% 86%;
     --secondary-foreground: 225 20% 10%;
-    --muted: 40 8% 92%;
-    --muted-foreground: 225 10% 40%;
-    --accent: 43 20% 92%;
-    --accent-foreground: 43 79% 35%;
-    --destructive: 0 84% 60%;
+    --muted: 40 6% 88%;
+    --muted-foreground: 225 10% 35%;
+    --accent: 43 15% 86%;
+    --accent-foreground: 43 79% 30%;
+    --destructive: 0 72% 48%;
     --destructive-foreground: 0 0% 100%;
-    --border: 43 12% 84%;
-    --input: 43 8% 86%;
-    --ring: 43 79% 44%;
+    --border: 43 10% 78%;
+    --input: 43 6% 82%;
+    --ring: 43 79% 38%;
     --radius: 0.375rem;
   }
 
@@ -98,19 +98,19 @@
 
 /* ── Light mode ── */
 .row-passed {
-  background-color: #22c55e !important;
-  color: #052e16 !important;
+  background-color: #16a34a !important;
+  color: #f0fdf4 !important;
 }
 .row-passed:hover {
-  background-color: #16a34a !important;
+  background-color: #15803d !important;
 }
 
 .row-failed {
-  background-color: #ef4444 !important;
-  color: #450a0a !important;
+  background-color: #dc2626 !important;
+  color: #fef2f2 !important;
 }
 .row-failed:hover {
-  background-color: #dc2626 !important;
+  background-color: #b91c1c !important;
 }
 
 .row-default {
@@ -156,15 +156,15 @@
   opacity: 0.75;
 }
 
-/* Disabled rows — faulted device or not installed */
+/* Disabled rows — faulted device or not installed (no result) */
 .row-disabled {
-  background-color: #d4d4d4 !important;
-  color: #737373 !important;
+  background-color: #c4c4c4 !important;
+  color: #636363 !important;
   opacity: 0.8;
 }
 
 .row-disabled:hover {
-  background-color: #c4c4c4 !important;
+  background-color: #b5b5b5 !important;
 }
 
 .dark .row-disabled {
@@ -175,6 +175,48 @@
 
 .dark .row-disabled:hover {
   background-color: #333333 !important;
+}
+
+/* Passed but not installed — green background, grayed out */
+.row-passed.row-disabled {
+  background-color: #16a34a !important;
+  color: #f0fdf4 !important;
+  opacity: 0.45;
+}
+
+.row-passed.row-disabled:hover {
+  background-color: #15803d !important;
+}
+
+.dark .row-passed.row-disabled {
+  background-color: #166534 !important;
+  color: #dcfce7 !important;
+  opacity: 0.4;
+}
+
+.dark .row-passed.row-disabled:hover {
+  background-color: #15803d !important;
+}
+
+/* Failed but not installed — red background, grayed out */
+.row-failed.row-disabled {
+  background-color: #dc2626 !important;
+  color: #fef2f2 !important;
+  opacity: 0.45;
+}
+
+.row-failed.row-disabled:hover {
+  background-color: #b91c1c !important;
+}
+
+.dark .row-failed.row-disabled {
+  background-color: #991b1b !important;
+  color: #fee2e2 !important;
+  opacity: 0.4;
+}
+
+.dark .row-failed.row-disabled:hover {
+  background-color: #b91c1c !important;
 }
 
 /* Drag-to-scroll */
