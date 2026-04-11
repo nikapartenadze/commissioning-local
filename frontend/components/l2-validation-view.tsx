@@ -4,11 +4,12 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { L2SheetGrid } from './l2-sheet-grid'
 import { L2OverviewMatrix } from './l2-overview-matrix'
 import { Badge } from '@/components/ui/badge'
-import { authFetch } from '@/lib/api-config'
+import { authFetch, getSignalRHubUrl } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
+import { useSignalR, L2CellUpdate } from '@/lib/signalr-client'
 
 interface L2Sheet {
   id: number
@@ -143,6 +144,32 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
   }, [])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  // Subscribe to live L2 cell updates pushed from the cloud via WebSocket.
+  // The local SSE client writes incoming changes to SQLite and broadcasts
+  // an L2CellUpdated message; we merge it into local state so testers see
+  // remote edits without refreshing.
+  const signalR = useSignalR(getSignalRHubUrl())
+  useEffect(() => {
+    const handleL2Update = (update: L2CellUpdate) => {
+      const key = `${update.localDeviceId}-${update.localColumnId}`
+      setCellValues(prev => {
+        const existing = prev.get(key)
+        // Only apply if incoming version is newer — avoids clobbering
+        // unsaved local edits whose optimistic version is ahead.
+        if (existing && existing.Version >= update.version) {
+          return prev
+        }
+        const next = new Map(prev)
+        next.set(key, { Value: update.value, Version: update.version })
+        return next
+      })
+    }
+    signalR.onL2CellUpdate(handleL2Update)
+    return () => {
+      signalR.offL2CellUpdate(handleL2Update)
+    }
+  }, [signalR.onL2CellUpdate, signalR.offL2CellUpdate])
 
   const handleCellChange = useCallback(async (deviceId: number, columnId: number, value: string | null) => {
     const key = `${deviceId}-${columnId}`
