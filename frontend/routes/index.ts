@@ -44,6 +44,8 @@ import * as cloudAutoSync from '@/app/api/cloud/auto-sync/route'
 import * as cloudPullNetwork from '@/app/api/cloud/pull-network/route'
 import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
+import * as updateStatus from '@/app/api/update/status/route'
+import * as updateInstall from '@/app/api/update/install/route'
 import * as history from '@/app/api/history/route'
 import * as historyByIo from '@/app/api/history/[ioId]/route'
 import * as historyExport from '@/app/api/history/export/route'
@@ -152,6 +154,10 @@ export function createApiRouter(): Router {
   router.post('/api/cloud/pull-network', asyncHandler(cloudPullNetwork.POST))
   router.post('/api/cloud/pull-estop', asyncHandler(cloudPullEstop.POST))
   router.post('/api/cloud/pull-l2', asyncHandler(cloudPullL2.POST))
+
+  // ── App Updates ───────────────────────────────────────────────────────────
+  router.get('/api/update/status', asyncHandler(updateStatus.GET))
+  router.post('/api/update/install', asyncHandler(updateInstall.POST))
 
   // ── History ────────────────────────────────────────────────────
   router.get('/api/history', asyncHandler(history.GET))

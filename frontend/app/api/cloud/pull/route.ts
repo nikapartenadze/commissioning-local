@@ -15,7 +15,9 @@ function getPullStmts() {
 }
 function createPullStmts() {
   return {
-    pendingCount: db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs'),
+    pendingIoCount: db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs'),
+    pendingL2Count: db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs'),
+    pendingChangeRequestCount: db.prepare("SELECT COUNT(*) as cnt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL"),
     ioCount: db.prepare('SELECT COUNT(*) as cnt FROM Ios'),
     getProject: db.prepare('SELECT id FROM Projects WHERE id = ?'),
     insertProject: db.prepare('INSERT INTO Projects (id, Name) VALUES (?, ?)'),
@@ -65,7 +67,7 @@ function createPullStmts() {
     insertPunchlist: db.prepare('INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)'),
     insertPunchlistItem: db.prepare('INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)'),
     insertL2Sheet: db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)'),
-    insertL2Col: db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+    insertL2Col: db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, InputType, DisplayOrder, IsSystem, IsEditable, IncludeInProgress, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     insertL2Dev: db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
     insertL2Cell: db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'),
   }
@@ -118,13 +120,20 @@ export async function POST(req: Request, res: Response) {
     console.log(`[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
-    const pendingRow = getPullStmts().pendingCount.get() as { cnt: number }
-    const pendingCount = pendingRow.cnt
-    const forceFlag = body.force === true
-    if (pendingCount > 0 && !forceFlag) {
+    const pendingIoCount = (getPullStmts().pendingIoCount.get() as { cnt: number }).cnt
+    const pendingL2Count = (getPullStmts().pendingL2Count.get() as { cnt: number }).cnt
+    const pendingChangeRequestCount = (getPullStmts().pendingChangeRequestCount.get() as { cnt: number }).cnt
+    const totalPendingCount = pendingIoCount + pendingL2Count + pendingChangeRequestCount
+    if (totalPendingCount > 0) {
+      const blockedQueues = [
+        pendingIoCount > 0 ? `${pendingIoCount} IO test changes` : null,
+        pendingL2Count > 0 ? `${pendingL2Count} L2 cell changes` : null,
+        pendingChangeRequestCount > 0 ? `${pendingChangeRequestCount} change requests` : null,
+      ].filter(Boolean).join(', ')
+
       return res.status(409).json({
         success: false,
-        error: `${pendingCount} test results have not been synced to cloud yet. Sync first, or use force=true to proceed anyway.`
+        error: `Pull blocked to protect unsynced local data: ${blockedQueues}. Sync them first before pulling from cloud.`
       } as CloudPullResponse)
     }
 
@@ -150,6 +159,15 @@ export async function POST(req: Request, res: Response) {
 
     if (cloudResponse.status === 401) {
       return res.status(403).json({ success: false, error: 'Cloud authentication failed - check API password' } as CloudPullResponse)
+    }
+
+    if (cloudResponse.status === 403) {
+      const errorText = await cloudResponse.text()
+      console.log(`[CloudPull] Cloud error: ${errorText}`)
+      return res.status(403).json({
+        success: false,
+        error: `API password is not authorized for subsystem ${subsystemId}. This usually means the subsystem belongs to a different cloud project.`
+      } as CloudPullResponse)
     }
 
     if (!cloudResponse.ok) {
@@ -558,7 +576,19 @@ export async function POST(req: Request, res: Response) {
             sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
             if (sheet.columns) {
               for (const col of sheet.columns) {
-                const cr = getPullStmts().insertL2Col.run(col.id, sr.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
+                const cr = getPullStmts().insertL2Col.run(
+                  col.id,
+                  sr.lastInsertRowid,
+                  col.name,
+                  col.columnType,
+                  col.inputType || col.columnType,
+                  col.displayOrder,
+                  col.isSystem ? 1 : 0,
+                  col.isEditable === false ? 0 : 1,
+                  col.includeInProgress ? 1 : 0,
+                  col.isRequired ? 1 : 0,
+                  col.description || null
+                )
                 columnIdMap.set(col.id, cr.lastInsertRowid as number)
               }
             }

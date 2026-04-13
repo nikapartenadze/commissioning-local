@@ -11,7 +11,9 @@
       "Bash(PORT=3010 PLC_WS_PORT=3012 DATABASE_URL=\"file:./test-instance-b/database-b.db\" node server.dev.js)",
       "Bash(rm -rf portable)",
       "Bash(deploy/BUILD-PORTABLE.bat)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Read(//c/Users/nika.fartenadze/.claude/**)",
+      "Bash(mkdir -p 'C:/Users/nika.fartenadze/.claude/commands/')"
     ]
   }
 }

@@ -83,6 +83,8 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   FileWrite $0 "PORT=3000$\r$\n"
   FileWrite $0 "HOSTNAME=0.0.0.0$\r$\n"
   FileWrite $0 "NODE_ENV=production$\r$\n"
+  FileWrite $0 "APP_VERSION=${APP_VERSION}$\r$\n"
+  FileWrite $0 "UPDATE_MANIFEST_URL=$\r$\n"
   FileClose $0
 
   ; ── Initialize database if first install ──

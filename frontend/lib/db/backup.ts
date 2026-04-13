@@ -1,33 +1,20 @@
 import fs from 'fs'
 import path from 'path'
+import Database from 'better-sqlite3'
+import { resolveBackupsDirPath, resolveDatabasePath } from '@/lib/storage-paths'
 
 /**
  * Get the path to the backups directory
  */
 export function getBackupDbPath(): string {
-  return path.resolve(process.cwd(), 'backups')
-}
-
-/**
- * Resolve the actual database.db path from DATABASE_URL env var.
- * Prisma resolves relative paths from the schema file location (prisma/),
- * so we do the same here.
- */
-export function getDatabasePath(): string {
-  const dbUrl = process.env.DATABASE_URL || 'file:./database.db'
-  // Strip "file:" prefix
-  const relative = dbUrl.replace(/^file:/, '')
-  // If absolute path, use as-is
-  if (path.isAbsolute(relative)) return relative
-  // Resolve relative to prisma/ directory (same as Prisma does)
-  return path.resolve(process.cwd(), 'prisma', relative)
+  return resolveBackupsDirPath()
 }
 
 /**
  * Create a backup of the database
  */
 export async function createBackup(reason: string): Promise<{ filename: string; path: string; size: number }> {
-  const dbPath = getDatabasePath()
+  const dbPath = resolveDatabasePath()
   const backupsDir = getBackupDbPath()
 
   // Ensure backups directory exists
@@ -41,17 +28,11 @@ export async function createBackup(reason: string): Promise<{ filename: string; 
   const filename = `database-${timestamp}-${safeReason}.db`
   const backupPath = path.join(backupsDir, filename)
 
-  // Copy the database file
-  fs.copyFileSync(dbPath, backupPath)
-
-  // Also copy WAL and SHM files if they exist (for consistency)
-  const walPath = dbPath + '-wal'
-  const shmPath = dbPath + '-shm'
-  if (fs.existsSync(walPath)) {
-    fs.copyFileSync(walPath, backupPath + '-wal')
-  }
-  if (fs.existsSync(shmPath)) {
-    fs.copyFileSync(shmPath, backupPath + '-shm')
+  const snapshotDb = new Database(dbPath, { readonly: true })
+  try {
+    await snapshotDb.backup(backupPath)
+  } finally {
+    snapshotDb.close()
   }
 
   const stats = fs.statSync(backupPath)
@@ -117,10 +98,4 @@ export async function deleteBackup(filename: string): Promise<void> {
   }
 
   fs.unlinkSync(filePath)
-
-  // Also clean up WAL/SHM files if they exist
-  const walPath = filePath + '-wal'
-  const shmPath = filePath + '-shm'
-  if (fs.existsSync(walPath)) fs.unlinkSync(walPath)
-  if (fs.existsSync(shmPath)) fs.unlinkSync(shmPath)
 }
