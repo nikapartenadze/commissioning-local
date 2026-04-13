@@ -2,15 +2,22 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
+import { getAutoSyncService } from '@/lib/cloud/auto-sync'
+import { configService } from '@/lib/config'
+import { resolveBackupsDirPath, resolveDatabasePath } from '@/lib/storage-paths'
 import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
 export async function GET(req: Request, res: Response) {
   try {
-    const countRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }
-    const pendingSyncCount = countRow.cnt
+    const pendingIoSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }).cnt
+    const pendingL2SyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs').get() as { cnt: number }).cnt
+    const pendingChangeRequestCount = (db.prepare("SELECT COUNT(*) as cnt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL").get() as { cnt: number }).cnt
+    const totalPendingCount = pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount
 
     const cloudSyncService = getCloudSyncService()
     const config = await cloudSyncService.getConfig()
+    const autoSyncService = getAutoSyncService()
+    const autoSyncStatus = autoSyncService ? autoSyncService.getStatus() : null
 
     let connected = false
     let error: string | undefined
@@ -34,13 +41,41 @@ export async function GET(req: Request, res: Response) {
       error = 'Remote URL not configured'
     }
 
-    const failedRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE RetryCount > 0').get() as { cnt: number }
-    const oldestRow = db.prepare('SELECT CreatedAt FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT 1').get() as { CreatedAt: string } | undefined
+    const failedIoSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE RetryCount > 0').get() as { cnt: number }).cnt
+    const failedL2SyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE RetryCount > 0').get() as { cnt: number }).cnt
+    const oldestIoRow = db.prepare('SELECT CreatedAt FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT 1').get() as { CreatedAt: string } | undefined
+    const oldestL2Row = db.prepare('SELECT CreatedAt FROM L2PendingSyncs ORDER BY CreatedAt ASC LIMIT 1').get() as { CreatedAt: string } | undefined
+    const oldestChangeRequestRow = db.prepare("SELECT CreatedAt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL ORDER BY CreatedAt ASC LIMIT 1").get() as { CreatedAt: string } | undefined
+    const dirtyQueues = [
+      pendingIoSyncCount > 0 ? 'io' : null,
+      pendingL2SyncCount > 0 ? 'l2' : null,
+      pendingChangeRequestCount > 0 ? 'change-requests' : null,
+    ].filter(Boolean) as string[]
 
     return res.json({
       connected,
-      pendingSyncCount,
-      lastSyncAttempt: oldestRow?.CreatedAt ?? undefined,
+      connectionState: sseClient?.connectionState ?? cloudSyncService.connectionState,
+      pendingSyncCount: pendingIoSyncCount,
+      pendingIoSyncCount,
+      pendingL2SyncCount,
+      pendingChangeRequestCount,
+      totalPendingCount,
+      failedIoSyncCount,
+      failedL2SyncCount,
+      oldestPendingIoSync: oldestIoRow?.CreatedAt ?? undefined,
+      oldestPendingL2Sync: oldestL2Row?.CreatedAt ?? undefined,
+      oldestPendingChangeRequest: oldestChangeRequestRow?.CreatedAt ?? undefined,
+      lastSyncAttempt: oldestIoRow?.CreatedAt ?? oldestL2Row?.CreatedAt ?? oldestChangeRequestRow?.CreatedAt ?? undefined,
+      pullBlocked: totalPendingCount > 0,
+      dirtyQueues,
+      autoSyncRunning: autoSyncStatus?.running ?? false,
+      lastPushAt: autoSyncStatus?.lastPushAt ?? undefined,
+      lastPullAt: autoSyncStatus?.lastPullAt ?? undefined,
+      lastPushResult: autoSyncStatus?.lastPushResult ?? undefined,
+      lastPullResult: autoSyncStatus?.lastPullResult ?? undefined,
+      configPath: configService.getConfigFilePath(),
+      databasePath: resolveDatabasePath(),
+      backupsPath: resolveBackupsDirPath(),
       error,
     } as CloudSyncStatusResponse)
   } catch (error) {
@@ -84,8 +119,7 @@ export async function POST(req: Request, res: Response) {
       error = 'Remote URL not configured'
     }
 
-    const countRow = db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }
-    const pendingSyncCount = countRow.cnt
+    const pendingSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }).cnt
 
     return res.json({ connected, pendingSyncCount, error } as CloudSyncStatusResponse)
   } catch (error) {

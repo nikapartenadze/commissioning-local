@@ -100,8 +100,49 @@ export interface CloudPullResponse {
 export interface CloudSyncStatusResponse {
   connected: boolean
   pendingSyncCount: number
+  pendingIoSyncCount?: number
+  pendingL2SyncCount?: number
+  pendingChangeRequestCount?: number
+  totalPendingCount?: number
+  failedIoSyncCount?: number
+  failedL2SyncCount?: number
+  oldestPendingIoSync?: string
+  oldestPendingL2Sync?: string
+  oldestPendingChangeRequest?: string
+  pullBlocked?: boolean
+  dirtyQueues?: string[]
+  connectionState?: ConnectionState
+  autoSyncRunning?: boolean
   lastSyncAttempt?: string
   lastSuccessfulSync?: string
+  lastPushAt?: string
+  lastPullAt?: string
+  lastPushResult?: string
+  lastPullResult?: string
+  configPath?: string
+  databasePath?: string
+  backupsPath?: string
+  error?: string
+}
+
+export interface AppUpdateStatusResponse {
+  currentVersion: string
+  manifestUrl?: string
+  manifestConfigured: boolean
+  updateAvailable: boolean
+  latestVersion?: string
+  installerUrl?: string
+  publishedAt?: string
+  notes?: string
+  installState?: {
+    status: 'idle' | 'checking' | 'downloading' | 'installing' | 'restarting' | 'success' | 'error'
+    message?: string
+    version?: string
+    startedAt?: string
+    completedAt?: string
+    installerUrl?: string
+  } | null
+  supported: boolean
   error?: string
 }
 
