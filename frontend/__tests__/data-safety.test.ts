@@ -3,7 +3,8 @@
  *
  * Validates the rules that prevent data loss:
  * - Pull should warn on significant IO count reduction
- * - PendingSync entries with excessive retries should be cleaned up
+ * - PendingSync entries should never be auto-deleted just for retrying
+ * - Pull should be blocked while any local sync queue is dirty
  * - Version conflicts should be detected correctly
  */
 import { describe, it, expect } from 'vitest'
@@ -36,21 +37,47 @@ describe('Cloud pull safety', () => {
 })
 
 describe('PendingSync TTL', () => {
-  function shouldCleanup(retryCount: number): boolean {
-    return retryCount > 100
+  function shouldRetainPendingSync(retryCount: number): boolean {
+    return retryCount >= 0
   }
 
-  it('keeps entries with low retry count', () => {
-    expect(shouldCleanup(0)).toBe(false)
-    expect(shouldCleanup(5)).toBe(false)
-    expect(shouldCleanup(50)).toBe(false)
-    expect(shouldCleanup(100)).toBe(false)
+  it('retains entries with low retry count', () => {
+    expect(shouldRetainPendingSync(0)).toBe(true)
+    expect(shouldRetainPendingSync(5)).toBe(true)
+    expect(shouldRetainPendingSync(50)).toBe(true)
+    expect(shouldRetainPendingSync(100)).toBe(true)
   })
 
-  it('cleans up entries with excessive retries', () => {
-    expect(shouldCleanup(101)).toBe(true)
-    expect(shouldCleanup(500)).toBe(true)
-    expect(shouldCleanup(1000)).toBe(true)
+  it('retains entries even after excessive retries', () => {
+    expect(shouldRetainPendingSync(101)).toBe(true)
+    expect(shouldRetainPendingSync(500)).toBe(true)
+    expect(shouldRetainPendingSync(1000)).toBe(true)
+  })
+})
+
+describe('Destructive cloud pull guard', () => {
+  function shouldBlockPull(pendingIoCount: number, pendingL2Count: number, pendingChangeRequestCount: number): boolean {
+    return pendingIoCount + pendingL2Count + pendingChangeRequestCount > 0
+  }
+
+  it('allows pull only when all local queues are clean', () => {
+    expect(shouldBlockPull(0, 0, 0)).toBe(false)
+  })
+
+  it('blocks pull when IO sync queue is dirty', () => {
+    expect(shouldBlockPull(1, 0, 0)).toBe(true)
+  })
+
+  it('blocks pull when L2 sync queue is dirty', () => {
+    expect(shouldBlockPull(0, 1, 0)).toBe(true)
+  })
+
+  it('blocks pull when local change requests are unsynced', () => {
+    expect(shouldBlockPull(0, 0, 1)).toBe(true)
+  })
+
+  it('blocks pull when multiple local queues are dirty', () => {
+    expect(shouldBlockPull(3, 2, 4)).toBe(true)
   })
 })
 

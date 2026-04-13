@@ -6,10 +6,11 @@ import { L2OverviewMatrix } from './l2-overview-matrix'
 import { Badge } from '@/components/ui/badge'
 import { authFetch, getSignalRHubUrl } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download } from 'lucide-react'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
 import { useSignalR, L2CellUpdate } from '@/lib/signalr-client'
+import { doesL2ColumnCountForProgress, normalizeL2InputType } from '@/lib/l2-utils'
 
 interface L2Sheet {
   id: number
@@ -22,7 +23,9 @@ interface L2Column {
   SheetId: number
   Name: string
   ColumnType: string
+  InputType?: string | null
   DisplayOrder: number
+  IncludeInProgress?: number
   Description?: string | null
 }
 
@@ -56,17 +59,17 @@ interface L2ValidationViewProps {
 }
 
 const COL_TYPE_STYLES: Record<string, string> = {
-  check: "bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300",
-  data: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900 dark:text-blue-300",
+  pass_fail: "bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300",
+  number: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900 dark:text-blue-300",
   readonly: "bg-gray-100 text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400",
-  notes: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900 dark:text-amber-300",
+  text: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900 dark:text-amber-300",
 }
 
 const COL_TYPE_HINTS: Record<string, string> = {
-  check: "Tap to cycle: pass / fail / empty",
-  data: "Type a measured or observed value",
+  pass_fail: "Tap to cycle: pass / fail / empty",
+  number: "Type a measured or observed value",
   readonly: "Pre-filled (cannot edit)",
-  notes: "Free-text notes or comments",
+  text: "Free-text notes or comments",
 }
 
 const MIN_SIDEBAR_W = 240
@@ -86,6 +89,11 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
   const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
   const [isNarrow, setIsNarrow] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  type QuickFilter = "all" | "complete" | "incomplete" | "has_failures" | "all_passed"
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>("all")
+  const [columnFilters, setColumnFilters] = useState<Record<string, any>>({})
+  const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>({ device: null, mcm: null, subsystem: null })
 
   // Detect narrow viewport (tablet)
   useEffect(() => {
@@ -171,6 +179,12 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
     }
   }, [signalR.onL2CellUpdate, signalR.offL2CellUpdate])
 
+  useEffect(() => {
+    setQuickFilter("all")
+    setColumnFilters({})
+    setFixedFilters({ device: null, mcm: null, subsystem: null })
+  }, [activeSheet])
+
   const handleCellChange = useCallback(async (deviceId: number, columnId: number, value: string | null) => {
     const key = `${deviceId}-${columnId}`
     setCellValues(prev => {
@@ -210,7 +224,7 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
           const cv = cellValues.get(`${device.id}-${col.id}`)
           if (!cv?.Value || cv.Value === '') {
             row.push('')
-          } else if (col.ColumnType === 'check') {
+          } else if (normalizeL2InputType(col.ColumnType, col.InputType) === 'pass_fail') {
             row.push(cv.Value === 'pass' ? 'Pass' : cv.Value === 'fail' ? 'Fail' : cv.Value)
           } else {
             row.push(cv.Value)
@@ -224,7 +238,11 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
       ws['!cols'] = [
         { wch: 25 }, { wch: 12 }, { wch: 15 },
         ...sheetCols.map(c => ({
-          wch: c.ColumnType === 'check' ? 10 : c.ColumnType === 'notes' ? 20 : c.ColumnType === 'data' ? 15 : 15
+          wch: normalizeL2InputType(c.ColumnType, c.InputType) === 'pass_fail'
+            ? 10
+            : normalizeL2InputType(c.ColumnType, c.InputType) === 'text'
+              ? 20
+              : 15
         }))
       ]
       XLSX.utils.book_append_sheet(wb, ws, (sheet.DisplayName || sheet.Name).slice(0, 31))
@@ -258,7 +276,7 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
 
   const sheetStats = data.sheets.map(sheet => {
     const sheetDevices = data.devices.filter(d => d.SheetId === sheet.id)
-    const sheetCols = data.columns.filter(c => c.SheetId === sheet.id && c.ColumnType === 'check')
+    const sheetCols = data.columns.filter(c => c.SheetId === sheet.id && doesL2ColumnCountForProgress(c))
     let completed = 0
     for (const dev of sheetDevices) {
       for (const col of sheetCols) {
@@ -283,6 +301,62 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
     .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
   const activeStats = sheetStats[activeSheet]
 
+  const filteredDevices = activeDevices.filter((device) => {
+    // Fixed column filters
+    if (fixedFilters.device !== null && !fixedFilters.device.includes(device.DeviceName)) return false
+    if (fixedFilters.mcm !== null && !fixedFilters.mcm.includes(device.Mcm || "")) return false
+    if (fixedFilters.subsystem !== null && !fixedFilters.subsystem.includes(device.Subsystem || "")) return false
+
+    // Per-column filters
+    for (const [key, filter] of Object.entries(columnFilters)) {
+      const colId = parseInt(key)
+      const col = activeColumns.find((c) => c.id === colId)
+      if (!col) continue
+      const cv = cellValues.get(`${device.id}-${colId}`)
+      const value = cv?.Value ?? null
+      const inputType = normalizeL2InputType(col.ColumnType, col.InputType)
+
+      if (inputType === "pass_fail" && typeof filter === "object") {
+        if (value === "pass" && !filter.pass) return false
+        if (value === "fail" && !filter.fail) return false
+        if (!value && !filter.empty) return false
+      } else if (Array.isArray(filter) && filter.length > 0) {
+        const cellStr = (value || "").toLowerCase()
+        if (!filter.some((tag: string) => cellStr.includes(tag.toLowerCase()))) return false
+      }
+    }
+
+    // Quick filter
+    if (quickFilter !== "all") {
+      const progressCols = activeColumns.filter((c) => doesL2ColumnCountForProgress(c))
+      const pfCols = activeColumns.filter((c) => normalizeL2InputType(c.ColumnType, c.InputType) === "pass_fail")
+
+      if (quickFilter === "complete") {
+        const allFilled = progressCols.every((c) => {
+          const v = cellValues.get(`${device.id}-${c.id}`)
+          return v?.Value != null && v.Value !== ""
+        })
+        if (!allFilled) return false
+      } else if (quickFilter === "incomplete") {
+        const hasEmpty = progressCols.some((c) => {
+          const v = cellValues.get(`${device.id}-${c.id}`)
+          return v?.Value == null || v.Value === ""
+        })
+        if (!hasEmpty) return false
+      } else if (quickFilter === "has_failures") {
+        const hasFail = pfCols.some((c) => cellValues.get(`${device.id}-${c.id}`)?.Value === "fail")
+        if (!hasFail) return false
+      } else if (quickFilter === "all_passed") {
+        const allPassed = pfCols.length > 0 && pfCols.every((c) => cellValues.get(`${device.id}-${c.id}`)?.Value === "pass")
+        if (!allPassed) return false
+      }
+    }
+
+    return true
+  })
+
+  const hasActiveFilters = quickFilter !== "all" || Object.keys(columnFilters).length > 0 || fixedFilters.device !== null || fixedFilters.mcm !== null || fixedFilters.subsystem !== null
+
   const guideContent = (
     <>
       {/* Sheet progress */}
@@ -302,7 +376,7 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
         </div>
         <div className="flex gap-3 mt-2 text-[11px] text-muted-foreground">
           <span>{activeStats.deviceCount} devices</span>
-          <span>{activeStats.colCount} checks</span>
+          <span>{activeStats.colCount} progress columns</span>
         </div>
       </div>
 
@@ -317,9 +391,9 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
               <div className="flex items-center gap-2">
                 <Badge
                   variant="outline"
-                  className={cn("shrink-0 text-[10px] px-1.5 py-0.5", COL_TYPE_STYLES[col.ColumnType])}
+                  className={cn("shrink-0 text-[10px] px-1.5 py-0.5", COL_TYPE_STYLES[normalizeL2InputType(col.ColumnType, col.InputType)])}
                 >
-                  {col.ColumnType}
+                  {normalizeL2InputType(col.ColumnType, col.InputType)}
                 </Badge>
                 <span className="text-sm font-medium text-foreground">{col.Name}</span>
               </div>
@@ -329,7 +403,7 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground/60 mt-1 pl-0.5 italic">
-                  {COL_TYPE_HINTS[col.ColumnType] || "Enter the required value"}
+                  {COL_TYPE_HINTS[normalizeL2InputType(col.ColumnType, col.InputType)] || "Enter the required value"}
                 </p>
               )}
             </div>
@@ -339,7 +413,7 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
 
       {/* Legend */}
       <div className="px-4 py-3 border-t bg-muted/30 shrink-0 text-xs text-muted-foreground leading-relaxed">
-        <strong>check</strong> = tap to cycle pass/fail &middot; <strong>data</strong> = type value &middot; <strong>readonly</strong> = pre-filled &middot; <strong>notes</strong> = free text
+        <strong>pass_fail</strong> = pass/fail toggle &middot; <strong>number</strong> = numeric input &middot; <strong>readonly</strong> = imported workbook value &middot; <strong>text</strong> = free text
         <p className="mt-1 italic text-[10px]">Right-click any column header for quick info.</p>
       </div>
     </>
@@ -425,21 +499,67 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
         })}
       </div>
 
+      {/* Quick filters */}
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b shrink-0">
+        {(["all", "complete", "incomplete", "has_failures", "all_passed"] as const).map((qf) => {
+          const labels = { all: "All", complete: "Complete", incomplete: "Incomplete", has_failures: "Has Failures", all_passed: "All Passed" }
+          return (
+            <button
+              key={qf}
+              onClick={() => setQuickFilter(quickFilter === qf ? "all" : qf)}
+              className={cn(
+                "rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
+                quickFilter === qf
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+              )}
+            >
+              {labels[qf]}
+            </button>
+          )
+        })}
+        {hasActiveFilters && (
+          <button
+            onClick={() => { setQuickFilter("all"); setColumnFilters({}); setFixedFilters({ device: null, mcm: null, subsystem: null }) }}
+            className="ml-1 text-[11px] text-muted-foreground underline hover:text-foreground"
+          >
+            Clear filters
+          </button>
+        )}
+        {filteredDevices.length !== activeDevices.length && (
+          <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+            {filteredDevices.length} of {activeDevices.length} devices
+          </span>
+        )}
+      </div>
+
       {/* Main content: grid + guide panel */}
       <div className="flex-1 min-h-0 flex relative">
         {/* Grid */}
         <div className="flex-1 min-w-0 min-h-0">
-          {activeDevices.length > 0 ? (
+          {filteredDevices.length > 0 ? (
             <L2SheetGrid
               sheet={activeSheetData}
               columns={activeColumns}
-              devices={activeDevices}
+              devices={filteredDevices}
+              allDevices={activeDevices}
               cellValues={cellValues}
               onCellChange={handleCellChange}
+              columnFilters={columnFilters}
+              fixedFilters={fixedFilters}
+              onColumnFilterChange={(colId, value) => {
+                setColumnFilters((prev) => {
+                  if (value === undefined || (Array.isArray(value) && value.length === 0) || (typeof value === "object" && !Array.isArray(value) && value.pass && value.fail && value.empty)) {
+                    const next = { ...prev }; delete next[colId]; return next
+                  }
+                  return { ...prev, [colId]: value }
+                })
+              }}
+              onFixedFilterChange={(field, value) => setFixedFilters((p) => ({ ...p, [field]: value }))}
             />
           ) : (
             <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-              No devices in this sheet
+              {activeDevices.length === 0 ? "No devices in this sheet" : "No devices match the current filters"}
             </div>
           )}
         </div>
