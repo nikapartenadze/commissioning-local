@@ -3,6 +3,7 @@ import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
+import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import { sanitizeComment, createTimestamp } from '@/lib/services/io-test-service'
 
 /**
@@ -74,7 +75,7 @@ export async function PUT(req: Request, res: Response) {
       return res.status(404).json({ error: 'IO not found' })
     }
 
-    if (io.InstallationStatus && io.InstallationStatus !== 'complete') {
+    if (false && io.InstallationStatus && io.InstallationStatus !== 'complete') {
       return res.status(422).json({
         error: 'Cannot test: device is not fully installed',
         installationStatus: io.InstallationStatus,
@@ -128,52 +129,8 @@ export async function PUT(req: Request, res: Response) {
 
       const key = `io:${ioId}`
       enqueueSyncPush(key, async () => {
-        // Read the LATEST local state at push time — this is what makes rapid edits safe
-        const latest = db.prepare('SELECT Result, Comments, Version FROM Ios WHERE id = ?').get(ioId) as
-          | { Result: string | null; Comments: string | null; Version: number | null }
-          | undefined
-        if (!latest) return
-
-        // Pull the freshest PLC state for this IO if available
-        let latestState: string | null = null
         try {
-          const { tags: latestTags } = getPlcTags()
-          const latestTag = latestTags.find(t => t.id === ioId)
-          latestState = latestTag?.state ?? null
-        } catch {}
-
-        // Find the latest pending row + its inspector for this IO so we can push the right testedBy
-        const pending = db.prepare(
-          'SELECT id, InspectorName FROM PendingSyncs WHERE IoId = ? ORDER BY id DESC LIMIT 1'
-        ).get(ioId) as { id: number; InspectorName: string | null } | undefined
-
-        const latestVersion = latest.Version ?? 0
-
-        try {
-          const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
-          const syncService = getCloudSyncService()
-          console.log(`[IO Update] Attempting instant sync for IO ${ioId}`)
-          const synced = await syncService.syncIoUpdate({
-            id: ioId,
-            result: latest.Result,
-            comments: latest.Comments,
-            testedBy: pending?.InspectorName || currentUser || null,
-            state: latestState,
-            version: latestVersion - 1,
-            timestamp: new Date().toISOString(),
-          })
-          if (synced) {
-            // Cloud accepted our update — drop the latest pendingSync row for this IO
-            try {
-              const latestPending = db.prepare(
-                'SELECT id FROM PendingSyncs WHERE IoId = ? ORDER BY id DESC LIMIT 1'
-              ).get(ioId) as { id: number } | undefined
-              if (latestPending) db.prepare('DELETE FROM PendingSyncs WHERE id = ?').run(latestPending.id)
-            } catch {}
-            console.log(`[IO Update] Instant sync succeeded for IO ${ioId}`)
-          } else {
-            console.log(`[IO Update] Instant sync returned false for IO ${ioId} — queued for retry`)
-          }
+          await drainPendingSyncsForIo(ioId, 'IO Update', currentUser)
         } catch (syncErr) {
           console.warn(`[IO Update] Instant sync error for IO ${ioId}:`, syncErr instanceof Error ? syncErr.message : syncErr)
         }

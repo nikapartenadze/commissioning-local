@@ -1,20 +1,19 @@
 import Database from 'better-sqlite3'
-import path from 'path'
+import { resolveDatabasePath } from '@/lib/storage-paths'
 
 // ── Singleton database instance ──────────────────────────────────
 
 const globalForDb = globalThis as unknown as { db: Database.Database | undefined }
 
 function createDb(): Database.Database {
-  const dbUrl = process.env.DATABASE_URL?.replace('file:', '').replace('./', '') || 'database.db'
-  const fullPath = path.isAbsolute(dbUrl) ? dbUrl : path.join(process.cwd(), dbUrl)
+  const fullPath = resolveDatabasePath()
 
   console.log(`[DB] Opening database at: ${fullPath}`)
   const db = new Database(fullPath)
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = ON')
-  db.pragma('synchronous = NORMAL')    // Safe with WAL, 2-3x faster writes
+  db.pragma('synchronous = FULL')      // Prefer durability over write throughput for commissioning data
   db.pragma('cache_size = -8000')      // 8MB page cache (default was 2MB)
   db.pragma('temp_store = MEMORY')     // Temp tables in RAM, not disk
   db.pragma('mmap_size = 30000000')    // 30MB memory-mapped I/O for faster reads
@@ -38,11 +37,30 @@ try {
     'ALTER TABLE Ios ADD COLUMN TestedBy TEXT',
     'ALTER TABLE Ios ADD COLUMN IoNumber TEXT',
     'ALTER TABLE L2Columns ADD COLUMN Description TEXT',
+    'ALTER TABLE L2Columns ADD COLUMN InputType TEXT',
+    'ALTER TABLE L2Columns ADD COLUMN IsSystem INTEGER DEFAULT 0',
+    'ALTER TABLE L2Columns ADD COLUMN IsEditable INTEGER DEFAULT 1',
+    'ALTER TABLE L2Columns ADD COLUMN IncludeInProgress INTEGER DEFAULT 0',
     'ALTER TABLE TestHistories ADD COLUMN Source TEXT',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
+  try {
+    db.exec(`
+      UPDATE L2Columns
+      SET InputType = CASE
+        WHEN COALESCE(NULLIF(InputType, ''), '') <> '' THEN InputType
+        WHEN ColumnType = 'check' THEN 'pass_fail'
+        WHEN ColumnType = 'number' THEN 'number'
+        WHEN ColumnType = 'readonly' THEN 'readonly'
+        ELSE 'text'
+      END
+    `)
+    db.exec(`UPDATE L2Columns SET IsSystem = CASE WHEN ColumnType = 'readonly' THEN 1 ELSE COALESCE(IsSystem, 0) END`)
+    db.exec(`UPDATE L2Columns SET IsEditable = CASE WHEN COALESCE(InputType, ColumnType) = 'readonly' THEN 0 ELSE 1 END`)
+    db.exec(`UPDATE L2Columns SET IncludeInProgress = CASE WHEN ColumnType = 'check' THEN 1 ELSE COALESCE(IncludeInProgress, 0) END`)
+  } catch { /* non-critical */ }
   // Indexes for L2 query performance
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_l2cells_device_column ON L2CellValues(DeviceId, ColumnId)') } catch { /* already exists */ }
   // Update query planner statistics (deferred to avoid blocking startup)
@@ -293,7 +311,11 @@ export function initializeSchema() {
       SheetId INTEGER NOT NULL REFERENCES L2Sheets(id) ON DELETE CASCADE,
       Name TEXT NOT NULL,
       ColumnType TEXT NOT NULL,
+      InputType TEXT,
       DisplayOrder INTEGER NOT NULL,
+      IsSystem INTEGER DEFAULT 0,
+      IsEditable INTEGER DEFAULT 1,
+      IncludeInProgress INTEGER DEFAULT 0,
       IsRequired INTEGER DEFAULT 0,
       Description TEXT
     );

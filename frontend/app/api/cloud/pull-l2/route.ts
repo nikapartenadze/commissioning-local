@@ -42,9 +42,21 @@ export async function POST(req: Request, res: Response) {
         sheetIdMap.set(sheet.id, result.lastInsertRowid as number)
         sheetsCount++
         if (sheet.columns) {
-          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, DisplayOrder, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, InputType, DisplayOrder, IsSystem, IsEditable, IncludeInProgress, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
           for (const col of sheet.columns) {
-            const colResult = insertCol.run(col.id, result.lastInsertRowid, col.name, col.columnType, col.displayOrder, col.isRequired ? 1 : 0, col.description || null)
+            const colResult = insertCol.run(
+              col.id,
+              result.lastInsertRowid,
+              col.name,
+              col.columnType,
+              col.inputType || col.columnType,
+              col.displayOrder,
+              col.isSystem ? 1 : 0,
+              col.isEditable === false ? 0 : 1,
+              col.includeInProgress ? 1 : 0,
+              col.isRequired ? 1 : 0,
+              col.description || null
+            )
             columnIdMap.set(col.id, colResult.lastInsertRowid as number)
           }
         }
