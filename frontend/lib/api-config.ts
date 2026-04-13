@@ -189,6 +189,8 @@ export const API_ENDPOINTS = {
   cloudSync: '/api/cloud/sync',
   cloudPull: '/api/cloud/pull',
   cloudStatus: '/api/cloud/status',
+  updateStatus: '/api/update/status',
+  updateInstall: '/api/update/install',
 
   // Diagnostics
   diagnosticSteps: '/api/diagnostics/steps',

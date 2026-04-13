@@ -1,282 +1,68 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the workspace-level guide for AI tools operating in `commissioning-local/`.
 
-## Project Overview
+## Workspace Overview
 
-Industrial I/O Checkout Tool for commissioning PLC systems. Technicians use this on tablets to test and validate I/O points during factory commissioning.
+This directory contains three related applications that are intentionally kept next to each other for shared context:
 
-**Architecture:** Fully self-contained Node.js application. No external backend — all logic runs inside Next.js API routes with a local SQLite database.
+1. `frontend/` - local commissioning tool used in the field
+2. `commissioning-cloud/` - cloud commissioning app and sync API
+3. `installation-tracker/` - installation progress tracker
 
-**How it works:**
-1. User opens app → logs in with 6-digit PIN
-2. User clicks "Pull IOs" → fetches I/O definitions from remote PostgreSQL, stores in local SQLite
-3. PLC communication via libplctag (ffi-rs), continuously reads tag states (75ms intervals)
-4. Tag states broadcast via WebSocket (same port as app, /ws path) to all connected browsers
-5. State transitions (FALSE→TRUE) prompt technician to mark Pass/Fail
-6. Results stored locally; auto-sync pushes to cloud every 30s, pulls every 60s
+They are colocated because they share domain concepts, database contracts, deployment sequencing, and cross-app integration work.
 
-## Tech Stack
+## Repo Model
 
-- **Runtime**: Node.js 20+, Next.js 14 (App Router), React 18, TypeScript
-- **UI**: Tailwind CSS, shadcn/ui (Radix UI), TanStack Virtual
-- **Database**: Prisma ORM + SQLite (local, WAL mode)
-- **PLC**: ffi-rs → libplctag native library (Ethernet/IP)
-- **Real-time**: WebSocket (ws library, same port as app via upgrade)
-- **Auth**: JWT + bcrypt, PIN-based login (default admin PIN: `111111`)
-- **Deployment**: Portable folder on Windows, Docker on Linux
+Do not treat this workspace as a single monorepo.
 
-## Common Commands
+- `commissioning-cloud/` is its own Git repository.
+- `installation-tracker/` is its own Git repository.
+- The local commissioning tool lives in this workspace and should be treated as its own codebase as well.
 
-### First-Time Setup
-```bash
-cd frontend
-cp env.example .env.local        # Create local environment config
-npm install                       # Install deps + generate Prisma client (postinstall)
-npx prisma db push                # Create SQLite database from schema
-npm run seed:diagnostics          # Optional: seed diagnostic help data
-npm run seed:network              # Optional: seed network topology test data
-```
+Practical implication:
 
-### Development
-```bash
-cd frontend
+- A change may require edits in more than one sibling directory.
+- Review Git state inside the affected repo, not just at the workspace root.
+- If work spans apps, expect separate commits and pushes in the owning repos.
+- Do not infer that nested directories are safe to ignore just because they are adjacent.
 
-npm run dev          # Start dev server (Next.js :3000 + WebSocket on same port)
-npm run dev:next     # Next.js only (port 3000, no real-time PLC updates)
-npm run dev:ws       # WebSocket server only
-npm run build        # Production build (standalone output)
-npm run lint         # ESLint
-npm run test:plc     # Full PLC connection test (reads tags, monitors 10s)
-npm run test:plc:simple  # Quick PLC connection test
-```
+## How The System Fits Together
 
-### Production (Windows Factory)
-```
-deploy\BUILD-PORTABLE.bat    # Build portable distribution (bundles Node.js, plctag.dll)
-deploy\SETUP-FIREWALL.bat    # Open port 3000 (run once as admin)
+At the platform level, these apps revolve around the same central operational data model.
 
-# In the portable/ folder:
-START.bat                    # Start app (port 3000, WebSocket on same port)
-STOP.bat                     # Stop app
-STATUS.bat                   # Check if running, show IP addresses
-```
+- `commissioning-cloud/` is the central sync and dashboard surface for commissioning data.
+- `installation-tracker/` operates against the same broader project/install data ecosystem.
+- `frontend/` is the field/offline client. It keeps a local SQLite database for resilience, then syncs central state through cloud APIs.
 
-### Docker (Linux)
-```bash
-cd docker && docker compose up -d --build    # Start on port 3000
-cd docker && docker compose down             # Stop
-```
+When a task touches any of the following, inspect more than one app before changing anything:
 
-### Database
-```bash
-cd frontend
-npx prisma generate          # Regenerate client after schema changes
-npx prisma db push            # Apply schema changes to database
-npx prisma studio             # Visual database browser
-npx tsx prisma/assign-tag-types.ts  # Auto-assign tag types from IO descriptions
-```
+- schema or shared table ownership
+- API request/response shapes
+- subsystem/project/IO identifiers
+- version conflict rules
+- auth headers or credentials
+- deployment environment assumptions
 
-## Project Structure
+## Authority By Directory
 
-```
-├── frontend/                        # The entire application
-│   ├── app/                         # Next.js App Router
-│   │   ├── page.tsx                 # Login page (PIN entry)
-│   │   ├── commissioning/[id]/      # Main testing page
-│   │   └── api/                     # API routes (ALL backend logic)
-│   │       ├── ios/                 # I/O CRUD, test, reset, fire-output, state, stats
-│   │       ├── plc/                 # PLC connect, disconnect, status, toggle-testing
-│   │       ├── cloud/               # Pull IOs, sync, auto-sync, status
-│   │       ├── auth/                # Login (PIN-only), verify
-│   │       ├── configuration/       # Config CRUD, runtime, connect, logs
-│   │       ├── history/             # Test history (all + per-IO + CSV export)
-│   │       ├── users/               # User CRUD, reset PIN, toggle active
-│   │       ├── diagnostics/         # Failure modes, troubleshooting steps
-│   │       ├── network/             # DLR ring topology, chain status, live PLC status
-│   │       ├── change-requests/     # IO change requests (CRUD)
-│   │       ├── backups/             # Database backup create/download/delete/sync
-│   │       ├── simulator/           # Enable, disable, status
-│   │       └── health/              # Health check
-│   ├── components/                  # React components (shadcn/ui)
-│   ├── lib/
-│   │   ├── plc/                     # PLC native bindings
-│   │   │   ├── libplctag.ts         # ffi-rs wrapper for libplctag C library
-│   │   │   ├── plc-client.ts        # High-level PLC client (connect, read, write)
-│   │   │   ├── tag-reader.ts        # Continuous 75ms tag reading loop + DINT grouping
-│   │   │   ├── websocket-client.ts  # Browser-side WebSocket hook
-│   │   │   └── types.ts             # PLC types + WebSocket message types
-│   │   ├── plc-client-manager.ts    # Singleton PLC client + WS broadcast helper
-│   │   ├── db/                      # Prisma singleton + repositories
-│   │   ├── auth/                    # JWT, bcrypt, middleware helpers
-│   │   ├── cloud/                   # Cloud sync service + auto-sync loops
-│   │   ├── config/                  # Config service (file-based, hot-reload via fs.watch)
-│   │   ├── services/                # IO test service, PLC simulator
-│   │   └── api-config.ts            # API endpoints, authFetch, WebSocket URL
-│   ├── prisma/schema.prisma         # Database schema (SQLite)
-│   ├── scripts/plc-websocket-server.js  # WebSocket broadcast server
-│   ├── server.js                    # Production server (Next.js + WS + broadcast)
-│   └── server.dev.js                # Dev server (spawns Next.js + WS as children)
-├── deploy/                          # Windows deployment scripts
-└── docker/                          # Docker deployment
-```
+Use the nearest app guide as the implementation source of truth:
 
-## Key Patterns
+- `frontend/CLAUDE.md` for the local field tool
+- `commissioning-cloud/CLAUDE.md` for the cloud app
+- `installation-tracker/CLAUDE.md` for the tracker
 
-### Single Process Architecture
-```
-Browser → http://SERVER:3000    → Next.js API Routes → SQLite / PLC
-Browser → ws://SERVER:3000/ws   → WebSocket server   ← PLC tag reader broadcasts
-```
+The root docs are for workspace orientation, not detailed app internals.
 
-### WebSocket Broadcast Flow
-API routes push messages to the WebSocket server via internal HTTP POST:
-```
-API Route → POST http://localhost:3102/broadcast → WebSocket server → all browsers
-```
-The broadcast URL is centralized in `getWsBroadcastUrl()` from `lib/plc-client-manager.ts`. Internal broadcast port = WS_PORT + 100 (3102 in dev, 3102 in prod with default config).
+## Important Notes
 
-### Singleton Services (globalThis pattern)
-PLC client, Prisma, and ConfigurationService all use `globalThis` to persist across hot reloads in development. Always use the accessor functions (`getPlcClient()`, `prisma`, `configService`) — never instantiate directly.
+- Some older root-level documents still describe the local tool before its move away from a pure Next.js runtime. For local app runtime details, prefer `frontend/CLAUDE.md`.
+- Cross-app changes should preserve explicit contracts rather than relying on matching names by convention.
+- Deployment and release work should respect app ownership; colocated repos do not imply shared history.
 
-### Auth
-- PIN-only login: client sends `{ pin }`, server iterates active users to find match
-- JWT tokens (8h expiry) stored in localStorage
-- `requireAuth` / `withAuth` / `withAdmin` helpers in `lib/auth/middleware.ts`
-- Middleware redirects unauthenticated page requests to `/`
-- Roles: `admin` (full access), `user` (test only, no config/PLC/cloud)
+## Useful Root Docs
 
-### Cloud Sync (Bidirectional)
-- **Instant push**: every pass/fail, comment, and reset is pushed to cloud immediately (~1-2 seconds)
-- **Background fallback**: auto-sync retries pending syncs every 30s if instant push fails; pull every 60s
-- **Pull merge rule**: local results are never overwritten; only IOs you haven't tested get cloud results
-- **Manual "Pull IOs"**: full replace of IO definitions from cloud (auto-syncs pending results first, creates backup)
-- **Offline resilience**: PendingSyncs queue persists in SQLite, retries on reconnect
-- **Live cloud dashboard**: cloud app receives updates via SSE — project dashboard updates in real-time without refresh
-- **Version sync**: local sends pre-increment version to match cloud's current version for atomic updates
-- See `SYNC-ARCHITECTURE.md` for full details
-
-### PLC Auto-Reconnect
-- On connection loss (PLC power cycle, network drop), auto-reconnects every 5 seconds
-- No admin intervention needed — testing mode resumes automatically
-- Toolbar shows amber "Reconnecting" indicator during retry
-- Intentional disconnect (clicking disconnect) stops auto-reconnect
-
-### Network Topology
-- Ring layout (DLR loop) + star diagram (DPM port detail) with pan/zoom viewport
-- Live PLC status: `ConnectionFaulted` tags preloaded on PLC connect (negative IDs, invisible to IO testing)
-- Cached reads via `readTagCached()` from the 75ms polling loop — no fresh PLC I/O per request
-- Auto-pulls network data from cloud if local SQLite is empty (uses saved cloud config)
-- Colors: green (healthy), red (faulted), yellow (unreachable), gray (not monitored)
-- Supports light and dark mode via CSS variables
-
-### Test Result Recording
-`POST /api/ios/[id]/test` — transactional update of IO record + TestHistory creation. Every test attempt is permanently recorded in the audit trail (TestHistory), even if later retested or overwritten by sync.
-
-### Configuration
-File-based `config.json` in `frontend/` directory. ConfigurationService watches the file with `fs.watch` and notifies listeners on changes. Config includes PLC IP/path, cloud URL/credentials, subsystem ID, column visibility.
-
-## Database (SQLite via Prisma)
-
-| Table | Purpose |
-|-------|---------|
-| Io | I/O definitions with Result, Timestamp, Comments, TagType, Version, networkDeviceName, punchlistStatus, trade, clarificationNote |
-| TestHistory | Audit trail (result, testedBy, failureMode, state, timestamp) |
-| PendingSync | Offline queue for cloud sync |
-| User | Legacy PIN-based auth (no longer used — name prompt via localStorage) |
-| Project / Subsystem | Organization hierarchy |
-| TagTypeDiagnostic | Diagnostic troubleshooting steps per tag type |
-| ChangeRequest | IO change requests (requestType, status, reviewedBy) |
-| NetworkRing / NetworkNode / NetworkPort | DLR ring topology and star connections |
-| EStopZone / EStopEpc / EStopIoPoint / EStopVfd | Emergency stop check data |
-| SafetyZone / SafetyZoneDrive | STO bypass zones with affected drives |
-| SafetyOutput | STD intermediary tags for safety outputs |
-
-Schema: `frontend/prisma/schema.prisma`. Run `npx prisma generate` after changes.
-
-## CSV Data Formats
-
-The system currently imports data from multiple CSV files. Here is how they relate:
-
-### Current CSV Formats
-
-**1. IO Data (OUTPUT CSV)** — columns: `Name,Description,Subsystem`
-- `Name` = PLC tag path (e.g., `NCP1_8_VFD:I.In_0`)
-- `Description` = what the IO is (e.g., `NCP1_8_TPE1 TRACKING PHOTOEYE` or `SPARE`)
-- `Subsystem` = MCM name (e.g., `MCM11`)
-- Contains ALL IOs including SPARE. DB has 662 IOs for MCM09, 3700 for MCM11.
-
-**2. IO Connections (TAGNAME CSV)** — columns: `TAGNAME,IO_PATH,DESC`
-- `TAGNAME` = parent network device (e.g., `NCP1_8_VFD`, `NCP1_2_FIOM1`, `SLOT5_IB16`)
-- `IO_PATH` = same as IO Name (the PLC tag)
-- `DESC` = same as IO Description
-- Only contains NON-SPARE IOs (224 rows vs 662 total for MCM09)
-- **Key insight**: `TAGNAME` IS the `networkDeviceName` — links IO to its parent network device
-
-**3. Network Topology CSV** — columns: `DPM_Name,DPM_IP,DPM_Fault,Device_Name,Device_IP,Device_Fault,Port,Loop_Order`
-- Row with Loop_Order=1 is the MCM controller
-- Other rows: DPM nodes with their connected devices (VFDs, FIOMs, etc.)
-- `Device_Name` matches `TAGNAME` from IO Connections CSV
-- `Device_Fault` = ConnectionFaulted tag for live status
-
-**4. EStop CSV** — columns: `EPC_Check_Tag,Zone,EPC_IO_Points,VFDs_Must_Stop,VFDs_Keep_Running`
-- Semicolon-separated lists within columns
-
-**5. Safety Bypass CSV** — columns: `BSS_Tag,STO_Signal,Zone,Drives`
-- BSS_Tag = tag to write TRUE to bypass safety
-- Drives = semicolon-separated VFD names that stop when bypassing
-
-### Relationships Between Data
-
-```
-Network CSV Device_Name  ←→  IO Connections TAGNAME  ←→  IO Name prefix (before :)
-     ↓                              ↓                           ↓
-NetworkPort.deviceName      Io.networkDeviceName          Io.name
-```
-
-- A VFD like `NCP1_8_VFD` appears in Network Topology as a device on a DPM port
-- The same `NCP1_8_VFD` appears as TAGNAME in IO Connections
-- Its IOs are `NCP1_8_VFD:I.In_0`, `NCP1_8_VFD:I.In_1`, etc. in the IO table
-- The prefix before `:` in the IO name = the network device name
-
-**Devices only in Network (no IOs)**: PMMs, LPEs, controller (SLOT2_EN4TR)
-**Devices only in IOs (no network entry)**: Slot modules (SLOT5_IB16, SLOT6_OB16E, SLOT7_IB16S) — these are local PLC modules, not network devices
-
-### Proposed Normalized CSV (Future)
-
-A single CSV that contains everything needed for both IO and network device relationships:
-
-```
-TAGNAME,IO_PATH,DESC,Subsystem,DPM_Name,Port,Device_IP,Device_Fault
-NCP1_8_VFD,NCP1_8_VFD:I.In_0,NCP1_8_VFD_DISC DISCONNECT AUX,MCM11,NCP1_1_DPM1,5,11.200.1.20,NCP1_8_VFD:I.ConnectionFaulted
-NCP1_8_VFD,NCP1_8_VFD:I.In_1,SPARE,MCM11,NCP1_1_DPM1,5,11.200.1.20,NCP1_8_VFD:I.ConnectionFaulted
-```
-
-This would allow a single import to:
-1. Create/update IO records (IO_PATH → Io.name, DESC → Io.description)
-2. Set networkDeviceName (TAGNAME → Io.networkDeviceName)
-3. Create/update network topology (DPM_Name, Port, Device_IP, Device_Fault)
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `file:./database.db` | SQLite database path |
-| `JWT_SECRET_KEY` | — | Secret for signing auth tokens |
-| `NODE_ENV` | `development` | Node environment |
-
-## Ports
-
-| Port | Context | Purpose |
-|------|---------|---------|
-| 3000 | Both | Next.js server + WebSocket (/ws path) (dev and production) |
-| 3102 | Both | Internal HTTP broadcast API (localhost only) |
-
-## Important Caveats
-
-- **Native library required**: `plctag.dll` (Windows) or `libplctag.so` (Linux) must be accessible
-- **No auto-connect**: App does NOT connect to PLC on startup — user must configure and connect
-- **Single Prisma instance**: `lib/prisma.ts` re-exports from `lib/db` — always use one or the other
-- **`signalr-client.ts`** is a backward-compat wrapper; actual transport is plain WebSocket
-- **No automated test suite**: Testing is manual via PLC test scripts (`test:plc`, `test:plc:simple`)
-- **Standalone build**: `next.config.mjs` uses `output: 'standalone'` — production doesn't need `node_modules` except native packages (prisma, ws, ffi-rs)
+- `README.md` - workspace map
+- `SYNC-ARCHITECTURE.md` - local/cloud sync behavior and data safety
+- `DEPLOYMENT-STRATEGY.md` - deployment options and packaging notes
+- `docs/` - planning and migration notes
