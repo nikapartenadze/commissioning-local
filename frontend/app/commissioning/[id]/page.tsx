@@ -552,6 +552,56 @@ export default function CommissioningPage() {
   // Track initialization to prevent duplicate calls from StrictMode or re-renders
   const isInitializedRef = useRef(false)
 
+  // NOTE: refreshCloudStatus and refreshUpdateStatus MUST be defined before
+  // the useEffect that calls them — const/useCallback declarations are not
+  // hoisted, so calling them before definition causes a TDZ runtime error
+  // in the production (minified) bundle.
+
+  const refreshCloudStatus = useCallback(async () => {
+    try {
+      const response = await authFetch(API_ENDPOINTS.cloudStatus)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const data = await response.json() as CloudSyncStatusResponse
+      setCloudStatus(data)
+      setIsCloudConnected(data.connected === true)
+    } catch (error) {
+      setIsCloudConnected(false)
+      setCloudStatus(prev => prev ? {
+        ...prev,
+        connected: false,
+        error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
+      } : {
+        connected: false,
+        pendingSyncCount: 0,
+        error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
+      })
+    }
+  }, [])
+
+  const refreshUpdateStatus = useCallback(async () => {
+    try {
+      const response = await authFetch(API_ENDPOINTS.updateStatus)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const data = await response.json() as AppUpdateStatusResponse
+      setAppUpdateStatus(data)
+    } catch (error) {
+      setAppUpdateStatus(prev => prev ? {
+        ...prev,
+        error: error instanceof Error ? error.message : 'Failed to refresh update status',
+      } : {
+        currentVersion: 'unknown',
+        manifestConfigured: false,
+        updateAvailable: false,
+        supported: false,
+        error: error instanceof Error ? error.message : 'Failed to refresh update status',
+      })
+    }
+  }, [])
+
   // Load config and existing IOs on page mount (no PLC or SignalR connection)
   // No polling needed - SignalR provides real-time updates for state changes
   useEffect(() => {
@@ -688,51 +738,6 @@ export default function CommissioningPage() {
 
     return updatedIo
   }
-
-  const refreshCloudStatus = useCallback(async () => {
-    try {
-      const response = await authFetch(API_ENDPOINTS.cloudStatus)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      const data = await response.json() as CloudSyncStatusResponse
-      setCloudStatus(data)
-      setIsCloudConnected(data.connected === true)
-    } catch (error) {
-      setIsCloudConnected(false)
-      setCloudStatus(prev => prev ? {
-        ...prev,
-        connected: false,
-        error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
-      } : {
-        connected: false,
-        pendingSyncCount: 0,
-        error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
-      })
-    }
-  }, [])
-
-  const refreshUpdateStatus = useCallback(async () => {
-    try {
-      const response = await authFetch(API_ENDPOINTS.updateStatus)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      const data = await response.json() as AppUpdateStatusResponse
-      setAppUpdateStatus(data)
-    } catch (error) {
-      setAppUpdateStatus(prev => prev ? {
-        ...prev,
-        error: error instanceof Error ? error.message : 'Failed to refresh update status',
-      } : {
-        currentVersion: 'unknown',
-        manifestConfigured: false,
-        updateAvailable: false,
-        supported: false,
-        error: error instanceof Error ? error.message : 'Failed to refresh update status',
-      })
-    }
-  }, [])
 
   // Handle SignalR testing state changes
   useEffect(() => {
