@@ -15,6 +15,9 @@ import { db } from '@/lib/db-sqlite'
 import type { PendingSync } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
+import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
+import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
+import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 30000 (30s)
@@ -170,12 +173,6 @@ class AutoSyncService {
         'SELECT * FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
       ).all() as PendingSync[]
 
-      if (pendingSyncs.length === 0) {
-        this._lastPushAt = new Date()
-        this._lastPushResult = 'nothing to push'
-        return
-      }
-
       const config = await configService.getConfig()
       const remoteUrl = config.remoteUrl
       const apiPassword = config.apiPassword
@@ -185,60 +182,40 @@ class AutoSyncService {
         return
       }
 
-      console.log(`[AutoSync] Pushing ${pendingSyncs.length} pending results to cloud...`)
+      let syncedIoCount = 0
+      let failedIoCount = 0
+      if (pendingSyncs.length > 0) {
+        console.log(`[AutoSync] Pushing ${pendingSyncs.length} pending results to cloud...`)
 
-      const updates = pendingSyncs.map(ps => ({
-        id: ps.IoId,
-        testedBy: ps.InspectorName,
-        result: ps.TestResult,
-        comments: ps.Comments,
-        state: ps.State,
-        version: Number(ps.Version),
-        timestamp: ps.Timestamp,
-      }))
+        const syncService = getCloudSyncService()
+        const blockedIoIds = new Set<number>()
 
-      const response = await fetch(`${remoteUrl}/api/sync/update`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiPassword || '',
-        },
-        body: JSON.stringify({ updates }),
-        signal: AbortSignal.timeout(15000),
-      })
+        for (const pending of pendingSyncs) {
+          if (blockedIoIds.has(pending.IoId)) {
+            continue
+          }
 
-      if (response.ok) {
-        const syncedIds = pendingSyncs.map(ps => ps.id)
-        const deletePlaceholders = syncedIds.map(() => '?').join(',')
-        db.prepare(`DELETE FROM PendingSyncs WHERE id IN (${deletePlaceholders})`).run(...syncedIds)
+          const synced = await syncService.syncIoUpdate(mapPendingSyncToIoUpdate(pending))
+          if (synced) {
+            pendingSyncRepository.delete(pending.id)
+            syncedIoCount++
+          } else {
+            blockedIoIds.add(pending.IoId)
+            pendingSyncRepository.recordFailure(pending.id, 'Background sync failed')
+            failedIoCount++
+          }
+        }
 
-        this._lastPushAt = new Date()
-        this._lastPushResult = `pushed ${syncedIds.length} results`
-        console.log(`[AutoSync] Pushed ${syncedIds.length} results to cloud`)
-
-        try {
-          const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
-          getCloudSyncService().setConnectionState('connected')
-        } catch { /* ignore */ }
-      } else {
-        this._lastPushResult = `HTTP ${response.status}`
-        console.warn(`[AutoSync] Push failed: ${response.status}`)
-
-        const updateStmt = db.prepare(
-          'UPDATE PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
-        )
-        for (const ps of pendingSyncs) {
-          try { updateStmt.run(`HTTP ${response.status}`, ps.id) } catch {}
+        if (syncedIoCount > 0) {
+          console.log(`[AutoSync] Pushed ${syncedIoCount} results to cloud`)
         }
       }
 
-      // Clean up permanently failed PendingSync entries (retryCount > 100)
-      try {
-        const staleResult = db.prepare('DELETE FROM PendingSyncs WHERE RetryCount > 100').run()
-        if (staleResult.changes > 0) {
-          console.warn(`[AutoSync] Cleaned up ${staleResult.changes} permanently failed PendingSync entries (retryCount > 100)`)
-        }
-      } catch { /* ignore cleanup errors */ }
+      this._lastPushAt = new Date()
+      this._lastPushResult =
+        syncedIoCount > 0 || failedIoCount > 0
+          ? `pushed ${syncedIoCount} results${failedIoCount > 0 ? `, ${failedIoCount} failed` : ''}`
+          : 'nothing to push'
 
       // Also push pending change requests to cloud
       try {
@@ -265,21 +242,23 @@ class AutoSyncService {
           })
           if (resp.ok) {
             const data = await resp.json()
-            // Mark ALL pushed requests as synced
-            const ids = pendingRequests.map(r => r.id)
-            const crPlaceholders = ids.map(() => '?').join(',')
-            db.prepare(`UPDATE ChangeRequests SET Status = 'synced' WHERE id IN (${crPlaceholders})`).run(...ids)
+            const acknowledgedRequests = Array.isArray(data.requests) ? data.requests : []
+            const acknowledgedIds = acknowledgedRequests
+              .map((cr: any) => Number(cr.localId))
+              .filter((id: number) => Number.isInteger(id) && id > 0)
 
-            // If cloud returned cloudId mappings, update those too
-            if (data.requests && Array.isArray(data.requests)) {
+            if (acknowledgedIds.length > 0) {
+              const crPlaceholders = acknowledgedIds.map(() => '?').join(',')
+              db.prepare(`UPDATE ChangeRequests SET Status = 'synced' WHERE id IN (${crPlaceholders})`).run(...acknowledgedIds)
+
               const updateCrStmt = db.prepare('UPDATE ChangeRequests SET CloudId = ? WHERE id = ?')
-              for (const cr of data.requests) {
+              for (const cr of acknowledgedRequests) {
                 if (cr.localId && cr.cloudId) {
                   try { updateCrStmt.run(cr.cloudId, cr.localId) } catch {}
                 }
               }
             }
-            console.log(`[AutoSync] Pushed and marked ${ids.length} change requests as synced`)
+            console.log(`[AutoSync] Cloud acknowledged ${acknowledgedIds.length}/${pendingRequests.length} change requests`)
           }
         }
       } catch { /* ignore change request sync errors */ }
@@ -387,13 +366,6 @@ class AutoSyncService {
           }
         }
 
-        // Clean up permanently failed L2PendingSync entries (retryCount > 100)
-        try {
-          const l2StaleResult = db.prepare('DELETE FROM L2PendingSyncs WHERE RetryCount > 100').run()
-          if (l2StaleResult.changes > 0) {
-            console.warn(`[AutoSync] Cleaned up ${l2StaleResult.changes} permanently failed L2PendingSync entries (retryCount > 100)`)
-          }
-        } catch { /* ignore cleanup errors */ }
       } catch { /* ignore L2 sync errors */ }
 
     } catch (error) {
@@ -445,6 +417,13 @@ class AutoSyncService {
         return
       }
 
+      const pendingIoCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs').get() as { count: number }).count
+      const pendingL2Count = (db.prepare('SELECT COUNT(*) as count FROM L2PendingSyncs').get() as { count: number }).count
+      if (pendingIoCount > 0 || pendingL2Count > 0) {
+        this._lastPullResult = `skipped (local pending syncs: io=${pendingIoCount}, l2=${pendingL2Count})`
+        return
+      }
+
       const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`
       const response = await fetch(cloudUrl, {
         method: 'GET',
@@ -482,6 +461,9 @@ class AutoSyncService {
       let updatedCount = 0
       let mergedResults = 0
       const subsystemIdNum = parseInt(subsystemId, 10)
+      const pendingIoIds = new Set(
+        (db.prepare('SELECT DISTINCT IoId FROM PendingSyncs').all() as Array<{ IoId: number }>).map(row => row.IoId)
+      )
 
       const selectStmt = db.prepare('SELECT Result, Version FROM Ios WHERE id = ?')
       const insertStmt = db.prepare(`
@@ -499,12 +481,11 @@ class AutoSyncService {
       `)
 
       const pullTransaction = db.transaction(() => {
-        // Check if subsystem changed — if so, clear all IOs first
+        // Auto-pull must never switch subsystems behind the user's back.
         const existingSubIds = db.prepare('SELECT DISTINCT SubsystemId FROM Ios').all() as { SubsystemId: number }[]
         const hasOtherSubsystems = existingSubIds.some(s => s.SubsystemId !== subsystemIdNum)
         if (hasOtherSubsystems) {
-          console.log(`[AutoSync] Subsystem changed (had ${existingSubIds.map(s => s.SubsystemId).join(',')}, now ${subsystemIdNum}) — clearing all IOs`)
-          db.exec('DELETE FROM Ios')
+          throw new Error(`auto-pull refused subsystem switch from ${existingSubIds.map(s => s.SubsystemId).join(',')} to ${subsystemIdNum}`)
         }
 
         for (const cloudIo of cloudIos) {
@@ -515,10 +496,14 @@ class AutoSyncService {
 
             const cloudVersion = Number(cloudIo.version) || 0
             const localVersion = localIo?.Version ?? 0
+            const hasLocalPendingSync = pendingIoIds.has(cloudIo.id)
 
-            // Determine if we should merge results
-            const shouldMergeResult = cloudIo.result !== undefined &&
-              (!localIo?.Result || cloudVersion > localVersion)
+            // Never overwrite local dirty state. Only merge cloud results/comments when cloud is newer
+            // and this IO has no unsynced local writes waiting in PendingSyncs.
+            const shouldMergeResult =
+              cloudIo.result !== undefined &&
+              !hasLocalPendingSync &&
+              cloudVersion > localVersion
 
             if (!localIo) {
               // Insert new IO

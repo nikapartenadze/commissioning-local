@@ -25,6 +25,9 @@ export interface AppConfig {
   /** Subsystem ID for filtering IOs */
   subsystemId: string;
 
+  /** Optional release manifest URL for host-side update checks */
+  updateManifestUrl?: string;
+
   /** Order mode: "0" = test any order, "1" = sequential testing */
   orderMode: string;
 
@@ -66,6 +69,7 @@ export interface ConfigUpdateRequest {
   remoteUrl?: string;
   apiPassword?: string;
   subsystemId?: string;
+  updateManifestUrl?: string;
   orderMode?: string;
   syncBatchSize?: number;
   syncBatchDelayMs?: number;
@@ -104,6 +108,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   remoteUrl: '',
   apiPassword: '',
   subsystemId: '',
+  updateManifestUrl: '',
   orderMode: '0',
   syncBatchSize: 50,
   syncBatchDelayMs: 500,
