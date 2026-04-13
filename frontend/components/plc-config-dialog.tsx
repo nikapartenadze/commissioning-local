@@ -254,7 +254,7 @@ export function PlcConfigDialog({
           onCloudPull(localConfig)
         }
       } else if (response.status === 409) {
-        // Pending syncs blocking the pull — offer force option
+        // Pending local queues block pull so cloud cannot overwrite unsynced site data.
         let errorData: any = {}
         try { errorData = await response.json() } catch {}
         const msg = errorData.error || 'Unsynced test results exist'
@@ -276,7 +276,7 @@ export function PlcConfigDialog({
             const syncResult = await syncRes.json()
             addPullLog(`Synced ${syncResult.syncedCount} results to cloud`)
 
-            // Retry pull with force flag in case some syncs still failed
+            // Retry pull normally. If anything is still pending, keep blocking instead of overwriting local data.
             addPullLog('Retrying pull...')
             const retryRes = await authFetch(API_ENDPOINTS.cloudPull, {
               method: 'POST',
@@ -285,7 +285,6 @@ export function PlcConfigDialog({
                 remoteUrl: localConfig.remoteUrl || "",
                 apiPassword: localConfig.apiPassword || "",
                 subsystemId: localConfig.subsystemId,
-                force: true,
               }),
             })
             if (retryRes.ok) {
@@ -297,29 +296,10 @@ export function PlcConfigDialog({
             } else {
               setPullStatus({ type: 'error', message: 'Pull failed after sync' })
             }
-          } else {
-            addPullLog('Sync failed — pulling with force flag...')
-            // Sync failed (cloud unreachable?) — force pull anyway, backup was created
-            const forceRes = await authFetch(API_ENDPOINTS.cloudPull, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                remoteUrl: localConfig.remoteUrl || "",
-                apiPassword: localConfig.apiPassword || "",
-                subsystemId: localConfig.subsystemId,
-                force: true,
-              }),
-            })
-            if (forceRes.ok) {
-              const forceResult = await forceRes.json()
-              addPullLog(`Force-pulled ${forceResult.ioCount} IOs (backup created)`)
-
-              setPullStatus({ type: 'success', message: `Pulled ${forceResult.ioCount} IOs` })
-              onCloudPull(localConfig)
             } else {
-              setPullStatus({ type: 'error', message: 'Force pull also failed' })
+              addPullLog('Sync failed — pull aborted to protect local unsynced data')
+              setPullStatus({ type: 'error', message: 'Pull blocked until pending local changes are synced' })
             }
-          }
         } catch (syncErr: any) {
           addPullLog(`Sync attempt failed: ${syncErr.message}`)
           setPullStatus({ type: 'error', message: msg })
@@ -707,7 +687,6 @@ export function PlcConfigDialog({
                               remoteUrl: localConfig.remoteUrl,
                               apiPassword: localConfig.apiPassword,
                               subsystemId: profile.subsystemId,
-                              force: true,
                             }),
                           })
                           const pullData = await pullRes.json()

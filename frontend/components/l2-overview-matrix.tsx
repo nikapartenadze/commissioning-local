@@ -100,7 +100,7 @@ export function L2OverviewMatrix() {
         <div>
           <h3 className="text-sm font-semibold">L2 Functional Validation — Overview</h3>
           <p className="text-[11px] text-muted-foreground">
-            {grandTotal.completed}/{grandTotal.total} checks ({grandTotal.percent}%)
+            {grandTotal.completed}/{grandTotal.total} progress cells ({grandTotal.percent}%)
           </p>
         </div>
         <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleRefresh} disabled={refreshing}>

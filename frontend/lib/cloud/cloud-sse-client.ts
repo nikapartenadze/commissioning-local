@@ -350,7 +350,7 @@ class CloudSseClient {
       }
 
       // Recount completed checks for the device
-      const completedCount = db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.ColumnType = 'check' AND cv.Value IS NOT NULL AND cv.Value != ''`).get(localDev.id) as { cnt: number } | undefined
+      const completedCount = db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.IncludeInProgress = 1 AND cv.Value IS NOT NULL AND cv.Value != ''`).get(localDev.id) as { cnt: number } | undefined
       if (completedCount) {
         db.prepare('UPDATE L2Devices SET CompletedChecks = ? WHERE id = ?').run(completedCount.cnt, localDev.id)
       }

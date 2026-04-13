@@ -9,6 +9,7 @@ echo.
 set "PROJECT_DIR=%~dp0.."
 set "FRONTEND_DIR=%PROJECT_DIR%\frontend"
 set "OUTPUT_DIR=%PROJECT_DIR%\portable"
+if not defined APP_VERSION set "APP_VERSION=1.0.0"
 
 set "PLCTAG_VER=v2.6.15"
 set "PLCTAG_URL=https://github.com/libplctag/libplctag/releases/download/%PLCTAG_VER%/libplctag_%PLCTAG_VER:~1%_windows_x64.zip"
@@ -93,6 +94,8 @@ xcopy /E /I /Q /Y "%FRONTEND_DIR%\dist" "%OUTPUT_DIR%\app\dist-server\dist"
 REM ── Startup backup module (plain JS) ──
 if not exist "%OUTPUT_DIR%\app\dist-server\lib" mkdir "%OUTPUT_DIR%\app\dist-server\lib"
 copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\dist-server\lib\" >nul 2>nul
+if not exist "%OUTPUT_DIR%\app\dist-server\tools" mkdir "%OUTPUT_DIR%\app\dist-server\tools"
+copy "%FRONTEND_DIR%\tools\install-update.ps1" "%OUTPUT_DIR%\app\dist-server\tools\" >nul 2>nul
 
 REM ── PLC native library ──
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\" >nul
@@ -159,6 +162,8 @@ echo JWT_SECRET_KEY=io-checkout-%RANDOM%%RANDOM%%RANDOM%
 echo PORT=3000
 echo HOSTNAME=0.0.0.0
 echo NODE_ENV=production
+echo APP_VERSION=%APP_VERSION%
+echo UPDATE_MANIFEST_URL=
 ) > "%NM_DST%\.env"
 
 REM ══════════════════════════════════════════════════════════════

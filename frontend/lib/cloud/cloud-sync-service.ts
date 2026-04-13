@@ -514,6 +514,18 @@ export class CloudSyncService {
       }
 
       if (response.ok) {
+        let responseData: { updatedCount?: number } | null = null
+        try {
+          responseData = await response.json()
+        } catch {
+          responseData = null
+        }
+
+        if (responseData?.updatedCount !== undefined && responseData.updatedCount < 1) {
+          log.warn(`Cloud accepted HTTP request for IO ${update.id} but updatedCount=${responseData.updatedCount}`)
+          return false
+        }
+
         log.info(`Successfully synced IO ${update.id} via HTTP`)
         this.setConnectionState('connected')
         return true
@@ -570,6 +582,21 @@ export class CloudSyncService {
       }
 
       if (response.ok) {
+        let responseData: { updatedCount?: number } | null = null
+        try {
+          responseData = await response.json()
+        } catch {
+          responseData = null
+        }
+
+        if (
+          responseData?.updatedCount !== undefined &&
+          responseData.updatedCount < updates.length
+        ) {
+          log.warn(`Cloud accepted batch HTTP request but only updated ${responseData.updatedCount}/${updates.length} IOs`)
+          return false
+        }
+
         log.info(`Successfully batch synced ${updates.length} IOs via HTTP`)
         this.setConnectionState('connected')
         return true

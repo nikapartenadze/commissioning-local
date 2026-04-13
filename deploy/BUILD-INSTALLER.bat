@@ -59,6 +59,7 @@ echo.
 echo [1/2] Building portable distribution...
 echo.
 if not exist "%PORTABLE_DIR%\app\dist-server\server-express.js" (
+    set "APP_VERSION=%APP_VERSION%"
     call "%DEPLOY_DIR%BUILD-PORTABLE.bat"
     if %errorlevel% neq 0 (
         echo ERROR: Portable build failed
