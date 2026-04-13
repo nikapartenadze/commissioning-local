@@ -3,8 +3,11 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '@/lib/utils'
-import { Check, X } from 'lucide-react'
+import { Check, X, Filter } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Checkbox } from '@/components/ui/checkbox'
+import { normalizeL2InputType } from '@/lib/l2-utils'
 
 interface L2Sheet {
   id: number
@@ -16,7 +19,11 @@ interface L2Column {
   id: number
   Name: string
   ColumnType: string
+  InputType?: string | null
   DisplayOrder: number
+  IsSystem?: number
+  IsEditable?: number
+  IncludeInProgress?: number
   Description?: string | null
 }
 
@@ -33,8 +40,13 @@ interface L2SheetGridProps {
   sheet: L2Sheet
   columns: L2Column[]
   devices: L2Device[]
+  allDevices?: L2Device[]
   cellValues: Map<string, { Value: string | null; Version: number }>
   onCellChange: (deviceId: number, columnId: number, value: string | null) => void
+  columnFilters?: Record<string, any>
+  fixedFilters?: { device: string[] | null; mcm: string[] | null; subsystem: string[] | null }
+  onColumnFilterChange?: (colId: number, value: any) => void
+  onFixedFilterChange?: (field: "device" | "mcm" | "subsystem", value: string[] | null) => void
 }
 
 const ROW_HEIGHT = 44
@@ -49,9 +61,9 @@ const DEFAULT_FIXED: Record<string, number> = {
 
 function baseScrollWidth(colType: string): number {
   switch (colType) {
-    case 'check': return 80
-    case 'notes': return 200
-    case 'data': return 130
+    case 'pass_fail': return 80
+    case 'text': return 180
+    case 'number': return 130
     case 'readonly': return 130
     default: return 100
   }
@@ -82,8 +94,8 @@ function CheckCell({ value, onChange }: { value: string | null; onChange: (v: st
   )
 }
 
-function EditableCell({ value, onChange, placeholder }: {
-  value: string | null; onChange: (v: string | null) => void; placeholder?: string
+function EditableCell({ value, onChange, placeholder, inputType = 'text' }: {
+  value: string | null; onChange: (v: string | null) => void; placeholder?: string; inputType?: 'text' | 'number'
 }) {
   const [editing, setEditing] = useState(false)
   const [localValue, setLocalValue] = useState(value ?? '')
@@ -104,7 +116,9 @@ function EditableCell({ value, onChange, placeholder }: {
   return (
     <input
       ref={inputRef}
-      type="text"
+      type={inputType}
+      inputMode={inputType === 'number' ? 'decimal' : undefined}
+      step={inputType === 'number' ? 'any' : undefined}
       value={editing ? localValue : (value ?? '')}
       onChange={(e) => setLocalValue(e.target.value)}
       onFocus={handleFocus}
@@ -140,17 +154,114 @@ function ResizeHandle({ onResizeStart }: { onResizeStart: (e: React.MouseEvent) 
 // ─── Context menu constants ─────────────────────────────────────────────
 
 const COL_TYPE_STYLES: Record<string, string> = {
-  check: "bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300",
-  data: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900 dark:text-blue-300",
+  pass_fail: "bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300",
+  number: "bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900 dark:text-blue-300",
   readonly: "bg-gray-100 text-gray-600 border-gray-300 dark:bg-gray-800 dark:text-gray-400",
-  notes: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900 dark:text-amber-300",
+  text: "bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900 dark:text-amber-300",
 }
 
 const COL_TYPE_HINTS: Record<string, string> = {
-  check: "Tap to cycle: empty \u2192 pass \u2192 fail \u2192 empty",
-  data: "Type a measured or observed value",
+  pass_fail: "Tap to cycle: empty \u2192 pass \u2192 fail \u2192 empty",
+  number: "Type a measured or observed numeric value",
   readonly: "Pre-filled value (cannot edit)",
-  notes: "Free-text notes or comments",
+  text: "Free-text value",
+}
+
+// ─── Filter popovers ────────────────────────────────────────────────────
+
+function FixedFilterPopover({
+  allValues,
+  selected,
+  onSelect,
+}: {
+  allValues: string[]
+  selected: string[] | null
+  onSelect: (val: string[] | null) => void
+}) {
+  const [search, setSearch] = useState("")
+  const filtered = search ? allValues.filter((v) => v.toLowerCase().includes(search.toLowerCase())) : allValues
+  return (
+    <div className="flex flex-col">
+      <div className="p-2 border-b">
+        <input
+          placeholder="Search..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full h-7 px-2 text-xs rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+          autoFocus
+        />
+      </div>
+      <div className="flex items-center justify-between px-2 py-1.5 border-b">
+        <button className="text-[10px] text-primary hover:underline" onClick={() => onSelect(null)}>Select All</button>
+        <button className="text-[10px] text-muted-foreground hover:underline" onClick={() => onSelect([])}>Clear</button>
+      </div>
+      <div className="max-h-48 overflow-y-auto p-1">
+        {filtered.map((val) => (
+          <label key={val} className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-accent rounded cursor-pointer">
+            <Checkbox
+              checked={selected === null || selected.includes(val)}
+              onCheckedChange={(checked) => {
+                const current = selected === null ? [...allValues] : [...selected]
+                if (checked) {
+                  const next = Array.from(new Set([...current, val]))
+                  onSelect(next.length === allValues.length ? null : next)
+                } else {
+                  onSelect(current.filter((v) => v !== val))
+                }
+              }}
+            />
+            <span className="truncate">{val}</span>
+          </label>
+        ))}
+        {filtered.length === 0 && <p className="text-xs text-muted-foreground px-2 py-1">No matches</p>}
+      </div>
+    </div>
+  )
+}
+
+function TagFilterPopover({
+  tags,
+  onTagsChange,
+  columnName,
+}: {
+  tags: string[]
+  onTagsChange: (tags: string[]) => void
+  columnName: string
+}) {
+  const [input, setInput] = useState("")
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && input.trim()) {
+      e.preventDefault()
+      const tag = input.trim()
+      if (!tags.includes(tag)) onTagsChange([...tags, tag])
+      setInput("")
+    }
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <input
+        placeholder={`Filter ${columnName}... (Enter)`}
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={handleKeyDown}
+        className="w-full h-7 px-2 text-xs rounded-md border bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+        autoFocus
+      />
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {tags.map((tag) => (
+            <span key={tag} className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              {tag}
+              <button onClick={() => onTagsChange(tags.filter((t) => t !== tag))} className="hover:text-destructive">
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </span>
+          ))}
+          <button onClick={() => onTagsChange([])} className="text-[10px] text-muted-foreground underline hover:text-foreground">Clear</button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ─── Main grid ──────────────────────────────────────────────────────────
@@ -159,9 +270,15 @@ export function L2SheetGrid({
   sheet,
   columns,
   devices,
+  allDevices,
   cellValues,
   onCellChange,
+  columnFilters = {},
+  fixedFilters = { device: null, mcm: null, subsystem: null },
+  onColumnFilterChange,
+  onFixedFilterChange,
 }: L2SheetGridProps) {
+  const allDevs = allDevices || devices
   const scrollRef = useRef<HTMLDivElement>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStartX, setDragStartX] = useState(0)
@@ -245,7 +362,7 @@ export function L2SheetGrid({
 
   // Scroll column widths: user override > auto-scaled > base default
   const scrollColWidths = useMemo(() => {
-    const bases = columns.map(col => baseScrollWidth(col.ColumnType))
+    const bases = columns.map(col => baseScrollWidth(normalizeL2InputType(col.ColumnType, col.InputType)))
     const baseTotalScroll = bases.reduce((sum, w) => sum + w, 0)
     const available = containerWidth - totalFixed
 
@@ -281,14 +398,15 @@ export function L2SheetGrid({
     const key = `${device.id}-${col.id}`
     const cv = cellValues.get(key)
     const value = cv?.Value ?? null
+    const inputType = normalizeL2InputType(col.ColumnType, col.InputType)
 
-    switch (col.ColumnType) {
-      case 'check':
+    switch (inputType) {
+      case 'pass_fail':
         return <CheckCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} />
-      case 'data':
+      case 'number':
+        return <EditableCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} inputType="number" />
+      case 'text':
         return <EditableCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} />
-      case 'notes':
-        return <EditableCell value={value} onChange={(v) => onCellChange(device.id, col.id, v)} placeholder="Notes..." />
       case 'readonly':
         return <ReadonlyCell value={value} />
       default:
@@ -365,35 +483,146 @@ export function L2SheetGrid({
             {/* Fixed header columns — sticky left */}
             <div className="sticky left-0 z-40 flex bg-muted shrink-0 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]">
               {/* Device */}
-              <div className="relative flex items-center px-3 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.deviceName }}>
-                Device
+              <div className="relative flex items-center justify-between px-3 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.deviceName }}>
+                <span>Device</span>
+                <div className="flex items-center gap-0.5">
+                  {onFixedFilterChange && (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button className={cn("shrink-0 rounded p-0.5 z-20", fixedFilters.device !== null ? "text-primary" : "text-muted-foreground/50 hover:text-muted-foreground")}>
+                          <Filter className="h-3 w-3" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-56 p-0" align="start">
+                        <FixedFilterPopover
+                          allValues={Array.from(new Set(allDevs.map((d) => d.DeviceName).filter(Boolean))).sort()}
+                          selected={fixedFilters.device}
+                          onSelect={(val) => onFixedFilterChange && onFixedFilterChange("device", val)}
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  )}
+                </div>
                 <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'deviceName', fixedW.deviceName)} />
               </div>
               {/* MCM */}
-              <div className="relative flex items-center px-2 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.mcm }}>
-                MCM
+              <div className="relative flex items-center justify-between px-2 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.mcm }}>
+                <span>MCM</span>
+                <div className="flex items-center gap-0.5">
+                  {onFixedFilterChange && (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button className={cn("shrink-0 rounded p-0.5 z-20", fixedFilters.mcm !== null ? "text-primary" : "text-muted-foreground/50 hover:text-muted-foreground")}>
+                          <Filter className="h-3 w-3" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-56 p-0" align="start">
+                        <FixedFilterPopover
+                          allValues={Array.from(new Set(allDevs.map((d) => d.Mcm).filter(Boolean))).sort()}
+                          selected={fixedFilters.mcm}
+                          onSelect={(val) => onFixedFilterChange && onFixedFilterChange("mcm", val)}
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  )}
+                </div>
                 <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'mcm', fixedW.mcm)} />
               </div>
               {/* Subsystem */}
-              <div className="relative flex items-center px-2 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.subsystem }}>
-                Subsystem
+              <div className="relative flex items-center justify-between px-2 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.subsystem }}>
+                <span>Subsystem</span>
+                <div className="flex items-center gap-0.5">
+                  {onFixedFilterChange && (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button className={cn("shrink-0 rounded p-0.5 z-20", fixedFilters.subsystem !== null ? "text-primary" : "text-muted-foreground/50 hover:text-muted-foreground")}>
+                          <Filter className="h-3 w-3" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-56 p-0" align="start">
+                        <FixedFilterPopover
+                          allValues={Array.from(new Set(allDevs.map((d) => d.Subsystem).filter(Boolean))).sort()}
+                          selected={fixedFilters.subsystem}
+                          onSelect={(val) => onFixedFilterChange && onFixedFilterChange("subsystem", val)}
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  )}
+                </div>
                 <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'subsystem', fixedW.subsystem)} />
               </div>
             </div>
 
             {/* Scrollable header columns */}
-            {columns.map((col, colIdx) => (
-              <div
-                key={col.id}
-                className="relative flex items-center px-2 text-xs font-semibold text-muted-foreground border-r shrink-0 cursor-context-menu select-none"
-                style={{ width: scrollColWidths[colIdx] }}
-                title={`Right-click for info: ${col.Name}`}
-                onContextMenu={(e) => handleHeaderContextMenu(e, col)}
-              >
-                <span className="truncate">{col.Name}</span>
-                <ResizeHandle onResizeStart={(e) => startColResize(e, col.id, scrollColWidths[colIdx])} />
-              </div>
-            ))}
+            {columns.map((col, colIdx) => {
+              const inputType = normalizeL2InputType(col.ColumnType, col.InputType)
+              const hasFilter = (() => {
+                const f = columnFilters[col.id]
+                if (!f) return false
+                if (Array.isArray(f)) return f.length > 0
+                return !f.pass || !f.fail || !f.empty
+              })()
+              return (
+                <div
+                  key={col.id}
+                  className="relative flex items-center justify-between px-2 text-xs font-semibold text-muted-foreground border-r shrink-0 cursor-context-menu select-none"
+                  style={{ width: scrollColWidths[colIdx] }}
+                  title={`Right-click for info: ${col.Name}`}
+                  onContextMenu={(e) => handleHeaderContextMenu(e, col)}
+                >
+                  <span className="truncate">{col.Name}</span>
+                  <div className="flex items-center gap-0.5">
+                    {onColumnFilterChange && (
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            className={cn("shrink-0 rounded p-0.5 z-20", hasFilter ? "text-primary" : "text-muted-foreground/50 hover:text-muted-foreground")}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Filter className="h-3 w-3" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-48 p-2" align="start" onClick={(e) => e.stopPropagation()}>
+                          {inputType === "pass_fail" ? (
+                            <div className="space-y-2">
+                              <p className="text-[11px] font-medium text-muted-foreground">Show rows where:</p>
+                              {(["pass", "fail", "empty"] as const).map((opt) => {
+                                const current = (columnFilters[col.id] as any) || { pass: true, fail: true, empty: true }
+                                return (
+                                  <label key={opt} className="flex items-center gap-2 text-xs">
+                                    <Checkbox
+                                      checked={current[opt]}
+                                      onCheckedChange={(checked) => {
+                                        const prev = (columnFilters[col.id] as any) || { pass: true, fail: true, empty: true }
+                                        onColumnFilterChange(col.id, { ...prev, [opt]: !!checked })
+                                      }}
+                                    />
+                                    <span className="capitalize">{opt === "empty" ? "Empty" : opt === "pass" ? "Pass" : "Fail"}</span>
+                                  </label>
+                                )
+                              })}
+                              <button
+                                onClick={() => onColumnFilterChange(col.id, undefined)}
+                                className="text-[10px] text-muted-foreground underline hover:text-foreground"
+                              >
+                                Reset
+                              </button>
+                            </div>
+                          ) : (
+                            <TagFilterPopover
+                              tags={(columnFilters[col.id] as string[]) || []}
+                              onTagsChange={(tags) => onColumnFilterChange && onColumnFilterChange(col.id, tags.length > 0 ? tags : undefined)}
+                              columnName={col.Name}
+                            />
+                          )}
+                        </PopoverContent>
+                      </Popover>
+                    )}
+                  </div>
+                  <ResizeHandle onResizeStart={(e) => startColResize(e, col.id, scrollColWidths[colIdx])} />
+                </div>
+              )
+            })}
           </div>
 
           {/* ── Virtualized rows ──────────────────────────────── */}
@@ -458,8 +687,8 @@ export function L2SheetGrid({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center gap-2 mb-1.5">
-            <Badge variant="outline" className={cn("text-[10px] px-1.5", COL_TYPE_STYLES[contextMenu.col.ColumnType])}>
-              {contextMenu.col.ColumnType}
+            <Badge variant="outline" className={cn("text-[10px] px-1.5", COL_TYPE_STYLES[normalizeL2InputType(contextMenu.col.ColumnType, contextMenu.col.InputType)])}>
+              {normalizeL2InputType(contextMenu.col.ColumnType, contextMenu.col.InputType)}
             </Badge>
             <span className="text-sm font-semibold truncate">{contextMenu.col.Name}</span>
           </div>
@@ -469,7 +698,7 @@ export function L2SheetGrid({
             </p>
           ) : (
             <p className="text-xs text-muted-foreground italic">
-              {COL_TYPE_HINTS[contextMenu.col.ColumnType] || "Enter the required value"}
+              {COL_TYPE_HINTS[normalizeL2InputType(contextMenu.col.ColumnType, contextMenu.col.InputType)] || "Enter the required value"}
             </p>
           )}
         </div>
