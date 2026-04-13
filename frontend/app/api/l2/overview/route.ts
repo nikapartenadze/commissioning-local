@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
+import { doesL2ColumnCountForProgress, getL2OverviewGroup } from '@/lib/l2-utils'
 
 /**
  * GET /api/l2/overview
@@ -12,7 +13,7 @@ export async function GET(req: Request, res: Response) {
   try {
     const sheets = db.prepare('SELECT id, Name, DisplayName FROM L2Sheets ORDER BY DisplayOrder').all() as any[]
     const devices = db.prepare('SELECT id, SheetId, DeviceName, Mcm, CompletedChecks, TotalChecks FROM L2Devices ORDER BY Mcm, DeviceName').all() as any[]
-    const columns = db.prepare('SELECT id, SheetId, ColumnType FROM L2Columns').all() as any[]
+    const columns = db.prepare('SELECT id, SheetId, ColumnType, InputType, IncludeInProgress FROM L2Columns').all() as any[]
 
     if (sheets.length === 0) {
       return res.json({ hasData: false, sheets: [], mcms: [], matrix: {}, totals: {} })
@@ -21,7 +22,8 @@ export async function GET(req: Request, res: Response) {
     // Get unique MCMs sorted
     const mcmSet = new Set<string>()
     for (const d of devices) {
-      if (d.Mcm) mcmSet.add(d.Mcm)
+      const groupKey = getL2OverviewGroup(d, sheets.find((sheet) => sheet.id === d.SheetId)?.Name)
+      if (groupKey) mcmSet.add(groupKey)
     }
     const mcms = Array.from(mcmSet).sort((a, b) => {
       // Sort MCM01, MCM02, ... naturally
@@ -33,7 +35,7 @@ export async function GET(req: Request, res: Response) {
     // Get check column IDs per sheet
     const checkColsBySheet = new Map<number, number[]>()
     for (const col of columns) {
-      if (col.ColumnType === 'check') {
+      if (doesL2ColumnCountForProgress(col)) {
         const arr = checkColsBySheet.get(col.SheetId) || []
         arr.push(col.id)
         checkColsBySheet.set(col.SheetId, arr)
@@ -90,7 +92,7 @@ export async function GET(req: Request, res: Response) {
 
       for (const mcm of mcms) {
         // Devices in this sheet + MCM
-        const mcmDevices = devices.filter((d: any) => d.SheetId === sheet.id && d.Mcm === mcm)
+        const mcmDevices = devices.filter((d: any) => d.SheetId === sheet.id && getL2OverviewGroup(d, sheet.Name) === mcm)
         const total = mcmDevices.length * checkColCount
         let completed = 0
         let lastTester: string | null = null
