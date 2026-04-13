@@ -60,6 +60,10 @@ interface PlcToolbarProps {
   activeTab?: 'io' | 'network' | 'estop'
   networkStats?: { healthy: number; faulted: number; unknown: number }
   estopStats?: { ok: number; failed: number; noData: number }
+  pendingIoSyncCount?: number
+  pendingL2SyncCount?: number
+  pendingChangeRequestCount?: number
+  pullBlocked?: boolean
 }
 
 export function PlcToolbar({
@@ -88,6 +92,10 @@ export function PlcToolbar({
   activeTab = 'io',
   networkStats,
   estopStats,
+  pendingIoSyncCount = 0,
+  pendingL2SyncCount = 0,
+  pendingChangeRequestCount = 0,
+  pullBlocked = false,
   punchlists = [],
   activePunchlistId = null,
   onPunchlistChange,
@@ -97,6 +105,12 @@ export function PlcToolbar({
 }: PlcToolbarProps) {
   const progressPercent = totalIos > 0 ? ((passedIos + failedIos) / totalIos) * 100 : 0
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
+  const totalPendingSyncs = pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount
+  const cloudTitle = totalPendingSyncs > 0
+    ? `Local queue pending: ${pendingIoSyncCount} IO, ${pendingL2SyncCount} L2, ${pendingChangeRequestCount} change request${pendingChangeRequestCount === 1 ? '' : 's'}. Pull is blocked until sync completes.`
+    : isCloudConnected
+      ? 'Cloud Connected'
+      : 'Offline Mode'
 
   return (
     <div className="bg-card border-y border-[#C6941A]/20">
@@ -461,20 +475,32 @@ export function PlcToolbar({
               variant="ghost"
               size="lg"
               className={cn(
-                "h-10 w-10 sm:h-12 sm:w-auto sm:px-3 p-0 sm:p-auto gap-2",
-                isCloudConnected ? "text-green-600" : "text-amber-600"
+                "relative h-10 w-10 sm:h-12 sm:w-auto sm:px-3 p-0 sm:p-auto gap-2",
+                totalPendingSyncs > 0
+                  ? "text-amber-600"
+                  : isCloudConnected
+                    ? "text-green-600"
+                    : "text-amber-600"
               )}
               onClick={onCloudSync}
-              title={isCloudConnected ? "Cloud Connected" : "Offline Mode"}
+              title={cloudTitle}
             >
-              {isCloudConnected ? (
-                <Cloud className="w-5 h-5" />
-              ) : (
-                <CloudOff className="w-5 h-5" />
-              )}
+              <div className="relative">
+                {isCloudConnected ? (
+                  <Cloud className="w-5 h-5" />
+                ) : (
+                  <CloudOff className="w-5 h-5" />
+                )}
+                {totalPendingSyncs > 0 && (
+                  <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-[10px] leading-[18px] font-bold text-black text-center">
+                    {totalPendingSyncs > 99 ? '99+' : totalPendingSyncs}
+                  </span>
+                )}
+              </div>
               <span className="text-xs uppercase hidden lg:inline">
-                {isCloudConnected ? "CLOUD" : "OFFLINE"}
+                {pullBlocked ? "QUEUE" : isCloudConnected ? "CLOUD" : "OFFLINE"}
               </span>
+              {pullBlocked && <AlertTriangle className="hidden lg:inline w-4 h-4" />}
             </Button>
           )}
 

@@ -42,6 +42,7 @@ import { GuidedTour } from "@/components/guided-tour"
 import { NamePrompt } from "@/components/name-prompt"
 import { ConnectionLostOverlay } from "@/components/connection-lost-overlay"
 import { logger } from "@/lib/logger"
+import type { AppUpdateStatusResponse, CloudSyncStatusResponse } from "@/lib/cloud/types"
 
 // Debug flags - set to true to enable specific logging
 const DEBUG_FIRE = true      // Fire output logs
@@ -57,6 +58,12 @@ function getDeviceName(tagName: string | null | undefined): string | null {
   const dotIdx = tagName.indexOf('.')
   if (dotIdx > 0) return tagName.substring(0, dotIdx)
   return tagName
+}
+
+function normalizeIoState(state: unknown): 'TRUE' | 'FALSE' | null {
+  if (state === true || state === 'TRUE') return 'TRUE'
+  if (state === false || state === 'FALSE') return 'FALSE'
+  return null
 }
 
 interface IoItem {
@@ -151,6 +158,8 @@ export default function CommissioningPage() {
     lastUpdate: new Date()
   })
   const [isCloudConnected, setIsCloudConnected] = useState(false)
+  const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusResponse | null>(null)
+  const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatusResponse | null>(null)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
   const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety' | 'l2'>('io')
@@ -173,6 +182,7 @@ export default function CommissioningPage() {
   const [showValueChangeDialog, setShowValueChangeDialog] = useState(false)
   const [showFailCommentDialog, setShowFailCommentDialog] = useState(false)
   const [showCloudSyncDialog, setShowCloudSyncDialog] = useState(false)
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false)
   const [selectedIo, setSelectedIo] = useState<IoItem | null>(null)
   const [pendingFailIo, setPendingFailIo] = useState<IoItem | null>(null)
   const [previousStates, setPreviousStates] = useState<Record<number, string>>({})
@@ -235,6 +245,7 @@ export default function CommissioningPage() {
   const [tagStatus, setTagStatus] = useState<TagStatus | null>(null)
   const [showTagStatusDialog, setShowTagStatusDialog] = useState(false)
   const [showTour, setShowTour] = useState(false)
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
 
   // Muted IOs — suppress dialog triggers for noisy IOs
   const [mutedIos, setMutedIos] = useState<Set<number>>(new Set())
@@ -553,17 +564,31 @@ export default function CommissioningPage() {
     loadPlcConfig()
     loadIos()
 
-    // Initial cloud status check (SSE handles live updates after this)
-    fetch('/api/cloud/status')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) setIsCloudConnected(data.connected === true) })
-      .catch(() => setIsCloudConnected(false))
+    // Initial cloud status check
+    refreshCloudStatus()
+    refreshUpdateStatus()
 
     return () => {
       isInitializedRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]) // Only re-run when projectId changes
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      refreshCloudStatus()
+    }, 10000)
+
+    return () => clearInterval(timer)
+  }, [refreshCloudStatus])
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      refreshUpdateStatus()
+    }, 60000)
+
+    return () => clearInterval(timer)
+  }, [refreshUpdateStatus])
 
   // PlcCommunicationService is not used - real-time updates come via SignalR
   // PLC connection is managed by the backend, not the frontend
@@ -600,6 +625,114 @@ export default function CommissioningPage() {
   useEffect(() => {
     mutedIosRef.current = mutedIos
   }, [mutedIos])
+
+  const applyIoStateTransition = (io: IoItem, updatedIo: IoItem, nextState: 'TRUE' | 'FALSE' | null) => {
+    if (!nextState) {
+      return updatedIo
+    }
+
+    const currentPlcStatus = plcStatusRef.current
+    const currentPreviousStates = previousStatesRef.current
+    const stateActuallyChanged = currentPreviousStates[io.id] !== nextState
+    const isSpare = io.description?.toUpperCase().includes('SPARE')
+    const isTrigger = currentPlcStatus.isTesting && stateActuallyChanged && nextState === 'TRUE'
+
+    if (isTrigger && mutedIosRef.current.has(io.id)) {
+      setPreviousStates(prev => ({
+        ...prev,
+        [io.id]: nextState
+      }))
+      return updatedIo
+    }
+
+    if (isTrigger && isSpare) {
+      const portKey = getPortPairKey(io.name)
+      const timer = setTimeout(() => {
+        pendingSpareTimers.current.delete(portKey)
+        addToDialogQueue(updatedIo)
+      }, 500)
+      if (pendingSpareTimers.current.has(portKey)) {
+        clearTimeout(pendingSpareTimers.current.get(portKey)!)
+      }
+      pendingSpareTimers.current.set(portKey, timer)
+    } else if (isTrigger && !isSpare && !io.result) {
+      const portKey = getPortPairKey(io.name)
+      if (pendingSpareTimers.current.has(portKey)) {
+        clearTimeout(pendingSpareTimers.current.get(portKey)!)
+        pendingSpareTimers.current.delete(portKey)
+      }
+
+      const currentFaultedDevices = faultedDevicesRef.current
+      const ioDeviceName = io.networkDeviceName || getDeviceName(io.name)
+      if (ioDeviceName && currentFaultedDevices.has(ioDeviceName)) {
+        setPreviousStates(prev => ({
+          ...prev,
+          [io.id]: nextState
+        }))
+        return updatedIo
+      }
+
+      const user = currentUserRef.current
+      if (!updatedIo.assignedTo || !user?.fullName || updatedIo.assignedTo === user.fullName) {
+        if (DEBUG_OTHER) {
+          console.log('💡 Triggering ValueChangeDialog for:', io.name)
+        }
+        addToDialogQueue(updatedIo)
+      }
+    }
+
+    setPreviousStates(prev => ({
+      ...prev,
+      [io.id]: nextState
+    }))
+
+    return updatedIo
+  }
+
+  const refreshCloudStatus = useCallback(async () => {
+    try {
+      const response = await authFetch(API_ENDPOINTS.cloudStatus)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const data = await response.json() as CloudSyncStatusResponse
+      setCloudStatus(data)
+      setIsCloudConnected(data.connected === true)
+    } catch (error) {
+      setIsCloudConnected(false)
+      setCloudStatus(prev => prev ? {
+        ...prev,
+        connected: false,
+        error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
+      } : {
+        connected: false,
+        pendingSyncCount: 0,
+        error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
+      })
+    }
+  }, [])
+
+  const refreshUpdateStatus = useCallback(async () => {
+    try {
+      const response = await authFetch(API_ENDPOINTS.updateStatus)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const data = await response.json() as AppUpdateStatusResponse
+      setAppUpdateStatus(data)
+    } catch (error) {
+      setAppUpdateStatus(prev => prev ? {
+        ...prev,
+        error: error instanceof Error ? error.message : 'Failed to refresh update status',
+      } : {
+        currentVersion: 'unknown',
+        manifestConfigured: false,
+        updateAvailable: false,
+        supported: false,
+        error: error instanceof Error ? error.message : 'Failed to refresh update status',
+      })
+    }
+  }, [])
 
   // Handle SignalR testing state changes
   useEffect(() => {
@@ -722,12 +855,13 @@ export default function CommissioningPage() {
   useEffect(() => {
     const handleCloudChange = (connected: boolean) => {
       setIsCloudConnected(connected)
+      refreshCloudStatus()
     }
     signalR.onCloudConnectionChange(handleCloudChange)
     return () => {
       signalR.offCloudConnectionChange(handleCloudChange)
     }
-  }, [signalR.onCloudConnectionChange, signalR.offCloudConnectionChange])
+  }, [refreshCloudStatus, signalR.onCloudConnectionChange, signalR.offCloudConnectionChange])
 
   // Handle SignalR comment updates
   useEffect(() => {
@@ -843,6 +977,7 @@ export default function CommissioningPage() {
       setIos(prevIos =>
         prevIos.map(io => {
           if (io.id === update.Id) {
+            const normalizedUpdateState = normalizeIoState(update.State)
             // Check if this is a state-only update (from continuous PLC reader via UpdateState)
             // or a full IO update (from result changes via UpdateIO)
             // State-only: Result='Not Tested', no timestamp, no comments — applies to ALL tags (inputs AND outputs)
@@ -861,13 +996,13 @@ export default function CommissioningPage() {
               // State-only update: only update the state, preserve result/timestamp/comments
               updatedIo = {
                 ...io,
-                state: update.State
+                state: normalizedUpdateState ?? io.state
               }
             } else {
               // Full IO update: update everything (result changes from Pass/Fail/Clear)
               updatedIo = {
                 ...io,
-                state: (update.State === 'TRUE' || update.State === 'FALSE') ? update.State : io.state,
+                state: normalizedUpdateState ?? io.state,
                 result: update.Result === "Not Tested" ? null : update.Result,
                 timestamp: update.Timestamp || io.timestamp,
                 comments: update.Comments !== undefined ? update.Comments : io.comments // Handle null comments explicitly
@@ -876,6 +1011,8 @@ export default function CommissioningPage() {
                 console.log('📡 Full IO update for:', io.name, 'New state:', update.State, 'New result:', updatedIo.result)
               }
             }
+
+            return applyIoStateTransition(io, updatedIo, normalizedUpdateState)
 
             // Use refs for current values to avoid dependency issues
             const currentPlcStatus = plcStatusRef.current
@@ -891,15 +1028,6 @@ export default function CommissioningPage() {
 
             // Don't trigger dialog for muted IOs
             if (isTrigger && mutedIosRef.current.has(io.id)) {
-              setPreviousStates(prev => ({
-                ...prev,
-                [io.id]: update.State
-              }))
-              return updatedIo
-            }
-
-            // Don't trigger dialog for IOs on devices that aren't fully installed
-            if (isTrigger && io.installationStatus && io.installationStatus !== 'complete') {
               setPreviousStates(prev => ({
                 ...prev,
                 [io.id]: update.State
@@ -1103,10 +1231,12 @@ export default function CommissioningPage() {
 
         // Update UI directly from API response (don't wait for WebSocket)
         if (result.success && result.state !== undefined) {
-          const newState = result.state ? 'TRUE' : 'FALSE'
+          const newState = normalizeIoState(result.state)
           setIos(prevIos =>
             prevIos.map(item =>
-              item.id === io.id ? { ...item, state: newState } : item
+              item.id === io.id
+                ? applyIoStateTransition(item, { ...item, state: newState ?? item.state }, newState)
+                : item
             )
           )
         }
@@ -1130,8 +1260,8 @@ export default function CommissioningPage() {
   }
 
   const handleMarkPassed = async (io: IoItem) => {
-    // Block if device not fully installed
-    if (io.installationStatus && io.installationStatus !== 'complete') {
+    // Temporary bypass: allow testing even when installation is not complete
+    if (false && io.installationStatus && io.installationStatus !== 'complete') {
       toast({
         title: "Cannot test — device not installed",
         description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before testing.`,
@@ -1196,8 +1326,8 @@ export default function CommissioningPage() {
   }
 
   const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
-    // Block if device not fully installed
-    if (io.installationStatus && io.installationStatus !== 'complete') {
+    // Temporary bypass: allow testing even when installation is not complete
+    if (false && io.installationStatus && io.installationStatus !== 'complete') {
       toast({
         title: "Cannot test — device not installed",
         description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before testing.`,
@@ -1458,6 +1588,37 @@ export default function CommissioningPage() {
     setShowCloudSyncDialog(true)
   }
 
+  const handleInstallUpdate = async () => {
+    try {
+      setIsInstallingUpdate(true)
+      const response = await authFetch(API_ENDPOINTS.updateInstall, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const result = await response.json().catch(() => ({}))
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || result.message || `Update request failed (${response.status})`)
+      }
+
+      toast({
+        title: "Update started",
+        description: result.message || "The host machine is downloading and installing the new version.",
+      })
+
+      setShowUpdateDialog(true)
+      setTimeout(() => refreshUpdateStatus(), 2000)
+    } catch (error) {
+      toast({
+        title: "Update failed to start",
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: "destructive",
+      })
+    } finally {
+      setIsInstallingUpdate(false)
+    }
+  }
+
 
   const handleCloudPull = async (newConfig: PlcConfig) => {
     logger.log('Cloud pull completed with config:', newConfig)
@@ -1598,6 +1759,19 @@ export default function CommissioningPage() {
     ).join('\n')
   }
 
+  const pendingIoSyncCount = cloudStatus?.pendingIoSyncCount ?? cloudStatus?.pendingSyncCount ?? 0
+  const pendingL2SyncCount = cloudStatus?.pendingL2SyncCount ?? 0
+  const pendingChangeRequestCount = cloudStatus?.pendingChangeRequestCount ?? 0
+  const totalPendingSyncCount = cloudStatus?.totalPendingCount ?? (pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount)
+  const hasDirtyLocalQueues = totalPendingSyncCount > 0
+  const dirtyQueueSummary = [
+    pendingIoSyncCount > 0 ? `${pendingIoSyncCount} IO` : null,
+    pendingL2SyncCount > 0 ? `${pendingL2SyncCount} L2` : null,
+    pendingChangeRequestCount > 0 ? `${pendingChangeRequestCount} CR` : null,
+  ].filter(Boolean).join(' • ')
+  const updateState = appUpdateStatus?.installState
+  const updateBusy = !!updateState && ['checking', 'downloading', 'installing', 'restarting'].includes(updateState.status)
+
   if (loading) {
     return (
       <div className="h-screen bg-background flex items-center justify-center">
@@ -1682,6 +1856,28 @@ export default function CommissioningPage() {
                 {import.meta.env.VITE_BUILD_VERSION}
               </span>
             )}
+            {appUpdateStatus && (appUpdateStatus.updateAvailable || updateBusy || updateState?.status === 'error') && (
+              <button
+                onClick={() => setShowUpdateDialog(true)}
+                className={cn(
+                  "px-2 py-1 rounded text-[10px] sm:text-xs font-semibold border",
+                  updateBusy
+                    ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-300 dark:border-blue-800/40"
+                    : appUpdateStatus.updateAvailable
+                      ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-800/40"
+                      : "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-300 dark:border-red-800/40"
+                )}
+                title={
+                  updateBusy
+                    ? updateState?.message || 'Update in progress'
+                    : appUpdateStatus.updateAvailable
+                      ? `Update available: ${appUpdateStatus.latestVersion}`
+                      : updateState?.message || appUpdateStatus.error || 'Update error'
+                }
+              >
+                {updateBusy ? 'Updating…' : appUpdateStatus.updateAvailable ? `Update ${appUpdateStatus.latestVersion}` : 'Update Error'}
+              </button>
+            )}
             <UserMenu />
             <ThemeToggle />
             {/* Mobile tab dropdown — far right */}
@@ -1753,6 +1949,22 @@ export default function CommissioningPage() {
       )}
       */}
 
+      {hasDirtyLocalQueues && (
+        <div className="flex-shrink-0 px-4 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-800/40 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
+              Local unsynced data detected
+            </div>
+            <div className="text-xs text-amber-700 dark:text-amber-300 truncate">
+              {dirtyQueueSummary}. Cloud pull is blocked until these local changes sync successfully.
+            </div>
+          </div>
+          <Button variant="outline" size="sm" className="shrink-0 border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-900/40" onClick={handleCloudSync}>
+            Open Sync
+          </Button>
+        </div>
+      )}
+
       {/* Tab Content */}
       {activeTab === 'network' ? (
         <div className="flex-1 min-h-0 overflow-hidden px-4">
@@ -1809,6 +2021,10 @@ export default function CommissioningPage() {
           activeTab={activeTab}
           networkStats={networkStats}
           estopStats={estopStats}
+          pendingIoSyncCount={pendingIoSyncCount}
+          pendingL2SyncCount={pendingL2SyncCount}
+          pendingChangeRequestCount={pendingChangeRequestCount}
+          pullBlocked={cloudStatus?.pullBlocked ?? hasDirtyLocalQueues}
         />
       </div>
 
@@ -1946,7 +2162,76 @@ export default function CommissioningPage() {
           open={showCloudSyncDialog}
           onOpenChange={setShowCloudSyncDialog}
           subsystemId={plcConfig.subsystemId}
+          initialStatus={cloudStatus}
         />
+
+        <Dialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Application Update</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="rounded-lg border p-3 bg-muted/20">
+                <div className="text-sm font-medium">Current version</div>
+                <div className="text-xs font-mono mt-1">{appUpdateStatus?.currentVersion || 'unknown'}</div>
+              </div>
+
+              <div className="rounded-lg border p-3 bg-muted/20">
+                <div className="text-sm font-medium">Latest version</div>
+                <div className="text-xs font-mono mt-1">{appUpdateStatus?.latestVersion || 'No release manifest found'}</div>
+                {appUpdateStatus?.publishedAt && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Published {new Date(appUpdateStatus.publishedAt).toLocaleString()}
+                  </div>
+                )}
+              </div>
+
+              {appUpdateStatus?.notes && (
+                <div className="rounded-lg border p-3 bg-muted/20">
+                  <div className="text-sm font-medium">Release notes</div>
+                  <div className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap">{appUpdateStatus.notes}</div>
+                </div>
+              )}
+
+              <div className="rounded-lg border p-3 bg-muted/20">
+                <div className="text-sm font-medium">Updater state</div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {updateState?.message || appUpdateStatus?.error || (appUpdateStatus?.updateAvailable ? 'Update available on host machine' : 'Already on latest version')}
+                </div>
+                {updateState?.startedAt && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Started {new Date(updateState.startedAt).toLocaleString()}
+                  </div>
+                )}
+                {updateState?.completedAt && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Completed {new Date(updateState.completedAt).toLocaleString()}
+                  </div>
+                )}
+              </div>
+
+              {!appUpdateStatus?.manifestConfigured && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-800/50 dark:bg-amber-950/30 p-3 text-xs text-amber-800 dark:text-amber-300">
+                  Update manifest URL is not configured yet. Set <span className="font-mono">UPDATE_MANIFEST_URL</span> or <span className="font-mono">updateManifestUrl</span> in config to enable release checks.
+                </div>
+              )}
+            </div>
+            <DialogFooter className="flex gap-2">
+              <Button variant="outline" onClick={() => { setShowUpdateDialog(false); refreshUpdateStatus() }}>
+                Close
+              </Button>
+              <Button variant="outline" onClick={refreshUpdateStatus} disabled={isInstallingUpdate}>
+                Refresh
+              </Button>
+              <Button
+                onClick={handleInstallUpdate}
+                disabled={!appUpdateStatus?.supported || !appUpdateStatus?.updateAvailable || updateBusy || isInstallingUpdate}
+              >
+                {updateBusy || isInstallingUpdate ? 'Installing…' : 'Install On Host'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Tag Status Dialog */}
         <TagStatusDialog

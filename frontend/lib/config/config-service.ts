@@ -22,9 +22,10 @@ import {
   ConfigChangeListener,
   DEFAULT_CONFIG,
 } from './types';
+import { resolveConfigFilePath } from '@/lib/storage-paths';
 
-// Path to config file (relative to frontend directory)
-const CONFIG_FILE_PATH = path.join(process.cwd(), 'config.json');
+// Keep config beside the active database unless CONFIG_PATH overrides it.
+const CONFIG_FILE_PATH = resolveConfigFilePath();
 
 /**
  * ConfigurationService - Singleton service for managing application configuration.
@@ -98,6 +99,7 @@ class ConfigurationService {
         remoteUrl: parsed.remoteUrl ?? DEFAULT_CONFIG.remoteUrl,
         apiPassword: parsed.apiPassword ?? parsed.ApiPassword ?? DEFAULT_CONFIG.apiPassword,
         subsystemId: parsed.subsystemId ?? DEFAULT_CONFIG.subsystemId,
+        updateManifestUrl: parsed.updateManifestUrl ?? DEFAULT_CONFIG.updateManifestUrl,
         orderMode: String(parsed.orderMode ?? DEFAULT_CONFIG.orderMode),
         syncBatchSize: Number(parsed.syncBatchSize ?? DEFAULT_CONFIG.syncBatchSize),
         syncBatchDelayMs: Number(parsed.syncBatchDelayMs ?? DEFAULT_CONFIG.syncBatchDelayMs),
@@ -155,6 +157,7 @@ class ConfigurationService {
       remoteUrl: newConfig.remoteUrl,
       ApiPassword: newConfig.apiPassword, // C# expects "ApiPassword"
       subsystemId: newConfig.subsystemId,
+      updateManifestUrl: newConfig.updateManifestUrl,
       orderMode: newConfig.orderMode,
       syncBatchSize: newConfig.syncBatchSize,
       syncBatchDelayMs: newConfig.syncBatchDelayMs,
@@ -168,6 +171,7 @@ class ConfigurationService {
     this.notifyInternalWrite();
 
     try {
+      await fs.mkdir(path.dirname(CONFIG_FILE_PATH), { recursive: true });
       await fs.writeFile(CONFIG_FILE_PATH, JSON.stringify(fileData, null, 2), 'utf-8');
       this.config = newConfig;
 
@@ -325,6 +329,7 @@ class ConfigurationService {
       'remoteUrl',
       'apiPassword',
       'subsystemId',
+      'updateManifestUrl',
       'orderMode',
       'syncBatchSize',
       'syncBatchDelayMs',
