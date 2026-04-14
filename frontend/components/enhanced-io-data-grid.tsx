@@ -83,11 +83,11 @@ function useColumnWidths() {
   const available = width - actionsTotal - 16
 
   if (width < 768) {
-    // Phone: fixed readable sizes, horizontal scroll is fine
+    // Phone: fixed readable sizes, horizontal scroll handles overflow
     return {
       description: 200, ioPoint: 180, state: 60,
       deviceStatus: 60, installStatus: 60, result: 80,
-      timestamp: 0, comments: 0,
+      timestamp: 0, comments: 180,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
@@ -98,7 +98,7 @@ function useColumnWidths() {
     return {
       description: 220, ioPoint: 200, state: 70,
       deviceStatus: 60, installStatus: 60, result: 90,
-      timestamp: 0, comments: 0,
+      timestamp: 0, comments: 200,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
@@ -109,7 +109,7 @@ function useColumnWidths() {
     return {
       description: 260, ioPoint: 220, state: 70,
       deviceStatus: 60, installStatus: 60, result: 90,
-      timestamp: 150, comments: 0,
+      timestamp: 150, comments: 220,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
