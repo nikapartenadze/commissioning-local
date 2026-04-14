@@ -202,6 +202,30 @@ export function EnhancedIoDataGrid({
   const [showAssignKeywordInput, setShowAssignKeywordInput] = useState(false)
   const COLUMN_WIDTHS = useColumnWidths()
 
+  // Per-column text filters with include/exclude mode
+  const [columnFilters, setColumnFilters] = useState<Record<string, { text: string; mode: 'include' | 'exclude' }>>({})
+
+  const updateColumnFilter = (column: string, text: string) => {
+    setColumnFilters(prev => {
+      if (!text) {
+        const next = { ...prev }
+        delete next[column]
+        return next
+      }
+      return { ...prev, [column]: { text, mode: prev[column]?.mode || 'include' } }
+    })
+  }
+
+  const toggleColumnFilterMode = (column: string) => {
+    setColumnFilters(prev => {
+      const current = prev[column]
+      if (!current) return prev
+      return { ...prev, [column]: { ...current, mode: current.mode === 'include' ? 'exclude' : 'include' } }
+    })
+  }
+
+  const hasActiveColumnFilters = Object.keys(columnFilters).length > 0
+
   // Fetch module health status periodically
   useEffect(() => {
     const fetchModuleHealth = async () => {
@@ -369,6 +393,7 @@ export function EnhancedIoDataGrid({
   const clearAllFilters = () => {
     setFilterTags([])
     setSearchTerm('')
+    setColumnFilters({})
   }
 
   // Auto-detect keyword filters from IO descriptions only
@@ -484,6 +509,20 @@ export function EnhancedIoDataGrid({
         if (excludes.length > 0 && excludes.some(([kw]) => desc.includes(kw))) return false
       }
 
+      // Apply per-column text filters
+      const colFilterEntries = Object.entries(columnFilters)
+      for (const [col, { text, mode }] of colFilterEntries) {
+        if (!text.trim()) continue
+        const lowerText = text.trim().toLowerCase()
+        let matches = false
+        if (col === 'description') matches = (io.description || '').toLowerCase().includes(lowerText)
+        else if (col === 'ioPoint') matches = (io.name || '').toLowerCase().includes(lowerText)
+        else if (col === 'result') matches = (io.result || '').toLowerCase().includes(lowerText)
+        else if (col === 'comments') matches = (io.comments || '').toLowerCase().includes(lowerText)
+        if (mode === 'include' && !matches) return false
+        if (mode === 'exclude' && matches) return false
+      }
+
       if (filterTags.length === 0 && !searchTerm.trim()) return true
 
       const allTerms = [...filterTags]
@@ -518,7 +557,7 @@ export function EnhancedIoDataGrid({
     }
 
     return [...filtered].sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
-  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, sortMode, punchlistIoSet])
+  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, punchlistIoSet])
 
   useEffect(() => {
     if (onFilteredDataChange) {
@@ -819,7 +858,8 @@ export function EnhancedIoDataGrid({
       >
         <div style={{ minWidth: `${totalWidth}px`, width: '100%' }}>
           {/* Header - Sticky, bold, industrial */}
-          <div className="bg-muted sticky top-0 z-10 flex border-b-2 border-[#C6941A]/40">
+          <div className="bg-muted sticky top-0 z-10 border-b-2 border-[#C6941A]/40">
+          <div className="flex">
             <div
               className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 sticky left-0 z-20 bg-muted"
               style={{ width: `${COLUMN_WIDTHS.description}px` }}
@@ -886,6 +926,174 @@ export function EnhancedIoDataGrid({
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.clear}px` }}>Clear</div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.mute}px` }}>Mute</div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.output}px` }}>Fire</div>
+          </div>
+
+          {/* Per-column filter row */}
+          <div className="flex border-t border-border/30 relative">
+            {/* Description filter */}
+            <div
+              className="px-1 py-1 flex-shrink-0 sticky left-0 z-20 bg-muted"
+              style={{ width: `${COLUMN_WIDTHS.description}px` }}
+            >
+              <div className="flex items-center gap-0.5">
+                <input
+                  type="text"
+                  placeholder="Filter desc…"
+                  value={columnFilters.description?.text || ''}
+                  onChange={(e) => updateColumnFilter('description', e.target.value)}
+                  className={cn(
+                    "w-full text-xs px-2 py-1 border rounded bg-background focus:outline-none focus:ring-1",
+                    columnFilters.description?.mode === 'exclude'
+                      ? "border-destructive focus:ring-destructive"
+                      : "focus:ring-primary"
+                  )}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                {columnFilters.description?.text && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleColumnFilterMode('description') }}
+                    className={cn(
+                      "shrink-0 w-6 h-6 flex items-center justify-center rounded text-xs font-bold transition-colors",
+                      columnFilters.description.mode === 'include'
+                        ? "bg-primary/15 text-primary hover:bg-primary/25"
+                        : "bg-destructive/15 text-destructive hover:bg-destructive/25"
+                    )}
+                    title={columnFilters.description.mode === 'include' ? 'Showing matches — click to exclude' : 'Hiding matches — click to include'}
+                  >
+                    {columnFilters.description.mode === 'include' ? '+' : '−'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* I/O Point filter */}
+            <div
+              className="px-1 py-1 flex-shrink-0 sticky z-20 bg-muted border-r border-border/50"
+              style={{ width: `${COLUMN_WIDTHS.ioPoint}px`, left: `${COLUMN_WIDTHS.description}px` }}
+            >
+              <div className="flex items-center gap-0.5">
+                <input
+                  type="text"
+                  placeholder="Filter I/O…"
+                  value={columnFilters.ioPoint?.text || ''}
+                  onChange={(e) => updateColumnFilter('ioPoint', e.target.value)}
+                  className={cn(
+                    "w-full text-xs px-2 py-1 border rounded bg-background focus:outline-none focus:ring-1",
+                    columnFilters.ioPoint?.mode === 'exclude'
+                      ? "border-destructive focus:ring-destructive"
+                      : "focus:ring-primary"
+                  )}
+                  onClick={(e) => e.stopPropagation()}
+                />
+                {columnFilters.ioPoint?.text && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleColumnFilterMode('ioPoint') }}
+                    className={cn(
+                      "shrink-0 w-6 h-6 flex items-center justify-center rounded text-xs font-bold transition-colors",
+                      columnFilters.ioPoint.mode === 'include'
+                        ? "bg-primary/15 text-primary hover:bg-primary/25"
+                        : "bg-destructive/15 text-destructive hover:bg-destructive/25"
+                    )}
+                    title={columnFilters.ioPoint.mode === 'include' ? 'Showing matches — click to exclude' : 'Hiding matches — click to include'}
+                  >
+                    {columnFilters.ioPoint.mode === 'include' ? '+' : '−'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Spacers for State / Net / Install */}
+            {showStateColumn && <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.state}px` }} />}
+            {COLUMN_WIDTHS.deviceStatus > 0 && <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }} />}
+            {COLUMN_WIDTHS.installStatus > 0 && <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.installStatus}px` }} />}
+
+            {/* Result filter */}
+            {showResultColumn && (
+              <div className="px-1 py-1 flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.result}px` }}>
+                <div className="flex items-center gap-0.5">
+                  <input
+                    type="text"
+                    placeholder="Filter…"
+                    value={columnFilters.result?.text || ''}
+                    onChange={(e) => updateColumnFilter('result', e.target.value)}
+                    className={cn(
+                      "w-full text-xs px-2 py-1 border rounded bg-background focus:outline-none focus:ring-1",
+                      columnFilters.result?.mode === 'exclude'
+                        ? "border-destructive focus:ring-destructive"
+                        : "focus:ring-primary"
+                    )}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  {columnFilters.result?.text && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleColumnFilterMode('result') }}
+                      className={cn(
+                        "shrink-0 w-6 h-6 flex items-center justify-center rounded text-xs font-bold transition-colors",
+                        columnFilters.result.mode === 'include'
+                          ? "bg-primary/15 text-primary hover:bg-primary/25"
+                          : "bg-destructive/15 text-destructive hover:bg-destructive/25"
+                      )}
+                      title={columnFilters.result.mode === 'include' ? 'Showing matches — click to exclude' : 'Hiding matches — click to include'}
+                    >
+                      {columnFilters.result.mode === 'include' ? '+' : '−'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Spacer for Tested column */}
+            {showTimestamp && <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.timestamp}px` }} />}
+
+            {/* Notes/Comments filter */}
+            {showComments && (
+              <div className="px-1 py-1 flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.comments}px` }}>
+                <div className="flex items-center gap-0.5">
+                  <input
+                    type="text"
+                    placeholder="Filter notes…"
+                    value={columnFilters.comments?.text || ''}
+                    onChange={(e) => updateColumnFilter('comments', e.target.value)}
+                    className={cn(
+                      "w-full text-xs px-2 py-1 border rounded bg-background focus:outline-none focus:ring-1",
+                      columnFilters.comments?.mode === 'exclude'
+                        ? "border-destructive focus:ring-destructive"
+                        : "focus:ring-primary"
+                    )}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  {columnFilters.comments?.text && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleColumnFilterMode('comments') }}
+                      className={cn(
+                        "shrink-0 w-6 h-6 flex items-center justify-center rounded text-xs font-bold transition-colors",
+                        columnFilters.comments.mode === 'include'
+                          ? "bg-primary/15 text-primary hover:bg-primary/25"
+                          : "bg-destructive/15 text-destructive hover:bg-destructive/25"
+                      )}
+                      title={columnFilters.comments.mode === 'include' ? 'Showing matches — click to exclude' : 'Hiding matches — click to include'}
+                    >
+                      {columnFilters.comments.mode === 'include' ? '+' : '−'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Spacer for action columns */}
+            <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history + COLUMN_WIDTHS.help + COLUMN_WIDTHS.failed + COLUMN_WIDTHS.clear + COLUMN_WIDTHS.mute + COLUMN_WIDTHS.output}px` }} />
+
+            {/* Clear column filters button */}
+            {hasActiveColumnFilters && (
+              <button
+                onClick={() => setColumnFilters({})}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-0.5"
+                title="Clear column filters"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
           </div>
 
           {/* Virtual Body */}
@@ -1159,7 +1367,7 @@ export function EnhancedIoDataGrid({
         <div className="flex-1 flex items-center justify-center text-muted-foreground p-8">
           <div className="text-center">
             <p className="text-lg">No IOs found matching your filters.</p>
-            {(filterTags.length > 0 || searchTerm) && (
+            {(filterTags.length > 0 || searchTerm || hasActiveColumnFilters) && (
               <Button
                 variant="outline"
                 onClick={clearAllFilters}
