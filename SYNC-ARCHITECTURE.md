@@ -1,7 +1,7 @@
 # IO Checkout Tool — Sync Architecture & Data Persistence
 
-**Version:** 3.1
-**Date:** 2026-03-20
+**Version:** 4.0
+**Date:** 2026-04-14
 **Purpose:** Explain how data syncing works when multiple technicians run independent copies of the tool on the same subsystem.
 
 ---
@@ -22,6 +22,21 @@ Technician A (laptop)          Cloud (PostgreSQL)          Technician B (laptop)
 ```
 
 **Key principle:** Your own test results are always saved locally first, then synced to cloud instantly. If instant sync fails, a background retry picks it up within 30 seconds. You never lose data because of a network issue.
+
+---
+
+## Data Ownership
+
+**The local field tool is the sole authority for test results.** The cloud app is a receiver and dashboard — it never modifies pass/fail/comment data.
+
+| Data | Owner | Cloud role |
+|------|-------|------------|
+| IO definitions (name, description, order) | Cloud | Source of truth |
+| Test results (pass, fail, cleared) | Local tool | Cloud is read-only receiver |
+| Comments | Local tool | Cloud is read-only receiver |
+| Audit history (TestHistory) | Both | Append-only on both sides |
+
+**Cloud always accepts local tool pushes — no version gating, no rejection.** If two local tools push for the same IO, both pushes succeed (last write wins on cloud, both preserved in audit history). The cloud UI does not expose pass/fail/clear controls.
 
 ---
 
@@ -46,15 +61,15 @@ A background loop drains any remaining pending sync entries:
 3. Only after the cloud confirms receipt are the queue entries removed
 4. This is a safety net — most results will have already synced instantly
 
-### Pull — Every 60 seconds
-Fetches IO data from cloud, including other technicians' test results.
+### Pull — On SSE reconnect only (no polling)
+The app does **not** poll cloud on a timer. Instead, it relies on the real-time SSE connection for live updates. A full pull only happens when the SSE connection (re)connects, to catch any events missed during a disconnect.
 
-1. Every 60 seconds, the app fetches the latest IO data from cloud
+1. When the SSE connection establishes or re-establishes, the app fetches the latest IO data from cloud
 2. IO definitions (name, description) are always updated from cloud
 3. **Test results are merged with this rule:**
    - If you already tested an IO locally → **your result is kept** (never overwritten)
    - If you haven't tested an IO but cloud has a result (from another technician) → **cloud result is pulled in**
-4. This means you see other people's work appear on your screen within ~60 seconds
+4. Between reconnects, individual IO updates arrive in real-time via SSE (typically within 1-2 seconds)
 
 ---
 
@@ -92,12 +107,12 @@ This should be rare (means two people are at the same panel), but it's handled:
 | Time | Person A | Cloud | Person B |
 |------|----------|-------|----------|
 | 0:00 | Tests IO #5 → Pass | — | Tests IO #5 → Fail |
-| 0:01 | Instant push → IO #5 = Pass (v5→v6) | Receives Pass | Instant push → IO #5 = Fail (v5) |
-| 0:02 | — | Rejects Fail (version mismatch) | — |
+| 0:01 | Instant push → IO #5 = Pass | Accepts Pass (v→v+1) | Instant push → IO #5 = Fail |
+| 0:02 | — | Accepts Fail (v→v+1) | — |
 
-**Result:** Cloud uses version checking — whichever push arrives first wins. The second push is rejected because the version has already incremented. Both test attempts are recorded in the local audit history (TestHistory table) on each person's machine and are never lost.
+**Result:** Cloud always accepts both pushes — last write wins on the dashboard. Both test attempts are recorded in the audit history (TestHistory table) on cloud and on each person's machine. No sync is ever rejected.
 
-**In practice:** Two people testing the same IO is rare. When it happens, first-push-wins. Both results exist in the local audit trail on each person's machine.
+**In practice:** Two people testing the same IO is rare. When it happens, the last push to arrive is what shows on the dashboard. Both results exist in the audit trail everywhere.
 
 ---
 
@@ -207,7 +222,7 @@ This means even in the rare case where two people test the same IO and one resul
 | Cloud sync (primary) | Pushed to cloud instantly on every action (~1-2 seconds) |
 | Cloud sync (fallback) | Background retry every 30 seconds for any failed instant syncs |
 | Sync queue | Stored in SQLite (survives crashes, restarts, power loss) |
-| Other users' results | Merged into your local view every 60 seconds |
+| Other users' results | Received in real-time via SSE; full catch-up on reconnect |
 | PLC connection | Auto-reconnects every 5 seconds on connection loss |
 | Database corruption | WAL (Write-Ahead Logging) mode enabled for crash safety |
 | Before manual pull | Automatic database backup created in `app/backups/` |
@@ -238,7 +253,7 @@ Both ports need to be accessible. Firewall rules are set up automatically on fir
 | Add/edit comment | Saved locally → instantly pushed to cloud |
 | Reset IO | Saved locally → instantly pushed to cloud |
 | Cloud unreachable | Result queued, background retry every 30s |
-| Wait 60 seconds | Other users' results appear on your screen |
+| Other user tests IO | Their result appears on your screen in real-time via SSE |
 | PLC power loss | Auto-reconnects every 5s, resumes testing |
 | Close the app | Data is safe in local database |
 | Reopen the app | Auto-sync resumes, catches up |
@@ -252,8 +267,9 @@ Both ports need to be accessible. Firewall rules are set up automatically on fir
 - **No dedicated server needed.** Each person runs their own copy.
 - **No data loss.** Results are always saved locally first, then synced.
 - **Instant sync.** Results pushed to cloud within 1-2 seconds of every action.
-- **Automatic fallback.** Background retry every 30s for any failed syncs. Pull every 60s.
-- **Multi-user safe.** Different IOs merge perfectly. Same IO = first push wins (both recorded in audit).
+- **Automatic fallback.** Background retry every 30s for any failed syncs. Pull on SSE reconnect.
+- **Multi-user safe.** Different IOs merge perfectly. Same IO = last push wins (both recorded in audit). Cloud never rejects.
+- **Local tool is leader.** Cloud always accepts test results. No version gating, no silent rejections.
 - **Auto-reconnect.** PLC connection recovers automatically — no admin login needed.
 - **Crash safe.** SQLite WAL mode + persistent sync queue.
 - **PLC safe.** Multiple simultaneous connections supported.
