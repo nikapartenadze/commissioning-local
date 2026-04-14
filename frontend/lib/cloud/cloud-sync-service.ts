@@ -522,7 +522,7 @@ export class CloudSyncService {
         }
 
         if (responseData?.updatedCount !== undefined && responseData.updatedCount < 1) {
-          log.warn(`Cloud accepted HTTP request for IO ${update.id} but updatedCount=${responseData.updatedCount}`)
+          log.warn(`Cloud accepted HTTP request for IO ${update.id} but updatedCount=0 — IO may not exist on cloud`)
           return false
         }
 
@@ -777,7 +777,8 @@ export class CloudSyncService {
   }
 
   /**
-   * Sync pending updates with version conflict handling
+   * Sync pending updates — cloud always accepts (local tool is the authority).
+   * No version conflict rejection: every pending sync is pushed unconditionally.
    */
   async syncPendingUpdatesWithVersionControl(
     getLocalIo: (ioId: number) => Promise<Io | null>
@@ -795,42 +796,10 @@ export class CloudSyncService {
       return result
     }
 
-    log.info(`Pre-sync version check: Found ${pendingSyncs.length} pending syncs`)
+    log.info(`Syncing ${pendingSyncs.length} pending updates (local-tool-is-leader, no version gating)`)
 
     for (const pending of pendingSyncs) {
       try {
-        // Get current local IO to check version
-        const localIo = await getLocalIo(pending.ioId)
-
-        if (!localIo) {
-          log.warn(`Local IO ${pending.ioId} not found for pending sync ${pending.id}`)
-          result.rejectedIds.push(pending.ioId)
-          result.errors.set(pending.ioId, 'Local IO not found')
-          continue
-        }
-
-        const localVersion = Number(localIo.version)
-
-        // Check version conflict rules
-        if (pending.version < localVersion) {
-          // Admin modified data - reject permanently
-          log.error(
-            `TEST RESULT LOST: Version conflict for IO ${pending.ioId} — pending version ${pending.version} < local version ${localVersion}. This test result has been permanently discarded due to admin precedence.`
-          )
-          result.rejectedIds.push(pending.ioId)
-          result.errors.set(pending.ioId, 'Version conflict - admin precedence')
-          continue
-        } else if (pending.version > localVersion) {
-          // Anomaly - reject for safety
-          log.error(
-            `TEST RESULT LOST: Version anomaly for IO ${pending.ioId} — pending version ${pending.version} > local version ${localVersion}. This test result has been permanently discarded due to version mismatch.`
-          )
-          result.rejectedIds.push(pending.ioId)
-          result.errors.set(pending.ioId, 'Version anomaly')
-          continue
-        }
-
-        // Version matches - proceed with sync
         const update: IoUpdateDto = {
           id: pending.ioId,
           testedBy: pending.inspectorName,
@@ -854,12 +823,6 @@ export class CloudSyncService {
         result.failedIds.push(pending.ioId)
         result.errors.set(pending.ioId, errorMessage)
       }
-    }
-
-    // Remove rejected items permanently
-    if (result.rejectedIds.length > 0) {
-      this.removePendingSyncs(result.rejectedIds)
-      log.info(`Permanently rejected ${result.rejectedIds.length} changes due to version conflicts`)
     }
 
     // Remove successfully synced items
