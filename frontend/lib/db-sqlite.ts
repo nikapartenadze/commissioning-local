@@ -358,6 +358,23 @@ export function initializeSchema() {
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS VfdCheckState (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      deviceName TEXT NOT NULL,
+      subsystemId INTEGER,
+      check1_status TEXT,
+      check2_status TEXT,
+      check3_status TEXT,
+      check3_comment TEXT,
+      check4_status TEXT,
+      check5_status TEXT,
+      speed_fpm INTEGER,
+      last_rpm REAL,
+      updatedBy TEXT,
+      updatedAt TEXT,
+      UNIQUE(deviceName, subsystemId)
+    );
   `)
 }
 
