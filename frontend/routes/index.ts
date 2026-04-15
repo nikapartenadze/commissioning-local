@@ -77,6 +77,9 @@ import * as l2Overview from '@/app/api/l2/overview/route'
 import * as punchlists from '@/app/api/punchlists/route'
 import * as projectIos from '@/app/api/project/[id]/ios/route'
 import * as projectHistory from '@/app/api/project/[id]/history/route'
+import * as vfdWriteTag from '@/app/api/vfd-commissioning/write-tag/route'
+import * as vfdReadTags from '@/app/api/vfd-commissioning/read-tags/route'
+import * as vfdState from '@/app/api/vfd-commissioning/state/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -216,6 +219,12 @@ export function createApiRouter(): Router {
   // ── Project ────────────────────────────────────────────────────
   router.get('/api/project/:id/ios', asyncHandler(projectIos.GET))
   router.get('/api/project/:id/history', asyncHandler(projectHistory.GET))
+
+  // ── VFD Commissioning ─────────────────────────────────────────
+  router.post('/api/vfd-commissioning/write-tag', asyncHandler(vfdWriteTag.POST))
+  router.post('/api/vfd-commissioning/read-tags', asyncHandler(vfdReadTags.POST))
+  router.get('/api/vfd-commissioning/state', asyncHandler(vfdState.GET))
+  router.post('/api/vfd-commissioning/state', asyncHandler(vfdState.POST))
 
   return router
 }
