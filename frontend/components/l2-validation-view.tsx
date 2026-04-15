@@ -6,7 +6,8 @@ import { L2OverviewMatrix } from './l2-overview-matrix'
 import { Badge } from '@/components/ui/badge'
 import { authFetch, getSignalRHubUrl } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter } from 'lucide-react'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter, Zap } from 'lucide-react'
+import { VfdCommissioningView } from './vfd-commissioning-view'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
 import { useSignalR, L2CellUpdate } from '@/lib/signalr-client'
@@ -56,6 +57,7 @@ interface L2Data {
 
 interface L2ValidationViewProps {
   subsystemId?: number
+  plcConnected?: boolean
 }
 
 const COL_TYPE_STYLES: Record<string, string> = {
@@ -76,14 +78,14 @@ const MIN_SIDEBAR_W = 240
 const MAX_SIDEBAR_W = 600
 const DEFAULT_SIDEBAR_W = 320
 
-export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
+export function L2ValidationView({ subsystemId, plcConnected = false }: L2ValidationViewProps) {
   const { currentUser } = useUser()
   const [data, setData] = useState<L2Data | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeSheet, setActiveSheet] = useState(0)
   const [showGuide, setShowGuide] = useState(false)
-  const [viewMode, setViewMode] = useState<'sheets' | 'overview'>('sheets')
+  const [viewMode, setViewMode] = useState<'sheets' | 'overview' | 'vfd'>('sheets')
   const [cellValues, setCellValues] = useState<Map<string, { Value: string | null; Version: number }>>(new Map())
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_W)
   const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
@@ -292,6 +294,12 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
   const completedChecks = sheetStats.reduce((sum, s) => sum + s.completed, 0)
   const overallPercent = totalChecks > 0 ? Math.round((completedChecks / totalChecks) * 100) : 0
 
+  // VFD devices: devices on sheets named "VFD" (case-insensitive), OR devices whose name contains "VFD"
+  const vfdSheetIds = new Set(data.sheets.filter(s => s.Name.toUpperCase().includes('VFD')).map(s => s.id))
+  const vfdDevices = data.devices
+    .filter(d => vfdSheetIds.has(d.SheetId) || d.DeviceName.toUpperCase().includes('VFD'))
+    .map(d => ({ id: d.id, deviceName: d.DeviceName, mcm: d.Mcm || '', subsystem: d.Subsystem || '' }))
+
   const activeSheetData = data.sheets[activeSheet]
   const activeColumns = data.columns
     .filter(c => c.SheetId === activeSheetData.id)
@@ -442,6 +450,15 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
           >
             <LayoutGrid className="h-3 w-3 inline mr-1" />Overview
           </button>
+          {(vfdDevices.length > 0 || vfdSheetIds.size > 0) && (
+            <button
+              className={cn("px-2 py-1 text-xs font-medium transition-colors", viewMode === 'vfd' ? "bg-amber-600 text-white" : "text-muted-foreground hover:text-foreground")}
+              onClick={() => setViewMode('vfd')}
+            >
+              <Zap className="h-3 w-3 inline mr-1" />VFD
+              <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0">{vfdDevices.length}</Badge>
+            </button>
+          )}
         </div>
         <Button
           variant="outline"
@@ -466,7 +483,15 @@ export function L2ValidationView({ subsystemId }: L2ValidationViewProps) {
         )}
       </div>
 
-      {viewMode === 'overview' ? (
+      {viewMode === 'vfd' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <VfdCommissioningView
+            devices={vfdDevices}
+            subsystemId={subsystemId || 0}
+            plcConnected={plcConnected}
+          />
+        </div>
+      ) : viewMode === 'overview' ? (
         <div className="flex-1 min-h-0">
           <L2OverviewMatrix />
         </div>

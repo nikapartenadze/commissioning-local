@@ -1,6 +1,13 @@
 $ErrorActionPreference = "Continue"
 
-$projectDir = "C:\Users\nfart\OneDrive\Desktop\commissioning-local"
+$projectDir = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+if (-not (Test-Path (Join-Path $projectDir "frontend"))) {
+    $projectDir = Split-Path -Parent $PSScriptRoot
+}
+if (-not (Test-Path (Join-Path $projectDir "frontend"))) {
+    Write-Host "ERROR: Cannot find project root. Run from the deploy/ directory."
+    exit 1
+}
 $frontendDir = Join-Path $projectDir "frontend"
 $outputDir = Join-Path $projectDir "portable"
 $deployDir = Join-Path $projectDir "deploy"
