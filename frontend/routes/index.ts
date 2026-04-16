@@ -78,8 +78,13 @@ import * as punchlists from '@/app/api/punchlists/route'
 import * as projectIos from '@/app/api/project/[id]/ios/route'
 import * as projectHistory from '@/app/api/project/[id]/history/route'
 import * as vfdWriteTag from '@/app/api/vfd-commissioning/write-tag/route'
+import * as vfdWriteTagsBatch from '@/app/api/vfd-commissioning/write-tags-batch/route'
 import * as vfdReadTags from '@/app/api/vfd-commissioning/read-tags/route'
+import * as vfdWizardOpen from '@/app/api/vfd-commissioning/wizard-open/route'
+import * as vfdWizardClose from '@/app/api/vfd-commissioning/wizard-close/route'
 import * as vfdState from '@/app/api/vfd-commissioning/state/route'
+import * as vfdWriteL2Cells from '@/app/api/vfd-commissioning/write-l2-cells/route'
+import * as vfdClear from '@/app/api/vfd-commissioning/clear/route'
 import * as deviceIdentity from '@/app/api/device/identity/route'
 
 /**
@@ -223,9 +228,14 @@ export function createApiRouter(): Router {
 
   // ── VFD Commissioning ─────────────────────────────────────────
   router.post('/api/vfd-commissioning/write-tag', asyncHandler(vfdWriteTag.POST))
+  router.post('/api/vfd-commissioning/write-tags-batch', asyncHandler(vfdWriteTagsBatch.POST))
   router.post('/api/vfd-commissioning/read-tags', asyncHandler(vfdReadTags.POST))
+  router.post('/api/vfd-commissioning/wizard-open', asyncHandler(vfdWizardOpen.POST))
+  router.post('/api/vfd-commissioning/wizard-close', asyncHandler(vfdWizardClose.POST))
+  router.post('/api/vfd-commissioning/write-l2-cells', asyncHandler(vfdWriteL2Cells.POST))
   router.get('/api/vfd-commissioning/state', asyncHandler(vfdState.GET))
   router.post('/api/vfd-commissioning/state', asyncHandler(vfdState.POST))
+  router.post('/api/vfd-commissioning/clear', asyncHandler(vfdClear.POST))
 
   // ── Device Identity ───────────────────────────────────────────
   router.get('/api/device/identity', asyncHandler(deviceIdentity.GET))

@@ -35,11 +35,11 @@ export async function POST(req: Request, res: Response) {
       return res.status(503).json({ error: 'No PLC connection config available' })
     }
 
-    // Build tag path: e.g. NCP1_7_VFD.CTRL.CMD.Bump or NCP1_7_VFD.CTRL.STS.Speed_FPM
+    // Build tag path: PLC tags are prefixed with CBT_ — e.g. CBT_NCP1_7_VFD.CTRL.CMD.Bump
     const isStatus = field === 'Speed_FPM' && dataType !== 'BOOL'
     const tagPath = isStatus
-      ? `${deviceName}.CTRL.STS.${field}`
-      : `${deviceName}.CTRL.CMD.${field}`
+      ? `CBT_${deviceName}.CTRL.STS.${field}`
+      : `CBT_${deviceName}.CTRL.CMD.${field}`
 
     // Determine elem_size based on data type
     let elemSize: number
