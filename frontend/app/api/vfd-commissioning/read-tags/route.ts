@@ -94,25 +94,31 @@ export async function POST(req: Request, res: Response) {
       const cmd: Record<string, any> = {}
       const sts: Record<string, any> = {}
 
+      // PLC tags are prefixed with CBT_ (e.g. CBT_NCP1_7_VFD.CTRL.CMD.Bump)
+      // Exception: keypad input tags use the raw device name with :I.* format
+      const base = `CBT_${deviceName}`
+      const keypadF1 = readPlcValue(gateway, path, `${deviceName}:I.KeypadButtonF1`, 'BOOL', timeout)
+      if (keypadF1 !== null) sts.KeypadButtonF1 = keypadF1
+
       // Read CMD BOOL fields
       for (const field of CMD_BOOL_FIELDS) {
-        cmd[field] = readPlcValue(gateway, path, `${deviceName}.CTRL.CMD.${field}`, 'BOOL', timeout)
+        cmd[field] = readPlcValue(gateway, path, `${base}.CTRL.CMD.${field}`, 'BOOL', timeout)
       }
       // Read CMD REAL fields
       for (const field of CMD_REAL_FIELDS) {
-        cmd[field] = readPlcValue(gateway, path, `${deviceName}.CTRL.CMD.${field}`, 'REAL', timeout)
+        cmd[field] = readPlcValue(gateway, path, `${base}.CTRL.CMD.${field}`, 'REAL', timeout)
       }
       // Read CMD INT fields
       for (const field of CMD_INT_FIELDS) {
-        cmd[field] = readPlcValue(gateway, path, `${deviceName}.CTRL.CMD.${field}`, 'INT', timeout)
+        cmd[field] = readPlcValue(gateway, path, `${base}.CTRL.CMD.${field}`, 'INT', timeout)
       }
       // Read STS BOOL fields
       for (const field of STS_BOOL_FIELDS) {
-        sts[field] = readPlcValue(gateway, path, `${deviceName}.CTRL.STS.${field}`, 'BOOL', timeout)
+        sts[field] = readPlcValue(gateway, path, `${base}.CTRL.STS.${field}`, 'BOOL', timeout)
       }
       // Read STS INT fields
       for (const field of STS_INT_FIELDS) {
-        sts[field] = readPlcValue(gateway, path, `${deviceName}.CTRL.STS.${field}`, 'INT', timeout)
+        sts[field] = readPlcValue(gateway, path, `${base}.CTRL.STS.${field}`, 'INT', timeout)
       }
 
       result[deviceName] = { cmd, sts }

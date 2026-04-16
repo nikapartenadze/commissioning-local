@@ -1,105 +1,135 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 
-const stmts = {
-  getBySubsystem: db.prepare('SELECT * FROM VfdCheckState WHERE subsystemId = ?'),
-  getExisting: db.prepare('SELECT id FROM VfdCheckState WHERE deviceName = ? AND subsystemId = ?'),
-  getRow: db.prepare('SELECT * FROM VfdCheckState WHERE deviceName = ? AND subsystemId = ?'),
+/**
+ * GET /api/vfd-commissioning/state
+ *
+ * Returns the commissioning state for every VFD-bearing L2 device by reading
+ * directly from L2CellValues — there is no longer a separate VfdCheckState
+ * table. The L2 spreadsheet (which is local-DB-stored AND cloud-synced) is
+ * the single source of truth for "is this VFD commissioned".
+ *
+ * The five columns the wizard fills:
+ *   - "Motor HP (Field)"    → from Step 2 (HP Confirm)
+ *   - "VFD HP (Field)"      → from Step 2 (HP Confirm)
+ *   - "Ready For Tracking"  → from Step 3 (Bump / Direction Confirm)
+ *   - "Belt Tracked"        → from Step 4 (Belt Tracking complete)
+ *   - "Speed Set Up"        → from Step 5 (Calibrate Speed). Stored as a stamp
+ *                             "INITIALS DATE · <fpm> FPM @ <rvs> RVS" so the
+ *                             measured calibration pair survives without a
+ *                             separate local table.
+ *
+ * Response shape:
+ *   {
+ *     states: [
+ *       {
+ *         deviceName: "NCP1_2_VFD",
+ *         sheetName: "APF",
+ *         cells: {
+ *           motorHpField:     "5.0"           | null,
+ *           vfdHpField:       "5.0"           | null,
+ *           readyForTracking: "ASH 9/5"        | null,
+ *           beltTracked:      "ASH 9/5"        | null,
+ *           speedSetUp:       "ASH 9/5 · 200 FPM @ 25.30 RVS" | null,
+ *         },
+ *       },
+ *       ...
+ *     ]
+ *   }
+ *
+ * The optional ?subsystemId=N query param is accepted for backward compatibility
+ * but ignored — L2 device rows aren't keyed by IO-subsystem id, and the caller
+ * (the VFD list) already filters its own device set.
+ */
+
+const COMMISSIONING_COLUMNS = [
+  'Motor HP (Field)',
+  'VFD HP (Field)',
+  'Ready For Tracking',
+  'Belt Tracked',
+  'Speed Set Up',
+] as const
+
+type CommissioningColumn = typeof COMMISSIONING_COLUMNS[number]
+
+function columnKey(name: CommissioningColumn): keyof CellSet {
+  switch (name) {
+    case 'Motor HP (Field)':   return 'motorHpField'
+    case 'VFD HP (Field)':     return 'vfdHpField'
+    case 'Ready For Tracking': return 'readyForTracking'
+    case 'Belt Tracked':       return 'beltTracked'
+    case 'Speed Set Up':       return 'speedSetUp'
+  }
 }
 
-/**
- * GET /api/vfd-commissioning/state?subsystemId=N
- *
- * Returns saved VFD check states for a subsystem.
- */
-export async function GET(req: Request, res: Response) {
+interface CellSet {
+  motorHpField:     string | null
+  vfdHpField:       string | null
+  readyForTracking: string | null
+  beltTracked:      string | null
+  speedSetUp:       string | null
+}
+
+const emptyCells = (): CellSet => ({
+  motorHpField: null, vfdHpField: null, readyForTracking: null,
+  beltTracked: null, speedSetUp: null,
+})
+
+// One bulk query: for every L2 device on a VFD/APF sheet, give me each of the
+// 5 commissioning column values (NULL if the cell hasn't been written).
+const stmtAllCells = db.prepare(`
+  SELECT
+    d.DeviceName    AS deviceName,
+    s.Name          AS sheetName,
+    c.Name          AS columnName,
+    cv.Value        AS value
+  FROM L2Devices d
+  JOIN L2Sheets   s ON s.id = d.SheetId
+  JOIN L2Columns  c ON c.SheetId = d.SheetId
+  LEFT JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
+  WHERE c.Name IN ('Motor HP (Field)', 'VFD HP (Field)', 'Ready For Tracking', 'Belt Tracked', 'Speed Set Up')
+    AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
+`)
+
+export async function GET(_req: Request, res: Response) {
   try {
-    const subsystemId = parseInt(req.query.subsystemId as string)
-    if (!subsystemId || isNaN(subsystemId)) {
-      return res.status(400).json({ error: 'subsystemId required' })
+    const rows = stmtAllCells.all() as Array<{
+      deviceName: string
+      sheetName: string
+      columnName: CommissioningColumn
+      value: string | null
+    }>
+
+    // Pivot rows → one record per (deviceName, sheetName) with a CellSet
+    type Acc = { deviceName: string; sheetName: string; cells: CellSet }
+    const byKey = new Map<string, Acc>()
+    for (const row of rows) {
+      const key = `${row.deviceName}::${row.sheetName}`
+      let acc = byKey.get(key)
+      if (!acc) {
+        acc = { deviceName: row.deviceName, sheetName: row.sheetName, cells: emptyCells() }
+        byKey.set(key, acc)
+      }
+      const colKey = columnKey(row.columnName)
+      if (colKey) acc.cells[colKey] = row.value
     }
 
-    const states = stmts.getBySubsystem.all(subsystemId)
-    return res.json({ states })
+    return res.json({ states: Array.from(byKey.values()) })
   } catch (error) {
     console.error('[VFD State GET] Error:', error)
-    return res.status(500).json({ error: 'Failed to fetch VFD check states' })
+    return res.status(500).json({ error: `Failed to fetch VFD commissioning state: ${error instanceof Error ? error.message : error}` })
   }
 }
 
 /**
  * POST /api/vfd-commissioning/state
  *
- * Upsert a VFD check state row. Supports updating individual check statuses,
- * check3 comment, speed_fpm, and last_rpm.
+ * Deprecated. The wizard now writes only to L2 (via /write-l2-cells) and the
+ * PLC. We keep this route returning a JSON 410 so any old client code that
+ * still POSTs here gets a clean error instead of an HTML 404 page.
  */
-export async function POST(req: Request, res: Response) {
-  try {
-    const { deviceName, subsystemId, check, status, comment, speedFpm, lastRpm, updatedBy } = req.body
-    if (!deviceName || !subsystemId) {
-      return res.status(400).json({ error: 'deviceName and subsystemId required' })
-    }
-
-    const now = new Date().toISOString()
-    const existing = stmts.getExisting.get(deviceName, subsystemId) as { id: number } | undefined
-
-    if (existing) {
-      // Build dynamic UPDATE
-      const updates: string[] = ['updatedAt = ?', 'updatedBy = ?']
-      const params: any[] = [now, updatedBy || null]
-
-      if (check !== undefined && status !== undefined) {
-        const checkNum = parseInt(check)
-        if (checkNum >= 1 && checkNum <= 5) {
-          updates.push(`check${checkNum}_status = ?`)
-          params.push(status)
-        }
-      }
-      if (check === 3 && comment !== undefined) {
-        updates.push('check3_comment = ?')
-        params.push(comment)
-      }
-      if (speedFpm !== undefined) {
-        updates.push('speed_fpm = ?')
-        params.push(speedFpm)
-      }
-      if (lastRpm !== undefined) {
-        updates.push('last_rpm = ?')
-        params.push(lastRpm)
-      }
-
-      params.push(deviceName, subsystemId)
-      db.prepare(`UPDATE VfdCheckState SET ${updates.join(', ')} WHERE deviceName = ? AND subsystemId = ?`).run(...params)
-    } else {
-      // INSERT new row with all columns, filling in only the provided values
-      const checkNum = check !== undefined ? parseInt(check) : null
-      db.prepare(`
-        INSERT INTO VfdCheckState (
-          deviceName, subsystemId,
-          check1_status, check2_status, check3_status, check3_comment,
-          check4_status, check5_status,
-          speed_fpm, last_rpm,
-          updatedBy, updatedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        deviceName,
-        subsystemId,
-        checkNum === 1 ? status : null,
-        checkNum === 2 ? status : null,
-        checkNum === 3 ? status : null,
-        checkNum === 3 && comment !== undefined ? comment : null,
-        checkNum === 4 ? status : null,
-        checkNum === 5 ? status : null,
-        speedFpm !== undefined ? speedFpm : null,
-        lastRpm !== undefined ? lastRpm : null,
-        updatedBy || null,
-        now,
-      )
-    }
-
-    return res.json({ success: true })
-  } catch (error) {
-    console.error('[VFD State POST] Error:', error)
-    return res.status(500).json({ error: 'Failed to save VFD check state' })
-  }
+export async function POST(_req: Request, res: Response) {
+  return res.status(410).json({
+    error: 'Deprecated: VFD commissioning state is now stored entirely in L2 cells. Use /api/vfd-commissioning/write-l2-cells.',
+  })
 }
