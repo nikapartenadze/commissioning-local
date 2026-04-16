@@ -31,19 +31,57 @@ export function UserProvider({ children }: { children: ReactNode }) {
     setIsMounted(true)
   }, [])
 
-  // Load tester name from localStorage on mount
+  // Resolve the session identity on mount.
+  // Server machine (loopback IP) is auto-named "Server Laptop" and bypasses
+  // the NamePrompt entirely. All other devices fall through to the normal
+  // localStorage + NamePrompt flow.
   useEffect(() => {
     if (!isMounted) return
 
-    const name = localStorage.getItem('tester-name')
-    if (name) {
-      setCurrentUserState({
-        fullName: name,
-        isAdmin: true,
-        loginTime: new Date()
-      })
+    let cancelled = false
+
+    const resolveIdentity = async () => {
+      let isServerDevice = false
+      try {
+        const res = await fetch('/api/device/identity', { cache: 'no-store' })
+        if (res.ok) {
+          const data = (await res.json()) as { isServerDevice?: boolean }
+          isServerDevice = data.isServerDevice === true
+        }
+      } catch {
+        // Network error — degrade gracefully to the existing flow.
+      }
+
+      if (cancelled) return
+
+      if (isServerDevice) {
+        // Force the canonical name regardless of what the user typed previously.
+        const SERVER_NAME = 'Server Laptop'
+        localStorage.setItem('tester-name', SERVER_NAME)
+        localStorage.removeItem('tester-name-previous')
+        setCurrentUserState({
+          fullName: SERVER_NAME,
+          isAdmin: true,
+          loginTime: new Date()
+        })
+      } else {
+        const stored = localStorage.getItem('tester-name')
+        if (stored) {
+          setCurrentUserState({
+            fullName: stored,
+            isAdmin: true,
+            loginTime: new Date()
+          })
+        }
+      }
+      setIsLoading(false)
     }
-    setIsLoading(false)
+
+    resolveIdentity()
+
+    return () => {
+      cancelled = true
+    }
   }, [isMounted])
 
   const setCurrentUser = (user: User | null) => {
