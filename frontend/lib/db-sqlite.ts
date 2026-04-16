@@ -359,23 +359,17 @@ export function initializeSchema() {
       LastError TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS VfdCheckState (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      deviceName TEXT NOT NULL,
-      subsystemId INTEGER,
-      check1_status TEXT,
-      check2_status TEXT,
-      check3_status TEXT,
-      check3_comment TEXT,
-      check4_status TEXT,
-      check5_status TEXT,
-      speed_fpm INTEGER,
-      last_rpm REAL,
-      updatedBy TEXT,
-      updatedAt TEXT,
-      UNIQUE(deviceName, subsystemId)
-    );
   `)
+
+  // VFD commissioning state is now stored entirely in L2CellValues
+  // (columns: "Motor HP (Field)", "VFD HP (Field)", "Ready For Tracking",
+  // "Belt Tracked", "Speed Set Up"). The old VfdCheckState table is
+  // dropped on startup — any data that was in it is already mirrored in L2.
+  try {
+    db.exec('DROP TABLE IF EXISTS VfdCheckState')
+  } catch {
+    // Best-effort — if the drop fails the table is simply unused now.
+  }
 }
 
 // ── Type definitions ─────────────────────────────────────────────

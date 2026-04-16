@@ -294,11 +294,20 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
   const completedChecks = sheetStats.reduce((sum, s) => sum + s.completed, 0)
   const overallPercent = totalChecks > 0 ? Math.round((completedChecks / totalChecks) * 100) : 0
 
-  // VFD devices: devices on sheets named "VFD" (case-insensitive), OR devices whose name contains "VFD"
-  const vfdSheetIds = new Set(data.sheets.filter(s => s.Name.toUpperCase().includes('VFD')).map(s => s.id))
+  // VFD devices: devices on sheets named "VFD" or "APF" (case-insensitive), OR devices whose name contains "VFD"
+  const vfdSheetIds = new Set(data.sheets.filter(s =>
+    s.Name.toUpperCase().includes('VFD') || s.Name.toUpperCase().includes('APF')
+  ).map(s => s.id))
+  const sheetNameById = new Map(data.sheets.map(s => [s.id, s.Name]))
   const vfdDevices = data.devices
     .filter(d => vfdSheetIds.has(d.SheetId) || d.DeviceName.toUpperCase().includes('VFD'))
-    .map(d => ({ id: d.id, deviceName: d.DeviceName, mcm: d.Mcm || '', subsystem: d.Subsystem || '' }))
+    .map(d => ({
+      id: d.id,
+      deviceName: d.DeviceName,
+      mcm: d.Mcm || '',
+      subsystem: d.Subsystem || '',
+      sheetName: sheetNameById.get(d.SheetId) || '',
+    }))
 
   const activeSheetData = data.sheets[activeSheet]
   const activeColumns = data.columns
@@ -430,57 +439,57 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
   return (
     <div ref={containerRef} className="flex flex-col h-full">
       {/* Header bar */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b shrink-0">
-        <span className="text-xs font-medium text-muted-foreground whitespace-nowrap tabular-nums">
+      <div className="flex items-center gap-3 px-4 py-3 border-b shrink-0">
+        <span className="text-sm font-medium text-muted-foreground whitespace-nowrap tabular-nums">
           {completedChecks}/{totalChecks} ({overallPercent}%)
         </span>
-        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+        <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
           <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${overallPercent}%` }} />
         </div>
-        <div className="flex items-center border rounded-md overflow-hidden">
+        <div className="flex items-center border rounded-md overflow-hidden h-9">
           <button
-            className={cn("px-2 py-1 text-xs font-medium transition-colors", viewMode === 'sheets' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'sheets' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
             onClick={() => setViewMode('sheets')}
           >
-            <Table2 className="h-3 w-3 inline mr-1" />Sheets
+            <Table2 className="h-3.5 w-3.5 inline mr-1.5" />Sheets
           </button>
           <button
-            className={cn("px-2 py-1 text-xs font-medium transition-colors", viewMode === 'overview' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+            className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'overview' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
             onClick={() => setViewMode('overview')}
           >
-            <LayoutGrid className="h-3 w-3 inline mr-1" />Overview
+            <LayoutGrid className="h-3.5 w-3.5 inline mr-1.5" />Overview
           </button>
           {(vfdDevices.length > 0 || vfdSheetIds.size > 0) && (
             <button
-              className={cn("px-2 py-1 text-xs font-medium transition-colors", viewMode === 'vfd' ? "bg-amber-600 text-white" : "text-muted-foreground hover:text-foreground")}
+              className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'vfd' ? "bg-amber-600 text-white" : "text-muted-foreground hover:text-foreground")}
               onClick={() => setViewMode('vfd')}
             >
-              <Zap className="h-3 w-3 inline mr-1" />VFD
-              <Badge variant="outline" className="ml-1 text-[9px] px-1 py-0">{vfdDevices.length}</Badge>
+              <Zap className="h-3.5 w-3.5 inline mr-1.5" />VFD
+              <Badge variant="outline" className="ml-1.5 text-[10px] px-1 py-0">{vfdDevices.length}</Badge>
             </button>
           )}
         </div>
         <Button
           variant="outline"
           size="sm"
-          className="h-7 text-xs gap-1"
+          className="h-9 text-sm gap-1.5"
           onClick={handleExport}
           disabled={!data || data.sheets.length === 0}
         >
-          <Download className="h-3 w-3" />
+          <Download className="h-3.5 w-3.5" />
           Export
         </Button>
-        {viewMode === 'sheets' && (
-          <Button
-            variant={showGuide ? "default" : "outline"}
-            size="sm"
-            className="h-7 text-xs gap-1"
-            onClick={() => setShowGuide(!showGuide)}
-          >
-            <Info className="h-3 w-3" />
-            Guide
-          </Button>
-        )}
+        <Button
+          variant={showGuide ? "default" : "outline"}
+          size="sm"
+          className="h-9 text-sm gap-1.5"
+          onClick={() => setShowGuide(!showGuide)}
+          disabled={viewMode !== 'sheets'}
+          title={viewMode !== 'sheets' ? "Guide is available on the Sheets view" : undefined}
+        >
+          <Info className="h-3.5 w-3.5" />
+          Guide
+        </Button>
       </div>
 
       {viewMode === 'vfd' ? (
