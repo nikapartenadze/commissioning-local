@@ -80,6 +80,7 @@ import * as projectHistory from '@/app/api/project/[id]/history/route'
 import * as vfdWriteTag from '@/app/api/vfd-commissioning/write-tag/route'
 import * as vfdReadTags from '@/app/api/vfd-commissioning/read-tags/route'
 import * as vfdState from '@/app/api/vfd-commissioning/state/route'
+import * as deviceIdentity from '@/app/api/device/identity/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -225,6 +226,9 @@ export function createApiRouter(): Router {
   router.post('/api/vfd-commissioning/read-tags', asyncHandler(vfdReadTags.POST))
   router.get('/api/vfd-commissioning/state', asyncHandler(vfdState.GET))
   router.post('/api/vfd-commissioning/state', asyncHandler(vfdState.POST))
+
+  // ── Device Identity ───────────────────────────────────────────
+  router.get('/api/device/identity', asyncHandler(deviceIdentity.GET))
 
   return router
 }
