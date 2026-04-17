@@ -8,6 +8,7 @@ import {
   plc_tag_set_bit,
   plc_tag_set_float32,
   plc_tag_set_int16,
+  plc_tag_get_uint32,
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
@@ -18,17 +19,28 @@ interface TagWrite {
   dataType: 'BOOL' | 'REAL' | 'INT'
 }
 
+/** Reinterpret raw uint32 as IEEE-754 float32 (avoids ffi-rs DataType.Float crash) */
+const _f32buf = new ArrayBuffer(4)
+const _f32view = new DataView(_f32buf)
+function uint32ToFloat(raw: number): number {
+  _f32view.setUint32(0, raw, true)
+  return _f32view.getFloat32(0, true)
+}
+
 /**
  * POST /api/vfd-commissioning/write-tags-batch
  *
- * Writes multiple PLC tags for one VFD device "back to back" — opens all handles,
- * sets all values in their buffers, then writes them in rapid succession.
+ * PLC context (AOI Rung 11):
+ *   XIC(Override_RVS) → ONS(ONS.6) → LIMIT(1,RVS,29.99) → MOVE(RVS,CommandedVelocity)
  *
- * This gives the PLC the best chance of catching the writes on the same scan cycle.
- * It is NOT a true atomic write (Ethernet/IP doesn't support that for arbitrary tags),
- * but the writes complete within milliseconds of each other.
+ * ONS fires only on the 0→1 RISING EDGE of Override_RVS. On that one scan
+ * RVS must be 1–29.99 or the LIMIT fails and the edge is consumed.
+ * Rung 15 FLL(0,CMD,1) zeros everything every scan (~10ms).
  *
- * Use case: Override_RVS=1 + RVS=value must be set together so the PLC accepts the new RPM.
+ * Because each plc_tag_write blocks ~7ms for the CIP round-trip, two
+ * sequential writes often straddle a scan boundary. We compensate by
+ * re-writing continuously and checking STS.RVS — once it matches the
+ * requested value, we know a scan caught both and we stop.
  */
 export async function POST(req: Request, res: Response) {
   try {
@@ -47,10 +59,16 @@ export async function POST(req: Request, res: Response) {
       return res.status(503).json({ error: 'No PLC connection config available' })
     }
 
+    // Check if this is an Override_RVS + RVS pair — if so, open a verify handle
+    const rvsWrite = writes.find(w => w.field === 'RVS' && w.dataType === 'REAL')
+    const hasOverride = writes.some(w => w.field === 'Override_RVS')
+    const needsVerify = rvsWrite && hasOverride
+
     const handles: { handle: number; field: string; dataType: string; value: number; tagPath: string }[] = []
+    let verifyHandle = -1
 
     try {
-      // Phase 1: Open all handles + read current values to populate buffers
+      // Phase 1: Open write handles
       for (const w of writes) {
         const isStatus = w.field === 'Speed_FPM' && w.dataType !== 'BOOL'
         const tagPath = isStatus
@@ -75,7 +93,19 @@ export async function POST(req: Request, res: Response) {
         handles.push({ handle, field: w.field, dataType: w.dataType, value: w.value, tagPath })
       }
 
-      // Phase 2: Read all (sync buffers)
+      // Open STS.RVS handle for verify reads (if Override_RVS + RVS pair)
+      if (needsVerify) {
+        verifyHandle = createTag({
+          gateway: connectionConfig.ip,
+          path: connectionConfig.path,
+          name: `CBT_${deviceName}.CTRL.STS.RVS`,
+          elemSize: 4,
+          elemCount: 1,
+          timeout: connectionConfig.timeout || 5000,
+        })
+      }
+
+      // Phase 2: Initial read (sync buffers)
       for (const h of handles) {
         const readStatus = plc_tag_read(h.handle, 5000)
         if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
@@ -83,38 +113,73 @@ export async function POST(req: Request, res: Response) {
         }
       }
 
-      // Phase 3: Set all values in buffers
-      for (const h of handles) {
-        let setStatus: number
-        if (h.dataType === 'BOOL') {
-          setStatus = plc_tag_set_bit(h.handle, 0, h.value ? 1 : 0)
-        } else if (h.dataType === 'REAL') {
-          setStatus = plc_tag_set_float32(h.handle, 0, h.value)
-        } else {
-          setStatus = plc_tag_set_int16(h.handle, 0, h.value)
+      // Phase 3: Write loop — keep writing until STS.RVS matches or timeout
+      const MAX_MS = 1000
+      const start = Date.now()
+      let iterations = 0
+      let lastError: string | null = null
+      let verified = false
+
+      while (Date.now() - start < MAX_MS) {
+        // Set values in buffers
+        for (const h of handles) {
+          if (h.dataType === 'BOOL') {
+            plc_tag_set_bit(h.handle, 0, h.value ? 1 : 0)
+          } else if (h.dataType === 'REAL') {
+            plc_tag_set_float32(h.handle, 0, h.value)
+          } else {
+            plc_tag_set_int16(h.handle, 0, h.value)
+          }
         }
-        if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-          throw new Error(`Set value failed for ${h.tagPath}: ${getStatusMessage(setStatus)}`)
+
+        // Write all (blocking, short timeout)
+        let ok = true
+        for (const h of handles) {
+          const ws = plc_tag_write(h.handle, 500)
+          if (ws !== PlcTagStatus.PLCTAG_STATUS_OK) {
+            ok = false
+            lastError = `${h.tagPath}: ${getStatusMessage(ws)}`
+          }
+        }
+
+        iterations++
+        if (!ok) break
+
+        // Check STS.RVS — did the PLC accept it?
+        if (needsVerify && verifyHandle >= 0) {
+          const rs = plc_tag_read(verifyHandle, 500)
+          if (rs === PlcTagStatus.PLCTAG_STATUS_OK) {
+            const currentRvs = uint32ToFloat(plc_tag_get_uint32(verifyHandle, 0))
+            // Match within 0.1 tolerance (float rounding)
+            if (Math.abs(currentRvs - rvsWrite!.value) < 0.1) {
+              verified = true
+              break
+            }
+          }
         }
       }
 
-      // Phase 4: Write all back-to-back (PLC scans should catch them together)
-      const writeResults: { tagPath: string; ok: boolean; error?: string }[] = []
-      for (const h of handles) {
-        const writeStatus = plc_tag_write(h.handle, 5000)
-        writeResults.push({
-          tagPath: h.tagPath,
-          ok: writeStatus === PlcTagStatus.PLCTAG_STATUS_OK,
-          error: writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK ? getStatusMessage(writeStatus) : undefined,
-        })
-      }
+      const elapsed = Date.now() - start
+      const success = needsVerify ? verified : !lastError
+      console.log(
+        `[VFD WriteTagsBatch] ${deviceName}: ${iterations} iterations, ${elapsed}ms,` +
+        ` verified=${verified}, error=${lastError || 'none'}`,
+      )
 
-      const allOk = writeResults.every(r => r.ok)
-      return res.json({ success: allOk, writes: writeResults })
+      return res.json({
+        success,
+        iterations,
+        elapsedMs: elapsed,
+        verified,
+        writes: handles.map(h => ({ tagPath: h.tagPath, ok: success })),
+        error: lastError || (!success ? 'Speed did not change within timeout' : undefined),
+      })
     } finally {
-      // Phase 5: Destroy all handles
       for (const h of handles) {
         try { plc_tag_destroy(h.handle) } catch { /* ignore */ }
+      }
+      if (verifyHandle >= 0) {
+        try { plc_tag_destroy(verifyHandle) } catch { /* ignore */ }
       }
     }
   } catch (error) {

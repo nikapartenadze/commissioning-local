@@ -5,12 +5,23 @@ import {
   plc_tag_read,
   plc_tag_write,
   plc_tag_destroy,
-  plc_tag_set_bit,
-  plc_tag_set_float32,
+  plc_tag_set_int8,
+  plc_tag_set_int32,
   plc_tag_set_int16,
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
+
+/**
+ * Convert a JavaScript number (float64) to its IEEE-754 float32 bit pattern
+ * stored as an int32. Avoids ffi-rs DataType.Float which crashes/corrupts.
+ */
+const _f32buf = new ArrayBuffer(4)
+const _f32view = new DataView(_f32buf)
+function floatToInt32Bits(value: number): number {
+  _f32view.setFloat32(0, value, true)
+  return _f32view.getInt32(0, true)
+}
 
 /**
  * POST /api/vfd-commissioning/write-tag
@@ -21,12 +32,15 @@ import {
 export async function POST(req: Request, res: Response) {
   try {
     const { deviceName, field, value, dataType } = req.body
+    console.log(`[VFD WriteTag] Request: deviceName=${deviceName}, field=${field}, value=${value}, dataType=${dataType}`)
+
     if (!deviceName || !field) {
       return res.status(400).json({ error: 'deviceName and field required' })
     }
 
     const client = getPlcClient()
     if (!client.isConnected) {
+      console.log(`[VFD WriteTag] PLC not connected`)
       return res.status(503).json({ error: 'PLC not connected' })
     }
 
@@ -40,6 +54,8 @@ export async function POST(req: Request, res: Response) {
     const tagPath = isStatus
       ? `CBT_${deviceName}.CTRL.STS.${field}`
       : `CBT_${deviceName}.CTRL.CMD.${field}`
+
+    console.log(`[VFD WriteTag] Tag path: ${tagPath}, gateway: ${connectionConfig.ip}, path: ${connectionConfig.path}`)
 
     // Determine elem_size based on data type
     let elemSize: number
@@ -64,12 +80,16 @@ export async function POST(req: Request, res: Response) {
     })
 
     if (handle < 0) {
+      console.error(`[VFD WriteTag] Failed to create tag handle: ${getStatusMessage(handle)}`)
       return res.status(500).json({ error: `Failed to create tag ${tagPath}: ${getStatusMessage(handle)}` })
     }
+
+    console.log(`[VFD WriteTag] Tag handle created: ${handle}`)
 
     try {
       // Read current value first (required to sync tag buffer before writing)
       const readStatus = plc_tag_read(handle, 5000)
+      console.log(`[VFD WriteTag] Read status: ${readStatus} (${getStatusMessage(readStatus)})`)
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return res.status(500).json({ error: `Failed to read tag before write: ${getStatusMessage(readStatus)}` })
       }
@@ -77,24 +97,34 @@ export async function POST(req: Request, res: Response) {
       // Set the value in the tag buffer
       let setStatus: number
       if (dataType === 'BOOL') {
-        setStatus = plc_tag_set_bit(handle, 0, value ? 1 : 0)
+        // Use plc_tag_set_int8 (NOT plc_tag_set_bit) — matches proven plc-client.ts approach
+        const byteVal = value ? 1 : 0
+        setStatus = plc_tag_set_int8(handle, 0, byteVal)
+        console.log(`[VFD WriteTag] Set int8 byte 0 to ${byteVal}, status: ${setStatus} (${getStatusMessage(setStatus)})`)
       } else if (dataType === 'REAL') {
-        setStatus = plc_tag_set_float32(handle, 0, value)
+        // Use plc_tag_set_int32 with float→int32 bit conversion.
+        // plc_tag_set_float32 uses ffi-rs DataType.Float which is broken.
+        const bits = floatToInt32Bits(value)
+        setStatus = plc_tag_set_int32(handle, 0, bits)
+        console.log(`[VFD WriteTag] Set REAL via int32 bits: value=${value}, bits=${bits}, status: ${setStatus}`)
       } else {
         // INT
         setStatus = plc_tag_set_int16(handle, 0, value)
       }
 
       if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        console.error(`[VFD WriteTag] Set value failed: ${getStatusMessage(setStatus)}`)
         return res.status(500).json({ error: `Failed to set value: ${getStatusMessage(setStatus)}` })
       }
 
       // Write to PLC
       const writeStatus = plc_tag_write(handle, 5000)
+      console.log(`[VFD WriteTag] Write status: ${writeStatus} (${getStatusMessage(writeStatus)})`)
       if (writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return res.status(500).json({ error: `Failed to write tag: ${getStatusMessage(writeStatus)}` })
       }
 
+      console.log(`[VFD WriteTag] SUCCESS: ${tagPath} = ${value}`)
       return res.json({ success: true, tagPath })
     } finally {
       plc_tag_destroy(handle)
