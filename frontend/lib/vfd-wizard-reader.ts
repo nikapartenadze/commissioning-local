@@ -19,12 +19,25 @@ import {
   plc_tag_destroy,
   plc_tag_get_bit,
   plc_tag_get_int16,
-  plc_tag_get_float32,
+  plc_tag_get_uint32,
   readTagAsync,
   waitForStatus,
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
+
+/**
+ * Read a REAL (float32) from a tag by reading raw uint32 bytes and
+ * reinterpreting as float32. This avoids the ffi-rs bug where
+ * DataType.Float returns "JsNumber can only be double type".
+ */
+const _f32buf = new ArrayBuffer(4)
+const _f32view = new DataView(_f32buf)
+function readFloat32FromTag(handle: number, offset: number): number {
+  const raw = plc_tag_get_uint32(handle, offset)
+  _f32view.setUint32(0, raw, true) // little-endian (Logix native byte order)
+  return _f32view.getFloat32(0, true)
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -158,9 +171,13 @@ async function initTagMap(
 
 /**
  * Continuous polling loop for one VFD's tags.
- * - Reads every connected handle
+ * - Reads every connected handle SEQUENTIALLY (one at a time)
  * - Retries failed handle creation every RETRY_INTERVAL_MS
  * - Always broadcasts a snapshot containing ALL tag keys (so client knows missing ones)
+ *
+ * IMPORTANT: Sequential reads are deliberate — they leave gaps in CIP session
+ * traffic that allow write operations (e.g. write-tags-batch for Override_RVS+RVS)
+ * to land cleanly. Do NOT switch to parallel reads.
  */
 async function pollLoop(reader: WizardReader): Promise<void> {
   const signal = reader.pollAbort.signal
@@ -210,7 +227,7 @@ async function pollLoop(reader: WizardReader): Promise<void> {
             tag.hasValue = true
             snapshot[key] = v
           } else if (tag.def.dataType === 'REAL') {
-            const v = plc_tag_get_float32(tag.handle, 0)
+            const v = readFloat32FromTag(tag.handle, 0)
             tag.value = v
             tag.hasValue = true
             snapshot[key] = v
