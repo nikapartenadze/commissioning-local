@@ -155,6 +155,18 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
 
   useEffect(() => { fetchData() }, [fetchData])
 
+  // Re-fetch L2 data when switching back to sheets view (e.g. after using the
+  // VFD wizard which writes L2 cells directly via write-l2-cells endpoint).
+  const prevViewModeRef = useRef(viewMode)
+  useEffect(() => {
+    const prev = prevViewModeRef.current
+    prevViewModeRef.current = viewMode
+    // Refresh when returning to sheets from any other tab
+    if (viewMode === 'sheets' && prev !== 'sheets') {
+      fetchData()
+    }
+  }, [viewMode, fetchData])
+
   // Subscribe to live L2 cell updates pushed from the cloud via WebSocket.
   // The local SSE client writes incoming changes to SQLite and broadcasts
   // an L2CellUpdated message; we merge it into local state so testers see
