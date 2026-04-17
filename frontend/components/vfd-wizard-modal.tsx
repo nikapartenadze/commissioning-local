@@ -330,36 +330,41 @@ function Step1Content({ sts, loading, deviceName, plcConnected }: {
   sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
 }) {
   const [sending, setSending] = useState(false)
-  const [sentCount, setSentCount] = useState(0)
   const [lastError, setLastError] = useState<string | null>(null)
+  const [sentOk, setSentOk] = useState(false)
   const lastSentMsRef = useRef<number>(0)
+  const sendingRef = useRef(false)
   const f1WasPressedRef = useRef<boolean>(false)
 
   const f1Pressed = sts.KeypadButtonF1 === true
   const validMapDone = sts.Valid_Map === true
 
-  // Send Valid_Map=1 to PLC. Manual button uses this; auto-trigger uses this.
-  const sendValidMap = async (reason: string) => {
-    if (!plcConnected || sending) return
+  // Send Valid_Map=1 CMD to PLC. Uses ref to avoid stale closure issues.
+  const sendValidMap = useCallback(async () => {
+    if (sendingRef.current) return
+    sendingRef.current = true
     setSending(true)
     setLastError(null)
+    console.log(`[Step1] Sending Valid_Map=1 to PLC...`)
     try {
       const result = await writeTag(deviceName, 'Valid_Map', 1, 'BOOL')
       if (result?.success === false) {
+        console.error(`[Step1] Valid_Map write failed:`, result?.error)
         setLastError(result?.error || 'Write failed')
       } else {
-        setSentCount(c => c + 1)
         lastSentMsRef.current = Date.now()
-        if (process.env.NODE_ENV === 'development') {
-          console.log(`[Step1] Sent Valid_Map=1 (${reason})`)
-        }
+        setSentOk(true)
+        console.log(`[Step1] Valid_Map=1 sent successfully`)
       }
     } catch (err) {
-      setLastError(err instanceof Error ? err.message : String(err))
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[Step1] Valid_Map write error:`, msg)
+      setLastError(msg)
     } finally {
+      sendingRef.current = false
       setSending(false)
     }
-  }
+  }, [deviceName])
 
   // Auto-send on the rising edge of F1: when F1 transitions from not-pressed to pressed.
   // Re-arms after F1 is released so the user can re-press to retry if Valid_Map didn't latch.
@@ -369,26 +374,21 @@ function Step1Content({ sts, loading, deviceName, plcConnected }: {
     const wasPressed = f1WasPressedRef.current
     f1WasPressedRef.current = f1Pressed
 
-    // Rising edge detected: F1 just went from FALSE to TRUE
+    // Rising edge detected: F1 just went from FALSE/null to TRUE
     if (!wasPressed && f1Pressed) {
-      // Debounce: don't auto-send more than once per second
-      if (Date.now() - lastSentMsRef.current < 1000) return
-      sendValidMap('auto: F1 rising edge')
+      // Debounce: don't auto-send more than once per 2 seconds
+      if (Date.now() - lastSentMsRef.current < 2000) return
+      console.log(`[Step1] F1 rising edge detected, triggering Valid_Map send`)
+      sendValidMap()
     }
-  }, [f1Pressed, plcConnected, validMapDone])
+  }, [f1Pressed, plcConnected, validMapDone, sendValidMap])
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground leading-relaxed">
         Confirm this VFD in the tool matches the physical VFD in the field.
+        Press <strong>F1</strong> on the VFD keypad — the tool validates the map automatically.
       </p>
-
-      <div className="rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4">
-        <p className="text-sm font-semibold text-amber-900 dark:text-amber-100 mb-1">What to do</p>
-        <p className="text-sm text-amber-800 dark:text-amber-200">
-          Ask the technician to press <strong>F1</strong> on the VFD keypad. The tool watches the keypad live and validates the map automatically the moment F1 is detected. If the auto-validate misses, use the manual button.
-        </p>
-      </div>
 
       {/* Live F1 keypad press indicator */}
       <div className={cn(
@@ -402,43 +402,25 @@ function Step1Content({ sts, loading, deviceName, plcConnected }: {
           )}>F1</div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold">
-              {f1Pressed ? "F1 is being pressed" : "Waiting for F1 press…"}
+              {f1Pressed ? (sentOk ? "F1 detected — Map Validated" : "F1 detected — validating map…") : "Waiting for F1 press…"}
             </p>
-            <p className="text-xs text-muted-foreground">Reading keypad input from the VFD</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Manual fallback */}
-      <div className="rounded-lg border bg-card p-4 space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold">Validate the map manually</p>
             <p className="text-xs text-muted-foreground">
-              {sentCount > 0
-                ? <>Validated {sentCount} time{sentCount !== 1 ? 's' : ''} so far.</>
-                : <>Click if auto-validation didn't trigger.</>}
+              {sending ? "Sending map validation to PLC…" : sentOk ? "Map validated — waiting for PLC confirmation…" : "Reading keypad input from the VFD"}
             </p>
           </div>
-          <ActionButton
-            label={sending ? 'Validating…' : 'Validate Map'}
-            icon={CheckCircle2}
-            onClick={() => sendValidMap('manual')}
-            disabled={!plcConnected}
-            sending={sending}
-          />
         </div>
-        {lastError && (
-          <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400">
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-            <span>{lastError}</span>
-          </div>
-        )}
       </div>
 
-      {/* PLC confirmation */}
+      {lastError && (
+        <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400 rounded-lg border border-red-300 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20 p-3">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>{lastError}</span>
+        </div>
+      )}
+
+      {/* PLC confirmation — reads CTRL.STS.Valid_Map */}
       <StatusPill
-        label="Map is valid"
+        label="Map Validated"
         value={sts.Valid_Map}
         loading={loading}
         trueText="Yes"
@@ -584,10 +566,17 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
         <p className="text-xs text-muted-foreground">{l2Status}</p>
       )}
 
-      {sts.Valid_HP === true && (
+      {sts.Valid_HP === true && sent && (
         <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm font-medium">
           <CheckCircle2 className="h-4 w-4" />
           HP confirmed. Values saved. Continue to step 3.
+        </div>
+      )}
+
+      {sts.Valid_HP === true && !sent && !canConfirm && (
+        <div className="flex items-start gap-2 text-amber-700 dark:text-amber-400 text-xs rounded-lg border border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20 p-3">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>PLC confirms HP but the spreadsheet is empty. Enter the HP values and click <strong>Confirm HP</strong> to save them.</span>
         </div>
       )}
     </div>
@@ -600,9 +589,9 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
 }) {
   const [bumpSending, setBumpSending] = useState(false)
   const [dirSending, setDirSending] = useState(false)
+  const [dirSent, setDirSent] = useState(false)
   const [comment, setComment] = useState('')
   const [bumpCount, setBumpCount] = useState(0)
-  const [dirCount, setDirCount] = useState(0)
   const [lastWriteError, setLastWriteError] = useState<string | null>(null)
 
   const handleBump = async () => {
@@ -630,7 +619,7 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
       if (result?.success === false) {
         setLastWriteError(`Valid_Direction: ${result?.error || 'write failed'}`)
       } else {
-        setDirCount(c => c + 1)
+        setDirSent(true)
         if (process.env.NODE_ENV === 'development') console.log('[Step3] Sent Valid_Direction=1')
 
         // Stamp "Ready For Tracking" in the L2 spreadsheet — INITIALS DATE
@@ -695,16 +684,19 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         <p className="text-sm font-medium">Did the motor spin in the correct direction?</p>
         <div className="flex items-center gap-3">
           <ActionButton
-            label={dirCount > 0 ? `Re-confirm Direction (×${dirCount})` : "Yes — Confirm Direction"}
+            label={dirSent || sts.Valid_Direction === true ? "Direction Confirmed" : "Yes — Confirm Direction"}
             icon={CheckCircle2}
             onClick={handleConfirmDirection}
-            disabled={!plcConnected}
+            disabled={!plcConnected || dirSending}
             sending={dirSending}
+            variant={sts.Valid_Direction === true ? 'outline' : 'primary'}
           />
         </div>
-        <p className="text-xs text-muted-foreground">
-          If the motor is spinning the wrong way, fix the polarity in the VFD config before retesting. Don't confirm.
-        </p>
+        {sts.Valid_Direction !== true && (
+          <p className="text-xs text-muted-foreground">
+            If the motor is spinning the wrong way, fix the polarity in the VFD config before retesting. Don't confirm.
+          </p>
+        )}
       </div>
 
       {lastWriteError && (
@@ -746,9 +738,7 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
 }) {
   const [overrideRpm, setOverrideRpm] = useState('')
   const [overrideSending, setOverrideSending] = useState(false)
-  const [overrideSent, setOverrideSent] = useState(false)
   const [overrideError, setOverrideError] = useState<string | null>(null)
-  const [overrideLastWrite, setOverrideLastWrite] = useState<{ rvs: number; ts: number } | null>(null)
 
   const handleOverride = async () => {
     if (!plcConnected || !overrideRpm) return
@@ -756,11 +746,6 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
     setOverrideError(null)
     try {
       const rvsVal = parseFloat(overrideRpm)
-      // ORDER MATTERS: write RVS value FIRST so it's settled in the PLC register,
-      // THEN write Override_RVS=1 to trigger the one-shot (ONS.6 in rung 11).
-      // The PLC clears CTRL.CMD to 0 every scan via FLL(0,CTRL.CMD,1) in rung 15,
-      // so Override_RVS only stays high for ~1 scan — the one-shot must catch
-      // the rising edge with RVS already at the desired value.
       const res = await fetch('/api/vfd-commissioning/write-tags-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -775,14 +760,7 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
       const data = await res.json()
       if (!res.ok || data.success === false) {
         const failed = (data.writes || []).filter((w: any) => !w.ok)
-        const msg = data.error || failed.map((f: any) => `${f.tagPath}: ${f.error}`).join('; ') || 'unknown'
-        setOverrideError(msg)
-        if (process.env.NODE_ENV === 'development') console.error('[Step4] Override failed:', data)
-      } else {
-        setOverrideSent(true)
-        setOverrideLastWrite({ rvs: rvsVal, ts: Date.now() })
-        if (process.env.NODE_ENV === 'development') console.log('[Step4] Sent Override_RVS=1 + RVS=' + rvsVal, data)
-        setTimeout(() => setOverrideSent(false), 2000)
+        setOverrideError(data.error || failed.map((f: any) => `${f.tagPath}: ${f.error}`).join('; ') || 'Write failed')
       }
     } catch (err) {
       setOverrideError(err instanceof Error ? err.message : String(err))
@@ -814,24 +792,9 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
         </ul>
       </div>
 
-      <div className="rounded-lg border bg-red-50/50 dark:bg-red-950/20 border-red-200 dark:border-red-800 p-4 flex items-start gap-3">
-        <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
-        <div className="text-sm">
-          <p className="font-semibold text-red-800 dark:text-red-200">Safety</p>
-          <p className="text-red-700 dark:text-red-300 mt-0.5">
-            The tool cannot start or stop the belt. Mechanics may have hands on the conveyor — only the keypad controls the motor.
-          </p>
-        </div>
-      </div>
-
-      {/* Speed override */}
+      {/* Speed override — input + button only */}
       <div className="rounded-lg border bg-card p-4 space-y-3">
-        <div>
-          <p className="text-sm font-semibold">Set the speed directly</p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Useful when the speed has drifted or the belt was stuck. Type the RVS value and click Set.
-          </p>
-        </div>
+        <p className="text-sm font-semibold">Set speed</p>
         <div className="flex items-center gap-3">
           <Input
             type="number"
@@ -842,33 +805,19 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
             className="h-10 w-28 font-mono"
           />
           <ActionButton
-            label={overrideSent ? "Speed Set" : "Set Speed"}
-            icon={overrideSent ? CheckCircle2 : Send}
+            label="Set Speed"
+            icon={Send}
             onClick={handleOverride}
             disabled={!plcConnected || !overrideRpm}
             sending={overrideSending}
-            variant={overrideSent ? 'outline' : 'primary'}
           />
         </div>
+        {overrideError && (
+          <p className="text-xs text-red-600 dark:text-red-400">{overrideError}</p>
+        )}
       </div>
 
-      {overrideError && (
-        <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400 rounded-lg border border-red-300 dark:border-red-800 bg-red-50/50 dark:bg-red-950/20 p-3">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-          <div>
-            <p className="font-semibold">Failed to set speed</p>
-            <p className="break-all mt-0.5">{overrideError}</p>
-          </div>
-        </div>
-      )}
-
-      {overrideLastWrite && !overrideError && (
-        <div className="flex items-center gap-2 text-xs text-green-600 dark:text-green-400 rounded-lg border border-green-300 dark:border-green-800 bg-green-50/50 dark:bg-green-950/20 p-3">
-          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-          <span>Speed set to <strong>{overrideLastWrite.rvs} RVS</strong> at {new Date(overrideLastWrite.ts).toLocaleTimeString()}</span>
-        </div>
-      )}
-
+      {/* Live Status — the only thing that matters */}
       <div className="rounded-lg border bg-card p-4 space-y-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Status</p>
         <StatusPill
@@ -891,7 +840,6 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
         {stsErrors.RVS && (
           <p className="text-[11px] text-amber-700 dark:text-amber-400 leading-snug">
             <strong>Can't read STS.RVS from PLC:</strong> {stsErrors.RVS}.
-            Verify the AOI version on this controller exposes <code className="font-mono">CTRL.STS.RVS</code> (REAL).
           </p>
         )}
       </div>
@@ -904,7 +852,6 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
           label={isComplete ? "Tracking Done" : "Mark Tracking Done"}
           icon={CheckCircle2}
           onClick={() => {
-            // Stamp "Belt Tracked" in L2 spreadsheet on first completion
             if (!isComplete) {
               const stamp = buildInitialsStamp(userName)
               writeL2Cells(deviceName, sheetName, userName, [
@@ -928,6 +875,8 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
 
   const [fpm, setFpm] = useState('')
   const [sending, setSending] = useState(false)
+  const [runAt30Sending, setRunAt30Sending] = useState(false)
+  const [runAt30Sent, setRunAt30Sent] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<{ fpm: number; rvs: number; ts: number } | null>(null)
 
@@ -953,24 +902,35 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
     return () => { cancelled = true }
   }, [deviceName])
 
+  // Send Run_At_30_RVS command — PLC sets CommandedVelocity to 29.99 (≈30 RVS)
+  // Rung 14: XIC(CTRL.CMD.Run_At_30_RVS) ONS → MOVE(29.99, Drive_Outputs.CommandedVelocity)
+  const handleRunAt30 = async () => {
+    if (!plcConnected) return
+    setRunAt30Sending(true)
+    setError(null)
+    try {
+      const result = await writeTag(deviceName, 'Run_At_30_RVS', 1, 'BOOL')
+      if (result?.success === false) {
+        setError(result?.error || 'Write failed')
+      } else {
+        setRunAt30Sent(true)
+        console.log('[Step5] Sent Run_At_30_RVS=1')
+        setTimeout(() => setRunAt30Sent(false), 3000)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+    setRunAt30Sending(false)
+  }
+
   const handleLog = async () => {
     if (!plcConnected || !fpm) return
     setSending(true)
     setError(null)
     try {
-      // Tell the PLC to capture its current commanded velocity into STS.RVS
-      // (Rung 14 in the AOI: ONS on Log_RVS → MOVE Drive_Outputs.CommandedVelocity to STS.RVS)
-      const result = await writeTag(deviceName, 'Log_RVS', 1, 'BOOL')
-      if (result?.success === false) {
-        setError(result?.error || 'Write failed')
-        setSending(false)
-        return
-      }
-
-      // Wait briefly for the PLC to capture and STS.RVS to update via the polling broadcast
-      await new Promise(resolve => setTimeout(resolve, 600))
-
-      // Read via ref so we pick up the latest broadcast (closure `sts` is stale)
+      // STS.RVS is now continuously updated by Rung 14:
+      // MOVE(Drive_Outputs.CommandedVelocity, CTRL.STS.RVS) — always runs when Valid_Direction is true.
+      // No need to send a Log_RVS command — just read the live value.
       const capturedRvs = stsRef.current.RVS
       const fpmVal = parseInt(fpm || '0')
 
@@ -1001,22 +961,15 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground leading-relaxed">
-        After tracking is done, calibrate the speed. Have mechanics measure the belt speed in FPM with a tachometer at the current motor RVS, type it below, then click Log Speed.
+        Set the motor to 30 RVS, then have mechanics measure the belt speed in FPM with a tachometer. Type the FPM below and click Log Speed.
       </p>
 
-      <div className="rounded-lg border bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-3 flex items-start gap-2">
-        <AlertTriangle className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-blue-800 dark:text-blue-200">
-          <strong>Best practice:</strong> ask mechanics to measure FPM at <strong>30 RVS</strong> — gives the most accurate ratio.
-        </p>
-      </div>
-
-      {/* Live current speed from PLC */}
+      {/* Live current speed from PLC — STS.RVS is continuously updated */}
       <div className={cn(
         "rounded-lg border bg-card p-4",
         stsErrors.RVS && "border-amber-300 bg-amber-50/40 dark:border-amber-800 dark:bg-amber-950/20",
       )}>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Current motor speed (from PLC)</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Current motor speed (live from PLC)</p>
         <p className="font-mono text-2xl font-bold">
           {sts.RVS != null ? sts.RVS.toFixed(2) : '—'}
           <span className="text-sm text-muted-foreground font-normal ml-1.5">RVS</span>
@@ -1030,11 +983,31 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
         )}
       </div>
 
+      {/* Run at 30 RVS button — sends CMD.Run_At_30_RVS to PLC */}
+      <div className="rounded-lg border bg-card p-4 space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">Set speed to 30 RVS</p>
+            <p className="text-xs text-muted-foreground">
+              Sends a command to the PLC to set motor speed to 30 RVS for tachometer measurement.
+            </p>
+          </div>
+          <ActionButton
+            label={runAt30Sent ? "Speed Set" : "Run at 30 RVS"}
+            icon={runAt30Sent ? CheckCircle2 : Play}
+            onClick={handleRunAt30}
+            disabled={!plcConnected}
+            sending={runAt30Sending}
+            variant={runAt30Sent ? 'outline' : 'amber'}
+          />
+        </div>
+      </div>
+
       <div className="rounded-lg border bg-card p-4 space-y-3">
         <div>
           <p className="text-sm font-semibold">Log the FPM measurement</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Type the FPM the mechanic just tached, then click Log Speed. The tool captures the current RVS from the PLC and stores the pair.
+            Type the FPM the mechanic just tached at the current RVS, then click Log Speed.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1237,6 +1210,33 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   useEffect(() => {
     if (activeStep === 0 && sts.Check_Allowed === true) setActiveStep(1)
   }, [sts.Check_Allowed, activeStep])
+
+  // Auto-backfill L2 cells for steps that PLC already confirms done.
+  // When a VFD was partially commissioned in a previous session (PLC state set)
+  // but L2 cells weren't written, catch up automatically so progress shows correctly.
+  const backfilledRef = useRef(false)
+  useEffect(() => {
+    if (backfilledRef.current) return
+    if (!sheetName || !userName) return
+    // Wait until we have at least one confirmed PLC state to check
+    if (sts.Valid_Direction == null && sts.Valid_HP == null) return
+
+    backfilledRef.current = true
+    readL2CellsForDevice(device.deviceName).then(cells => {
+      if (!cells) return
+      const toWrite: { columnName: string; value: string }[] = []
+
+      // Step 3: Valid_Direction is true but "Ready For Tracking" not stamped
+      if (sts.Valid_Direction === true && !cells.readyForTracking?.trim()) {
+        toWrite.push({ columnName: 'Ready For Tracking', value: buildInitialsStamp(userName) })
+      }
+
+      if (toWrite.length > 0) {
+        console.log(`[VfdWizard] Auto-backfilling ${toWrite.length} L2 cell(s) for ${device.deviceName}`)
+        writeL2Cells(device.deviceName, sheetName, userName, toWrite).catch(() => {})
+      }
+    })
+  }, [sts.Valid_Direction, sts.Valid_HP, device.deviceName, sheetName, userName])
 
   // Handle escape key
   useEffect(() => {
