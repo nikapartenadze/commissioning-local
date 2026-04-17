@@ -8,7 +8,7 @@ import {
   plc_tag_read,
   plc_tag_write,
   plc_tag_destroy,
-  plc_tag_set_bit,
+  plc_tag_set_int8,
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
@@ -75,7 +75,7 @@ async function pulseInvalidate(
   try {
     const r = plc_tag_read(handle, timeoutMs)
     if (r !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `read: ${getStatusMessage(r)}` }
-    const s = plc_tag_set_bit(handle, 0, 1)
+    const s = plc_tag_set_int8(handle, 0, 1)
     if (s !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `set: ${getStatusMessage(s)}` }
     const w = plc_tag_write(handle, timeoutMs)
     if (w !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `write: ${getStatusMessage(w)}` }
