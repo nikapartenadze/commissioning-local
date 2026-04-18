@@ -15,7 +15,7 @@ export type {
   NetworkStatusUpdate,
   TagStatusUpdate,
   ErrorEvent,
-  L2CellUpdate,
+  FVCellUpdate,
   WebSocketConnectionOptions,
   WebSocketConnection
 } from './plc/websocket-client'

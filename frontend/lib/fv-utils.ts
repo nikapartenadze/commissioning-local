@@ -1,6 +1,6 @@
-export type L2InputType = 'pass_fail' | 'number' | 'text' | 'readonly'
+export type FVInputType = 'pass_fail' | 'number' | 'text' | 'readonly'
 
-export function normalizeL2InputType(columnType?: string | null, inputType?: string | null): L2InputType {
+export function normalizeFVInputType(columnType?: string | null, inputType?: string | null): FVInputType {
   const value = (inputType || columnType || '').trim().toLowerCase()
   if (value === 'pass_fail' || value === 'check') return 'pass_fail'
   if (value === 'number' || value === 'numeric') return 'number'
@@ -8,7 +8,7 @@ export function normalizeL2InputType(columnType?: string | null, inputType?: str
   return 'text'
 }
 
-export function doesL2ColumnCountForProgress(column: {
+export function doesFVColumnCountForProgress(column: {
   IncludeInProgress?: number | boolean | null
   includeInProgress?: boolean | null
   ColumnType?: string | null
@@ -23,14 +23,14 @@ export function doesL2ColumnCountForProgress(column: {
       : null
 
   if (explicit !== null) return explicit
-  return normalizeL2InputType(column.ColumnType || column.columnType, column.InputType || column.inputType) === 'pass_fail'
+  return normalizeFVInputType(column.ColumnType || column.columnType, column.InputType || column.inputType) === 'pass_fail'
 }
 
-export function isL2ValueComplete(value: string | null | undefined): boolean {
+export function isFVValueComplete(value: string | null | undefined): boolean {
   return value != null && String(value).trim() !== ''
 }
 
-export function getL2OverviewGroup(device: {
+export function getFVOverviewGroup(device: {
   DeviceName?: string | null
   deviceName?: string | null
   Mcm?: string | null

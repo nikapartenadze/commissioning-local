@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-This file provides guidance for working on the local commissioning tool in `frontend/`.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+This is the local commissioning tool in `frontend/`.
 
 ## Project Overview
 
@@ -109,7 +111,7 @@ frontend/
     network-topology-view.tsx
     estop-check-view.tsx
     safety-io-view.tsx
-    l2-validation-view.tsx
+    fv-validation-view.tsx
   server-express.ts               # production server
 ```
 
@@ -145,14 +147,51 @@ There is some auth transition history in the codebase.
 
 When changing auth, inspect both sides before assuming one model is authoritative.
 
+## Storage Paths
+
+Resolved by `lib/storage-paths.ts`. All paths sit beside the active SQLite database:
+
+- **Portable mode:** database, config, logs, backups all in the app folder
+- **Installer mode:** `C:\ProgramData\IOCheckout\` for database/config/logs/backups
+
+Files:
+- `database.db` — main SQLite database (WAL mode)
+- `config.json` — runtime config (cloud URL, API password, subsystem, PLC settings)
+- `logs/` — application logs
+- `backups/` — automatic database backups (created before manual "Pull IOs")
+
+Override with `CONFIG_PATH` env var if needed.
+
+## Database Details
+
+- SQLite with WAL (Write-Ahead Logging) for crash safety
+- Pragmas tuned for durability over throughput — commissioning data is critical
+- Schema auto-initialized and auto-migrated on every startup (safe `ALTER TABLE IF NOT EXISTS`)
+- 20+ tables: Projects, Subsystems, Ios, TestHistories, L2CellValues, SafetyZones, etc.
+- `better-sqlite3` is synchronous — writes are serialized, concurrent reads are fine
+- Prisma schema (`prisma/schema.prisma`) is kept as a reference and for seed scripts, but runtime does NOT use Prisma client
+
+## Sync Behavior
+
+- **Instant push:** local save → immediate HTTP POST to cloud (~1-2 sec)
+- **Background retry:** every 30 seconds, `lib/cloud/sync-queue.ts` retries any failed syncs
+- **Pull:** only on SSE reconnect, not polling
+- **Multi-user:** different IOs merge cleanly; same IO = last-write-wins in UI, both preserved in TestHistory audit trail
+- **Data authority:** local SQLite is the sole authority for test results; cloud is a read-only receiver
+- **Database backup:** automatic before any manual "Pull IOs" operation
+
+See `../SYNC-ARCHITECTURE.md` for the full contract.
+
 ## Testing Notes
 
-- There is a real unit test setup here with Vitest under `__tests__/`.
-- There are also manual PLC connectivity scripts for field verification.
-- For sync, PLC, or data safety changes, prefer reading the tests before editing behavior.
+- Unit tests with Vitest under `__tests__/`
+- Manual PLC connectivity scripts: `test-plc.ts` and `test-plc-simple.ts`
+- For sync, PLC, or data safety changes, prefer reading the tests before editing behavior
 
 ## Working Guidance
 
 - Prefer the actual code over older root docs when there is a conflict.
 - If a change affects sync contracts, inspect `../commissioning-cloud/` too.
 - If a change affects shared project/install data assumptions, inspect `../installation-tracker/` too.
+- PLC/FFI changes (`lib/plc/`, `libplctag.ts`) are high-risk — must be tested on actual hardware.
+- The main testing grid (`components/enhanced-io-data-grid.tsx`, ~65KB) is the largest component; changes there have broad UI impact.

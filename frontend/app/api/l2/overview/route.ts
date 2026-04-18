@@ -1,6 +1,6 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-import { doesL2ColumnCountForProgress, getL2OverviewGroup } from '@/lib/l2-utils'
+import { doesFVColumnCountForProgress, getFVOverviewGroup } from '@/lib/fv-utils'
 
 /**
  * GET /api/l2/overview
@@ -22,7 +22,7 @@ export async function GET(req: Request, res: Response) {
     // Get unique MCMs sorted
     const mcmSet = new Set<string>()
     for (const d of devices) {
-      const groupKey = getL2OverviewGroup(d, sheets.find((sheet) => sheet.id === d.SheetId)?.Name)
+      const groupKey = getFVOverviewGroup(d, sheets.find((sheet) => sheet.id === d.SheetId)?.Name)
       if (groupKey) mcmSet.add(groupKey)
     }
     const mcms = Array.from(mcmSet).sort((a, b) => {
@@ -35,7 +35,7 @@ export async function GET(req: Request, res: Response) {
     // Get check column IDs per sheet
     const checkColsBySheet = new Map<number, number[]>()
     for (const col of columns) {
-      if (doesL2ColumnCountForProgress(col)) {
+      if (doesFVColumnCountForProgress(col)) {
         const arr = checkColsBySheet.get(col.SheetId) || []
         arr.push(col.id)
         checkColsBySheet.set(col.SheetId, arr)
@@ -92,7 +92,7 @@ export async function GET(req: Request, res: Response) {
 
       for (const mcm of mcms) {
         // Devices in this sheet + MCM
-        const mcmDevices = devices.filter((d: any) => d.SheetId === sheet.id && getL2OverviewGroup(d, sheet.Name) === mcm)
+        const mcmDevices = devices.filter((d: any) => d.SheetId === sheet.id && getFVOverviewGroup(d, sheet.Name) === mcm)
         const total = mcmDevices.length * checkColCount
         let completed = 0
         let lastTester: string | null = null
