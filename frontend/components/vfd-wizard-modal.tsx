@@ -10,7 +10,7 @@ import { useUser } from '@/lib/user-context'
 import {
   X, Wifi, WifiOff, Loader2, CheckCircle2, XCircle, AlertTriangle,
   Zap, CircleDot, Send, Play, Square, ChevronRight, RotateCcw,
-  Signal, Fingerprint, Gauge, ArrowRight, Settings2,
+  Signal, Fingerprint, Gauge, ArrowRight, Settings2, Lock,
 } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -174,17 +174,18 @@ function StepIndicator({ stepNum, label, status, active }: {
       "flex items-center gap-2 px-3 py-2 rounded-lg transition-all text-sm cursor-default",
       active && "bg-primary/10 border border-primary/30",
       status === 'done' && !active && "opacity-70",
-      status === 'locked' && "opacity-30",
+      status === 'locked' && "opacity-50",
     )}>
       <div className={cn(
         "h-7 w-7 rounded-full flex items-center justify-center text-xs font-bold border-2 shrink-0",
         status === 'done' && "bg-green-500 border-green-600 text-white",
         status === 'failed' && "bg-red-500 border-red-600 text-white",
         status === 'active' && "bg-primary border-primary text-primary-foreground",
-        status === 'locked' && "bg-muted border-border text-muted-foreground",
+        status === 'locked' && "bg-muted border-muted-foreground/30 text-muted-foreground",
       )}>
         {status === 'done' ? <CheckCircle2 className="h-4 w-4" /> :
          status === 'failed' ? <XCircle className="h-4 w-4" /> :
+         status === 'locked' ? <Lock className="h-3.5 w-3.5" /> :
          stepNum}
       </div>
       <span className={cn("font-medium", active ? "text-foreground" : "text-muted-foreground")}>{label}</span>
@@ -241,7 +242,7 @@ function StatusPill({
       isOff && "border-border bg-card",
       isUnknown && "border-border bg-card",
     )}>
-      <span className="text-sm font-medium">{label}</span>
+      <span className="text-sm font-medium text-foreground">{label}</span>
       <div className="flex items-center gap-2">
         <div className={cn(
           "h-2.5 w-2.5 rounded-full shrink-0",
@@ -296,7 +297,7 @@ function Step0Content({ sts, loading }: { sts: StsState; loading: boolean }) {
   const allowed = sts.Check_Allowed === true
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p className="text-sm text-foreground/80 leading-relaxed">
         The VFD must be online and running before any checks can be performed.
         The tool checks this automatically.
       </p>
@@ -311,13 +312,13 @@ function Step0Content({ sts, loading }: { sts: StsState; loading: boolean }) {
       />
 
       {allowed && (
-        <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm font-medium">
+        <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
           <CheckCircle2 className="h-4 w-4" />
           VFD is online. Continue to step 1.
         </div>
       )}
       {!loading && !allowed && (
-        <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-sm">
+        <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm">
           <AlertTriangle className="h-4 w-4" />
           Waiting for the VFD to come online…
         </div>
@@ -326,35 +327,42 @@ function Step0Content({ sts, loading }: { sts: StsState; loading: boolean }) {
   )
 }
 
-function Step1Content({ sts, loading, deviceName, plcConnected }: {
+function Step1Content({ sts, loading, deviceName, plcConnected, sheetName, userName }: {
   sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
+  sheetName?: string; userName?: string
 }) {
   const [sending, setSending] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
   const [sentOk, setSentOk] = useState(false)
-  const lastSentMsRef = useRef<number>(0)
+  /** Latched: stays true once a rising edge of F1 is detected. */
+  const [f1Detected, setF1Detected] = useState(false)
   const sendingRef = useRef(false)
   const f1WasPressedRef = useRef<boolean>(false)
 
   const f1Pressed = sts.KeypadButtonF1 === true
   const validMapDone = sts.Valid_Map === true
 
-  // Send Valid_Map=1 CMD to PLC. Uses ref to avoid stale closure issues.
-  const sendValidMap = useCallback(async () => {
+  // Confirm identity: send Valid_Map=1 to PLC + write "Verify Identity" L2 cell.
+  const confirmIdentity = useCallback(async () => {
     if (sendingRef.current) return
     sendingRef.current = true
     setSending(true)
     setLastError(null)
-    console.log(`[Step1] Sending Valid_Map=1 to PLC...`)
+    console.log(`[Step1] User confirmed F1 press — sending Valid_Map=1 to PLC...`)
     try {
       const result = await writeTag(deviceName, 'Valid_Map', 1, 'BOOL')
       if (result?.success === false) {
         console.error(`[Step1] Valid_Map write failed:`, result?.error)
         setLastError(result?.error || 'Write failed')
       } else {
-        lastSentMsRef.current = Date.now()
         setSentOk(true)
         console.log(`[Step1] Valid_Map=1 sent successfully`)
+
+        // Write "Verify Identity" L2 cell with initials stamp — best-effort
+        const stamp = buildInitialsStamp(userName)
+        writeL2Cells(deviceName, sheetName, userName, [
+          { columnName: 'Verify Identity', value: stamp },
+        ]).catch(() => { /* best-effort */ })
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -364,51 +372,88 @@ function Step1Content({ sts, loading, deviceName, plcConnected }: {
       sendingRef.current = false
       setSending(false)
     }
-  }, [deviceName])
+  }, [deviceName, sheetName, userName])
 
-  // Auto-send on the rising edge of F1: when F1 transitions from not-pressed to pressed.
-  // Re-arms after F1 is released so the user can re-press to retry if Valid_Map didn't latch.
+  // Detect F1 rising edge and latch it — user must manually confirm.
+  // Re-arms after F1 is released so the user can re-press to retry.
   useEffect(() => {
     if (!plcConnected || validMapDone) return
 
     const wasPressed = f1WasPressedRef.current
     f1WasPressedRef.current = f1Pressed
 
-    // Rising edge detected: F1 just went from FALSE/null to TRUE
+    // Rising edge: F1 just went from FALSE/null to TRUE
     if (!wasPressed && f1Pressed) {
-      // Debounce: don't auto-send more than once per 2 seconds
-      if (Date.now() - lastSentMsRef.current < 2000) return
-      console.log(`[Step1] F1 rising edge detected, triggering Valid_Map send`)
-      sendValidMap()
+      console.log(`[Step1] F1 rising edge detected — waiting for user confirmation`)
+      setF1Detected(true)
     }
-  }, [f1Pressed, plcConnected, validMapDone, sendValidMap])
+  }, [f1Pressed, plcConnected, validMapDone])
+
+  const showConfirmation = (f1Detected || f1Pressed) && !validMapDone && !sentOk
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p className="text-sm text-foreground/80 leading-relaxed">
         Confirm this VFD in the tool matches the physical VFD in the field.
-        Press <strong>F1</strong> on the VFD keypad — the tool validates the map automatically.
+        Press <strong className="text-foreground">F1</strong> on the VFD keypad — the tool detects the keypad press and asks you to confirm.
       </p>
 
       {/* Live F1 keypad press indicator */}
       <div className={cn(
         "rounded-lg border p-4 transition-colors",
-        f1Pressed ? "border-green-400 bg-green-50/60 dark:border-green-700 dark:bg-green-950/30" : "bg-card"
+        f1Detected || f1Pressed
+          ? "border-green-400 bg-green-50/60 dark:border-green-700 dark:bg-green-950/30"
+          : "border-border bg-card",
       )}>
         <div className="flex items-center gap-3">
           <div className={cn(
             "h-11 w-11 rounded-md border flex items-center justify-center font-mono font-bold text-base transition-all",
-            f1Pressed ? "bg-green-500 border-green-600 text-white" : "bg-muted border-border text-muted-foreground"
+            f1Pressed
+              ? "bg-green-500 border-green-600 text-white"
+              : f1Detected
+                ? "bg-green-100 border-green-300 text-green-700 dark:bg-green-900/50 dark:border-green-700 dark:text-green-300"
+                : "bg-muted border-border text-muted-foreground",
           )}>F1</div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold">
-              {f1Pressed ? (sentOk ? "F1 detected — Map Validated" : "F1 detected — validating map…") : "Waiting for F1 press…"}
+            <p className="text-sm font-semibold text-foreground">
+              {f1Detected || f1Pressed
+                ? (sentOk ? "F1 detected — identity confirmed" : "F1 press detected")
+                : "Waiting for F1 press…"}
             </p>
             <p className="text-xs text-muted-foreground">
-              {sending ? "Sending map validation to PLC…" : sentOk ? "Map validated — waiting for PLC confirmation…" : "Reading keypad input from the VFD"}
+              {sending
+                ? "Sending identity validation to PLC…"
+                : sentOk
+                  ? "Validated — waiting for PLC confirmation…"
+                  : f1Detected || f1Pressed
+                    ? "We detected a keypad press from the VFD"
+                    : "Reading keypad input from the VFD"}
             </p>
           </div>
         </div>
+
+        {/* Confirmation prompt — appears after F1 rising edge */}
+        {showConfirmation && (
+          <div className="mt-4 pt-3 border-t border-green-200 dark:border-green-800 space-y-3">
+            <p className="text-sm font-semibold text-foreground">
+              Did you just press F1 on{' '}
+              <span className="font-mono text-primary">{deviceName}</span>?
+            </p>
+            <Button
+              onClick={confirmIdentity}
+              disabled={sending || !plcConnected}
+              className={cn(
+                "h-10 px-5 gap-2 font-semibold border-0",
+                "bg-green-600 hover:bg-green-700 text-white",
+                "dark:bg-green-600 dark:hover:bg-green-700 dark:text-white",
+                sending && "animate-pulse",
+              )}
+            >
+              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Yes, I pressed it
+            </Button>
+          </div>
+        )}
       </div>
 
       {lastError && (
@@ -420,7 +465,7 @@ function Step1Content({ sts, loading, deviceName, plcConnected }: {
 
       {/* PLC confirmation — reads CTRL.STS.Valid_Map */}
       <StatusPill
-        label="Map Validated"
+        label="Identity verified"
         value={sts.Valid_Map}
         loading={loading}
         trueText="Yes"
@@ -429,7 +474,7 @@ function Step1Content({ sts, loading, deviceName, plcConnected }: {
       />
 
       {validMapDone && (
-        <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm font-medium">
+        <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
           <CheckCircle2 className="h-4 w-4" />
           Identity confirmed. Continue to step 2.
         </div>
@@ -501,7 +546,7 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p className="text-sm text-foreground/80 leading-relaxed">
         Confirm the motor and drive horsepower match the mechanical spec.
         Read the motor faceplate and the VFD label, enter the values, then click Confirm.
       </p>
@@ -567,7 +612,7 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
       )}
 
       {sts.Valid_HP === true && sent && (
-        <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm font-medium">
+        <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
           <CheckCircle2 className="h-4 w-4" />
           HP confirmed. Values saved. Continue to step 3.
         </div>
@@ -636,7 +681,7 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p className="text-sm text-foreground/80 leading-relaxed">
         Jog the motor for 1 second to check that it runs and to see which direction it spins. The PLC limits the jog to a single 1-second pulse no matter how many times you click.
       </p>
 
@@ -681,7 +726,7 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
       </div>
 
       <div className="rounded-lg border bg-card p-4 space-y-2">
-        <p className="text-sm font-medium">Did the motor spin in the correct direction?</p>
+        <p className="text-sm font-medium text-foreground">Did the motor spin in the correct direction?</p>
         <div className="flex items-center gap-3">
           <ActionButton
             label={dirSent || sts.Valid_Direction === true ? "Direction Confirmed" : "Yes — Confirm Direction"}
@@ -716,7 +761,7 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
       />
 
       {sts.Valid_Direction === true && (
-        <div className="flex items-center gap-2 text-green-600 dark:text-green-400 text-sm font-medium">
+        <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
           <CheckCircle2 className="h-4 w-4" />
           Direction confirmed. Continue to step 4.
         </div>
@@ -770,7 +815,7 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p className="text-sm text-foreground/80 leading-relaxed">
         Hand the conveyor over to the mechanical team. They run the belt using the VFD keypad while adjusting tracking.
       </p>
 
@@ -960,7 +1005,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p className="text-sm text-foreground/80 leading-relaxed">
         Set the motor to 30 RVS, then have mechanics measure the belt speed in FPM with a tachometer. Type the FPM below and click Log Speed.
       </p>
 
@@ -1168,9 +1213,20 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setStsLoading(false)
     })
 
+    // Heartbeat: re-call wizard-open every 60s to prevent the 120s idle timeout
+    // from killing the reader while mechanics work on belt tracking, etc.
+    const heartbeat = setInterval(() => {
+      fetch('/api/vfd-commissioning/wizard-open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceName: device.deviceName }),
+      }).catch(() => { /* ignore */ })
+    }, 60_000)
+
     // Cleanup: close WebSocket + tell server to dispose reader
     return () => {
       cancelled = true
+      clearInterval(heartbeat)
       if (ws) { try { ws.close() } catch { /* ignore */ } }
       fetch('/api/vfd-commissioning/wizard-close', {
         method: 'POST',
@@ -1267,20 +1323,25 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             {STEPS.map(step => {
               const status = getStepStatus(step.num)
               const clickable = canGoTo(step.num)
+              const isLocked = status === 'locked'
               return (
-                <button
+                <div
                   key={step.num}
-                  onClick={() => clickable && setActiveStep(step.num)}
-                  disabled={!clickable}
-                  className="w-full text-left"
+                  title={isLocked ? "Complete the previous step first to unlock this check" : undefined}
                 >
-                  <StepIndicator
-                    stepNum={step.num}
-                    label={step.label}
-                    status={status}
-                    active={activeStep === step.num}
-                  />
-                </button>
+                  <button
+                    onClick={() => clickable && setActiveStep(step.num)}
+                    disabled={!clickable}
+                    className="w-full text-left"
+                  >
+                    <StepIndicator
+                      stepNum={step.num}
+                      label={step.label}
+                      status={status}
+                      active={activeStep === step.num}
+                    />
+                  </button>
+                </div>
               )
             })}
           </nav>
@@ -1321,7 +1382,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
           {/* Step content */}
           <div className="flex-1 overflow-y-auto px-6 py-5">
             {activeStep === 0 && <Step0Content sts={sts} loading={stsLoading} />}
-            {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} />}
+            {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onComplete={() => setCheck4Complete(prev => !prev)} isComplete={check4Complete} />}
@@ -1352,14 +1413,26 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             </div>
 
             {activeStep < 5 ? (
-              <Button
-                size="sm"
-                disabled={!canGoTo(activeStep + 1)}
-                onClick={() => setActiveStep(prev => Math.min(5, prev + 1))}
-                className="h-9 gap-1"
+              <div
+                className="relative group"
+                title={!canGoTo(activeStep + 1) ? "This check is not available until the current step is finished" : undefined}
               >
-                Next <ChevronRight className="h-3.5 w-3.5" />
-              </Button>
+                <Button
+                  size="sm"
+                  disabled={!canGoTo(activeStep + 1)}
+                  onClick={() => setActiveStep(prev => Math.min(5, prev + 1))}
+                  className="h-9 gap-1"
+                >
+                  Next <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+                {!canGoTo(activeStep + 1) && (
+                  <div className="absolute bottom-full right-0 mb-2 hidden group-hover:block pointer-events-none z-20">
+                    <div className="bg-popover text-popover-foreground text-xs font-medium rounded-md px-3 py-2 shadow-lg border whitespace-nowrap">
+                      Complete the current step to continue
+                    </div>
+                  </div>
+                )}
+              </div>
             ) : (
               <Button size="sm" onClick={onClose} className="h-9">
                 Done

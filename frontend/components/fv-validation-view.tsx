@@ -1,25 +1,25 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { L2SheetGrid } from './l2-sheet-grid'
-import { L2OverviewMatrix } from './l2-overview-matrix'
+import { FVSheetGrid } from './fv-sheet-grid'
+import { FVOverviewMatrix } from './fv-overview-matrix'
 import { Badge } from '@/components/ui/badge'
 import { authFetch, getSignalRHubUrl } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter, Zap } from 'lucide-react'
-import { VfdCommissioningView } from './vfd-commissioning-view'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter, Zap, Search } from 'lucide-react'
+import { VfdWizardModal } from './vfd-wizard-modal'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
-import { useSignalR, L2CellUpdate } from '@/lib/signalr-client'
-import { doesL2ColumnCountForProgress, normalizeL2InputType } from '@/lib/l2-utils'
+import { useSignalR, FVCellUpdate } from '@/lib/signalr-client'
+import { doesFVColumnCountForProgress, normalizeFVInputType } from '@/lib/fv-utils'
 
-interface L2Sheet {
+interface FVSheet {
   id: number
   Name: string
   DisplayName: string
 }
 
-interface L2Column {
+interface FVColumn {
   id: number
   SheetId: number
   Name: string
@@ -30,7 +30,7 @@ interface L2Column {
   Description?: string | null
 }
 
-interface L2Device {
+interface FVDevice {
   id: number
   SheetId: number
   DeviceName: string
@@ -40,22 +40,22 @@ interface L2Device {
   TotalChecks: number
 }
 
-interface L2CellValue {
+interface FVCellValue {
   DeviceId: number
   ColumnId: number
   Value: string | null
   Version: number
 }
 
-interface L2Data {
-  sheets: L2Sheet[]
-  columns: L2Column[]
-  devices: L2Device[]
-  cellValues: L2CellValue[]
+interface FVData {
+  sheets: FVSheet[]
+  columns: FVColumn[]
+  devices: FVDevice[]
+  cellValues: FVCellValue[]
   hasData: boolean
 }
 
-interface L2ValidationViewProps {
+interface FVValidationViewProps {
   subsystemId?: number
   plcConnected?: boolean
 }
@@ -78,24 +78,28 @@ const MIN_SIDEBAR_W = 240
 const MAX_SIDEBAR_W = 600
 const DEFAULT_SIDEBAR_W = 320
 
-export function L2ValidationView({ subsystemId, plcConnected = false }: L2ValidationViewProps) {
+export function FVValidationView({ subsystemId, plcConnected = false }: FVValidationViewProps) {
   const { currentUser } = useUser()
-  const [data, setData] = useState<L2Data | null>(null)
+  const [data, setData] = useState<FVData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeSheet, setActiveSheet] = useState(0)
   const [showGuide, setShowGuide] = useState(false)
-  const [viewMode, setViewMode] = useState<'sheets' | 'overview' | 'vfd'>('sheets')
+  const [viewMode, setViewMode] = useState<'sheets' | 'overview'>('sheets')
   const [cellValues, setCellValues] = useState<Map<string, { Value: string | null; Version: number }>>(new Map())
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_W)
   const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
   const [isNarrow, setIsNarrow] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // VFD wizard state — opened from either the VFD tab or the sheet grid
+  const [wizardDevice, setWizardDevice] = useState<{ id: number; deviceName: string; mcm: string; subsystem: string; sheetName?: string } | null>(null)
+
   type QuickFilter = "all" | "complete" | "incomplete" | "has_failures" | "all_passed"
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all")
   const [columnFilters, setColumnFilters] = useState<Record<string, any>>({})
   const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>({ device: null, mcm: null, subsystem: null })
+  const [searchQuery, setSearchQuery] = useState("")
 
   // Detect narrow viewport (tablet)
   useEffect(() => {
@@ -137,8 +141,8 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
       setLoading(true)
       setError(null)
       const res = await authFetch('/api/l2')
-      if (!res.ok) throw new Error(`Failed to fetch L2 data: ${res.status}`)
-      const json: L2Data = await res.json()
+      if (!res.ok) throw new Error(`Failed to fetch functional validation data: ${res.status}`)
+      const json: FVData = await res.json()
       setData(json)
 
       const map = new Map<string, { Value: string | null; Version: number }>()
@@ -147,7 +151,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
       }
       setCellValues(map)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load L2 data')
+      setError(err instanceof Error ? err.message : 'Failed to load functional validation data')
     } finally {
       setLoading(false)
     }
@@ -155,8 +159,8 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  // Re-fetch L2 data when switching back to sheets view (e.g. after using the
-  // VFD wizard which writes L2 cells directly via write-l2-cells endpoint).
+  // Re-fetch FV data when switching back to sheets view (e.g. after using the
+  // VFD wizard which writes cells directly via write-l2-cells endpoint).
   const prevViewModeRef = useRef(viewMode)
   useEffect(() => {
     const prev = prevViewModeRef.current
@@ -167,13 +171,13 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
     }
   }, [viewMode, fetchData])
 
-  // Subscribe to live L2 cell updates pushed from the cloud via WebSocket.
+  // Subscribe to live FV cell updates pushed from the cloud via WebSocket.
   // The local SSE client writes incoming changes to SQLite and broadcasts
-  // an L2CellUpdated message; we merge it into local state so testers see
+  // a cell-updated message; we merge it into local state so testers see
   // remote edits without refreshing.
   const signalR = useSignalR(getSignalRHubUrl())
   useEffect(() => {
-    const handleL2Update = (update: L2CellUpdate) => {
+    const handleFVUpdate = (update: FVCellUpdate) => {
       const key = `${update.localDeviceId}-${update.localColumnId}`
       setCellValues(prev => {
         const existing = prev.get(key)
@@ -187,11 +191,11 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
         return next
       })
     }
-    signalR.onL2CellUpdate(handleL2Update)
+    signalR.onFVCellUpdate(handleFVUpdate)
     return () => {
-      signalR.offL2CellUpdate(handleL2Update)
+      signalR.offFVCellUpdate(handleFVUpdate)
     }
-  }, [signalR.onL2CellUpdate, signalR.offL2CellUpdate])
+  }, [signalR.onFVCellUpdate, signalR.offFVCellUpdate])
 
   useEffect(() => {
     setQuickFilter("all")
@@ -214,7 +218,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
         body: JSON.stringify({ deviceId, columnId, value, updatedBy: currentUser?.fullName || localStorage.getItem('tester-name') || 'unknown' }),
       })
     } catch (err) {
-      console.error('Failed to save L2 cell value:', err)
+      console.error('Failed to save functional validation cell value:', err)
     }
   }, [])
 
@@ -238,7 +242,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
           const cv = cellValues.get(`${device.id}-${col.id}`)
           if (!cv?.Value || cv.Value === '') {
             row.push('')
-          } else if (normalizeL2InputType(col.ColumnType, col.InputType) === 'pass_fail') {
+          } else if (normalizeFVInputType(col.ColumnType, col.InputType) === 'pass_fail') {
             row.push(cv.Value === 'pass' ? 'Pass' : cv.Value === 'fail' ? 'Fail' : cv.Value)
           } else {
             row.push(cv.Value)
@@ -252,9 +256,9 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
       ws['!cols'] = [
         { wch: 25 }, { wch: 12 }, { wch: 15 },
         ...sheetCols.map(c => ({
-          wch: normalizeL2InputType(c.ColumnType, c.InputType) === 'pass_fail'
+          wch: normalizeFVInputType(c.ColumnType, c.InputType) === 'pass_fail'
             ? 10
-            : normalizeL2InputType(c.ColumnType, c.InputType) === 'text'
+            : normalizeFVInputType(c.ColumnType, c.InputType) === 'text'
               ? 20
               : 15
         }))
@@ -263,14 +267,14 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
     }
 
     const date = new Date().toISOString().split('T')[0]
-    XLSX.writeFile(wb, `L2-Validation-${date}.xlsx`)
+    XLSX.writeFile(wb, `Functional-Validation-${date}.xlsx`)
   }, [data, cellValues])
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin mr-2" />
-        Loading L2 validation data...
+        Loading functional validation data...
       </div>
     )
   }
@@ -283,14 +287,14 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-3">
         <ClipboardCheck className="h-10 w-10 opacity-40" />
-        <p className="text-sm">No L2 validation data. Pull from cloud to load.</p>
+        <p className="text-sm">No functional validation data. Pull from cloud to load.</p>
       </div>
     )
   }
 
   const sheetStats = data.sheets.map(sheet => {
     const sheetDevices = data.devices.filter(d => d.SheetId === sheet.id)
-    const sheetCols = data.columns.filter(c => c.SheetId === sheet.id && doesL2ColumnCountForProgress(c))
+    const sheetCols = data.columns.filter(c => c.SheetId === sheet.id && doesFVColumnCountForProgress(c))
     let completed = 0
     for (const dev of sheetDevices) {
       for (const col of sheetCols) {
@@ -330,11 +334,23 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
     .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
   const activeStats = sheetStats[activeSheet]
 
+  // Is the currently selected sheet a VFD/APF sheet?
+  const isActiveSheetVfd = vfdSheetIds.has(activeSheetData.id)
+
   const filteredDevices = activeDevices.filter((device) => {
+    // Search query
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase()
+      const matches = device.DeviceName.toLowerCase().includes(q)
+        || (device.Mcm || "").toLowerCase().includes(q)
+        || (device.Subsystem || "").toLowerCase().includes(q)
+      if (!matches) return false
+    }
+
     // Fixed column filters
-    if (fixedFilters.device !== null && !fixedFilters.device.includes(device.DeviceName)) return false
-    if (fixedFilters.mcm !== null && !fixedFilters.mcm.includes(device.Mcm || "")) return false
-    if (fixedFilters.subsystem !== null && !fixedFilters.subsystem.includes(device.Subsystem || "")) return false
+    if (fixedFilters.device !== null && fixedFilters.device.length > 0 && !fixedFilters.device.includes(device.DeviceName)) return false
+    if (fixedFilters.mcm !== null && fixedFilters.mcm.length > 0 && !fixedFilters.mcm.includes(device.Mcm || "")) return false
+    if (fixedFilters.subsystem !== null && fixedFilters.subsystem.length > 0 && !fixedFilters.subsystem.includes(device.Subsystem || "")) return false
 
     // Per-column filters
     for (const [key, filter] of Object.entries(columnFilters)) {
@@ -343,7 +359,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
       if (!col) continue
       const cv = cellValues.get(`${device.id}-${colId}`)
       const value = cv?.Value ?? null
-      const inputType = normalizeL2InputType(col.ColumnType, col.InputType)
+      const inputType = normalizeFVInputType(col.ColumnType, col.InputType)
 
       if (inputType === "pass_fail" && typeof filter === "object") {
         if (value === "pass" && !filter.pass) return false
@@ -357,8 +373,8 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
 
     // Quick filter
     if (quickFilter !== "all") {
-      const progressCols = activeColumns.filter((c) => doesL2ColumnCountForProgress(c))
-      const pfCols = activeColumns.filter((c) => normalizeL2InputType(c.ColumnType, c.InputType) === "pass_fail")
+      const progressCols = activeColumns.filter((c) => doesFVColumnCountForProgress(c))
+      const pfCols = activeColumns.filter((c) => normalizeFVInputType(c.ColumnType, c.InputType) === "pass_fail")
 
       if (quickFilter === "complete") {
         const allFilled = progressCols.every((c) => {
@@ -384,7 +400,18 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
     return true
   })
 
-  const hasActiveFilters = quickFilter !== "all" || Object.keys(columnFilters).length > 0 || fixedFilters.device !== null || fixedFilters.mcm !== null || fixedFilters.subsystem !== null
+  const hasActiveFilters = quickFilter !== "all" || Object.keys(columnFilters).length > 0 || fixedFilters.device !== null || fixedFilters.mcm !== null || fixedFilters.subsystem !== null || searchQuery !== ""
+
+  /** Open the VFD wizard from the sheet grid */
+  const handleOpenWizardFromGrid = (device: { id: number; DeviceName: string; Mcm: string; Subsystem: string }) => {
+    setWizardDevice({
+      id: device.id,
+      deviceName: device.DeviceName,
+      mcm: device.Mcm || '',
+      subsystem: device.Subsystem || '',
+      sheetName: sheetNameById.get(activeSheetData.id) || '',
+    })
+  }
 
   const guideContent = (
     <>
@@ -420,9 +447,9 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
               <div className="flex items-center gap-2">
                 <Badge
                   variant="outline"
-                  className={cn("shrink-0 text-[10px] px-1.5 py-0.5", COL_TYPE_STYLES[normalizeL2InputType(col.ColumnType, col.InputType)])}
+                  className={cn("shrink-0 text-[10px] px-1.5 py-0.5", COL_TYPE_STYLES[normalizeFVInputType(col.ColumnType, col.InputType)])}
                 >
-                  {normalizeL2InputType(col.ColumnType, col.InputType)}
+                  {normalizeFVInputType(col.ColumnType, col.InputType)}
                 </Badge>
                 <span className="text-sm font-medium text-foreground">{col.Name}</span>
               </div>
@@ -432,7 +459,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground/60 mt-1 pl-0.5 italic">
-                  {COL_TYPE_HINTS[normalizeL2InputType(col.ColumnType, col.InputType)] || "Enter the required value"}
+                  {COL_TYPE_HINTS[normalizeFVInputType(col.ColumnType, col.InputType)] || "Enter the required value"}
                 </p>
               )}
             </div>
@@ -471,15 +498,6 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
           >
             <LayoutGrid className="h-3.5 w-3.5 inline mr-1.5" />Overview
           </button>
-          {(vfdDevices.length > 0 || vfdSheetIds.size > 0) && (
-            <button
-              className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'vfd' ? "bg-amber-600 text-white" : "text-muted-foreground hover:text-foreground")}
-              onClick={() => setViewMode('vfd')}
-            >
-              <Zap className="h-3.5 w-3.5 inline mr-1.5" />VFD
-              <Badge variant="outline" className="ml-1.5 text-[10px] px-1 py-0">{vfdDevices.length}</Badge>
-            </button>
-          )}
         </div>
         <Button
           variant="outline"
@@ -496,25 +514,17 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
           size="sm"
           className="h-9 text-sm gap-1.5"
           onClick={() => setShowGuide(!showGuide)}
-          disabled={viewMode !== 'sheets'}
-          title={viewMode !== 'sheets' ? "Guide is available on the Sheets view" : undefined}
+          disabled={viewMode === 'overview'}
+          title={viewMode === 'overview' ? "Guide is available on the Sheets view" : undefined}
         >
           <Info className="h-3.5 w-3.5" />
           Guide
         </Button>
       </div>
 
-      {viewMode === 'vfd' ? (
-        <div className="flex-1 min-h-0 overflow-auto">
-          <VfdCommissioningView
-            devices={vfdDevices}
-            subsystemId={subsystemId || 0}
-            plcConnected={plcConnected}
-          />
-        </div>
-      ) : viewMode === 'overview' ? (
+      {viewMode === 'overview' ? (
         <div className="flex-1 min-h-0">
-          <L2OverviewMatrix />
+          <FVOverviewMatrix />
         </div>
       ) : (
       <>
@@ -523,6 +533,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
         {data.sheets.map((sheet, idx) => {
           const stats = sheetStats[idx]
           const isActive = idx === activeSheet
+          const isVfd = vfdSheetIds.has(sheet.id)
           return (
             <button
               key={sheet.id}
@@ -534,6 +545,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
                   : "bg-card text-card-foreground border-border hover:bg-accent"
               )}
             >
+              {isVfd && <Zap className="h-3 w-3" />}
               {sheet.Name}
               {stats.deviceCount > 0 && (
                 <Badge variant={isActive ? "secondary" : "outline"} className="text-[10px] tabular-nums px-1">
@@ -545,8 +557,23 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
         })}
       </div>
 
-      {/* Quick filters */}
+      {/* Search + quick filters */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b shrink-0">
+        <div className="relative mr-1">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Search devices..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-7 w-44 rounded-md border bg-background pl-7 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          {searchQuery && (
+            <button onClick={() => setSearchQuery("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
         {(["all", "complete", "incomplete", "has_failures", "all_passed"] as const).map((qf) => {
           const labels = { all: "All", complete: "Complete", incomplete: "Incomplete", has_failures: "Has Failures", all_passed: "All Passed" }
           return (
@@ -566,7 +593,7 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
         })}
         {hasActiveFilters && (
           <button
-            onClick={() => { setQuickFilter("all"); setColumnFilters({}); setFixedFilters({ device: null, mcm: null, subsystem: null }) }}
+            onClick={() => { setQuickFilter("all"); setColumnFilters({}); setFixedFilters({ device: null, mcm: null, subsystem: null }); setSearchQuery("") }}
             className="ml-1 text-[11px] text-muted-foreground underline hover:text-foreground"
           >
             Clear filters
@@ -583,31 +610,28 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
       <div className="flex-1 min-h-0 flex relative">
         {/* Grid */}
         <div className="flex-1 min-w-0 min-h-0">
-          {filteredDevices.length > 0 ? (
-            <L2SheetGrid
-              sheet={activeSheetData}
-              columns={activeColumns}
-              devices={filteredDevices}
-              allDevices={activeDevices}
-              cellValues={cellValues}
-              onCellChange={handleCellChange}
-              columnFilters={columnFilters}
-              fixedFilters={fixedFilters}
-              onColumnFilterChange={(colId, value) => {
-                setColumnFilters((prev) => {
-                  if (value === undefined || (Array.isArray(value) && value.length === 0) || (typeof value === "object" && !Array.isArray(value) && value.pass && value.fail && value.empty)) {
-                    const next = { ...prev }; delete next[colId]; return next
-                  }
-                  return { ...prev, [colId]: value }
-                })
-              }}
-              onFixedFilterChange={(field, value) => setFixedFilters((p) => ({ ...p, [field]: value }))}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-              {activeDevices.length === 0 ? "No devices in this sheet" : "No devices match the current filters"}
-            </div>
-          )}
+          <FVSheetGrid
+            sheet={activeSheetData}
+            columns={activeColumns}
+            devices={filteredDevices}
+            allDevices={activeDevices}
+            cellValues={cellValues}
+            onCellChange={handleCellChange}
+            columnFilters={columnFilters}
+            fixedFilters={fixedFilters}
+            onColumnFilterChange={(colId, value) => {
+              setColumnFilters((prev) => {
+                if (value === undefined || (Array.isArray(value) && value.length === 0) || (typeof value === "object" && !Array.isArray(value) && value.pass && value.fail && value.empty)) {
+                  const next = { ...prev }; delete next[colId]; return next
+                }
+                return { ...prev, [colId]: value }
+              })
+            }}
+            onFixedFilterChange={(field, value) => setFixedFilters((p) => ({ ...p, [field]: value }))}
+            isVfdSheet={isActiveSheetVfd}
+            onOpenWizard={isActiveSheetVfd ? handleOpenWizardFromGrid : undefined}
+            emptyMessage={activeDevices.length === 0 ? "No devices in this sheet" : "No devices match the current filters"}
+          />
         </div>
 
         {/* Guide — Desktop: resizable right sidebar */}
@@ -663,6 +687,21 @@ export function L2ValidationView({ subsystemId, plcConnected = false }: L2Valida
         )}
       </div>
       </>
+      )}
+
+      {/* VFD Wizard Modal — opened from sheet grid or VFD tab */}
+      {wizardDevice && (
+        <VfdWizardModal
+          device={wizardDevice}
+          subsystemId={subsystemId || 0}
+          plcConnected={plcConnected}
+          sheetName={wizardDevice.sheetName}
+          onClose={() => {
+            setWizardDevice(null)
+            // Wizard may have written cells — refresh the grid.
+            fetchData()
+          }}
+        />
       )}
     </div>
   )

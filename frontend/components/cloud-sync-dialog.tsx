@@ -126,7 +126,7 @@ export function CloudSyncDialog({
                 Subsystem <Badge variant="outline" className="ml-1">{subsystemId || 'Not set'}</Badge>
               </div>
               <div className="text-xs text-muted-foreground">
-                IO sync preserves ordered test events and history. L2 sync converges to the latest saved cell value.
+                IO sync preserves ordered test events and history. Functional validation sync converges to the latest saved cell value.
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -146,7 +146,7 @@ export function CloudSyncDialog({
               <div className="text-xs text-muted-foreground">Ordered test changes waiting for cloud ack</div>
             </div>
             <div className="rounded-lg border p-3">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground">L2 Queue</div>
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">Functional Validation Queue</div>
               <div className="mt-1 text-2xl font-bold">{pendingL2}</div>
               <div className="text-xs text-muted-foreground">Latest-value cell updates waiting for retry</div>
             </div>
@@ -199,7 +199,7 @@ export function CloudSyncDialog({
               <Loader2 className="h-12 w-12 animate-spin text-primary" />
               <div className="text-center space-y-1">
                 <p className="font-medium">Syncing IO queue to cloud...</p>
-                <p className="text-xs text-muted-foreground">L2 and change requests continue retrying in the background</p>
+                <p className="text-xs text-muted-foreground">Functional validation and change requests continue retrying in the background</p>
               </div>
             </div>
           )}

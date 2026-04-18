@@ -3,19 +3,19 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '@/lib/utils'
-import { Check, X, Filter } from 'lucide-react'
+import { Check, X, Filter, Zap } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Checkbox } from '@/components/ui/checkbox'
-import { normalizeL2InputType } from '@/lib/l2-utils'
+import { normalizeFVInputType } from '@/lib/fv-utils'
 
-interface L2Sheet {
+interface FVSheet {
   id: number
   Name: string
   DisplayName: string
 }
 
-interface L2Column {
+interface FVColumn {
   id: number
   Name: string
   ColumnType: string
@@ -27,7 +27,7 @@ interface L2Column {
   Description?: string | null
 }
 
-interface L2Device {
+interface FVDevice {
   id: number
   DeviceName: string
   Mcm: string
@@ -36,17 +36,23 @@ interface L2Device {
   TotalChecks: number
 }
 
-interface L2SheetGridProps {
-  sheet: L2Sheet
-  columns: L2Column[]
-  devices: L2Device[]
-  allDevices?: L2Device[]
+interface FVSheetGridProps {
+  sheet: FVSheet
+  columns: FVColumn[]
+  devices: FVDevice[]
+  allDevices?: FVDevice[]
   cellValues: Map<string, { Value: string | null; Version: number }>
   onCellChange: (deviceId: number, columnId: number, value: string | null) => void
   columnFilters?: Record<string, any>
   fixedFilters?: { device: string[] | null; mcm: string[] | null; subsystem: string[] | null }
   onColumnFilterChange?: (colId: number, value: any) => void
   onFixedFilterChange?: (field: "device" | "mcm" | "subsystem", value: string[] | null) => void
+  /** When true, each device row shows a VFD wizard launch icon */
+  isVfdSheet?: boolean
+  /** Called when user clicks the VFD wizard icon on a device row */
+  onOpenWizard?: (device: FVDevice) => void
+  /** Message to show when devices array is empty */
+  emptyMessage?: string
 }
 
 const ROW_HEIGHT = 44
@@ -192,8 +198,8 @@ function FixedFilterPopover({
         />
       </div>
       <div className="flex items-center justify-between px-2 py-1.5 border-b">
-        <button className="text-[10px] text-primary hover:underline" onClick={() => onSelect(null)}>Select All</button>
-        <button className="text-[10px] text-muted-foreground hover:underline" onClick={() => onSelect([])}>Clear</button>
+        <button className="text-[10px] text-primary hover:underline" onClick={() => onSelect(selected === null ? [] : null)}>{selected === null ? "Deselect All" : "Select All"}</button>
+        <button className="text-[10px] text-muted-foreground hover:underline" onClick={() => onSelect(null)}>Clear</button>
       </div>
       <div className="max-h-48 overflow-y-auto p-1">
         {filtered.map((val) => (
@@ -266,7 +272,7 @@ function TagFilterPopover({
 
 // ─── Main grid ──────────────────────────────────────────────────────────
 
-export function L2SheetGrid({
+export function FVSheetGrid({
   sheet,
   columns,
   devices,
@@ -277,13 +283,16 @@ export function L2SheetGrid({
   fixedFilters = { device: null, mcm: null, subsystem: null },
   onColumnFilterChange,
   onFixedFilterChange,
-}: L2SheetGridProps) {
+  isVfdSheet = false,
+  onOpenWizard,
+  emptyMessage,
+}: FVSheetGridProps) {
   const allDevs = allDevices || devices
   const scrollRef = useRef<HTMLDivElement>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStartX, setDragStartX] = useState(0)
   const [dragScrollLeft, setDragScrollLeft] = useState(0)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; col: L2Column } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; col: FVColumn } | null>(null)
   const [containerWidth, setContainerWidth] = useState(0)
 
   // Width overrides — keyed by "fixed-{name}" or "col-{id}"
@@ -362,7 +371,7 @@ export function L2SheetGrid({
 
   // Scroll column widths: user override > auto-scaled > base default
   const scrollColWidths = useMemo(() => {
-    const bases = columns.map(col => baseScrollWidth(normalizeL2InputType(col.ColumnType, col.InputType)))
+    const bases = columns.map(col => baseScrollWidth(normalizeFVInputType(col.ColumnType, col.InputType)))
     const baseTotalScroll = bases.reduce((sum, w) => sum + w, 0)
     const available = containerWidth - totalFixed
 
@@ -394,11 +403,11 @@ export function L2SheetGrid({
 
   // ─── Cell renderer ─────────────────────────────────────────────────
 
-  const renderCell = useCallback((device: L2Device, col: L2Column) => {
+  const renderCell = useCallback((device: FVDevice, col: FVColumn) => {
     const key = `${device.id}-${col.id}`
     const cv = cellValues.get(key)
     const value = cv?.Value ?? null
-    const inputType = normalizeL2InputType(col.ColumnType, col.InputType)
+    const inputType = normalizeFVInputType(col.ColumnType, col.InputType)
 
     switch (inputType) {
       case 'pass_fail':
@@ -414,20 +423,25 @@ export function L2SheetGrid({
     }
   }, [cellValues, onCellChange])
 
-  const handleHeaderContextMenu = useCallback((e: React.MouseEvent, col: L2Column) => {
+  const handleHeaderContextMenu = useCallback((e: React.MouseEvent, col: FVColumn) => {
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY, col })
   }, [])
 
   // ─── Drag-to-scroll (mouse only, with dead-zone to avoid hijacking clicks/selection) ───
+  // Allows drag from anywhere including inputs — if the user drags beyond
+  // the threshold the input is blurred and scroll mode activates. A plain
+  // click without dragging lets the input keep focus as normal.
   const dragPendingRef = useRef(false)
+  const dragStartTargetRef = useRef<HTMLElement | null>(null)
   const handleDragStart = (e: React.MouseEvent) => {
     if (!scrollRef.current) return
     const target = e.target as HTMLElement
-    // Skip interactive elements entirely
-    if (target.closest('button') || target.closest('input') || target.closest('select') || target.closest('textarea')) return
+    // Skip buttons (wizard icon, filter, etc.) — their onClick must fire cleanly
+    if (target.closest('button')) return
     // Start tracking but don't activate drag yet — wait for movement threshold
     dragPendingRef.current = true
+    dragStartTargetRef.current = target
     setIsDragging(false)
     setDragStartX(e.pageX - scrollRef.current.offsetLeft)
     setDragScrollLeft(scrollRef.current.scrollLeft)
@@ -440,6 +454,16 @@ export function L2SheetGrid({
     if (dragPendingRef.current && !isDragging) {
       if (distance > 8) {
         setIsDragging(true)
+        // Blur any focused input so it doesn't capture the drag
+        const active = document.activeElement as HTMLElement | null
+        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+          active.blur()
+        }
+        // Also blur the element that received mousedown (it may not be focused yet)
+        const startTarget = dragStartTargetRef.current
+        if (startTarget && (startTarget.tagName === 'INPUT' || startTarget.tagName === 'TEXTAREA')) {
+          startTarget.blur()
+        }
         e.preventDefault()
       }
       return
@@ -448,7 +472,7 @@ export function L2SheetGrid({
     e.preventDefault()
     scrollRef.current.scrollLeft = dragScrollLeft - (x - dragStartX) * 1.5
   }
-  const handleDragEnd = () => { setIsDragging(false); dragPendingRef.current = false }
+  const handleDragEnd = () => { setIsDragging(false); dragPendingRef.current = false; dragStartTargetRef.current = null }
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (!scrollRef.current) return
@@ -555,7 +579,7 @@ export function L2SheetGrid({
 
             {/* Scrollable header columns */}
             {columns.map((col, colIdx) => {
-              const inputType = normalizeL2InputType(col.ColumnType, col.InputType)
+              const inputType = normalizeFVInputType(col.ColumnType, col.InputType)
               const hasFilter = (() => {
                 const f = columnFilters[col.id]
                 if (!f) return false
@@ -626,6 +650,11 @@ export function L2SheetGrid({
           </div>
 
           {/* ── Virtualized rows ──────────────────────────────── */}
+          {devices.length === 0 && emptyMessage && (
+            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+              {emptyMessage}
+            </div>
+          )}
           <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
             {virtualizer.getVirtualItems().map(virtualRow => {
               const device = devices[virtualRow.index]
@@ -641,13 +670,25 @@ export function L2SheetGrid({
                 >
                   {/* Fixed columns — sticky left, opaque bg to hide scrolled content */}
                   <div className={cn("sticky left-0 z-10 flex shrink-0", rowIdx % 2 === 0 ? "bg-card" : "bg-muted")}>
-                    <div
-                      className="flex items-center px-3 text-xs font-medium border-r truncate"
-                      style={{ width: fixedW.deviceName }}
-                      title={device.DeviceName}
-                    >
-                      {device.DeviceName}
-                    </div>
+                    {isVfdSheet && onOpenWizard ? (
+                      <button
+                        onClick={() => onOpenWizard(device)}
+                        className="flex items-center gap-1.5 px-3 text-xs font-medium border-r truncate h-full cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-950/30 transition-colors text-left"
+                        style={{ width: fixedW.deviceName }}
+                        title={`Open VFD wizard for ${device.DeviceName}`}
+                      >
+                        <Zap className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                        <span className="truncate">{device.DeviceName}</span>
+                      </button>
+                    ) : (
+                      <div
+                        className="flex items-center px-3 text-xs font-medium border-r truncate"
+                        style={{ width: fixedW.deviceName }}
+                        title={device.DeviceName}
+                      >
+                        {device.DeviceName}
+                      </div>
+                    )}
                     <div
                       className="flex items-center px-2 text-xs text-muted-foreground border-r"
                       style={{ width: fixedW.mcm }}
@@ -687,8 +728,8 @@ export function L2SheetGrid({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center gap-2 mb-1.5">
-            <Badge variant="outline" className={cn("text-[10px] px-1.5", COL_TYPE_STYLES[normalizeL2InputType(contextMenu.col.ColumnType, contextMenu.col.InputType)])}>
-              {normalizeL2InputType(contextMenu.col.ColumnType, contextMenu.col.InputType)}
+            <Badge variant="outline" className={cn("text-[10px] px-1.5", COL_TYPE_STYLES[normalizeFVInputType(contextMenu.col.ColumnType, contextMenu.col.InputType)])}>
+              {normalizeFVInputType(contextMenu.col.ColumnType, contextMenu.col.InputType)}
             </Badge>
             <span className="text-sm font-semibold truncate">{contextMenu.col.Name}</span>
           </div>
@@ -698,7 +739,7 @@ export function L2SheetGrid({
             </p>
           ) : (
             <p className="text-xs text-muted-foreground italic">
-              {COL_TYPE_HINTS[normalizeL2InputType(contextMenu.col.ColumnType, contextMenu.col.InputType)] || "Enter the required value"}
+              {COL_TYPE_HINTS[normalizeFVInputType(contextMenu.col.ColumnType, contextMenu.col.InputType)] || "Enter the required value"}
             </p>
           )}
         </div>
