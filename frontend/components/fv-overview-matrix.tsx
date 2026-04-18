@@ -48,7 +48,7 @@ function formatDate(iso: string | null): string {
   return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
-export function L2OverviewMatrix() {
+export function FVOverviewMatrix() {
   const [data, setData] = useState<OverviewData | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -86,7 +86,7 @@ export function L2OverviewMatrix() {
   if (!data?.hasData) {
     return (
       <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">
-        No L2 data. Pull from cloud first.
+        No functional validation data. Pull from cloud first.
       </div>
     )
   }
@@ -98,7 +98,7 @@ export function L2OverviewMatrix() {
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
         <div>
-          <h3 className="text-sm font-semibold">L2 Functional Validation — Overview</h3>
+          <h3 className="text-sm font-semibold">Functional Validation — Overview</h3>
           <p className="text-[11px] text-muted-foreground">
             {grandTotal.completed}/{grandTotal.total} progress cells ({grandTotal.percent}%)
           </p>

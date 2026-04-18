@@ -107,7 +107,7 @@ export function PlcToolbar({
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
   const totalPendingSyncs = pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount
   const cloudTitle = totalPendingSyncs > 0
-    ? `Local queue pending: ${pendingIoSyncCount} IO, ${pendingL2SyncCount} L2, ${pendingChangeRequestCount} change request${pendingChangeRequestCount === 1 ? '' : 's'}. Pull is blocked until sync completes.`
+    ? `Local queue pending: ${pendingIoSyncCount} IO, ${pendingL2SyncCount} FV, ${pendingChangeRequestCount} change request${pendingChangeRequestCount === 1 ? '' : 's'}. Pull is blocked until sync completes.`
     : isCloudConnected
       ? 'Cloud Connected'
       : 'Offline Mode'
