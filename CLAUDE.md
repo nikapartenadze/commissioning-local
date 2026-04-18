@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file is the workspace-level guide for AI tools operating in `commissioning-local/`.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Workspace Overview
 
@@ -60,9 +60,29 @@ The root docs are for workspace orientation, not detailed app internals.
 - Cross-app changes should preserve explicit contracts rather than relying on matching names by convention.
 - Deployment and release work should respect app ownership; colocated repos do not imply shared history.
 
+## Ports
+
+| Port | Purpose |
+|------|---------|
+| 3000 | HTTP server + WebSocket (`/ws` path upgrade) |
+| 3102 | Internal broadcast API (localhost only, PLC tag events) |
+| 5173 | Vite dev server (development only) |
+
+## Distribution
+
+The field tool ships as either a portable ZIP (~48MB) or a Windows NSIS installer (~55MB).
+
+- Portable ZIP: `deploy/BUILD-PORTABLE.bat` — bundles Node.js 20, compiled server, Vite client, and `plctag.dll`
+- NSIS Installer: `deploy/BUILD-INSTALLER.bat` — installs to `C:\Program Files\IOCheckout\`, data in `C:\ProgramData\IOCheckout\`, auto-start Windows Service via NSSM
+
+See `DEPLOYMENT-STRATEGY.md` for trade-offs and roadmap.
+
 ## Useful Root Docs
 
-- `README.md` - workspace map
-- `SYNC-ARCHITECTURE.md` - local/cloud sync behavior and data safety
-- `DEPLOYMENT-STRATEGY.md` - deployment options and packaging notes
-- `docs/` - planning and migration notes
+- `README.md` — workspace map
+- `SYNC-ARCHITECTURE.md` — local/cloud sync behavior and data safety
+- `DEPLOYMENT-STRATEGY.md` — deployment options and packaging notes
+- `TEST-PLAN.md` — field validation checklist (setup, single-user, multi-user, VPN, resilience)
+- `docs/` — planning and migration notes
+- `docs/SYNC-CONTRACT.md` — formal sync contract between local and cloud
+- `docs/MEMORY-OPTIMIZATION-PLAN.md` — heap and memory profiling notes
