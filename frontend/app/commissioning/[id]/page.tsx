@@ -21,7 +21,7 @@ import { ChangeRequestsPanel } from "@/components/change-requests-panel"
 import NetworkTopologyView from "@/components/network-topology-view"
 import EStopCheckView from "@/components/estop-check-view"
 import SafetyIoView from "@/components/safety-io-view"
-import { L2ValidationView } from "@/components/l2-validation-view"
+import { FVValidationView } from "@/components/fv-validation-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -1874,7 +1874,7 @@ export default function CommissioningPage() {
                 { id: 'network', label: 'Network', hash: 'network' },
                 { id: 'estop', label: 'EStop', hash: 'estop' },
                 { id: 'safety', label: 'Safety', hash: 'safety' },
-                { id: 'l2', label: 'L2', hash: 'l2' },
+                { id: 'l2', label: 'FV', hash: 'l2' },
               ]
               const switchTab = (tab: typeof activeTab, hash: string) => {
                 if (tab === 'io') {
@@ -1950,7 +1950,7 @@ export default function CommissioningPage() {
                 { id: 'network', label: 'Network', hash: 'network' },
                 { id: 'estop', label: 'EStop', hash: 'estop' },
                 { id: 'safety', label: 'Safety', hash: 'safety' },
-                { id: 'l2', label: 'L2', hash: 'l2' },
+                { id: 'l2', label: 'FV', hash: 'l2' },
               ]
               const switchTab = (tab: typeof activeTab, hash: string) => {
                 if (tab === 'io') {
@@ -2034,7 +2034,7 @@ export default function CommissioningPage() {
         </div>
       ) : activeTab === 'l2' ? (
         <div className="flex-1 min-h-0 overflow-hidden">
-          <L2ValidationView subsystemId={parseInt(plcConfig.subsystemId) || undefined} plcConnected={plcStatus.isConnected} />
+          <FVValidationView subsystemId={parseInt(plcConfig.subsystemId) || undefined} plcConnected={plcStatus.isConnected} />
         </div>
       ) : (
       <>
