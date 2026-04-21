@@ -6,7 +6,7 @@ import { FVOverviewMatrix } from './fv-overview-matrix'
 import { Badge } from '@/components/ui/badge'
 import { authFetch, getSignalRHubUrl } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter, Zap, Search } from 'lucide-react'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter, Zap, Search, RefreshCw, AlertTriangle, CloudDownload } from 'lucide-react'
 import { VfdWizardModal } from './vfd-wizard-modal'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
@@ -91,6 +91,56 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
   const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
   const [isNarrow, setIsNarrow] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  // Manual L2/FV pull state
+  const [l2Pulling, setL2Pulling] = useState(false)
+  const [l2PullError, setL2PullError] = useState<string | null>(null)
+  const [l2PullResult, setL2PullResult] = useState<string | null>(null)
+
+  const handleManualL2Pull = useCallback(async () => {
+    setL2Pulling(true)
+    setL2PullError(null)
+    setL2PullResult(null)
+    try {
+      // Get current config (remoteUrl, apiPassword, subsystemId)
+      const configRes = await authFetch('/api/configuration')
+      if (!configRes.ok) throw new Error('Could not load config — set cloud URL and API password first')
+      const config = await configRes.json()
+      const remoteUrl = config.remoteUrl || config.cloudUrl
+      const apiPassword = config.apiPassword
+      const subId = subsystemId || config.subsystemId
+
+      if (!remoteUrl) throw new Error('No cloud URL configured — go to Settings and set Remote URL')
+      if (!subId) throw new Error('No subsystem ID configured')
+
+      console.log(`[FV Pull] Pulling L2 from ${remoteUrl}/api/sync/l2/${subId}`)
+
+      const res = await authFetch('/api/cloud/pull-l2', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId: subId }),
+      })
+      const result = await res.json()
+
+      if (!res.ok || !result.success) {
+        const msg = result.error || `Pull failed (${res.status})`
+        console.error('[FV Pull] Failed:', msg)
+        setL2PullError(msg)
+        return
+      }
+
+      console.log(`[FV Pull] OK: ${result.l2Pulled} devices, ${result.l2CellsPulled} cells`)
+      setL2PullResult(`Pulled ${result.l2Pulled} devices, ${result.l2CellsPulled} cell values`)
+      // Reload the FV data
+      await fetchData()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[FV Pull] Exception:', msg)
+      setL2PullError(msg)
+    } finally {
+      setL2Pulling(false)
+    }
+  }, [subsystemId, fetchData])
 
   // VFD wizard state — opened from either the VFD tab or the sheet grid
   const [wizardDevice, setWizardDevice] = useState<{ id: number; deviceName: string; mcm: string; subsystem: string; sheetName?: string } | null>(null)
@@ -280,14 +330,47 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
   }
 
   if (error) {
-    return <div className="flex items-center justify-center h-64 text-destructive">{error}</div>
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4">
+        <AlertTriangle className="h-10 w-10 text-destructive" />
+        <p className="text-sm text-destructive font-medium">{error}</p>
+        <Button variant="outline" size="sm" onClick={fetchData} className="gap-2">
+          <RefreshCw className="h-4 w-4" />
+          Retry
+        </Button>
+      </div>
+    )
   }
 
   if (!data || !data.hasData || data.sheets.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-3">
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-4">
         <ClipboardCheck className="h-10 w-10 opacity-40" />
-        <p className="text-sm">No functional validation data. Pull from cloud to load.</p>
+        <div className="text-center space-y-1">
+          <p className="text-sm font-medium">No functional validation data available</p>
+          <p className="text-xs">Pull from cloud to load FV sheets, or retry if you just pulled.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={fetchData} className="gap-2">
+            <RefreshCw className="h-4 w-4" />
+            Retry Loading
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleManualL2Pull} disabled={l2Pulling} className="gap-2">
+            <CloudDownload className="h-4 w-4" />
+            {l2Pulling ? 'Pulling FV...' : 'Pull FV from Cloud'}
+          </Button>
+        </div>
+        {l2PullError && (
+          <div className="max-w-md px-4 py-2 rounded-md bg-red-100 dark:bg-red-950 text-red-800 dark:text-red-200 text-xs">
+            <p className="font-medium">FV Pull Error:</p>
+            <p className="mt-0.5">{l2PullError}</p>
+          </div>
+        )}
+        {l2PullResult && (
+          <div className="max-w-md px-4 py-2 rounded-md bg-green-100 dark:bg-green-950 text-green-800 dark:text-green-200 text-xs">
+            <p>{l2PullResult}</p>
+          </div>
+        )}
       </div>
     )
   }

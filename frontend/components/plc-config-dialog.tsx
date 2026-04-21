@@ -244,13 +244,57 @@ export function PlcConfigDialog({
 
       if (response.ok) {
         const result = await response.json()
-        addPullLog(`${result.ioCount} IOs retrieved`)
+        addPullLog(`${result.ioCount || 0} IOs retrieved`)
+
+        // ── Browser console: full pull breakdown ──
+        console.log('[Pull] Full result:', JSON.stringify({
+          ioCount: result.ioCount,
+          networkPulled: result.networkPulled,
+          estopPulled: result.estopPulled,
+          punchlistsPulled: result.punchlistsPulled,
+          l2Pulled: result.l2Pulled,
+          l2CellsPulled: result.l2CellsPulled,
+          historiesPulled: result.historiesPulled,
+          l2Error: result.l2Error || null,
+        }))
+
+        // ── Browser console: FV-specific loud errors ──
+        if (result.l2Error) {
+          console.error('[Pull] FV/L2 ERROR:', result.l2Error)
+        }
+        if (result.l2Pulled === 0 && !result.l2Error) {
+          console.warn('[Pull] FV/L2 WARNING: 0 devices pulled — no L2 template on cloud or empty response')
+        }
+        if (result.l2Pulled > 0) {
+          console.log(`[Pull] FV/L2 OK: ${result.l2Pulled} devices, ${result.l2CellsPulled || 0} cell values`)
+        }
+
+        // Log all pull details so user can see what worked
+        if (result.networkPulled !== undefined) addPullLog(`Network: ${result.networkPulled} rings`)
+        if (result.estopPulled !== undefined) addPullLog(`E-Stop: ${result.estopPulled} zones`)
+        if (result.punchlistsPulled !== undefined) addPullLog(`Punchlists: ${result.punchlistsPulled}`)
+        if (result.historiesPulled !== undefined) addPullLog(`Test histories: ${result.historiesPulled}`)
+
+        // L2/FV pull status — make it very visible
+        if (result.l2Pulled !== undefined) {
+          addPullLog(`FV (L2): ${result.l2Pulled} devices, ${result.l2CellsPulled || 0} cell values`)
+          if (result.l2Pulled === 0) {
+            addPullLog('WARNING: No FV data pulled — check if L2 template is configured on cloud')
+          }
+        }
+        if (result.l2Error) {
+          addPullLog(`FV ERROR: ${result.l2Error}`)
+        }
+        if (result.warning) {
+          addPullLog(`WARNING: ${result.warning}`)
+        }
 
         if (result.ioCount === 0) {
           addPullLog('No IOs found - check subsystem ID')
           setPullStatus({ type: 'error', message: `No IOs found for subsystem ${localConfig.subsystemId}` })
         } else {
-          setPullStatus({ type: 'success', message: `Pulled ${result.ioCount} IOs` })
+          const l2Note = result.l2Pulled > 0 ? `, ${result.l2Pulled} FV devices` : ''
+          setPullStatus({ type: 'success', message: `Pulled ${result.ioCount} IOs${l2Note}` })
           onCloudPull(localConfig)
         }
       } else if (response.status === 409) {
@@ -290,8 +334,12 @@ export function PlcConfigDialog({
             if (retryRes.ok) {
               const retryResult = await retryRes.json()
               addPullLog(`Pulled ${retryResult.ioCount} IOs`)
+              if (retryResult.l2Pulled !== undefined) addPullLog(`FV (L2): ${retryResult.l2Pulled} devices, ${retryResult.l2CellsPulled || 0} cells`)
+              if (retryResult.l2Pulled === 0) addPullLog('WARNING: No FV data pulled')
+              if (retryResult.l2Error) addPullLog(`FV ERROR: ${retryResult.l2Error}`)
 
-              setPullStatus({ type: 'success', message: `Synced & pulled ${retryResult.ioCount} IOs` })
+              const l2Note = retryResult.l2Pulled > 0 ? `, ${retryResult.l2Pulled} FV devices` : ''
+              setPullStatus({ type: 'success', message: `Synced & pulled ${retryResult.ioCount} IOs${l2Note}` })
               onCloudPull(localConfig)
             } else {
               setPullStatus({ type: 'error', message: 'Pull failed after sync' })
