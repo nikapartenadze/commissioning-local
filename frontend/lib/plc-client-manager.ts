@@ -197,6 +197,21 @@ function setupClientEventListeners(client: PlcClient): void {
     }
   });
 
+  // On successful PLC connection, sync VFD validation flags (Valid_Map,
+  // Valid_HP, Valid_Direction) for all devices whose checks are completed.
+  // Runs after a short delay so the tag reader is fully up before we create
+  // temporary write handles.
+  client.on('initialized', () => {
+    setTimeout(async () => {
+      try {
+        const { syncValidationFlags } = await import('@/lib/vfd-validation-writer');
+        await syncValidationFlags();
+      } catch (err) {
+        console.warn('[PlcClientManager] VFD validation sync failed:', err);
+      }
+    }, 3000); // 3 s delay — let tag reader settle first
+  });
+
   // Broadcast errors
   client.on('error', (error) => {
     console.error(`[PlcClientManager] Error: ${error.message}`);
