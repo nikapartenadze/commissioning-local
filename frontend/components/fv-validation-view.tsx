@@ -97,51 +97,6 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
   const [l2PullError, setL2PullError] = useState<string | null>(null)
   const [l2PullResult, setL2PullResult] = useState<string | null>(null)
 
-  const handleManualL2Pull = useCallback(async () => {
-    setL2Pulling(true)
-    setL2PullError(null)
-    setL2PullResult(null)
-    try {
-      // Get current config (remoteUrl, apiPassword, subsystemId)
-      const configRes = await authFetch('/api/configuration')
-      if (!configRes.ok) throw new Error('Could not load config — set cloud URL and API password first')
-      const config = await configRes.json()
-      const remoteUrl = config.remoteUrl || config.cloudUrl
-      const apiPassword = config.apiPassword
-      const subId = subsystemId || config.subsystemId
-
-      if (!remoteUrl) throw new Error('No cloud URL configured — go to Settings and set Remote URL')
-      if (!subId) throw new Error('No subsystem ID configured')
-
-      console.log(`[FV Pull] Pulling L2 from ${remoteUrl}/api/sync/l2/${subId}`)
-
-      const res = await authFetch('/api/cloud/pull-l2', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId: subId }),
-      })
-      const result = await res.json()
-
-      if (!res.ok || !result.success) {
-        const msg = result.error || `Pull failed (${res.status})`
-        console.error('[FV Pull] Failed:', msg)
-        setL2PullError(msg)
-        return
-      }
-
-      console.log(`[FV Pull] OK: ${result.l2Pulled} devices, ${result.l2CellsPulled} cells`)
-      setL2PullResult(`Pulled ${result.l2Pulled} devices, ${result.l2CellsPulled} cell values`)
-      // Reload the FV data
-      await fetchData()
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      console.error('[FV Pull] Exception:', msg)
-      setL2PullError(msg)
-    } finally {
-      setL2Pulling(false)
-    }
-  }, [subsystemId, fetchData])
-
   // VFD wizard state — opened from either the VFD tab or the sheet grid
   const [wizardDevice, setWizardDevice] = useState<{ id: number; deviceName: string; mcm: string; subsystem: string; sheetName?: string } | null>(null)
 
@@ -206,6 +161,51 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
       setLoading(false)
     }
   }, [])
+
+  const handleManualL2Pull = useCallback(async () => {
+    setL2Pulling(true)
+    setL2PullError(null)
+    setL2PullResult(null)
+    try {
+      // Get current config (remoteUrl, apiPassword, subsystemId)
+      const configRes = await authFetch('/api/configuration')
+      if (!configRes.ok) throw new Error('Could not load config — set cloud URL and API password first')
+      const config = await configRes.json()
+      const remoteUrl = config.remoteUrl || config.cloudUrl
+      const apiPassword = config.apiPassword
+      const subId = subsystemId || config.subsystemId
+
+      if (!remoteUrl) throw new Error('No cloud URL configured — go to Settings and set Remote URL')
+      if (!subId) throw new Error('No subsystem ID configured')
+
+      console.log(`[FV Pull] Pulling L2 from ${remoteUrl}/api/sync/l2/${subId}`)
+
+      const res = await authFetch('/api/cloud/pull-l2', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId: subId }),
+      })
+      const result = await res.json()
+
+      if (!res.ok || !result.success) {
+        const msg = result.error || `Pull failed (${res.status})`
+        console.error('[FV Pull] Failed:', msg)
+        setL2PullError(msg)
+        return
+      }
+
+      console.log(`[FV Pull] OK: ${result.l2Pulled} devices, ${result.l2CellsPulled} cells`)
+      setL2PullResult(`Pulled ${result.l2Pulled} devices, ${result.l2CellsPulled} cell values`)
+      // Reload the FV data
+      await fetchData()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[FV Pull] Exception:', msg)
+      setL2PullError(msg)
+    } finally {
+      setL2Pulling(false)
+    }
+  }, [subsystemId, fetchData])
 
   useEffect(() => { fetchData() }, [fetchData])
 
