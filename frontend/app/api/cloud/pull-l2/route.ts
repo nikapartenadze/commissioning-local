@@ -118,6 +118,13 @@ export async function POST(req: Request, res: Response) {
 
     console.log(`[L2Pull] SUCCESS: ${result.sheetsCount} sheets, ${result.l2Pulled} devices, ${result.l2CellsPulled} cells`)
 
+    // Sync VFD validation flags to PLC for pulled L2 data
+    if (result.l2CellsPulled > 0) {
+      import('@/lib/vfd-validation-writer')
+        .then(m => m.triggerValidationSync())
+        .catch(() => { /* best-effort */ })
+    }
+
     return res.json({
       success: true,
       l2Pulled: result.l2Pulled,
