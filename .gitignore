@@ -60,3 +60,11 @@ io-checkout-*.zip
 IOCheckout-Setup-*.exe
 commissioning-cloud/
 io-checkout-*-portable/
+
+# Data files — never commit project CSVs, PDFs, or docs
+*.csv
+*.pdf
+*.PDF
+docs/
+images/
+installation-tracker
