@@ -178,6 +178,17 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
+    // If any commissioning check cell was written, trigger background sync of
+    // VFD validation flags to the PLC (Valid_Map, Valid_HP, Valid_Direction).
+    const checkCellWritten = written.some(w => w.ok && [
+      'Ready For Tracking', 'Motor HP (Field)', 'VFD HP (Field)',
+    ].includes(w.columnName))
+    if (checkCellWritten) {
+      import('@/lib/vfd-validation-writer')
+        .then(m => m.triggerValidationSync())
+        .catch(() => { /* best-effort */ })
+    }
+
     return res.json({
       success: written.every(w => w.ok),
       written,
