@@ -43,6 +43,12 @@ next-env.d.ts
 
 .jwt-secret
 
+# Runtime data (secrets, DB, config)
+config.json
+database.db
+database.db-wal
+database.db-shm
+
 # Build outputs
 dist/
 dist-server/
