@@ -624,6 +624,15 @@ export async function POST(req: Request, res: Response) {
             }
           }
           console.log(`[CloudPull] L2 PULL SUCCESS: ${l2Data.sheets.length} sheets, ${l2Pulled} devices, ${l2CellsPulled} cell values`)
+
+          // Sync VFD validation flags to PLC for any devices that already have
+          // completed checks in the pulled L2 data (e.g. fresh portable pulling
+          // progress from cloud).
+          if (l2CellsPulled > 0) {
+            import('@/lib/vfd-validation-writer')
+              .then(m => m.triggerValidationSync())
+              .catch(() => { /* best-effort */ })
+          }
         } else if (!l2Data.success) {
           l2Error = `Cloud returned success=false: ${l2Data.error || JSON.stringify(l2Data).slice(0, 200)}`
           console.warn(`[CloudPull] ${l2Error}`)
