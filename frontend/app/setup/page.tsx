@@ -59,6 +59,11 @@ export default function SetupPage() {
         throw new Error(pullData.message || "Failed to pull IOs from cloud")
       }
 
+      // Log FV pull result to console so it's visible in portable console window
+      console.log(`[Pull] IOs: ${pullData.ioCount}, Network: ${pullData.networkPulled || 0} rings, FV: ${pullData.l2Pulled || 0} devices / ${pullData.l2CellsPulled || 0} cells`)
+      if (pullData.l2Error) console.warn(`[Pull] FV ERROR: ${pullData.l2Error}`)
+      if (pullData.l2Pulled === 0) console.warn('[Pull] WARNING: No FV/L2 data was pulled')
+
       setSuccess(true)
 
       // Redirect to commissioning page after 1.5 seconds

@@ -239,11 +239,10 @@ export async function POST(req: Request, res: Response) {
       db.exec('DELETE FROM NetworkRings')
       db.exec('DELETE FROM Punchlists')
       db.exec('DELETE FROM PunchlistItems')
-      db.exec('DELETE FROM L2CellValues')
-      db.exec('DELETE FROM L2Devices')
-      db.exec('DELETE FROM L2Columns')
-      db.exec('DELETE FROM L2Sheets')
-      console.log('[CloudPull] Cleared all related data (safety, network, punchlists, L2)')
+      // NOTE: L2 data is NOT deleted here — it's only cleared when fresh L2 data
+      // is successfully fetched from cloud (see L2 pull section below).
+      // This prevents losing FV data if the L2 pull fails.
+      console.log('[CloudPull] Cleared all related data (safety, network, punchlists)')
 
       const upsertStmt = getPullStmts().upsertIo
       let upsertedCount = 0
@@ -552,16 +551,29 @@ export async function POST(req: Request, res: Response) {
       console.log('[CloudPull] Punchlist pull skipped or failed (non-blocking)')
     }
 
-    // Pull L2 data
+    // Pull L2 (Functional Validation) data
     let l2Pulled = 0
+    let l2CellsPulled = 0
+    let l2Error: string | null = null
     try {
-      const l2Res = await fetch(`${remoteUrl}/api/sync/l2/${subsystemId}`, {
+      const l2Url = `${remoteUrl}/api/sync/l2/${subsystemId}`
+      console.log(`[CloudPull] Fetching L2/FV data from: ${l2Url}`)
+      const l2Res = await fetch(l2Url, {
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
         signal: AbortSignal.timeout(15000),
       })
-      if (l2Res.ok) {
+      console.log(`[CloudPull] L2 response status: ${l2Res.status}`)
+
+      if (!l2Res.ok) {
+        const errorText = await l2Res.text().catch(() => '(could not read body)')
+        l2Error = `HTTP ${l2Res.status}: ${errorText.slice(0, 200)}`
+        console.error(`[CloudPull] L2 pull failed: ${l2Error}`)
+      } else {
         const l2Data = await l2Res.json()
+        console.log(`[CloudPull] L2 response: success=${l2Data.success}, sheets=${l2Data.sheets?.length || 0}, devices=${l2Data.devices?.length || 0}, cellValues=${l2Data.cellValues?.length || 0}`)
+
         if (l2Data.success && l2Data.sheets?.length > 0) {
+          // Only delete existing L2 data when we have fresh data to replace it
           db.exec('DELETE FROM L2CellValues')
           db.exec('DELETE FROM L2Devices')
           db.exec('DELETE FROM L2Columns')
@@ -595,7 +607,10 @@ export async function POST(req: Request, res: Response) {
           }
           for (const dev of (l2Data.devices || [])) {
             const localSheetId = sheetIdMap.get(dev.sheetId)
-            if (!localSheetId) continue
+            if (!localSheetId) {
+              console.warn(`[CloudPull] L2 device ${dev.id} (${dev.deviceName}) has sheetId=${dev.sheetId} not in sheets — skipping`)
+              continue
+            }
             const dr = getPullStmts().insertL2Dev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
             deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
             l2Pulled++
@@ -603,13 +618,23 @@ export async function POST(req: Request, res: Response) {
           for (const cell of (l2Data.cellValues || [])) {
             const ld = deviceIdMap.get(cell.deviceId)
             const lc = columnIdMap.get(cell.columnId)
-            if (ld && lc) getPullStmts().insertL2Cell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
+            if (ld && lc) {
+              getPullStmts().insertL2Cell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
+              l2CellsPulled++
+            }
           }
-          console.log(`[CloudPull] Pulled L2 data: ${l2Data.sheets.length} sheets, ${l2Pulled} devices`)
+          console.log(`[CloudPull] L2 PULL SUCCESS: ${l2Data.sheets.length} sheets, ${l2Pulled} devices, ${l2CellsPulled} cell values`)
+        } else if (!l2Data.success) {
+          l2Error = `Cloud returned success=false: ${l2Data.error || JSON.stringify(l2Data).slice(0, 200)}`
+          console.warn(`[CloudPull] ${l2Error}`)
+        } else {
+          l2Error = 'No L2 template/sheets on cloud (not configured for this project?)'
+          console.log(`[CloudPull] ${l2Error}`)
         }
       }
-    } catch {
-      console.log('[CloudPull] L2 pull skipped or failed (non-blocking)')
+    } catch (e) {
+      l2Error = e instanceof Error ? e.message : String(e)
+      console.error('[CloudPull] L2/FV pull EXCEPTION:', l2Error)
     }
 
     return res.json({
@@ -621,7 +646,9 @@ export async function POST(req: Request, res: Response) {
       estopPulled,
       punchlistsPulled,
       l2Pulled,
+      l2CellsPulled,
       historiesPulled,
+      ...(l2Error ? { l2Error } : {}),
       ...(pullWarning ? { warning: pullWarning } : {}),
       debug: {
         cloudIosLength: cloudIos.length,
