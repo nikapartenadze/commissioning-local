@@ -78,14 +78,48 @@ const MIN_SIDEBAR_W = 240
 const MAX_SIDEBAR_W = 600
 const DEFAULT_SIDEBAR_W = 320
 
+// ── Persistent FV filter state ──────────────────────────────────────
+// Persists the user's sheet selection and filters to localStorage so they
+// survive tab switches, navigation, and page reloads.
+
+const FV_STORAGE_KEY = 'fv-view-state'
+
+interface FVPersistedState {
+  activeSheet: number
+  quickFilter: string
+  columnFilters: Record<string, any>
+  fixedFilters: { device: string[] | null; mcm: string[] | null; subsystem: string[] | null }
+  searchQuery: string
+  viewMode: 'sheets' | 'overview'
+}
+
+function loadFVState(subsystemId?: number): Partial<FVPersistedState> {
+  try {
+    const key = subsystemId ? `${FV_STORAGE_KEY}-${subsystemId}` : FV_STORAGE_KEY
+    const raw = localStorage.getItem(key)
+    if (!raw) return {}
+    return JSON.parse(raw) as Partial<FVPersistedState>
+  } catch { return {} }
+}
+
+function saveFVState(state: FVPersistedState, subsystemId?: number): void {
+  try {
+    const key = subsystemId ? `${FV_STORAGE_KEY}-${subsystemId}` : FV_STORAGE_KEY
+    localStorage.setItem(key, JSON.stringify(state))
+  } catch { /* quota exceeded or private mode — ignore */ }
+}
+
 export function FVValidationView({ subsystemId, plcConnected = false }: FVValidationViewProps) {
   const { currentUser } = useUser()
   const [data, setData] = useState<FVData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeSheet, setActiveSheet] = useState(0)
+
+  // Restore persisted state on mount
+  const _saved = useRef(loadFVState(subsystemId))
+  const [activeSheet, setActiveSheet] = useState(_saved.current.activeSheet ?? 0)
   const [showGuide, setShowGuide] = useState(false)
-  const [viewMode, setViewMode] = useState<'sheets' | 'overview'>('sheets')
+  const [viewMode, setViewMode] = useState<'sheets' | 'overview'>(_saved.current.viewMode ?? 'sheets')
   const [cellValues, setCellValues] = useState<Map<string, { Value: string | null; Version: number }>>(new Map())
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_W)
   const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
@@ -101,10 +135,15 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
   const [wizardDevice, setWizardDevice] = useState<{ id: number; deviceName: string; mcm: string; subsystem: string; sheetName?: string } | null>(null)
 
   type QuickFilter = "all" | "complete" | "incomplete" | "has_failures" | "all_passed"
-  const [quickFilter, setQuickFilter] = useState<QuickFilter>("all")
-  const [columnFilters, setColumnFilters] = useState<Record<string, any>>({})
-  const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>({ device: null, mcm: null, subsystem: null })
-  const [searchQuery, setSearchQuery] = useState("")
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>((_saved.current.quickFilter as QuickFilter) ?? "all")
+  const [columnFilters, setColumnFilters] = useState<Record<string, any>>(_saved.current.columnFilters ?? {})
+  const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>(_saved.current.fixedFilters ?? { device: null, mcm: null, subsystem: null })
+  const [searchQuery, setSearchQuery] = useState(_saved.current.searchQuery ?? "")
+
+  // Persist filter state whenever it changes
+  useEffect(() => {
+    saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode }, subsystemId)
+  }, [activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, subsystemId])
 
   // Detect narrow viewport (tablet)
   useEffect(() => {
@@ -247,11 +286,12 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
     }
   }, [signalR.onFVCellUpdate, signalR.offFVCellUpdate])
 
+  // Clamp persisted activeSheet to valid range once data arrives
   useEffect(() => {
-    setQuickFilter("all")
-    setColumnFilters({})
-    setFixedFilters({ device: null, mcm: null, subsystem: null })
-  }, [activeSheet])
+    if (data?.sheets && data.sheets.length > 0 && activeSheet >= data.sheets.length) {
+      setActiveSheet(0)
+    }
+  }, [data?.sheets?.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCellChange = useCallback(async (deviceId: number, columnId: number, value: string | null) => {
     const key = `${deviceId}-${columnId}`
@@ -357,12 +397,12 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
           </Button>
           <Button variant="outline" size="sm" onClick={handleManualL2Pull} disabled={l2Pulling} className="gap-2">
             <CloudDownload className="h-4 w-4" />
-            {l2Pulling ? 'Pulling FV...' : 'Pull FV from Cloud'}
+            {l2Pulling ? 'Pulling Functional Validation...' : 'Pull Functional Validation from Cloud'}
           </Button>
         </div>
         {l2PullError && (
           <div className="max-w-md px-4 py-2 rounded-md bg-red-100 dark:bg-red-950 text-red-800 dark:text-red-200 text-xs">
-            <p className="font-medium">FV Pull Error:</p>
+            <p className="font-medium">Functional Validation Pull Error:</p>
             <p className="mt-0.5">{l2PullError}</p>
           </div>
         )}
