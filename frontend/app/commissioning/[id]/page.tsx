@@ -1874,7 +1874,7 @@ export default function CommissioningPage() {
                 { id: 'network', label: 'Network', hash: 'network' },
                 { id: 'estop', label: 'EStop', hash: 'estop' },
                 { id: 'safety', label: 'Safety', hash: 'safety' },
-                { id: 'l2', label: 'FV', hash: 'l2' },
+                { id: 'l2', label: 'Functional', hash: 'l2' },
               ]
               const switchTab = (tab: typeof activeTab, hash: string) => {
                 if (tab === 'io') {
@@ -1950,7 +1950,7 @@ export default function CommissioningPage() {
                 { id: 'network', label: 'Network', hash: 'network' },
                 { id: 'estop', label: 'EStop', hash: 'estop' },
                 { id: 'safety', label: 'Safety', hash: 'safety' },
-                { id: 'l2', label: 'FV', hash: 'l2' },
+                { id: 'l2', label: 'Functional', hash: 'l2' },
               ]
               const switchTab = (tab: typeof activeTab, hash: string) => {
                 if (tab === 'io') {

@@ -698,7 +698,9 @@ class AutoSyncService {
 
       if (!remoteUrl || !subsystemId) return
 
-      // Read PLC connection + estop tag values
+      // Only push estop status when PLC is actually connected.
+      // If PLC is not connected, skip entirely — avoids overwriting
+      // live data from another tool instance on the same subsystem.
       let connected = false
       let tags: Record<string, boolean | null> = {}
 
@@ -727,8 +729,12 @@ class AutoSyncService {
           }
         }
       } catch {
-        // PLC not available — send disconnected status
+        // PLC not available — skip push
       }
+
+      // Don't send disconnected status to cloud — it would overwrite
+      // live data from a tool that IS connected to the PLC
+      if (!connected) return
 
       await fetch(`${remoteUrl}/api/sync/estop-status`, {
         method: 'POST',
