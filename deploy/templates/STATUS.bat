@@ -1,6 +1,6 @@
 @echo off
 echo ============================================================
-echo  IO Checkout Tool - Status
+echo  Commissioning Tool - Status
 echo ============================================================
 echo.
 netstat -an | findstr ":3000 " | findstr "LISTENING" >nul 2>nul

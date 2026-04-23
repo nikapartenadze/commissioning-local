@@ -30,9 +30,10 @@ import {
  */
 
 const COMMISSIONING_COLUMNS = [
+  'Verify Identity',
   'Motor HP (Field)',
   'VFD HP (Field)',
-  'Ready For Tracking',
+  'Check Direction',
   'Belt Tracked',
   'Speed Set Up',
 ]
@@ -58,6 +59,7 @@ const stmts = {
   getCellForPush: db.prepare('SELECT Value, Version, UpdatedBy FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
   deletePendingSync: db.prepare('DELETE FROM L2PendingSyncs WHERE id = ?'),
   getLatestPendingForCell: db.prepare('SELECT id FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ? ORDER BY id DESC LIMIT 1'),
+  clearControlsVerified: db.prepare('DELETE FROM VfdControlsVerified WHERE deviceName = ?'),
 }
 
 async function pulseInvalidate(
@@ -147,6 +149,9 @@ export async function POST(req: Request, res: Response) {
       // Refresh derived progress counter on the device row
       const completedCount = stmts.countCompleted.get(target.deviceId) as { cnt: number }
       stmts.updateDeviceChecks.run(completedCount?.cnt || 0, target.deviceId)
+
+      // Also clear the local-only "Controls Verified" state
+      stmts.clearControlsVerified.run(deviceName)
     })()
 
     // 3. Best-effort cloud push for each cleared cell

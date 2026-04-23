@@ -4,7 +4,7 @@
  * completed their commissioning checks.
  *
  * When a VFD passes through the wizard and completes identity, HP, and direction
- * checks, the L2 spreadsheet records "Ready For Tracking" with an initials+date
+ * checks, the L2 spreadsheet records "Check Direction" with an initials+date
  * stamp.  This service reads that L2 data and writes the corresponding CMD flags
  * to the PLC so the drives stay validated — even after a PLC power cycle or
  * controller restart.
@@ -16,7 +16,7 @@
  * Triggers:
  *   1. PLC 'initialized' event  → immediate sync of all validated VFDs
  *   2. L2 cell write / cloud pull → debounced re-sync
- *   3. Periodic safety-net      → every 60 s while PLC is connected
+ *   3. Periodic safety-net      → every 10 s while PLC is connected
  *
  * Only writes "check" flags — never motor commands (Bump, Run_At_30_RVS, etc.).
  */
@@ -59,9 +59,10 @@ const MIN_SYNC_INTERVAL_MS = 5_000 // at most once per 5 s
 // ── L2 query ───────────────────────────────────────────────────────
 
 /**
- * Return every VFD device whose "Ready For Tracking" L2 cell is non-empty.
- * "Ready For Tracking" is written after wizard Step 3 (direction confirmed),
- * which implies Steps 1 (identity / map) and 2 (HP) also passed.
+ * Return every VFD device whose "Check Direction" L2 cell is non-empty.
+ * "Check Direction" is the last wizard step (Step 3).  Because the wizard is
+ * sequential, a non-empty value here means Steps 1 (Verify Identity),
+ * 2 (Motor HP / VFD HP), and 3 (Check Direction) are all complete.
  */
 function getValidatedDevices(): ValidatedDevice[] {
   try {
@@ -71,7 +72,7 @@ function getValidatedDevices(): ValidatedDevice[] {
       JOIN L2Sheets   s  ON s.id = d.SheetId
       JOIN L2Columns  c  ON c.SheetId = d.SheetId
       JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
-      WHERE c.Name = 'Ready For Tracking'
+      WHERE c.Name = 'Check Direction'
         AND cv.Value IS NOT NULL AND cv.Value != ''
         AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
     `).all() as ValidatedDevice[]
@@ -189,13 +190,22 @@ export async function syncValidationFlags(): Promise<void> {
     const { getPlcClient, getPlcStatus } = await import('@/lib/plc-client-manager')
 
     const client = getPlcClient()
-    if (!client.isConnected) return
+    if (!client.isConnected) {
+      console.log('[VfdValidationWriter] Skipped: PLC not connected')
+      return
+    }
 
     const { connectionConfig } = getPlcStatus()
-    if (!connectionConfig) return
+    if (!connectionConfig) {
+      console.log('[VfdValidationWriter] Skipped: no connection config')
+      return
+    }
 
     const devices = getValidatedDevices()
-    if (devices.length === 0) return
+    if (devices.length === 0) {
+      console.log('[VfdValidationWriter] Skipped: no validated VFDs found (no "Check Direction" cells in L2)')
+      return
+    }
 
     const t0 = Date.now()
     const { ok, fail } = batchWriteFlags(
@@ -248,4 +258,4 @@ setInterval(() => {
       console.error('[VfdValidationWriter] Deferred sync error:', err)
     })
   }
-}, 60_000).unref?.()
+}, 10_000).unref?.()

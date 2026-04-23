@@ -61,6 +61,24 @@ try {
     db.exec(`UPDATE L2Columns SET IsEditable = CASE WHEN COALESCE(InputType, ColumnType) = 'readonly' THEN 0 ELSE 1 END`)
     db.exec(`UPDATE L2Columns SET IncludeInProgress = CASE WHEN ColumnType = 'check' THEN 1 ELSE COALESCE(IncludeInProgress, 0) END`)
   } catch { /* non-critical */ }
+  // One-time: Invalidate all Belt Tracked values — they were auto-read from PLC
+  // (CTRL.STS.Track_Belt) which was wrong. Belt Tracked is now manual entry only.
+  // Uses a flag column to avoid re-running on every startup.
+  try {
+    const alreadyDone = db.prepare(
+      `SELECT 1 FROM L2CellValues cv JOIN L2Columns c ON cv.ColumnId = c.id WHERE c.Name = 'Belt Tracked' AND cv.Value = '__invalidated_v2.20__' LIMIT 1`
+    ).get()
+    if (!alreadyDone) {
+      const cleared = db.prepare(`
+        UPDATE L2CellValues SET Value = NULL, UpdatedBy = 'system:belt-tracked-reset', UpdatedAt = datetime('now')
+        WHERE ColumnId IN (SELECT id FROM L2Columns WHERE LOWER(TRIM(Name)) = 'belt tracked')
+          AND Value IS NOT NULL AND Value != ''
+      `).run()
+      if (cleared.changes > 0) {
+        console.log(`[DB] Invalidated ${cleared.changes} Belt Tracked cell(s) — now manual entry only`)
+      }
+    }
+  } catch { /* non-critical */ }
   // Indexes for L2 query performance
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_l2cells_device_column ON L2CellValues(DeviceId, ColumnId)') } catch { /* already exists */ }
   // Update query planner statistics (deferred to avoid blocking startup)
@@ -362,14 +380,25 @@ export function initializeSchema() {
   `)
 
   // VFD commissioning state is now stored entirely in L2CellValues
-  // (columns: "Motor HP (Field)", "VFD HP (Field)", "Ready For Tracking",
-  // "Belt Tracked", "Speed Set Up"). The old VfdCheckState table is
-  // dropped on startup — any data that was in it is already mirrored in L2.
+  // (columns: "Verify Identity", "Motor HP (Field)", "VFD HP (Field)",
+  // "Check Direction", "Belt Tracked", "Speed Set Up"). The old VfdCheckState
+  // table is dropped on startup — any data that was in it is already mirrored in L2.
   try {
     db.exec('DROP TABLE IF EXISTS VfdCheckState')
   } catch {
     // Best-effort — if the drop fails the table is simply unused now.
   }
+
+  // Step 4 "Controls Verified" has no L2 column — it's a manual confirmation
+  // that keypad controls (F0/F1/F2) work. Persisted locally so reopening the
+  // wizard remembers the tech already verified controls for this VFD.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS VfdControlsVerified (
+      deviceName TEXT PRIMARY KEY,
+      completedBy TEXT,
+      completedAt TEXT DEFAULT (datetime('now'))
+    )
+  `)
 }
 
 // ── Type definitions ─────────────────────────────────────────────

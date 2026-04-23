@@ -690,7 +690,8 @@ export function EnhancedIoDataGrid({
     ioName.includes(':O:') ||
     ioName.includes('.Outputs.') ||
     ioName.endsWith('.DO') ||
-    ioName.endsWith('_DO')
+    ioName.endsWith('_DO') ||
+    ioName.startsWith('STD_')   // Safety intermediary tags (STO/BSD control)
 
   // Safety outputs cannot be written - they're controlled by safety PLC
   const isSafetyOutput = (ioName: string) => ioName.includes(':SO.')

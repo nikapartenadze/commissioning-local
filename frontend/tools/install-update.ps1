@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$InstallerUrl,
   [Parameter(Mandatory = $true)][string]$ExpectedVersion,
   [Parameter(Mandatory = $true)][string]$StatePath,
-  [string]$ServiceName = "IOCheckout"
+  [string]$ServiceName = "CommissioningTool"
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,11 +63,11 @@ $script:StartedAt = (Get-Date).ToString("o")
 try {
   Write-State -Status "checking" -Message "Preparing update"
 
-  $installDir = Get-RegistryValue -Path "HKLM:\Software\IOCheckout" -Name "InstallDir"
-  $dataDir = Get-RegistryValue -Path "HKLM:\Software\IOCheckout" -Name "DataDir"
+  $installDir = Get-RegistryValue -Path "HKLM:\Software\CommissioningTool" -Name "InstallDir"
+  $dataDir = Get-RegistryValue -Path "HKLM:\Software\CommissioningTool" -Name "DataDir"
 
   if (-not $dataDir) {
-    $dataDir = Join-Path $env:ProgramData "IOCheckout"
+    $dataDir = Join-Path $env:ProgramData "CommissioningTool"
   }
 
   if (-not (Test-Path $dataDir)) {
@@ -79,12 +79,12 @@ try {
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
   }
 
-  $tempRoot = Join-Path $env:TEMP "IOCheckoutUpdate"
+  $tempRoot = Join-Path $env:TEMP "CommissioningToolUpdate"
   if (-not (Test-Path $tempRoot)) {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
   }
 
-  $installerPath = Join-Path $tempRoot ("IOCheckout-Setup-v{0}.exe" -f $ExpectedVersion)
+  $installerPath = Join-Path $tempRoot ("CommissioningTool-Setup-v{0}.exe" -f $ExpectedVersion)
 
   Write-State -Status "downloading" -Message "Downloading installer"
   Invoke-WebRequest -Uri $InstallerUrl -OutFile $installerPath -UseBasicParsing

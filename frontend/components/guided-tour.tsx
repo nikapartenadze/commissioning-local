@@ -21,7 +21,7 @@ const steps: Step[] = [
   {
     target: 'body',
     placement: 'center',
-    title: 'Welcome to IO Checkout Tool',
+    title: 'Welcome to Commissioning Tool',
     content: (
       <div>
         <p>This tour will walk you through the testing workflow step by step.</p>

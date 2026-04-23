@@ -17,7 +17,7 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":3000 " ^| findstr "LISTENIN
 )
 
 REM Auto-setup firewall
-netsh advfirewall firewall show rule name="IO Checkout - App" >nul 2>&1
+netsh advfirewall firewall show rule name="Commissioning Tool - App" >nul 2>&1
 if %errorlevel% neq 0 (
     echo Setting up firewall rules...
     net session >nul 2>&1
@@ -25,13 +25,13 @@ if %errorlevel% neq 0 (
         echo Requesting administrator access for firewall setup...
         powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%~dp0SETUP-FIREWALL.bat'" 2>nul
     ) else (
-        netsh advfirewall firewall add rule name="IO Checkout - App" dir=in action=allow protocol=tcp localport=3000 >nul
+        netsh advfirewall firewall add rule name="Commissioning Tool - App" dir=in action=allow protocol=tcp localport=3000 >nul
         echo Firewall rules added.
     )
 )
 
 echo ============================================================
-echo  IO Checkout Tool
+echo  Commissioning Tool
 echo ============================================================
 echo.
 echo   App:   http://localhost:3000

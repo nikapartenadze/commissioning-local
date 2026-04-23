@@ -13,7 +13,7 @@ $outputDir = Join-Path $projectDir "portable"
 $deployDir = Join-Path $projectDir "deploy"
 
 Write-Host "============================================================"
-Write-Host " IO Checkout Tool - Build Portable Distribution"
+Write-Host " Commissioning Tool - Build Portable Distribution"
 Write-Host "============================================================"
 
 # Step 1: Clean and create output dir
@@ -73,7 +73,7 @@ Write-Host "[5/6] Installing production dependencies..."
 
 $runtimePkg = @"
 {
-  "name": "io-checkout-runtime",
+  "name": "commissioning-tool-runtime",
   "private": true,
   "dependencies": {
     "express": "^5.2.1",
@@ -121,7 +121,7 @@ Write-Host "  Native modules verified"
 # Create .env
 $envContent = @"
 DATABASE_URL=file:../database.db
-JWT_SECRET_KEY=io-checkout-$(Get-Random)$(Get-Random)$(Get-Random)
+JWT_SECRET_KEY=commissioning-tool-$(Get-Random)$(Get-Random)$(Get-Random)
 PORT=3000
 HOSTNAME=0.0.0.0
 NODE_ENV=production
@@ -147,8 +147,8 @@ if (Test-Path $firewallBat) { Copy-Item $firewallBat $outputDir }
 
 # README
 @"
-IO Checkout Tool
-================
+Commissioning Tool
+==================
 
 FIRST TIME:  Double-click START.bat
 DAILY USE:   START.bat to launch, Ctrl+C to stop

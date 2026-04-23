@@ -14,7 +14,7 @@ export function App() {
           defaultTheme="system"
           enableSystem
           disableTransitionOnChange
-          storageKey="io-checkout-theme"
+          storageKey="commissioning-tool-theme"
         >
           <RouterProvider router={router} />
           <Toaster />

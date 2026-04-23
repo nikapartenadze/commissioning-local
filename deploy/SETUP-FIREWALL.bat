@@ -1,6 +1,6 @@
 @echo off
 echo ============================================================
-echo  IO Checkout Tool - Firewall Setup (Run as Administrator)
+echo  Commissioning Tool - Firewall Setup (Run as Administrator)
 echo ============================================================
 echo.
 echo This opens port 3000 so tablets can connect.
@@ -17,7 +17,7 @@ if %errorlevel% neq 0 (
 
 echo Adding firewall rules...
 
-netsh advfirewall firewall add rule name="IO Checkout Tool - App" dir=in action=allow protocol=tcp localport=3000 >nul
+netsh advfirewall firewall add rule name="Commissioning Tool - App" dir=in action=allow protocol=tcp localport=3000 >nul
 
 echo.
 echo Firewall rules added:

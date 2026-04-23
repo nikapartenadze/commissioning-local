@@ -18,7 +18,7 @@ import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
  *     updatedBy: "ASH",
  *     cells: [
  *       { columnName: "Motor HP (Field)", value: "5.0" },
- *       { columnName: "Ready For Tracking", value: "ASH 9/9" }
+ *       { columnName: "Check Direction", value: "ASH 9/9" }
  *     ]
  *   }
  *
@@ -181,7 +181,7 @@ export async function POST(req: Request, res: Response) {
     // If any commissioning check cell was written, trigger background sync of
     // VFD validation flags to the PLC (Valid_Map, Valid_HP, Valid_Direction).
     const checkCellWritten = written.some(w => w.ok && [
-      'Ready For Tracking', 'Motor HP (Field)', 'VFD HP (Field)',
+      'Verify Identity', 'Check Direction', 'Motor HP (Field)', 'VFD HP (Field)',
     ].includes(w.columnName))
     if (checkCellWritten) {
       import('@/lib/vfd-validation-writer')

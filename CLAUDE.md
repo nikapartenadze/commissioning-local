@@ -73,7 +73,7 @@ The root docs are for workspace orientation, not detailed app internals.
 The field tool ships as either a portable ZIP (~48MB) or a Windows NSIS installer (~55MB).
 
 - Portable ZIP: `deploy/BUILD-PORTABLE.bat` — bundles Node.js 20, compiled server, Vite client, and `plctag.dll`
-- NSIS Installer: `deploy/BUILD-INSTALLER.bat` — installs to `C:\Program Files\IOCheckout\`, data in `C:\ProgramData\IOCheckout\`, auto-start Windows Service via NSSM
+- NSIS Installer: `deploy/BUILD-INSTALLER.bat` — installs to `C:\Program Files\CommissioningTool\`, data in `C:\ProgramData\CommissioningTool\`, auto-start Windows Service via NSSM
 
 See `DEPLOYMENT-STRATEGY.md` for trade-offs and roadmap.
 

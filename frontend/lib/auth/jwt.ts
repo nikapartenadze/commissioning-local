@@ -116,8 +116,8 @@ const getOrCreateSecret = (): string => {
 const getJwtConfig = () => {
   return {
     secretKey: getOrCreateSecret(),
-    issuer: process.env.JWT_ISSUER || 'io-checkout-tool',
-    audience: process.env.JWT_AUDIENCE || 'io-checkout-frontend',
+    issuer: process.env.JWT_ISSUER || 'commissioning-tool',
+    audience: process.env.JWT_AUDIENCE || 'commissioning-tool-frontend',
     expirationHours: parseInt(process.env.JWT_EXPIRATION_HOURS || '8', 10),
   };
 };

@@ -86,6 +86,7 @@ import * as vfdState from '@/app/api/vfd-commissioning/state/route'
 import * as vfdWriteL2Cells from '@/app/api/vfd-commissioning/write-l2-cells/route'
 import * as vfdClear from '@/app/api/vfd-commissioning/clear/route'
 import * as vfdTestWrite from '@/app/api/vfd-commissioning/test-write/route'
+import * as vfdControlsVerified from '@/app/api/vfd-commissioning/controls-verified/route'
 import * as deviceIdentity from '@/app/api/device/identity/route'
 
 /**
@@ -239,6 +240,7 @@ export function createApiRouter(): Router {
   router.post('/api/vfd-commissioning/clear', asyncHandler(vfdClear.POST))
   router.post('/api/vfd-commissioning/test-write', asyncHandler(vfdTestWrite.POST))
   router.get('/api/vfd-commissioning/test-write', asyncHandler(vfdTestWrite.GET))
+  router.post('/api/vfd-commissioning/controls-verified', asyncHandler(vfdControlsVerified.POST))
 
   // ── Device Identity ───────────────────────────────────────────
   router.get('/api/device/identity', asyncHandler(deviceIdentity.GET))
