@@ -57,9 +57,12 @@ frontend/libplctag.so
 # Vercel
 .vercel
 io-checkout-*.zip
+commissioning-tool-*.zip
 IOCheckout-Setup-*.exe
+CommissioningTool-Setup-*.exe
 commissioning-cloud/
 io-checkout-*-portable/
+commissioning-tool-*-portable/
 
 # Data files — never commit project CSVs, PDFs, or docs
 *.csv

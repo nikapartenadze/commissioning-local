@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo  IO Checkout Tool - Build Portable Distribution
+echo  Commissioning Tool - Build Portable Distribution
 echo ============================================================
 echo.
 
@@ -116,7 +116,7 @@ set "NM_DST=%OUTPUT_DIR%\app\dist-server"
 
 (
 echo {
-echo   "name": "io-checkout-runtime",
+echo   "name": "commissioning-tool-runtime",
 echo   "private": true,
 echo   "dependencies": {
 echo     "express": "^5.2.1",
@@ -158,7 +158,7 @@ echo   Native modules verified
 REM ── Create .env ──
 (
 echo DATABASE_URL=file:../database.db
-echo JWT_SECRET_KEY=io-checkout-%RANDOM%%RANDOM%%RANDOM%
+echo JWT_SECRET_KEY=commissioning-tool-%RANDOM%%RANDOM%%RANDOM%
 echo PORT=3000
 echo HOSTNAME=0.0.0.0
 echo NODE_ENV=production
@@ -178,8 +178,8 @@ copy "%~dp0SETUP-FIREWALL.bat" "%OUTPUT_DIR%\" >nul
 
 REM ── README.txt ──
 (
-echo IO Checkout Tool
-echo ================
+echo Commissioning Tool
+echo ==================
 echo.
 echo FIRST TIME:  Double-click START.bat
 echo DAILY USE:   START.bat to launch, Ctrl+C to stop

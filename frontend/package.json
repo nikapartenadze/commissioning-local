@@ -1,5 +1,5 @@
 {
-  "name": "io-checkout-commissioning",
+  "name": "commissioning-tool",
   "version": "1.0.0",
   "private": true,
   "scripts": {

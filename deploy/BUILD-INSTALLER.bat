@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo  IO Checkout Tool - Build Windows Installer
+echo  Commissioning Tool - Build Windows Installer
 echo  Creates a setup .exe with NSSM service integration
 echo ============================================================
 echo.
@@ -89,11 +89,11 @@ echo ============================================================
 echo  INSTALLER BUILD COMPLETE
 echo ============================================================
 echo.
-echo Output: %PROJECT_DIR%\IOCheckout-Setup-v%APP_VERSION%.exe
+echo Output: %PROJECT_DIR%\CommissioningTool-Setup-v%APP_VERSION%.exe
 echo.
 echo This installer:
-echo   - Installs to C:\Program Files\IOCheckout
-echo   - Stores data in C:\ProgramData\IOCheckout
+echo   - Installs to C:\Program Files\CommissioningTool
+echo   - Stores data in C:\ProgramData\CommissioningTool
 echo   - Creates Windows service (auto-start on boot)
 echo   - Sets up firewall rules
 echo   - Upgrades in-place (preserves database + config)

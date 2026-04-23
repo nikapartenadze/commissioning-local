@@ -86,7 +86,7 @@ function appendLog(file: string, line: string): void {
 
 // Messages matching these patterns go to CONSOLE + file (user-facing)
 const CONSOLE_PATTERNS = [
-  /IO Checkout Tool/,
+  /Commissioning Tool/,
   /Ready in \d+ms/,
   /Starting Next\.js/,
   /Background auto-sync started/,
@@ -212,7 +212,7 @@ if (process.env.NODE_ENV === 'production') {
 // ============================================================================
 
 console.log('');
-console.log('IO Checkout Tool - Production Server');
+console.log('Commissioning Tool - Production Server');
 console.log('');
 console.log(`  App + WebSocket: http://${HOSTNAME}:${PORT} (ws upgrades on /ws)`);
 console.log('');

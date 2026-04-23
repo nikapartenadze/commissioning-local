@@ -88,7 +88,6 @@ function getTagDefs(deviceName: string): TagDef[] {
     { key: 'Valid_HP',        tagPath: `CBT_${deviceName}.CTRL.STS.Valid_HP`,            dataType: 'BOOL', elemSize: 1 },
     { key: 'Valid_Direction', tagPath: `CBT_${deviceName}.CTRL.STS.Valid_Direction`,     dataType: 'BOOL', elemSize: 1 },
     { key: 'Jogging',         tagPath: `CBT_${deviceName}.CTRL.STS.Jogging`,             dataType: 'BOOL', elemSize: 1 },
-    { key: 'Track_Belt',      tagPath: `CBT_${deviceName}.CTRL.STS.Track_Belt`,          dataType: 'BOOL', elemSize: 1 },
     { key: 'RVS',             tagPath: `CBT_${deviceName}.CTRL.STS.RVS`,                 dataType: 'REAL', elemSize: 4 },
   ]
 }
@@ -266,7 +265,6 @@ async function pollLoop(reader: WizardReader): Promise<void> {
           ` Valid_HP=${snapshot.Valid_HP}` +
           ` Valid_Direction=${snapshot.Valid_Direction}` +
           ` Jogging=${snapshot.Jogging}` +
-          ` Track_Belt=${snapshot.Track_Belt}` +
           ` RVS=${snapshot.RVS}` +
           errSummary,
         )

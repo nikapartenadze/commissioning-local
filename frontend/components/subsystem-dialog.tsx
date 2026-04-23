@@ -42,7 +42,7 @@ export function SubsystemDialog({ open, onOpenChange, projectName, subsystems }:
                 Configuration Information
               </h4>
               <p className="text-sm text-amber-800 dark:text-amber-200">
-                Use these subsystem IDs when configuring local IO Checkout Tool applications.
+                Use these subsystem IDs when configuring local Commissioning Tool applications.
               </p>
             </div>
           </div>

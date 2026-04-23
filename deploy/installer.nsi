@@ -1,4 +1,4 @@
-; IO Checkout Tool — NSIS Installer Script
+; Commissioning Tool — NSIS Installer Script
 ; Builds a Windows installer with NSSM service integration
 ;
 ; Features:
@@ -12,8 +12,8 @@
 !include "FileFunc.nsh"
 
 ; ── Version & Metadata ──────────────────────────────────────
-!define APP_NAME "IO Checkout Tool"
-!define APP_SHORT "IOCheckout"
+!define APP_NAME "Commissioning Tool"
+!define APP_SHORT "CommissioningTool"
 !define APP_PUBLISHER "autStand"
 !define APP_URL "https://commissioning.lci.ge"
 !ifndef APP_VERSION
@@ -21,14 +21,14 @@
 !endif
 
 !define INSTALL_DIR "$PROGRAMFILES\${APP_SHORT}"
-!define SERVICE_NAME "IOCheckout"
-!define SERVICE_DISPLAY "IO Checkout Tool"
+!define SERVICE_NAME "CommissioningTool"
+!define SERVICE_DISPLAY "Commissioning Tool"
 
 Var DATA_DIR
 
 ; ── Installer Settings ──────────────────────────────────────
 Name "${APP_NAME} ${APP_VERSION}"
-OutFile "..\IOCheckout-Setup-v${APP_VERSION}.exe"
+OutFile "..\CommissioningTool-Setup-v${APP_VERSION}.exe"
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKLM "Software\${APP_SHORT}" "InstallDir"
 RequestExecutionLevel admin
@@ -52,7 +52,7 @@ RequestExecutionLevel admin
 Section "Install"
   SetOutPath "$INSTDIR"
   ReadEnvStr $DATA_DIR "ProgramData"
-StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
+StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
 
   ; Stop existing service if upgrading
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE_NAME}'
@@ -79,7 +79,7 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   ; ── Create .env pointing to data directory ──
   FileOpen $0 "$INSTDIR\app\dist-server\.env" w
   FileWrite $0 "DATABASE_URL=file:$DATA_DIR\database.db$\r$\n"
-  FileWrite $0 "JWT_SECRET_KEY=io-checkout-svc-$HWNDPARENT$\r$\n"
+  FileWrite $0 "JWT_SECRET_KEY=commissioning-tool-svc-$HWNDPARENT$\r$\n"
   FileWrite $0 "PORT=3000$\r$\n"
   FileWrite $0 "HOSTNAME=0.0.0.0$\r$\n"
   FileWrite $0 "NODE_ENV=production$\r$\n"
@@ -125,9 +125,9 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppRestartDelay 5000'
 
   ; ── Firewall Rules ──
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="IO Checkout - App"'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="IO Checkout - WebSocket"'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="IO Checkout - App" dir=in action=allow protocol=tcp localport=3000'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - App"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - WebSocket"'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Commissioning Tool - App" dir=in action=allow protocol=tcp localport=3000'
 
   ; ── Start Service ──
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE_NAME}'
@@ -149,7 +149,7 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   ; ── Start Menu Shortcuts ──
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   ; Create a URL shortcut to open the app in browser
-  FileOpen $0 "$SMPROGRAMS\${APP_NAME}\Open IO Checkout.url" w
+  FileOpen $0 "$SMPROGRAMS\${APP_NAME}\Open Commissioning Tool.url" w
   FileWrite $0 "[InternetShortcut]$\r$\n"
   FileWrite $0 "URL=http://localhost:3000$\r$\n"
   FileWrite $0 "IconIndex=0$\r$\n"
@@ -158,7 +158,7 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   CreateShortCut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 
   ; ── Desktop Shortcut ──
-  FileOpen $0 "$DESKTOP\IO Checkout.url" w
+  FileOpen $0 "$DESKTOP\Commissioning Tool.url" w
   FileWrite $0 "[InternetShortcut]$\r$\n"
   FileWrite $0 "URL=http://localhost:3000$\r$\n"
   FileWrite $0 "IconIndex=0$\r$\n"
@@ -173,7 +173,7 @@ SectionEnd
 ; ── Uninstall Section ───────────────────────────────────────
 Section "Uninstall"
   ReadEnvStr $DATA_DIR "ProgramData"
-StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
+StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
 
   ; Stop and remove service
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE_NAME}'
@@ -181,8 +181,8 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
 
   ; Remove firewall rules
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="IO Checkout - App"'
-  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="IO Checkout - WebSocket"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - App"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - WebSocket"'
 
   ; Remove app files (NOT data directory)
   RMDir /r "$INSTDIR\node"
@@ -193,7 +193,7 @@ StrCpy $DATA_DIR "$DATA_DIR\IOCheckout"
   RMDir "$INSTDIR"
 
   ; Remove shortcuts
-  Delete "$DESKTOP\IO Checkout.url"
+  Delete "$DESKTOP\Commissioning Tool.url"
   RMDir /r "$SMPROGRAMS\${APP_NAME}"
 
   ; Remove registry

@@ -114,18 +114,18 @@ export function FVOverviewMatrix() {
         <table className="border-collapse text-xs w-full">
           <thead>
             <tr>
-              <th className="sticky left-0 z-20 bg-muted px-3 py-2 text-left font-bold border border-border min-w-[60px]">
+              <th className="sticky top-0 left-0 z-30 bg-muted px-3 py-2 text-left font-bold border border-border min-w-[60px]">
                 Type
               </th>
-              <th className="sticky left-[60px] z-20 bg-muted px-3 py-2 text-left font-bold border border-border min-w-[140px]">
+              <th className="sticky top-0 left-[60px] z-30 bg-muted px-3 py-2 text-left font-bold border border-border min-w-[140px]">
                 Description
               </th>
               {mcms.map(mcm => (
-                <th key={mcm} className="bg-muted px-2 py-2 text-center font-bold border border-border min-w-[70px] whitespace-nowrap">
+                <th key={mcm} className="sticky top-0 z-20 bg-muted px-2 py-2 text-center font-bold border border-border min-w-[70px] whitespace-nowrap">
                   {mcm}
                 </th>
               ))}
-              <th className="bg-muted/80 px-3 py-2 text-center font-bold border border-border min-w-[70px]">
+              <th className="sticky top-0 z-20 bg-muted/80 px-3 py-2 text-center font-bold border border-border min-w-[70px]">
                 Total
               </th>
             </tr>

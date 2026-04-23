@@ -6,7 +6,7 @@ This is the local commissioning tool in `frontend/`.
 
 ## Project Overview
 
-Industrial I/O checkout tool for commissioning PLC systems in the field.
+Industrial commissioning tool for PLC systems in the field.
 
 Technicians use this app on tablets or laptops to:
 
@@ -152,7 +152,7 @@ When changing auth, inspect both sides before assuming one model is authoritativ
 Resolved by `lib/storage-paths.ts`. All paths sit beside the active SQLite database:
 
 - **Portable mode:** database, config, logs, backups all in the app folder
-- **Installer mode:** `C:\ProgramData\IOCheckout\` for database/config/logs/backups
+- **Installer mode:** `C:\ProgramData\CommissioningTool\` for database/config/logs/backups
 
 Files:
 - `database.db` — main SQLite database (WAL mode)

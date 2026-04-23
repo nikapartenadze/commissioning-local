@@ -348,7 +348,7 @@ export default function CommissioningPage() {
   }, [mutedIos])
 
   // localStorage key for dialog queue persistence
-  const DIALOG_QUEUE_STORAGE_KEY = 'io-checkout-dialog-queue'
+  const DIALOG_QUEUE_STORAGE_KEY = 'commissioning-tool-dialog-queue'
 
   // Persist dialog queue + currentDialogIo to localStorage
   useEffect(() => {
@@ -1510,15 +1510,6 @@ export default function CommissioningPage() {
 
 
   const handleShowFireOutputDialog = (io: IoItem) => {
-    // Block if device not fully installed
-    if (io.installationStatus && io.installationStatus !== 'complete') {
-      toast({
-        title: "Cannot fire — device not installed",
-        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before firing outputs.`,
-        variant: "destructive"
-      })
-      return
-    }
     // Unmute the IO if it was muted — firing means the user wants to interact with it
     if (mutedIos.has(io.id)) {
       toggleMuteIo(io.id)

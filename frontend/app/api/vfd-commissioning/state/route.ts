@@ -9,10 +9,11 @@ import { db } from '@/lib/db-sqlite'
  * table. The L2 spreadsheet (which is local-DB-stored AND cloud-synced) is
  * the single source of truth for "is this VFD commissioned".
  *
- * The five columns the wizard fills:
+ * The six columns the wizard fills:
+ *   - "Verify Identity"     → from Step 1 (Identity Confirm)
  *   - "Motor HP (Field)"    → from Step 2 (HP Confirm)
  *   - "VFD HP (Field)"      → from Step 2 (HP Confirm)
- *   - "Ready For Tracking"  → from Step 3 (Bump / Direction Confirm)
+ *   - "Check Direction"     → from Step 3 (Bump / Direction Confirm)
  *   - "Belt Tracked"        → from Step 4 (Belt Tracking complete)
  *   - "Speed Set Up"        → from Step 5 (Calibrate Speed). Stored as a stamp
  *                             "INITIALS DATE · <fpm> FPM @ <rvs> RVS" so the
@@ -26,9 +27,10 @@ import { db } from '@/lib/db-sqlite'
  *         deviceName: "NCP1_2_VFD",
  *         sheetName: "APF",
  *         cells: {
+ *           verifyIdentity:   "ASH 9/5"        | null,
  *           motorHpField:     "5.0"           | null,
  *           vfdHpField:       "5.0"           | null,
- *           readyForTracking: "ASH 9/5"        | null,
+ *           checkDirection:   "ASH 9/5"        | null,
  *           beltTracked:      "ASH 9/5"        | null,
  *           speedSetUp:       "ASH 9/5 · 200 FPM @ 25.30 RVS" | null,
  *         },
@@ -43,9 +45,10 @@ import { db } from '@/lib/db-sqlite'
  */
 
 const COMMISSIONING_COLUMNS = [
+  'Verify Identity',
   'Motor HP (Field)',
   'VFD HP (Field)',
-  'Ready For Tracking',
+  'Check Direction',
   'Belt Tracked',
   'Speed Set Up',
 ] as const
@@ -54,29 +57,33 @@ type CommissioningColumn = typeof COMMISSIONING_COLUMNS[number]
 
 function columnKey(name: CommissioningColumn): keyof CellSet {
   switch (name) {
+    case 'Verify Identity':    return 'verifyIdentity'
     case 'Motor HP (Field)':   return 'motorHpField'
     case 'VFD HP (Field)':     return 'vfdHpField'
-    case 'Ready For Tracking': return 'readyForTracking'
+    case 'Check Direction':    return 'checkDirection'
     case 'Belt Tracked':       return 'beltTracked'
     case 'Speed Set Up':       return 'speedSetUp'
   }
 }
 
 interface CellSet {
-  motorHpField:     string | null
-  vfdHpField:       string | null
-  readyForTracking: string | null
-  beltTracked:      string | null
-  speedSetUp:       string | null
+  verifyIdentity:      string | null
+  motorHpField:        string | null
+  vfdHpField:          string | null
+  checkDirection:      string | null
+  beltTracked:         string | null
+  speedSetUp:          string | null
+  controlsVerified:    string | null
 }
 
 const emptyCells = (): CellSet => ({
-  motorHpField: null, vfdHpField: null, readyForTracking: null,
-  beltTracked: null, speedSetUp: null,
+  verifyIdentity: null, motorHpField: null, vfdHpField: null,
+  checkDirection: null, beltTracked: null, speedSetUp: null,
+  controlsVerified: null,
 })
 
 // One bulk query: for every L2 device on a VFD/APF sheet, give me each of the
-// 5 commissioning column values (NULL if the cell hasn't been written).
+// 6 commissioning column values (NULL if the cell hasn't been written).
 const stmtAllCells = db.prepare(`
   SELECT
     d.DeviceName    AS deviceName,
@@ -87,9 +94,14 @@ const stmtAllCells = db.prepare(`
   JOIN L2Sheets   s ON s.id = d.SheetId
   JOIN L2Columns  c ON c.SheetId = d.SheetId
   LEFT JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
-  WHERE c.Name IN ('Motor HP (Field)', 'VFD HP (Field)', 'Ready For Tracking', 'Belt Tracked', 'Speed Set Up')
+  WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Check Direction', 'Belt Tracked', 'Speed Set Up')
     AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
 `)
+
+// Step 4 "Controls Verified" is stored locally (no L2 column).
+const stmtControlsVerified = db.prepare(
+  `SELECT deviceName, completedBy, completedAt FROM VfdControlsVerified`
+)
 
 export async function GET(_req: Request, res: Response) {
   try {
@@ -99,6 +111,12 @@ export async function GET(_req: Request, res: Response) {
       columnName: CommissioningColumn
       value: string | null
     }>
+
+    // Load all controls-verified stamps (local-only, keyed by deviceName)
+    const cvRows = stmtControlsVerified.all() as Array<{
+      deviceName: string; completedBy: string | null; completedAt: string | null
+    }>
+    const cvMap = new Map(cvRows.map(r => [r.deviceName, r.completedBy || r.completedAt || 'yes']))
 
     // Pivot rows → one record per (deviceName, sheetName) with a CellSet
     type Acc = { deviceName: string; sheetName: string; cells: CellSet }
@@ -112,6 +130,12 @@ export async function GET(_req: Request, res: Response) {
       }
       const colKey = columnKey(row.columnName)
       if (colKey) acc.cells[colKey] = row.value
+    }
+
+    // Merge controls-verified into each device's cell set
+    for (const acc of byKey.values()) {
+      const cv = cvMap.get(acc.deviceName)
+      if (cv) acc.cells.controlsVerified = cv
     }
 
     return res.json({ states: Array.from(byKey.values()) })

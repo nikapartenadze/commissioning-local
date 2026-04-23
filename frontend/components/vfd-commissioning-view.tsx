@@ -26,15 +26,17 @@ interface VfdCommissioningViewProps {
  * (stored in local SQLite AND synced to cloud) is the single source of truth.
  *
  * A cell holds a string value when that wizard step has completed. Values are:
+ *   - verifyIdentity               → INITIALS DATE stamp from Step 1
  *   - motorHpField / vfdHpField    → numeric text from Step 2 (e.g. "5.0")
- *   - readyForTracking / beltTracked → INITIALS DATE stamp (e.g. "ASH 9/5")
+ *   - checkDirection / beltTracked → INITIALS DATE stamp (e.g. "ASH 9/5")
  *   - speedSetUp                   → enriched stamp from Step 5
  *                                     e.g. "ASH 9/5 · 200 FPM @ 25.30 RVS"
  */
 interface CellState {
+  verifyIdentity:   string | null
   motorHpField:     string | null
   vfdHpField:       string | null
-  readyForTracking: string | null
+  checkDirection:   string | null
   beltTracked:      string | null
   speedSetUp:       string | null
 }
@@ -42,29 +44,31 @@ interface CellState {
 // ── Helpers ────────────────────────────────────────────────────────
 
 const emptyCells = (): CellState => ({
-  motorHpField: null, vfdHpField: null, readyForTracking: null,
-  beltTracked: null, speedSetUp: null,
+  verifyIdentity: null, motorHpField: null, vfdHpField: null,
+  checkDirection: null, beltTracked: null, speedSetUp: null,
 })
 
 function isNonEmpty(v: string | null): boolean {
   return v != null && v.trim() !== ''
 }
 
-/** All five commissioning L2 cells populated = done. */
+/** All six commissioning L2 cells populated = done. */
 function isDone(s: CellState): boolean {
-  return isNonEmpty(s.motorHpField)
+  return isNonEmpty(s.verifyIdentity)
+    && isNonEmpty(s.motorHpField)
     && isNonEmpty(s.vfdHpField)
-    && isNonEmpty(s.readyForTracking)
+    && isNonEmpty(s.checkDirection)
     && isNonEmpty(s.beltTracked)
     && isNonEmpty(s.speedSetUp)
 }
 
-/** 0..5 count of populated commissioning cells. */
+/** 0..6 count of populated commissioning cells. */
 function progressCount(s: CellState): number {
   let n = 0
+  if (isNonEmpty(s.verifyIdentity)) n++
   if (isNonEmpty(s.motorHpField)) n++
   if (isNonEmpty(s.vfdHpField)) n++
-  if (isNonEmpty(s.readyForTracking)) n++
+  if (isNonEmpty(s.checkDirection)) n++
   if (isNonEmpty(s.beltTracked)) n++
   if (isNonEmpty(s.speedSetUp)) n++
   return n
@@ -91,7 +95,7 @@ function StatusBadge({ state }: { state: CellState }) {
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-100 text-amber-800 border border-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:border-amber-800">
         <CircleDot className="h-3 w-3" />
-        {progress}/5
+        {progress}/6
       </span>
     )
   }
@@ -176,9 +180,10 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
         const map = new Map<string, CellState>()
         for (const row of (data.states || [])) {
           map.set(row.deviceName, {
+            verifyIdentity:   row.cells?.verifyIdentity   ?? null,
             motorHpField:     row.cells?.motorHpField     ?? null,
             vfdHpField:       row.cells?.vfdHpField       ?? null,
-            readyForTracking: row.cells?.readyForTracking ?? null,
+            checkDirection:   row.cells?.checkDirection    ?? null,
             beltTracked:      row.cells?.beltTracked      ?? null,
             speedSetUp:       row.cells?.speedSetUp       ?? null,
           })
@@ -192,14 +197,14 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
 
   /**
    * Wipe commissioning state for one VFD so it can be re-tested.
-   * Deletes the five L2 commissioning cells (cloud-synced) and pulses
+   * Deletes the six L2 commissioning cells (cloud-synced) and pulses
    * Invalidate_Map/HP/Direction to the PLC.
    */
   const handleClear = useCallback(async (device: VfdDevice) => {
     const ok = typeof window !== 'undefined'
       ? window.confirm(
           `Clear commissioning for ${device.deviceName}?\n\n` +
-          `• L2 cells cleared: Motor HP, VFD HP, Ready For Tracking, Belt Tracked, Speed Set Up\n` +
+          `• L2 cells cleared: Verify Identity, Motor HP, VFD HP, Check Direction, Belt Tracked, Speed Set Up\n` +
           `• Cloud sync will push the clears\n` +
           `• PLC invalidate pulses will be sent` +
           (plcConnected ? '' : ' (PLC is offline — skipped)'),

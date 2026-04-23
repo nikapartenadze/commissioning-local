@@ -167,7 +167,7 @@ export function ProjectListEnhanced({
                       <div>
                         <h4 className="font-semibold text-sm">Configuration Information</h4>
                         <p className="text-xs text-muted-foreground mt-1">
-                          Use these subsystem IDs when configuring local IO Checkout Tool applications.
+                          Use these subsystem IDs when configuring local Commissioning Tool applications.
                         </p>
                       </div>
                     </div>

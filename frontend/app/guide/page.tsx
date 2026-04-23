@@ -714,7 +714,7 @@ export default function GuidePage() {
               <ArrowLeft className="w-5 h-5" />
             </Link>
             <div>
-              <h1 className="font-bold">IO Checkout Tool — Guide</h1>
+              <h1 className="font-bold">Commissioning Tool — Guide</h1>
               <p className="text-xs text-muted-foreground">Step {currentStep + 1} of {filteredSteps.length}</p>
             </div>
           </div>

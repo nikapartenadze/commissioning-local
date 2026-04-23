@@ -28,7 +28,6 @@ interface StsState {
   Valid_HP: boolean | null
   Valid_Direction: boolean | null
   Jogging: boolean | null
-  Track_Belt: boolean | null
   RVS: number | null
   KeypadButtonF1: boolean | null
 }
@@ -57,7 +56,7 @@ async function writeTag(deviceName: string, field: string, value: number, dataTy
 
 /**
  * Write one or more L2 spreadsheet cells for the active VFD device.
- * Used by wizard steps to fill in Motor HP, VFD HP, "Ready For Tracking", etc.
+ * Used by wizard steps to fill in Verify Identity, Motor HP, VFD HP, "Check Direction", etc.
  */
 async function writeL2Cells(
   deviceName: string,
@@ -110,18 +109,20 @@ function buildInitialsStamp(fullName: string | undefined | null): string {
 // pushed by the server-side polling reader (see openWizardReader in lib/vfd-wizard-reader.ts).
 
 /**
- * Read the five commissioning L2 cells for one device.
+ * Read the six commissioning L2 cells for one device.
  *
  * L2 cells are now the single source of truth for VFD commissioning state
  * (the old VfdCheckState table is gone). This is how Step 2 / Step 5 prefill
  * their inputs on reopen.
  */
 interface L2CommissioningCells {
-  motorHpField:     string | null
-  vfdHpField:       string | null
-  readyForTracking: string | null
-  beltTracked:      string | null
-  speedSetUp:       string | null
+  verifyIdentity:      string | null
+  motorHpField:        string | null
+  vfdHpField:          string | null
+  checkDirection:      string | null
+  beltTracked:         string | null
+  speedSetUp:          string | null
+  controlsVerified:    string | null
 }
 
 async function readL2CellsForDevice(deviceName: string): Promise<L2CommissioningCells | null> {
@@ -667,10 +668,10 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         setDirSent(true)
         if (process.env.NODE_ENV === 'development') console.log('[Step3] Sent Valid_Direction=1')
 
-        // Stamp "Ready For Tracking" in the L2 spreadsheet — INITIALS DATE
+        // Stamp "Check Direction" in the L2 spreadsheet — INITIALS DATE
         const stamp = buildInitialsStamp(userName)
         writeL2Cells(deviceName, sheetName, userName, [
-          { columnName: 'Ready For Tracking', value: stamp },
+          { columnName: 'Check Direction', value: stamp },
         ]).catch(() => { /* best-effort */ })
       }
     } catch (err) {
@@ -770,57 +771,23 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
   )
 }
 
-function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheetName, userName, onComplete, isComplete }: {
+function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, onComplete, isComplete }: {
   sts: StsState
   stsErrors: StsErrors
   loading: boolean
   deviceName: string
   plcConnected: boolean
-  sheetName?: string
-  userName?: string
   onComplete: () => void
   isComplete: boolean
 }) {
-  const [overrideRpm, setOverrideRpm] = useState('')
-  const [overrideSending, setOverrideSending] = useState(false)
-  const [overrideError, setOverrideError] = useState<string | null>(null)
-
-  const handleOverride = async () => {
-    if (!plcConnected || !overrideRpm) return
-    setOverrideSending(true)
-    setOverrideError(null)
-    try {
-      const rvsVal = parseFloat(overrideRpm)
-      const res = await fetch('/api/vfd-commissioning/write-tags-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceName,
-          writes: [
-            { field: 'RVS', value: rvsVal, dataType: 'REAL' },
-            { field: 'Override_RVS', value: 1, dataType: 'BOOL' },
-          ],
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok || data.success === false) {
-        const failed = (data.writes || []).filter((w: any) => !w.ok)
-        setOverrideError(data.error || failed.map((f: any) => `${f.tagPath}: ${f.error}`).join('; ') || 'Write failed')
-      }
-    } catch (err) {
-      setOverrideError(err instanceof Error ? err.message : String(err))
-    }
-    setOverrideSending(false)
-  }
-
   return (
     <div className="space-y-4">
       <p className="text-sm text-foreground/80 leading-relaxed">
-        Hand the conveyor over to the mechanical team. They run the belt using the VFD keypad while adjusting tracking.
+        Confirm that the VFD keypad controls (F0 / F1 / F2) are working correctly on this conveyor before handing over to the mechanical team for belt tracking.
       </p>
 
       <div className="rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 space-y-2">
-        <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">Keypad controls for the mechanical team</p>
+        <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">Verify these keypad controls</p>
         <ul className="text-sm text-amber-800 dark:text-amber-200 space-y-1.5">
           <li className="flex items-center gap-2.5">
             <kbd className="font-mono font-bold bg-amber-100 dark:bg-amber-900/50 px-2 py-0.5 rounded border border-amber-300 dark:border-amber-700 text-xs min-w-[24px] text-center">F1</kbd>
@@ -837,42 +804,9 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
         </ul>
       </div>
 
-      {/* Speed override — input + button only */}
-      <div className="rounded-lg border bg-card p-4 space-y-3">
-        <p className="text-sm font-semibold">Set speed</p>
-        <div className="flex items-center gap-3">
-          <Input
-            type="number"
-            min={0} max={30} step={0.1}
-            placeholder="e.g. 15.0"
-            value={overrideRpm}
-            onChange={e => setOverrideRpm(e.target.value)}
-            className="h-10 w-28 font-mono"
-          />
-          <ActionButton
-            label="Set Speed"
-            icon={Send}
-            onClick={handleOverride}
-            disabled={!plcConnected || !overrideRpm}
-            sending={overrideSending}
-          />
-        </div>
-        {overrideError && (
-          <p className="text-xs text-red-600 dark:text-red-400">{overrideError}</p>
-        )}
-      </div>
-
-      {/* Live Status — the only thing that matters */}
+      {/* Live speed — still useful for verifying F0/F2 work */}
       <div className="rounded-lg border bg-card p-4 space-y-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Status</p>
-        <StatusPill
-          label="Belt is tracking"
-          value={sts.Track_Belt}
-          loading={loading}
-          trueText="Running"
-          falseText="Stopped"
-          pendingText="Checking…"
-        />
         <div className={cn(
           "flex items-center justify-between rounded-lg border px-3 py-2.5 bg-card",
           stsErrors.RVS && "border-amber-300 bg-amber-50/40 dark:border-amber-800 dark:bg-amber-950/20",
@@ -890,23 +824,32 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, sheet
       </div>
 
       <div className="pt-2 border-t">
-        <p className="text-sm text-muted-foreground mb-3">
-          When the mechanical team is finished tracking the belt, mark this step complete.
+        {isComplete ? (
+          <div className="rounded-lg border border-green-300 bg-green-50/50 dark:border-green-800 dark:bg-green-950/20 p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+              <p className="text-sm font-semibold text-green-800 dark:text-green-200">Controls verified</p>
+            </div>
+            <p className="text-sm text-green-700 dark:text-green-300">
+              Notify the mechanical team that this conveyor is ready for belt tracking.
+            </p>
+          </div>
+        ) : (
+          <>
+            <p className="text-sm text-muted-foreground mb-3">
+              Once you've confirmed F0 / F1 / F2 controls are working, mark this conveyor as ready for tracking.
+            </p>
+            <ActionButton
+              label="Controls Verified — Ready for Tracking"
+              icon={CheckCircle2}
+              onClick={onComplete}
+              variant="primary"
+            />
+          </>
+        )}
+        <p className="text-xs text-muted-foreground mt-3">
+          The mechanical team will mark the <strong>Belt Tracked</strong> column when tracking is complete. Speed calibration unlocks after that.
         </p>
-        <ActionButton
-          label={isComplete ? "Tracking Done" : "Mark Tracking Done"}
-          icon={CheckCircle2}
-          onClick={() => {
-            if (!isComplete) {
-              const stamp = buildInitialsStamp(userName)
-              writeL2Cells(deviceName, sheetName, userName, [
-                { columnName: 'Belt Tracked', value: stamp },
-              ]).catch(() => { /* best-effort */ })
-            }
-            onComplete()
-          }}
-          variant={isComplete ? 'outline' : 'primary'}
-        />
       </div>
     </div>
   )
@@ -991,6 +934,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       const l2Result = await writeL2Cells(deviceName, sheetName, userName, [
         { columnName: 'Speed Set Up', value: stamp },
       ])
+      console.log('[Step5] writeL2Cells result:', JSON.stringify(l2Result))
       if (!l2Result?.success) {
         const failed = (l2Result?.written || []).filter((w: any) => !w.ok)
         throw new Error(l2Result?.error || (failed.length > 0 ? failed.map((f: any) => f.error).join(', ') : 'Spreadsheet write failed'))
@@ -1114,7 +1058,7 @@ const STEPS = [
   { num: 1, label: 'Identity Check', icon: Fingerprint },
   { num: 2, label: 'Horsepower Check', icon: Settings2 },
   { num: 3, label: 'Bump Test', icon: Zap },
-  { num: 4, label: 'Belt Tracking', icon: Play },
+  { num: 4, label: 'Verify Controls', icon: Play },
   { num: 5, label: 'Calibrate Speed', icon: Gauge },
 ]
 
@@ -1126,12 +1070,28 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   const [activeStep, setActiveStep] = useState(0)
   const [sts, setSts] = useState<StsState>({
     Check_Allowed: null, Valid_Map: null, Valid_HP: null,
-    Valid_Direction: null, Jogging: null, Track_Belt: null, RVS: null,
+    Valid_Direction: null, Jogging: null, RVS: null,
     KeypadButtonF1: null,
   })
   const [stsErrors, setStsErrors] = useState<StsErrors>({})
   const [stsLoading, setStsLoading] = useState(true)
   const [check4Complete, setCheck4Complete] = useState(false)
+  // Belt Tracked is now a manual entry (filled by mechanical team, not from PLC).
+  // Step 5 (Speed Calibration) is locked until the Belt Tracked L2 cell is filled.
+  const [beltTrackedDone, setBeltTrackedDone] = useState(false)
+  useEffect(() => {
+    readL2CellsForDevice(device.deviceName).then(cells => {
+      console.log(`[VFD Wizard] Restoring state for ${device.deviceName}:`, {
+        beltTracked: cells?.beltTracked ?? null,
+        controlsVerified: cells?.controlsVerified ?? null,
+        speedSetUp: cells?.speedSetUp ?? null,
+      })
+      if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
+      // Step 4 "Controls Verified" is persisted in a local DB table (no L2 column).
+      // Restore it on reopen so Step 5 isn't locked.
+      if (cells?.controlsVerified) setCheck4Complete(true)
+    })
+  }, [device.deviceName])
   // Server-side reader pushes VFD STS tag updates over WebSocket every ~100ms.
   // Wizard does NOT HTTP-poll. We:
   //   1. Open the reader on mount (server creates persistent handles + starts polling)
@@ -1185,7 +1145,6 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 `Valid_HP=${s.Valid_HP}`,
                 `Valid_Direction=${s.Valid_Direction}`,
                 `Jogging=${s.Jogging}`,
-                `Track_Belt=${s.Track_Belt}`,
                 `RVS=${s.RVS}`,
                 Object.keys(errs).length ? `errors=${JSON.stringify(errs)}` : '',
               )
@@ -1197,7 +1156,6 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
               Valid_HP: s.Valid_HP ?? null,
               Valid_Direction: s.Valid_Direction ?? null,
               Jogging: s.Jogging ?? null,
-              Track_Belt: s.Track_Belt ?? null,
               RVS: s.RVS ?? null,
               KeypadButtonF1: s.KeypadButtonF1 ?? null,
             })
@@ -1246,7 +1204,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       case 2: return sts.Valid_HP ? 'done' : (sts.Valid_Map ? (activeStep >= 2 ? 'active' : 'locked') : 'locked')
       case 3: return sts.Valid_Direction ? 'done' : (sts.Valid_HP ? (activeStep >= 3 ? 'active' : 'locked') : 'locked')
       case 4: return check4Complete ? 'done' : (sts.Valid_Direction ? (activeStep >= 4 ? 'active' : 'locked') : 'locked')
-      case 5: return check4Complete ? (activeStep >= 5 ? 'active' : 'locked') : 'locked'
+      case 5: return (check4Complete && beltTrackedDone) ? (activeStep >= 5 ? 'active' : 'locked') : 'locked'
       default: return 'locked'
     }
   }
@@ -1258,7 +1216,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     if (stepNum === 2) return sts.Valid_Map === true
     if (stepNum === 3) return sts.Valid_HP === true
     if (stepNum === 4) return sts.Valid_Direction === true
-    if (stepNum === 5) return check4Complete === true
+    if (stepNum === 5) return check4Complete === true && beltTrackedDone === true
     return false
   }
 
@@ -1282,9 +1240,9 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       if (!cells) return
       const toWrite: { columnName: string; value: string }[] = []
 
-      // Step 3: Valid_Direction is true but "Ready For Tracking" not stamped
-      if (sts.Valid_Direction === true && !cells.readyForTracking?.trim()) {
-        toWrite.push({ columnName: 'Ready For Tracking', value: buildInitialsStamp(userName) })
+      // Step 3: Valid_Direction is true but "Check Direction" not stamped
+      if (sts.Valid_Direction === true && !cells.checkDirection?.trim()) {
+        toWrite.push({ columnName: 'Check Direction', value: buildInitialsStamp(userName) })
       }
 
       if (toWrite.length > 0) {
@@ -1385,7 +1343,20 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
-            {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onComplete={() => setCheck4Complete(prev => !prev)} isComplete={check4Complete} />}
+            {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
+              setCheck4Complete(true)
+              // Persist to local DB so reopening the wizard remembers this
+              fetch('/api/vfd-commissioning/controls-verified', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deviceName: device.deviceName, completedBy: userName }),
+              })
+                .then(r => {
+                  if (!r.ok) console.error('[VFD Controls] POST failed:', r.status)
+                  else console.log('[VFD Controls] Saved for', device.deviceName)
+                })
+                .catch(err => console.error('[VFD Controls] POST error:', err))
+            }} isComplete={check4Complete} />}
             {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
           </div>
 

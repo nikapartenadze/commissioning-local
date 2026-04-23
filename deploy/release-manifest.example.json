@@ -1,6 +1,6 @@
 {
   "version": "2.10.1",
-  "installerUrl": "https://commissioning.lci.ge/downloads/io-checkout/IOCheckout-Setup-v2.10.1.exe",
+  "installerUrl": "https://commissioning.lci.ge/downloads/commissioning-tool/CommissioningTool-Setup-v2.10.1.exe",
   "publishedAt": "2026-04-13T12:00:00Z",
   "notes": "Fixes sync durability issues and adds host-managed updates."
 }
