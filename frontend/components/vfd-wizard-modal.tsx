@@ -855,9 +855,9 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, onCom
   )
 }
 
-function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName }: {
+function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onSpeedLogged }: {
   sts: StsState; stsErrors: StsErrors; loading: boolean; deviceName: string; subsystemId: number; plcConnected: boolean
-  sheetName?: string; userName?: string
+  sheetName?: string; userName?: string; onSpeedLogged?: () => void
 }) {
   void subsystemId // accepted for API parity; no longer used — state lives in L2
 
@@ -941,6 +941,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       }
 
       setLastResult({ fpm: fpmVal, rvs: capturedRvs, ts: Date.now() })
+      onSpeedLogged?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -1079,6 +1080,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // Belt Tracked is now a manual entry (filled by mechanical team, not from PLC).
   // Step 5 (Speed Calibration) is locked until the Belt Tracked L2 cell is filled.
   const [beltTrackedDone, setBeltTrackedDone] = useState(false)
+  // Speed Set Up tracks whether step 5 (Calibrate Speed) was completed.
+  const [speedSetUpDone, setSpeedSetUpDone] = useState(false)
   useEffect(() => {
     readL2CellsForDevice(device.deviceName).then(cells => {
       console.log(`[VFD Wizard] Restoring state for ${device.deviceName}:`, {
@@ -1090,6 +1093,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       // Step 4 "Controls Verified" is persisted in a local DB table (no L2 column).
       // Restore it on reopen so Step 5 isn't locked.
       if (cells?.controlsVerified) setCheck4Complete(true)
+      // Step 5 "Calibrate Speed" — mark done if the L2 cell already has a value.
+      if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
     })
   }, [device.deviceName])
   // Server-side reader pushes VFD STS tag updates over WebSocket every ~100ms.
@@ -1204,7 +1209,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       case 2: return sts.Valid_HP ? 'done' : (sts.Valid_Map ? (activeStep >= 2 ? 'active' : 'locked') : 'locked')
       case 3: return sts.Valid_Direction ? 'done' : (sts.Valid_HP ? (activeStep >= 3 ? 'active' : 'locked') : 'locked')
       case 4: return check4Complete ? 'done' : (sts.Valid_Direction ? (activeStep >= 4 ? 'active' : 'locked') : 'locked')
-      case 5: return (check4Complete && beltTrackedDone) ? (activeStep >= 5 ? 'active' : 'locked') : 'locked'
+      case 5: return speedSetUpDone ? 'done' : (check4Complete && beltTrackedDone) ? (activeStep >= 5 ? 'active' : 'locked') : 'locked'
       default: return 'locked'
     }
   }
@@ -1357,7 +1362,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 })
                 .catch(err => console.error('[VFD Controls] POST error:', err))
             }} isComplete={check4Complete} />}
-            {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
+            {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
           </div>
 
           {/* Footer navigation */}

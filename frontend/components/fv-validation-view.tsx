@@ -184,7 +184,8 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
     try {
       setLoading(true)
       setError(null)
-      const res = await authFetch('/api/l2')
+      // Cache-bust to ensure we get fresh data after wizard writes
+      const res = await authFetch(`/api/l2?_t=${Date.now()}`)
       if (!res.ok) throw new Error(`Failed to fetch functional validation data: ${res.status}`)
       const json: FVData = await res.json()
       setData(json)
@@ -194,6 +195,7 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
         map.set(`${cv.DeviceId}-${cv.ColumnId}`, { Value: cv.Value, Version: cv.Version })
       }
       setCellValues(map)
+      console.log(`[FV] Refreshed: ${json.cellValues.length} cells loaded`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load functional validation data')
     } finally {
