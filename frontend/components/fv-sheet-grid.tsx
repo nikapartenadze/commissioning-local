@@ -407,7 +407,14 @@ export function FVSheetGrid({
     const key = `${device.id}-${col.id}`
     const cv = cellValues.get(key)
     const value = cv?.Value ?? null
-    const inputType = normalizeFVInputType(col.ColumnType, col.InputType)
+    let inputType = normalizeFVInputType(col.ColumnType, col.InputType)
+
+    // If the column is "number" but the value contains non-numeric text
+    // (e.g. wizard stamps like "ASH 4/23 · 375 FPM @ 29.99 RVS"),
+    // render as text so the value is visible instead of blank.
+    if (inputType === 'number' && value && isNaN(Number(value))) {
+      inputType = 'text'
+    }
 
     switch (inputType) {
       case 'pass_fail':
