@@ -1,79 +1,68 @@
-# Commissioning Workspace
+# Commissioning Tool
 
-This directory is an umbrella workspace for three related applications that are developed and deployed together but kept in their own repositories.
+Field commissioning tool for industrial PLC systems. Used by technicians on tablets and laptops to test, validate, and commission conveyor and VFD systems on-site.
 
-## Projects
+## What It Does
 
-| Path | Role | Primary Runtime |
-|------|------|-----------------|
-| `frontend/` | Local commissioning tool used on site for PLC I/O checkout, offline-first operation, and field testing | Vite + React + Express + SQLite + libplctag |
-| `commissioning-cloud/` | Cloud commissioning app and sync API used by field tools and dashboards | Next.js + Prisma + PostgreSQL |
-| `installation-tracker/` | Installation progress tracker for warehouse/distribution projects | Next.js + Prisma + PostgreSQL |
+- Connects to Allen-Bradley PLCs over Ethernet/IP
+- Reads and writes PLC tags in real-time via WebSocket
+- VFD commissioning wizard (identity, HP, bump test, controls, speed calibration)
+- L2 Functional Validation spreadsheet with pass/fail tracking
+- I/O point testing with live state monitoring
+- Offline-first with local SQLite database
+- Syncs results to cloud when connected
+- Safety zone and E-Stop verification
+- Network topology visualization
 
-## Why They Live Side by Side
+## Tech Stack
 
-These apps share system context:
+- **Client:** Vite + React 18 + React Router
+- **Server:** Express 5 + TypeScript
+- **Database:** SQLite (better-sqlite3)
+- **PLC:** libplctag via ffi-rs
+- **Realtime:** WebSocket on port 3000
 
-- They move together through the same delivery pipeline.
-- They depend on common data contracts and operational assumptions.
-- They are tied to one central PostgreSQL system in the broader platform.
-- The local field tool also keeps a local SQLite working database for offline use and syncs central state through the cloud app.
+## Quick Start
 
-Keeping the repos adjacent makes cross-project work tractable when a change touches:
-
-- database schema or table ownership
-- sync payloads and versioning
-- shared project/subsystem/IO concepts
-- deployment and environment assumptions
-
-## Repo Boundaries
-
-The directories are intentionally colocated, but they are not one merged codebase.
-
-- `frontend/` belongs to the local commissioning tool codebase in this workspace.
-- `commissioning-cloud/` has its own Git repository and release flow.
-- `installation-tracker/` has its own Git repository and release flow.
-
-When a task spans multiple apps:
-
-1. Inspect each affected repo directly.
-2. Treat contracts as explicit: API shapes, schema fields, version rules, auth, and deployment assumptions.
-3. Commit and push in the owning repo for each app.
-4. Do not assume a root `git status` represents the nested repos.
-
-## System Topology
-
-```text
-Field Tablet / Laptop
-  -> frontend/ local commissioning app
-  -> local SQLite cache + PLC connection
-  -> sync/update APIs in commissioning-cloud/
-  -> central PostgreSQL data used across cloud services
-  -> installation-tracker/ reads and writes related project/install data
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-## Documentation Map
+- Vite client: http://localhost:5173
+- Express API + WebSocket: http://localhost:3000
 
-Workspace-level:
+## Distribution
 
-- [CLAUDE.md](CLAUDE.md)
-- [SYNC-ARCHITECTURE.md](SYNC-ARCHITECTURE.md)
-- [DEPLOYMENT-STRATEGY.md](DEPLOYMENT-STRATEGY.md)
+Ships as a portable ZIP (~42 MB) or Windows NSIS installer (~55 MB). No installation required for portable mode — extract and run `START.bat`.
 
-Per app:
+```bash
+# Build portable
+cd deploy
+powershell -ExecutionPolicy Bypass -File build-portable-auto.ps1
 
-- [frontend/CLAUDE.md](frontend/CLAUDE.md)
-- [commissioning-cloud/CLAUDE.md](commissioning-cloud/CLAUDE.md)
-- [installation-tracker/CLAUDE.md](installation-tracker/CLAUDE.md)
+# Or use the batch file
+BUILD-PORTABLE.bat
+```
 
-Operational docs for the local tool:
+## Project Structure
 
-- [deploy/BUILD-RELEASE-GUIDE.md](deploy/BUILD-RELEASE-GUIDE.md)
-- [deploy/INSTALLER-GUIDE.md](deploy/INSTALLER-GUIDE.md)
-- [docs/SYNC-CONTRACT.md](docs/SYNC-CONTRACT.md)
-- [docs/SYNC-VALIDATION-CHECKLIST.md](docs/SYNC-VALIDATION-CHECKLIST.md)
-- [docs/HOST-UPDATER.md](docs/HOST-UPDATER.md)
+```
+frontend/
+  app/api/          # Express route handlers
+  components/       # React UI components
+  lib/              # Database, PLC, sync, config services
+  routes/           # Express router mount table
+  server-express.ts # Production server entry point
+  src/              # Vite client entry point
+deploy/             # Build scripts, installer, batch templates
+```
 
-## Working Rule
+## Ports
 
-Use the root as the workspace entry point, then drop into the owning app before making assumptions about runtime, framework, or deployment details.
+| Port | Purpose |
+|------|---------|
+| 3000 | HTTP server + WebSocket |
+| 3102 | Internal broadcast API (localhost only) |
+| 5173 | Vite dev server (dev only) |

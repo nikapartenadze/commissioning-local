@@ -245,5 +245,28 @@ export function createApiRouter(): Router {
   // ── Device Identity ───────────────────────────────────────────
   router.get('/api/device/identity', asyncHandler(deviceIdentity.GET))
 
+  // ── Global Error Handler ──────────────────────────────────────
+  // Catches all errors from asyncHandler() and prevents them from
+  // becoming unhandled rejections that crash the process.
+  router.use((err: any, req: any, res: any, _next: any) => {
+    const status = err.status || err.statusCode || 500
+    const message = err.message || 'Internal Server Error'
+    const route = `${req.method} ${req.originalUrl || req.url}`
+
+    // Log all server errors with full context
+    if (status >= 500) {
+      console.error(`[API] ${route} → ${status} ERROR: ${message}${err.stack ? '\n' + err.stack : ''}`)
+    } else {
+      console.warn(`[API] ${route} → ${status}: ${message}`)
+    }
+
+    // Don't leak internal error details in production
+    if (!res.headersSent) {
+      res.status(status).json({
+        error: process.env.NODE_ENV === 'development' ? message : 'Internal Server Error',
+      })
+    }
+  })
+
   return router
 }

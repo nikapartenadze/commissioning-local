@@ -105,7 +105,9 @@ class AutoSyncService {
             this.pullFromCloud()
           })
         }
-      } catch {}
+      } catch (err) {
+        console.warn('[AutoSync] Failed to start SSE client:', err)
+      }
 
       // Subscribe to config changes so SSE client stays in sync
       configService.onChange((event) => {
@@ -254,14 +256,16 @@ class AutoSyncService {
               const updateCrStmt = db.prepare('UPDATE ChangeRequests SET CloudId = ? WHERE id = ?')
               for (const cr of acknowledgedRequests) {
                 if (cr.localId && cr.cloudId) {
-                  try { updateCrStmt.run(cr.cloudId, cr.localId) } catch {}
+                  try { updateCrStmt.run(cr.cloudId, cr.localId) } catch (e) { console.warn('[AutoSync] Failed to update CR cloudId:', e) }
                 }
               }
             }
             console.log(`[AutoSync] Cloud acknowledged ${acknowledgedIds.length}/${pendingRequests.length} change requests`)
           }
         }
-      } catch { /* ignore change request sync errors */ }
+      } catch (err) {
+        console.warn('[AutoSync] Change request push error:', err instanceof Error ? err.message : err)
+      }
 
       // Push pending L2 cell value changes to cloud
       // Strategy: re-read current local cell state for each pending sync to handle
@@ -349,7 +353,7 @@ class AutoSyncService {
               .map(u => u.pendingId)
 
             for (const id of conflictedPendingIds) {
-              try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run('version conflict', id) } catch {}
+              try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run('version conflict', id) } catch (e) { console.warn('[AutoSync] Failed to update L2 retry count:', e) }
             }
 
             const updatedCount = l2Data.updatedCount ?? successfulPendingIds.length
@@ -361,12 +365,14 @@ class AutoSyncService {
             }
           } else {
             for (const p of dedupedPending) {
-              try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status}`, p.id) } catch {}
+              try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status}`, p.id) } catch (e) { console.warn('[AutoSync] Failed to update L2 retry count:', e) }
             }
           }
         }
 
-      } catch { /* ignore L2 sync errors */ }
+      } catch (err) {
+        console.warn('[AutoSync] L2 cell sync error:', err instanceof Error ? err.message : err)
+      }
 
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -598,19 +604,23 @@ class AutoSyncService {
                       new Date().toISOString(),
                       cr.cloudId,
                     )
-                  } catch {}
+                  } catch (e) { console.warn('[AutoSync] Failed to update CR status:', e) }
                 }
               }
               console.log(`[AutoSync] Pulled ${crData.requests.length} change request status updates`)
             }
           }
         }
-      } catch { /* ignore change request pull errors */ }
+      } catch (err) {
+        console.warn('[AutoSync] Change request pull error:', err instanceof Error ? err.message : err)
+      }
 
       try {
         const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
         getCloudSyncService().setConnectionState('connected')
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.warn('[AutoSync] Failed to set cloud connection state:', err)
+      }
 
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)

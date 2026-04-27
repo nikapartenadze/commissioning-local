@@ -64,6 +64,19 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   CreateDirectory "$DATA_DIR\logs"
   CreateDirectory "$DATA_DIR\backups"
 
+  ; ── Pre-upgrade database backup (safety net for rollback) ──
+  IfFileExists "$DATA_DIR\database.db" 0 skip_backup
+    ; Copy database to backups with version + timestamp in filename
+    ; Format: pre-upgrade-vX.Y.Z-YYYYMMDD-HHMMSS.db
+    ; Read previous version from registry (if upgrading)
+    ReadRegStr $1 HKLM "Software\${APP_SHORT}" "Version"
+    StrCmp $1 "" no_prev_version
+      ${GetTime} "" "L" $2 $3 $4 $5 $6 $7 $8
+      CopyFiles /SILENT "$DATA_DIR\database.db" "$DATA_DIR\backups\pre-upgrade-v$1-$4$3$2-$6$7.db"
+      DetailPrint "Database backed up: pre-upgrade-v$1-$4$3$2-$6$7.db"
+    no_prev_version:
+  skip_backup:
+
   ; ── Copy app files (replaced on upgrade) ──
   SetOutPath "$INSTDIR\node"
   File /r "${PORTABLE_DIR}\node\*.*"
@@ -131,6 +144,24 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
 
   ; ── Start Service ──
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE_NAME}'
+
+  ; ── Log upgrade event (append to install-history.log for audit trail) ──
+  ReadRegStr $1 HKLM "Software\${APP_SHORT}" "Version"
+  StrCmp $1 "" fresh_install
+    ; Upgrade
+    ${GetTime} "" "L" $2 $3 $4 $5 $6 $7 $8
+    FileOpen $0 "$DATA_DIR\logs\install-history.log" a
+    FileSeek $0 0 END
+    FileWrite $0 "$4-$3-$2 $6:$7:$8 UPGRADE v$1 -> v${APP_VERSION}$\r$\n"
+    FileClose $0
+    Goto reg_write
+  fresh_install:
+    ${GetTime} "" "L" $2 $3 $4 $5 $6 $7 $8
+    FileOpen $0 "$DATA_DIR\logs\install-history.log" a
+    FileSeek $0 0 END
+    FileWrite $0 "$4-$3-$2 $6:$7:$8 INSTALL v${APP_VERSION} (fresh)$\r$\n"
+    FileClose $0
+  reg_write:
 
   ; ── Registry (for uninstall + upgrade detection) ──
   WriteRegStr HKLM "Software\${APP_SHORT}" "InstallDir" "$INSTDIR"
