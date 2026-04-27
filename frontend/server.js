@@ -123,6 +123,9 @@ const CONSOLE_PATTERNS = [
   /User logged in/,
   /Auto-seeded \d+ diagnostic/,
   /ERROR|EADDRINUSE/,
+  /\[SHUTDOWN\]/,
+  /\[FATAL\]/,
+  /\[HEALTH\].*WARNING/,
 ];
 
 // Messages matching these patterns are FILE-ONLY (noise)
@@ -214,6 +217,16 @@ console.log('Commissioning Tool - Production Server');
 console.log('');
 console.log(`  App + WebSocket: http://${HOSTNAME}:${PORT} (ws upgrades on /ws)`);
 console.log('');
+
+// Log startup diagnostics to file for crash investigation
+const startupInfo = [
+  `[STARTUP] Server starting at ${new Date().toISOString()}`,
+  `[STARTUP] Node.js ${process.version}, pid: ${process.pid}, platform: ${process.platform} ${process.arch}`,
+  `[STARTUP] PORT=${PORT}, HOSTNAME=${HOSTNAME}, NODE_ENV=${process.env.NODE_ENV || 'undefined'}`,
+  `[STARTUP] Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB RSS`,
+  `[STARTUP] Log dir: ${LOG_DIR}`,
+];
+startupInfo.forEach(line => appendLog(LOG_FILE, `${logTimestamp()} ${line}`));
 
 // ============================================================================
 // PLC WebSocket Server (noServer mode — attached to main HTTP server)
@@ -417,17 +430,79 @@ setTimeout(async () => {
 }, 8000);
 
 // ============================================================================
-// Graceful Shutdown
+// Graceful Shutdown & Crash Protection
 // ============================================================================
 
-function shutdown() {
-  console.log('\nShutting down...');
-  // Stop auto-sync
+let isShuttingDown = false;
+
+function shutdown(signal) {
+  if (isShuttingDown) return; // prevent double-shutdown
+  isShuttingDown = true;
+
+  const ts = logTimestamp();
+  const msg = `[SHUTDOWN] Server stopping — signal: ${signal} (pid: ${process.pid}, uptime: ${Math.floor(process.uptime())}s)`;
+  console.log(msg);
+  // Ensure it's in the log file even if console.log filtering hides it
+  appendLog(LOG_FILE, `${ts} ${msg}`);
+
+  // Stop auto-sync (best-effort, don't block shutdown)
   fetch(`http://localhost:${PORT}/api/cloud/auto-sync`, { method: 'DELETE' }).catch(() => {});
   plcWss.close();
   broadcastHttpServer.close();
+
+  // Force exit after 5 seconds if graceful close hangs
+  setTimeout(() => {
+    appendLog(LOG_FILE, `${logTimestamp()} [SHUTDOWN] Forced exit after 5s timeout`);
+    process.exit(1);
+  }, 5000).unref();
+
   process.exit(0);
 }
 
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+// Intentional signals (Ctrl+C, kill, Windows service stop)
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// ============================================================================
+// Crash Handlers — catch unhandled errors and LOG them before dying
+// ============================================================================
+
+process.on('uncaughtException', (err) => {
+  const ts = logTimestamp();
+  const msg = `[FATAL] Uncaught exception: ${err.message}\n${err.stack || '(no stack)'}`;
+  // Write directly to error log — console.error might be intercepted/suppressed
+  appendLog(ERROR_FILE, `${ts} ${msg}`);
+  appendLog(LOG_FILE, `${ts} ${msg}`);
+  // Also print to raw stderr so it shows in the terminal
+  process.stderr.write(`\n${ts} ${msg}\n`);
+  // Exit with error code — the process is in an unknown state
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const ts = logTimestamp();
+  const errMsg = reason instanceof Error
+    ? `${reason.message}\n${reason.stack || '(no stack)'}`
+    : String(reason);
+  const msg = `[FATAL] Unhandled promise rejection: ${errMsg}`;
+  appendLog(ERROR_FILE, `${ts} ${msg}`);
+  appendLog(LOG_FILE, `${ts} ${msg}`);
+  process.stderr.write(`\n${ts} ${msg}\n`);
+  // Exit — unhandled rejections are crashes since Node 15+
+  process.exit(1);
+});
+
+// Log memory usage periodically to detect leaks leading to crashes
+setInterval(() => {
+  const mem = process.memoryUsage();
+  const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+  const rssMB = Math.round(mem.rss / 1024 / 1024);
+  const externalMB = Math.round(mem.external / 1024 / 1024);
+  appendLog(LOG_FILE, `${logTimestamp()} [HEALTH] Memory: heap=${heapMB}MB, rss=${rssMB}MB, external=${externalMB}MB, clients=${plcClients.size}, uptime=${Math.floor(process.uptime())}s`);
+  // Warn if memory is getting high (> 512MB RSS)
+  if (rssMB > 512) {
+    const warning = `[HEALTH] HIGH MEMORY WARNING: RSS=${rssMB}MB — possible memory leak`;
+    appendLog(ERROR_FILE, `${logTimestamp()} ${warning}`);
+    console.warn(warning);
+  }
+}, 60000); // every 60 seconds

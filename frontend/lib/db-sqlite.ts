@@ -77,6 +77,21 @@ try {
       if (cleared.changes > 0) {
         console.log(`[DB] Invalidated ${cleared.changes} Belt Tracked cell(s) — now manual entry only`)
       }
+      // Write the sentinel flag so this migration never runs again.
+      // Pick the first Belt Tracked cell (or insert one) and set its value to the flag.
+      const flagCol = db.prepare(`SELECT id FROM L2Columns WHERE LOWER(TRIM(Name)) = 'belt tracked' LIMIT 1`).get() as { id: number } | undefined
+      if (flagCol) {
+        const anyDevice = db.prepare(`SELECT DeviceId FROM L2CellValues WHERE ColumnId = ? LIMIT 1`).get(flagCol.id) as { DeviceId: number } | undefined
+        if (anyDevice) {
+          db.prepare(`UPDATE L2CellValues SET Value = '__invalidated_v2.20__' WHERE DeviceId = ? AND ColumnId = ?`).run(anyDevice.DeviceId, flagCol.id)
+        } else {
+          // No cell exists yet — find any device and insert a flag row
+          const anyDev = db.prepare(`SELECT id FROM L2Devices LIMIT 1`).get() as { id: number } | undefined
+          if (anyDev) {
+            db.prepare(`INSERT OR IGNORE INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt) VALUES (?, ?, '__invalidated_v2.20__', 'system:belt-tracked-flag', datetime('now'))`).run(anyDev.id, flagCol.id)
+          }
+        }
+      }
     }
   } catch { /* non-critical */ }
   // Indexes for L2 query performance

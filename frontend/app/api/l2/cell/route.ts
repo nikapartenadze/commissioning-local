@@ -107,7 +107,7 @@ export async function POST(req: Request, res: Response) {
           try {
             const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
             getCloudSseClient()?.trackPushedL2Id(cloudDeviceId, cloudColumnId)
-          } catch {}
+          } catch (e) { console.warn('[L2 SSE] trackPushedL2Id failed:', e) }
 
           // Cloud accepted our update — drop the latest pendingSync row for this cell
           try {

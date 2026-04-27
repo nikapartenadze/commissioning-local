@@ -112,8 +112,10 @@ class CloudSseClient {
           connected: state === 'connected',
           state,
         }),
-      }).catch(() => {})
-    } catch {}
+      }).catch(() => { /* WS broadcast server may not be running */ })
+    } catch (err) {
+      console.warn('[CloudSSE] Failed to broadcast connection state change:', err)
+    }
   }
 
   private async startStream(): Promise<void> {
@@ -150,7 +152,9 @@ class CloudSseClient {
 
       // Fire onConnect callbacks (e.g., trigger immediate pending sync push)
       Array.from(this._onConnectCallbacks).forEach(cb => {
-        try { cb() } catch {}
+        try { cb() } catch (err) {
+          console.error('[CloudSSE] Error in onConnect callback:', err)
+        }
       })
 
       // Parse SSE stream
@@ -177,8 +181,8 @@ class CloudSseClient {
             const data = dataLines.join('\n')
             try {
               this.handleEvent(JSON.parse(data))
-            } catch {
-              // Skip malformed events
+            } catch (err) {
+              console.warn('[CloudSSE] Malformed SSE event data:', data.substring(0, 200), err)
             }
           }
         }
@@ -241,7 +245,9 @@ class CloudSseClient {
       case 'l2-cell-updated':
       case 'l2_cell_updated': {
         const l2Data = event.data || event
-        this.handleL2CellUpdated(l2Data).catch(() => {})
+        this.handleL2CellUpdated(l2Data).catch((err) => {
+          console.error('[CloudSSE] L2 cell update error:', err)
+        })
         break
       }
 
@@ -308,11 +314,13 @@ class CloudSseClient {
             timestamp: event.timestamp ?? '',
             comments: event.comments ?? '',
           }),
-        }).catch(() => {})
-      } catch {}
+        }).catch(() => { /* WS broadcast best-effort */ })
+      } catch (wsErr) {
+        console.warn('[CloudSSE] Failed to broadcast IO update to WS:', wsErr)
+      }
 
     } catch (error) {
-      // Skip individual IO update errors
+      console.error('[CloudSSE] Error handling IO update for id', ioId, ':', error)
     }
   }
 
@@ -372,11 +380,13 @@ class CloudSseClient {
             updatedAt: data.updatedAt,
           }),
         })
-      } catch {}
+      } catch (wsErr) {
+        console.warn('[CloudSSE] Failed to broadcast L2 cell update to WS:', wsErr)
+      }
 
       console.log(`[SSE] L2 cell update applied: device ${localDev.id} col ${localCol.id} = "${data.value}" (v${data.version})`)
     } catch (error) {
-      // Skip individual L2 cell update errors
+      console.error('[CloudSSE] Error handling L2 cell update:', error)
     }
   }
 }

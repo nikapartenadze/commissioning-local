@@ -157,7 +157,7 @@ export async function POST(req: Request, res: Response) {
         await fetch(`http://localhost:${port}/api/network/status?subsystemId=${body.subsystemId || ''}`)
         await fetch(`http://localhost:${port}/api/estop/status`)
         console.log('[Connect API] Network + EStop tag handles created in background')
-      } catch {}
+      } catch (e) { console.warn('[Connect API] Background network/estop status fetch failed:', e) }
     }, 5000)
 
     return res.json({

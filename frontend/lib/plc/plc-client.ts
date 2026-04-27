@@ -120,6 +120,13 @@ export class PlcClient extends EventEmitter {
     this.config = { ...DEFAULT_CLIENT_CONFIG, ...config };
     this.tagReader = createTagReader(this.config);
 
+    // Safety: add a default 'error' listener so unhandled errors don't crash the process.
+    // PlcClientManager.setupClientEventListeners() adds its own, but this ensures
+    // there is ALWAYS at least one listener even if setup hasn't happened yet.
+    this.on('error', (err) => {
+      console.error('[PlcClient] Unhandled error event:', err.message || err);
+    });
+
     // Store bound listeners for later removal
     this.boundTagValueChange = this.handleTagValueChange.bind(this);
     this.boundConnectionStatusChange = this.handleConnectionStatusChange.bind(this);

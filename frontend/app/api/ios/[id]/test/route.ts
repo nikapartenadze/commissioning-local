@@ -126,7 +126,7 @@ export async function POST(req: Request, res: Response) {
       try {
         const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
         getCloudSseClient()?.trackPushedId(ioId)
-      } catch {}
+      } catch (e) { console.warn('[Test SSE] trackPushedId failed:', e) }
 
       const key = `io:${ioId}`
       enqueueSyncPush(key, async () => {

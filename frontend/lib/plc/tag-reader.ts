@@ -109,6 +109,14 @@ export class TagReaderService extends EventEmitter {
   constructor(config: Partial<TagReaderConfig> = {}) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
+
+    // Safety: ensure there is always at least one 'error' listener.
+    // Node.js EventEmitter throws on unhandled 'error' events, which would
+    // crash the entire process. PlcClient attaches its own listener, but
+    // this guards against the window before that happens.
+    this.on('error', (err: Error, tagName?: string) => {
+      console.error(`[TagReader] Unhandled error${tagName ? ` for tag ${tagName}` : ''}:`, err.message || err);
+    });
   }
 
   /**
