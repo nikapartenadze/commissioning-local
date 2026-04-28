@@ -1,0 +1,76 @@
+/* Color rules for SVG device <g> elements based on data-status attribute.
+ * Bold, saturated for factory lighting. The map injects data-status onto
+ * each <g id="..."> element after the SVG is loaded.
+ *
+ * The :where() wrapper keeps specificity low so existing inline fill/stroke
+ * attributes on the rect/path inside the <g> are overridden.
+ */
+
+.guided-svg :where(g[data-status] rect, g[data-status] path) {
+  transition: fill 200ms ease, stroke 200ms ease;
+}
+
+/* untested: light gray fill, dark gray stroke */
+.guided-svg g[data-status="untested"] :where(rect, path) {
+  fill: #f5f5f5;
+  stroke: #475569;
+  stroke-width: 1.5;
+}
+
+/* in_progress: amber */
+.guided-svg g[data-status="in_progress"] :where(rect, path) {
+  fill: #fcd34d;
+  stroke: #b45309;
+  stroke-width: 1.5;
+}
+
+/* passed: saturated green */
+.guided-svg g[data-status="passed"] :where(rect, path) {
+  fill: #4ade80;
+  stroke: #166534;
+  stroke-width: 1.5;
+}
+
+/* failed: bold red */
+.guided-svg g[data-status="failed"] :where(rect, path) {
+  fill: #f87171;
+  stroke: #991b1b;
+  stroke-width: 1.5;
+}
+
+/* skipped: striped gray (uses repeating-linear-gradient pattern via SVG defs is overkill for v1; use mid-gray with dashed stroke) */
+.guided-svg g[data-status="skipped"] :where(rect, path) {
+  fill: #cbd5e1;
+  stroke: #64748b;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+/* no_ios: muted, slightly transparent */
+.guided-svg g[data-status="no_ios"] :where(rect, path) {
+  fill: #e5e7eb;
+  stroke: #9ca3af;
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+/* current target: bright pulsing blue outline (independent of state) */
+.guided-svg g[data-current="true"] :where(rect, path) {
+  stroke: #2563eb;
+  stroke-width: 3;
+  animation: guided-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes guided-pulse {
+  0%, 100% { stroke-opacity: 1; }
+  50% { stroke-opacity: 0.45; }
+}
+
+/* hover/click affordance — slight elevation */
+.guided-svg g[data-status]:not([data-status="no_ios"]) {
+  cursor: pointer;
+}
+
+.guided-svg g[data-status]:not([data-status="no_ios"]):hover :where(rect, path) {
+  filter: brightness(1.05);
+}
