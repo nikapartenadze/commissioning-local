@@ -67,6 +67,12 @@ export function guidedReducer(state: GuidedState, action: GuidedAction): GuidedS
 export function useGuidedSession(subsystemId: number) {
   const [state, dispatch] = useReducer(guidedReducer, initialGuidedState)
 
+  // We intentionally trigger refetch via state.refreshCounter rather than
+  // state.skippedDevices: skip/unskip actions both bump the counter, and
+  // any future action that needs a refetch should follow the same pattern.
+  // (skippedDevices is read inside the effect to build the query string,
+  // but is not in the dep array — the counter is the single source of truth
+  // for "something changed; reload devices".)
   useEffect(() => {
     let cancelled = false
     dispatch({ type: 'LOAD_START' })
