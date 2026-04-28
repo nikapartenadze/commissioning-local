@@ -1,16 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, MapPin } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useGuidedSession } from '@/lib/guided/use-guided-session'
 import { findCurrentTarget } from '@/lib/guided/device-state'
-import { GuidedTestingMap } from './guided-testing-map'
+import { GuidedTestingMap, type GuidedTestingMapHandle } from './guided-testing-map'
 import { DeviceTestPanel } from './device-test-panel'
 
 export function GuidedModePage() {
   const { id } = useParams<{ id: string }>()
   const subsystemId = id ? parseInt(id, 10) : NaN
   const [svgMarkup, setSvgMarkup] = useState<string | null>(null)
+  const mapRef = useRef<GuidedTestingMapHandle | null>(null)
   const { state, openDevice, closeDevice, skipDevice } = useGuidedSession(subsystemId)
 
   useEffect(() => {
@@ -73,6 +74,7 @@ export function GuidedModePage() {
           </div>
         ) : (
           <GuidedTestingMap
+            ref={mapRef}
             svgMarkup={svgMarkup}
             devices={state.devices}
             currentTarget={currentTarget}
@@ -84,7 +86,13 @@ export function GuidedModePage() {
         {currentTarget && !selectedDevice && (
           <button
             type="button"
-            onClick={() => openDevice(currentTarget.deviceName)}
+            onClick={() => {
+              // Pan first, then open the drawer — user sees the device move
+              // into view, then the drawer slides in. Spec §12 acceptance
+              // criterion: "Tapping 'Next →' pans to and opens the current target."
+              mapRef.current?.centerOnDevice(currentTarget.deviceName)
+              openDevice(currentTarget.deviceName)
+            }}
             className="absolute bottom-4 right-4 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2 text-sm font-semibold"
           >
             <MapPin className="w-4 h-4" />

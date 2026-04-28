@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch'
+import type { ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch'
 import type { Device } from '@/lib/guided/types'
 import './guided-mode.css'
 
@@ -14,14 +15,45 @@ interface Props {
   onDeviceClick: (deviceName: string) => void
 }
 
+/** Imperative API exposed to parents via ref. */
+export interface GuidedTestingMapHandle {
+  /**
+   * Pan/zoom the SVG so the named device is centered and comfortably visible.
+   * No-op if the device's <g> can't be found in the live DOM.
+   */
+  centerOnDevice: (deviceName: string) => void
+}
+
 /**
  * Renders the SCADA SVG full-screen with pan/zoom, then walks the live DOM
  * to set `data-status` (and `data-current` on the current target) on each
  * <g> matching a known device. Click delegation is on the container; we
  * inspect `event.target.closest('g[data-status]')` to find which device.
  */
-export function GuidedTestingMap({ svgMarkup, devices, currentTarget, onDeviceClick }: Props) {
+export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(function GuidedTestingMap(
+  { svgMarkup, devices, currentTarget, onDeviceClick },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const transformRef = useRef<ReactZoomPanPinchContentRef | null>(null)
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      centerOnDevice(deviceName: string) {
+        const root = containerRef.current
+        const transform = transformRef.current
+        if (!root || !transform) return
+        // Pass the actual DOM node (not a string id) — string ids don't always
+        // resolve when the element is nested deep in the SVG.
+        const g = root.querySelector(`svg g[id="${CSS.escape(deviceName)}"]`)
+        if (!(g instanceof HTMLElement) && !(g instanceof SVGElement)) return
+        // zoomToElement accepts HTMLElement | string; SVGGElement works at runtime.
+        transform.zoomToElement(g as unknown as HTMLElement, 1.5, 400)
+      },
+    }),
+    [],
+  )
 
   // After the SVG is in the DOM, stamp data-status on each <g> from the device list.
   useEffect(() => {
@@ -73,6 +105,7 @@ export function GuidedTestingMap({ svgMarkup, devices, currentTarget, onDeviceCl
   return (
     <div className="w-full h-full bg-slate-50 overflow-hidden">
       <TransformWrapper
+        ref={transformRef}
         minScale={0.3}
         maxScale={4}
         initialScale={0.6}
@@ -94,4 +127,4 @@ export function GuidedTestingMap({ svgMarkup, devices, currentTarget, onDeviceCl
       </TransformWrapper>
     </div>
   )
-}
+})
