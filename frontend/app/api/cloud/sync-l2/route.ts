@@ -32,18 +32,22 @@ export async function POST(req: Request, res: Response) {
 
     console.log(`[L2 Sync] Manual sync triggered — ${l2Pending.length} pending items`)
 
-    // Deduplicate: if multiple pending syncs exist for the same cell, only push
-    // the latest one (delete the older ones).
+    // Deduplicate: if multiple pending syncs exist for the same cell, keep the
+    // one with the LOWEST Version (closest to what cloud actually has). Delete rest.
     const cellMap = new Map<string, any>()
     const stalePendingIds: number[] = []
     for (const p of l2Pending) {
       const key = `${p.CloudDeviceId}-${p.CloudColumnId}`
       const existing = cellMap.get(key)
-      if (!existing || p.id > existing.id) {
-        if (existing) stalePendingIds.push(existing.id)
+      if (!existing) {
         cellMap.set(key, p)
       } else {
-        stalePendingIds.push(p.id)
+        if (p.Version < existing.Version) {
+          stalePendingIds.push(existing.id)
+          cellMap.set(key, p)
+        } else {
+          stalePendingIds.push(p.id)
+        }
       }
     }
     if (stalePendingIds.length > 0) {
@@ -54,10 +58,11 @@ export async function POST(req: Request, res: Response) {
 
     const dedupedPending = Array.from(cellMap.values())
 
-    // For each pending sync, look up the current local cell state by cloud IDs.
-    // This ensures we always push the latest local state, not stale snapshots.
+    // Read latest local VALUE but use stored pending Version as the base.
+    // Using local.Version - 1 would break when multiple edits happened while
+    // previous pushes were failing — the local version jumps ahead but cloud hasn't moved.
     const getLocalCell = db.prepare(`
-      SELECT cv.Value, cv.Version
+      SELECT cv.Value, cv.UpdatedBy
       FROM L2CellValues cv
       JOIN L2Devices d ON d.id = cv.DeviceId
       JOIN L2Columns c ON c.id = cv.ColumnId
@@ -65,14 +70,14 @@ export async function POST(req: Request, res: Response) {
     `)
 
     const l2Updates = dedupedPending.map((p: any) => {
-      const local = getLocalCell.get(p.CloudDeviceId, p.CloudColumnId) as { Value: string | null; Version: number } | undefined
+      const local = getLocalCell.get(p.CloudDeviceId, p.CloudColumnId) as { Value: string | null; UpdatedBy: string | null } | undefined
       return {
         pendingId: p.id,
         deviceId: p.CloudDeviceId,
         columnId: p.CloudColumnId,
-        value: local ? local.Value : p.Value,
-        version: local ? local.Version - 1 : p.Version,
-        updatedBy: p.UpdatedBy,
+        value: local ? local.Value : p.Value,       // latest local value
+        version: p.Version,                          // stored base version (what cloud has)
+        updatedBy: local?.UpdatedBy || p.UpdatedBy,
       }
     })
 
@@ -128,15 +133,16 @@ export async function POST(req: Request, res: Response) {
         (l2Data?.updates || []).map((u: any) => `${u.deviceId}-${u.columnId}`)
       )
 
-      const successfulIds = batch
-        .filter(u => updatedKeys.has(`${u.deviceId}-${u.columnId}`))
-        .map(u => u.pendingId)
-
-      if (successfulIds.length > 0) {
-        const placeholders = successfulIds.map(() => '?').join(',')
-        db.prepare(`DELETE FROM L2PendingSyncs WHERE id IN (${placeholders})`).run(...successfulIds)
+      // Delete ALL pending rows for successful cells (not just the one we pushed)
+      const deleteAllForCell = db.prepare('DELETE FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ?')
+      let batchSynced = 0
+      for (const u of batch) {
+        if (updatedKeys.has(`${u.deviceId}-${u.columnId}`)) {
+          deleteAllForCell.run(u.deviceId, u.columnId)
+          batchSynced++
+        }
       }
-      totalSynced += successfulIds.length
+      totalSynced += batchSynced
 
       const conflicted = batch.filter(u => !updatedKeys.has(`${u.deviceId}-${u.columnId}`))
       totalFailed += conflicted.length
