@@ -17,6 +17,7 @@ import {
   FileEdit,
   FileText,
   HelpCircle,
+  Map,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { cn } from "@/lib/utils"
@@ -402,6 +403,21 @@ export function PlcToolbar({
           >
             <FileEdit className="w-5 h-5 sm:w-6 sm:h-6" />
           </Button>
+
+          {/* Guided Mode entry — opens SVG-driven guided checkout */}
+          {subsystemId && (
+            <Button
+              asChild
+              variant="ghost"
+              size="lg"
+              className="h-10 w-10 sm:h-12 sm:w-12 p-0"
+              title="Guided Mode"
+            >
+              <Link to={`/commissioning/${subsystemId}/guided`}>
+                <Map className="w-5 h-5 sm:w-6 sm:h-6" />
+              </Link>
+            </Button>
+          )}
         </div>
 
         {/* Divider - hidden on mobile */}
