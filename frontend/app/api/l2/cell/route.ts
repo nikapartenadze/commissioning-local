@@ -13,8 +13,11 @@ const stmts = {
   countCompleted: db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.IncludeInProgress = 1 AND cv.Value IS NOT NULL AND cv.Value != ''`),
   updateDeviceChecks: db.prepare('UPDATE L2Devices SET CompletedChecks = ? WHERE id = ?'),
   deletePendingSync: db.prepare('DELETE FROM L2PendingSyncs WHERE id = ?'),
+  deleteAllPendingForCell: db.prepare('DELETE FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ?'),
   getCellForPush: db.prepare('SELECT Value, Version, UpdatedBy FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
   getLatestPendingForCell: db.prepare('SELECT id FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ? ORDER BY id DESC LIMIT 1'),
+  // Get the OLDEST pending sync version for a cell — this is the version the cloud actually has
+  getOldestPendingVersion: db.prepare('SELECT MIN(Version) as version FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ?'),
 }
 
 export async function POST(req: Request, res: Response) {
@@ -60,9 +63,16 @@ export async function POST(req: Request, res: Response) {
       const key = `l2cell:${deviceId}-${columnId}`
 
       enqueueSyncPush(key, async () => {
-        // Read the LATEST local state at push time — this is what makes rapid edits safe
+        // Read the LATEST local value (handles rapid edits — always push final value)
         const cell = stmts.getCellForPush.get(deviceId, columnId) as { Value: string | null; Version: number; UpdatedBy: string | null } | undefined
         if (!cell) return
+
+        // Use the OLDEST pending sync version as the base — this is what the cloud
+        // actually has. DO NOT use cell.Version - 1, because if multiple people edited
+        // this cell while the first push was in-flight (slow network), local version
+        // jumps ahead and cell.Version - 1 won't match the cloud's actual version.
+        const oldestPending = stmts.getOldestPendingVersion.get(cloudDeviceId, cloudColumnId) as { version: number | null } | undefined
+        const baseVersion = oldestPending?.version ?? (cell.Version - 1)
 
         const config = await configService.getConfig()
         if (!config.remoteUrl) return
@@ -77,7 +87,7 @@ export async function POST(req: Request, res: Response) {
                 deviceId: cloudDeviceId,
                 columnId: cloudColumnId,
                 value: cell.Value,
-                version: cell.Version - 1,
+                version: baseVersion,
                 updatedBy: cell.UpdatedBy || 'unknown',
               }],
             }),
@@ -109,12 +119,12 @@ export async function POST(req: Request, res: Response) {
             getCloudSseClient()?.trackPushedL2Id(cloudDeviceId, cloudColumnId)
           } catch (e) { console.warn('[L2 SSE] trackPushedL2Id failed:', e) }
 
-          // Cloud accepted our update — drop the latest pendingSync row for this cell
+          // Cloud accepted our update — drop ALL pendingSync rows for this cell
+          // (not just the latest — all intermediate rows are now stale)
           try {
-            const pending = stmts.getLatestPendingForCell.get(cloudDeviceId, cloudColumnId) as { id: number } | undefined
-            if (pending) stmts.deletePendingSync.run(pending.id)
+            stmts.deleteAllPendingForCell.run(cloudDeviceId, cloudColumnId)
           } catch (err) {
-            console.warn(`[L2 Sync] Failed to clear pendingSync for device ${cloudDeviceId} col ${cloudColumnId}:`, err instanceof Error ? err.message : err)
+            console.warn(`[L2 Sync] Failed to clear pendingSyncs for device ${cloudDeviceId} col ${cloudColumnId}:`, err instanceof Error ? err.message : err)
           }
           return
         }
