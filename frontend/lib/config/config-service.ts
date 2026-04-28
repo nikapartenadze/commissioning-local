@@ -21,6 +21,7 @@ import {
   ConfigChangeEvent,
   ConfigChangeListener,
   DEFAULT_CONFIG,
+  EMBEDDED_REMOTE_URL,
 } from './types';
 import { resolveConfigFilePath } from '@/lib/storage-paths';
 
@@ -96,7 +97,8 @@ class ConfigurationService {
       this.config = {
         ip: parsed.ip ?? DEFAULT_CONFIG.ip,
         path: parsed.path ?? DEFAULT_CONFIG.path,
-        remoteUrl: parsed.remoteUrl ?? DEFAULT_CONFIG.remoteUrl,
+        // remoteUrl is embedded — ignore stored value, always use the constant
+        remoteUrl: EMBEDDED_REMOTE_URL,
         apiPassword: parsed.apiPassword ?? parsed.ApiPassword ?? DEFAULT_CONFIG.apiPassword,
         subsystemId: parsed.subsystemId ?? DEFAULT_CONFIG.subsystemId,
         updateManifestUrl: parsed.updateManifestUrl ?? DEFAULT_CONFIG.updateManifestUrl,
@@ -148,6 +150,8 @@ class ConfigurationService {
       ...updates,
       // Ensure apiPassword is saved with correct casing for compatibility
       apiPassword: updates.apiPassword ?? currentConfig.apiPassword,
+      // remoteUrl is embedded — never accept caller-supplied values
+      remoteUrl: EMBEDDED_REMOTE_URL,
     };
 
     // Prepare JSON for file (use ApiPassword for C# backend compatibility)

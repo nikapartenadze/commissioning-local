@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import { getPlcStatus, getPlcPerformanceStats } from '@/lib/plc-client-manager';
 import { configService } from '@/lib/config';
+import { EMBEDDED_REMOTE_URL } from '@/lib/config/types';
 import { db } from '@/lib/db-sqlite';
 
 // Get testing state from shared global
@@ -49,7 +50,7 @@ export async function GET(req: Request, res: Response) {
       plcPath: status.connectionConfig?.path || config.path || '1,0',
       subsystemId: config.subsystemId || '',
       apiPassword: config.apiPassword || '',
-      remoteUrl: config.remoteUrl || 'https://commissioning.lci.ge',
+      remoteUrl: EMBEDDED_REMOTE_URL,
       plcProfiles: (config as any).plcProfiles || [],
       performanceStats,
       library: libraryStatus,

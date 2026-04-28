@@ -73,6 +73,18 @@ function createPullStmts() {
   }
 }
 
+function describeFetchError(err: unknown): string {
+  if (!err) return 'unknown error'
+  if (!(err instanceof Error)) return String(err)
+  const cause = (err as any).cause
+  if (cause) {
+    const code = cause.code || cause.errno
+    const causeMsg = cause.message || String(cause)
+    return code ? `${err.message} (${code}: ${causeMsg})` : `${err.message} (${causeMsg})`
+  }
+  return err.message
+}
+
 function classifyDescription(desc: string | null): string | null {
   if (!desc) return null
   const dl = desc.toLowerCase()
@@ -147,13 +159,39 @@ export async function POST(req: Request, res: Response) {
     const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`
     console.log(`[CloudPull] Fetching from: ${cloudUrl}`)
 
-    const cloudResponse = await fetch(cloudUrl, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': apiPassword || '',
-      },
-    })
+    let cloudResponse: globalThis.Response | null = null
+    let lastFetchErr: unknown = null
+    const MAX_ATTEMPTS = 4
+    const baseHeaders = {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiPassword || '',
+    }
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        cloudResponse = await fetch(cloudUrl, {
+          method: 'GET',
+          headers: baseHeaders,
+          signal: AbortSignal.timeout(attempt === 1 ? 25000 : 30000),
+        })
+        if (attempt > 1) console.log(`[CloudPull] Attempt ${attempt}/${MAX_ATTEMPTS} succeeded`)
+        break
+      } catch (err) {
+        lastFetchErr = err
+        console.warn(`[CloudPull] Attempt ${attempt}/${MAX_ATTEMPTS} failed: ${describeFetchError(err)}`)
+        if (attempt === MAX_ATTEMPTS) break
+        const backoffMs = 2000 * Math.pow(2, attempt - 1) // 2s, 4s, 8s
+        await new Promise(r => setTimeout(r, backoffMs))
+      }
+    }
+
+    if (!cloudResponse) {
+      const msg = describeFetchError(lastFetchErr)
+      const isTimeout = /TimeoutError|timed out|HEADERS_TIMEOUT|BODY_TIMEOUT/i.test(msg)
+      const userMsg = isTimeout
+        ? `Cloud server did not respond after ${MAX_ATTEMPTS} attempts. Check your network connection to ${remoteUrl}.`
+        : `Cannot reach cloud server after ${MAX_ATTEMPTS} attempts: ${msg}. Check that the cloud URL is correct and your network connection is working.`
+      return res.status(502).json({ success: false, error: userMsg } as CloudPullResponse)
+    }
 
     console.log(`[CloudPull] Cloud response status: ${cloudResponse.status}`)
 
@@ -363,6 +401,7 @@ export async function POST(req: Request, res: Response) {
       const infoUrl = `${remoteUrl}/api/sync/subsystem-info/${subsystemId}`
       const infoRes = await fetch(infoUrl, {
         headers: { 'X-API-Key': apiPassword || '' },
+        signal: AbortSignal.timeout(10000),
       })
       if (infoRes.ok) {
         const info = await infoRes.json()
@@ -498,7 +537,9 @@ export async function POST(req: Request, res: Response) {
 
     // Pull safety data
     try {
-      const safetyRes = await fetch(`${remoteUrl}/api/sync/safety?subsystemId=${subsystemId}&apiKey=${apiPassword}`)
+      const safetyRes = await fetch(`${remoteUrl}/api/sync/safety?subsystemId=${subsystemId}&apiKey=${apiPassword}`, {
+        signal: AbortSignal.timeout(15000),
+      })
       if (safetyRes.ok) {
         const safetyData = await safetyRes.json()
         if (safetyData.success) {
