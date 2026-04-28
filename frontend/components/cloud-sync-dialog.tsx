@@ -15,6 +15,7 @@ interface CloudSyncDialogProps {
   initialStatus?: CloudSyncStatusResponse | null
 }
 
+type SyncTarget = 'io' | 'l2'
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error'
 
 export function CloudSyncDialog({
@@ -24,6 +25,7 @@ export function CloudSyncDialog({
   initialStatus = null,
 }: CloudSyncDialogProps) {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
+  const [syncTarget, setSyncTarget] = useState<SyncTarget>('io')
   const [uploadedCount, setUploadedCount] = useState(0)
   const [errorMessage, setErrorMessage] = useState("")
   const [statusLoading, setStatusLoading] = useState(false)
@@ -56,12 +58,14 @@ export function CloudSyncDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialStatus?.connected, initialStatus?.pendingSyncCount, initialStatus?.totalPendingCount, initialStatus?.lastPushAt, initialStatus?.lastPullAt])
 
-  const handleSync = async () => {
+  const handleSync = async (target: SyncTarget = 'io') => {
     try {
+      setSyncTarget(target)
       setSyncStatus('syncing')
       setErrorMessage("")
 
-      const response = await authFetch(API_ENDPOINTS.cloudSync, {
+      const endpoint = target === 'l2' ? API_ENDPOINTS.cloudSyncL2 : API_ENDPOINTS.cloudSync
+      const response = await authFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
@@ -72,8 +76,16 @@ export function CloudSyncDialog({
           setUploadedCount(result.syncedCount || 0)
           setSyncStatus('success')
         } else {
-          setErrorMessage(result.message || result.errors?.join(', ') || 'Upload failed - check backend logs')
-          setSyncStatus('error')
+          const failMsg = result.errors?.join(', ') || result.message || 'Upload failed - check backend logs'
+          if (result.syncedCount > 0) {
+            // Partial success — some synced, some failed
+            setUploadedCount(result.syncedCount)
+            setErrorMessage(`${result.syncedCount} synced, ${result.failedCount} failed: ${failMsg}`)
+            setSyncStatus('error')
+          } else {
+            setErrorMessage(failMsg)
+            setSyncStatus('error')
+          }
         }
       } else {
         let nextErrorMessage = 'Failed to sync to cloud'
@@ -198,8 +210,14 @@ export function CloudSyncDialog({
             <div className="flex flex-col items-center justify-center py-6 space-y-4">
               <Loader2 className="h-12 w-12 animate-spin text-primary" />
               <div className="text-center space-y-1">
-                <p className="font-medium">Syncing IO queue to cloud...</p>
-                <p className="text-xs text-muted-foreground">Functional validation and change requests continue retrying in the background</p>
+                <p className="font-medium">
+                  {syncTarget === 'l2' ? 'Syncing FV queue to cloud...' : 'Syncing IO queue to cloud...'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {syncTarget === 'l2'
+                    ? 'Pushing latest cell values for each pending item'
+                    : 'Functional validation and change requests continue retrying in the background'}
+                </p>
               </div>
             </div>
           )}
@@ -210,10 +228,12 @@ export function CloudSyncDialog({
                 <CheckCircle2 className="h-12 w-12 text-green-500" />
               </div>
               <div className="text-center space-y-2">
-                <p className="font-semibold text-lg">IO Queue Synced</p>
+                <p className="font-semibold text-lg">
+                  {syncTarget === 'l2' ? 'FV Queue Synced' : 'IO Queue Synced'}
+                </p>
                 <p className="text-sm text-muted-foreground">
                   Uploaded <Badge variant="outline" className="mx-1 font-mono">{uploadedCount}</Badge>
-                  pending IO {uploadedCount === 1 ? 'change' : 'changes'}
+                  pending {syncTarget === 'l2' ? 'FV' : 'IO'} {uploadedCount === 1 ? 'change' : 'changes'}
                 </p>
               </div>
             </div>
@@ -240,9 +260,13 @@ export function CloudSyncDialog({
               <Button variant="outline" onClick={handleClose}>
                 Close
               </Button>
-              <Button onClick={handleSync} className="gap-2" disabled={statusLoading}>
+              <Button onClick={() => handleSync('l2')} variant="secondary" className="gap-2" disabled={statusLoading || pendingL2 === 0}>
                 <Upload className="h-4 w-4" />
-                Sync IO Queue
+                Sync FV Queue{pendingL2 > 0 ? ` (${pendingL2})` : ''}
+              </Button>
+              <Button onClick={() => handleSync('io')} className="gap-2" disabled={statusLoading || pendingIo === 0}>
+                <Upload className="h-4 w-4" />
+                Sync IO Queue{pendingIo > 0 ? ` (${pendingIo})` : ''}
               </Button>
             </>
           )}
