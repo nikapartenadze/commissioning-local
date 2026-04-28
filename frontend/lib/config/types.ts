@@ -16,7 +16,7 @@ export interface AppConfig {
   /** PLC path for Ethernet/IP routing (e.g., "1,0") */
   path: string;
 
-  /** Remote cloud server URL for syncing (e.g., "https://commissioning.lci.ge") */
+  /** Remote cloud server URL for syncing — always EMBEDDED_REMOTE_URL at runtime; stored value is ignored */
   remoteUrl: string;
 
   /** API password for cloud authentication */
@@ -99,13 +99,20 @@ export interface PlcConnectRequest {
 }
 
 /**
+ * Embedded cloud server URL. Single source of truth — the field tool always
+ * talks to this host, regardless of what's stored in config.json. The Remote
+ * URL field was removed from the UI to prevent operator misconfiguration.
+ */
+export const EMBEDDED_REMOTE_URL = 'https://commissioning.autstand.com';
+
+/**
  * Default configuration values.
  * Used when config.json doesn't exist or has missing fields.
  */
 export const DEFAULT_CONFIG: AppConfig = {
   ip: '',
   path: '1,0',
-  remoteUrl: '',
+  remoteUrl: EMBEDDED_REMOTE_URL,
   apiPassword: '',
   subsystemId: '',
   updateManifestUrl: '',

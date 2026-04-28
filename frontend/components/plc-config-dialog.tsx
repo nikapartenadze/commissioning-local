@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check, Zap, Loader2 } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
-import type { PlcProfile } from "@/lib/config/types"
+import { EMBEDDED_REMOTE_URL, type PlcProfile } from "@/lib/config/types"
 
 interface PlcConfig {
   ip: string
@@ -149,7 +149,7 @@ export function PlcConfigDialog({
           path: status.plcPath || "1,0",
           subsystemId: status.subsystemId || "",
           apiPassword: status.apiPassword || "",
-          remoteUrl: status.remoteUrl || "https://commissioning.lci.ge"
+          remoteUrl: status.remoteUrl || EMBEDDED_REMOTE_URL
         })
         // Set live status for showing connection state
         setLiveStatus({
@@ -183,7 +183,7 @@ export function PlcConfigDialog({
       setPullStatus({ type: 'loading', message: 'Connecting to cloud...' })
 
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 120000)
+      const timeoutId = setTimeout(() => controller.abort(), 180000)
 
       // Save cloud settings to config.json before pulling
       try {
@@ -799,29 +799,16 @@ export function PlcConfigDialog({
           {activeTab === 'cloud' && (
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <div className="space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="space-y-1">
-                    <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
-                    <Input
-                      id="subsystemId"
-                      value={localConfig.subsystemId}
-                      onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
-                      placeholder="16"
-                      disabled={busy}
-                      className="h-8 text-sm"
-                    />
-                  </div>
-                  <div className="sm:col-span-2 space-y-1">
-                    <Label htmlFor="remoteUrl" className="text-xs">Remote URL</Label>
-                    <Input
-                      id="remoteUrl"
-                      value={localConfig.remoteUrl || ""}
-                      onChange={(e) => setLocalConfig({ ...localConfig, remoteUrl: e.target.value })}
-                      placeholder="https://your-cloud-service.com"
-                      disabled={busy}
-                      className="h-8 text-sm"
-                    />
-                  </div>
+                <div className="space-y-1">
+                  <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
+                  <Input
+                    id="subsystemId"
+                    value={localConfig.subsystemId}
+                    onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
+                    placeholder="16"
+                    disabled={busy}
+                    className="h-8 text-sm"
+                  />
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="apiPassword" className="text-xs">API Password</Label>
@@ -838,7 +825,7 @@ export function PlcConfigDialog({
 
                 <Button
                   onClick={handlePullIos}
-                  disabled={busy || !localConfig.subsystemId || !localConfig.remoteUrl}
+                  disabled={busy || !localConfig.subsystemId}
                   className="w-full bg-primary hover:bg-primary/90 text-white h-10"
                 >
                   <CloudDownload className="w-4 h-4 mr-2" />

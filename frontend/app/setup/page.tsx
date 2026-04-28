@@ -7,10 +7,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { CloudDownload, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
+import { EMBEDDED_REMOTE_URL } from "@/lib/config/types"
 
 export default function SetupPage() {
   const navigate = useNavigate()
-  const [remoteUrl, setRemoteUrl] = useState("")
   const [subsystemId, setSubsystemId] = useState("")
   const [apiPassword, setApiPassword] = useState("")
   const [plcIp, setPlcIp] = useState("")
@@ -30,7 +30,7 @@ export default function SetupPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          remoteUrl,
+          remoteUrl: EMBEDDED_REMOTE_URL,
           subsystemId,
           apiPassword,
           ip: plcIp,
@@ -47,7 +47,7 @@ export default function SetupPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          remoteUrl,
+          remoteUrl: EMBEDDED_REMOTE_URL,
           subsystemId,
           apiPassword,
         }),
@@ -111,13 +111,8 @@ export default function SetupPage() {
             </h3>
 
             <div className="space-y-2">
-              <Label htmlFor="remoteUrl">Remote URL</Label>
-              <Input
-                id="remoteUrl"
-                value={remoteUrl}
-                onChange={(e) => setRemoteUrl(e.target.value)}
-                placeholder="https://commissioning.example.com"
-              />
+              <Label>Cloud Server</Label>
+              <p className="text-sm text-muted-foreground font-mono break-all">{EMBEDDED_REMOTE_URL}</p>
             </div>
 
             <div className="space-y-2">
