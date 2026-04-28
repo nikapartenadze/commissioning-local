@@ -90,6 +90,8 @@ import * as vfdTestWrite from '@/app/api/vfd-commissioning/test-write/route'
 import * as vfdControlsVerified from '@/app/api/vfd-commissioning/controls-verified/route'
 import * as deviceIdentity from '@/app/api/device/identity/route'
 import * as guidedMapById from '@/app/api/maps/subsystem/[id]/route'
+import * as guidedDevices from '@/app/api/guided/devices/route'
+import * as guidedDeviceByName from '@/app/api/guided/devices/[name]/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -251,6 +253,8 @@ export function createApiRouter(): Router {
 
   // ── Guided Mode (SVG-driven) ──────────────────────────────────
   router.get('/api/maps/subsystem/:id', asyncHandler(guidedMapById.GET))
+  router.get('/api/guided/devices', asyncHandler(guidedDevices.GET))
+  router.get('/api/guided/devices/:name', asyncHandler(guidedDeviceByName.GET))
 
   // ── Global Error Handler ──────────────────────────────────────
   // Catches all errors from asyncHandler() and prevents them from
