@@ -6,6 +6,7 @@ const CommissioningPage = lazy(() => import('../app/commissioning/[id]/page'))
 const SetupPage = lazy(() => import('../app/setup/page'))
 const GuidePage = lazy(() => import('../app/guide/page'))
 const GuideScreenshots = lazy(() => import('../app/guide/screenshots/page'))
+const BeltTrackingPageLazy = lazy(() => import('../app/belt-tracking/page'))
 
 function Loading() {
   return (
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
   { path: '/commissioning', element: <LazyPage Component={CommissioningRedirect} /> },
   { path: '/commissioning/:id', element: <LazyPage Component={CommissioningPage} /> },
   { path: '/setup', element: <LazyPage Component={SetupPage} /> },
+  { path: '/belt-tracking', element: <LazyPage Component={BeltTrackingPageLazy} /> },
   { path: '/guide', element: <LazyPage Component={GuidePage} /> },
   { path: '/guide/screenshots', element: <LazyPage Component={GuideScreenshots} /> },
 ])

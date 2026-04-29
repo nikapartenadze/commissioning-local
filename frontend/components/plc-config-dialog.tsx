@@ -81,6 +81,15 @@ export function PlcConfigDialog({
     tagCount: number
     plcIp: string
   } | null>(null)
+
+  // Live cloud sync status — mirrors the PLC banner visually so the two
+  // tabs feel structurally identical when toggled.
+  const [cloudStatus, setCloudStatus] = useState<{
+    connected: boolean
+    pendingL2: number
+    pendingIo: number
+    lastPullAt?: string
+  } | null>(null)
   const pullTimerRef = useRef<NodeJS.Timeout | null>(null)
   const plcTimerRef = useRef<NodeJS.Timeout | null>(null)
   const plcLogEndRef = useRef<HTMLDivElement | null>(null)
@@ -128,6 +137,32 @@ export function PlcConfigDialog({
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
+
+  // Poll cloud sync status while the dialog is open. Cheap (one GET) and
+  // the banner stays current if a sync drains while the user is reading.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const r = await authFetch('/api/cloud/status')
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const data = await r.json()
+        if (cancelled) return
+        setCloudStatus({
+          connected: !!data.connected,
+          pendingL2: data.pendingL2SyncCount ?? 0,
+          pendingIo: data.pendingIoSyncCount ?? 0,
+          lastPullAt: data.lastPullAt,
+        })
+      } catch {
+        if (!cancelled) setCloudStatus(prev => prev ? { ...prev, connected: false } : { connected: false, pendingL2: 0, pendingIo: 0 })
+      }
+    }
+    tick()
+    const id = window.setInterval(tick, 5000)
+    return () => { cancelled = true; window.clearInterval(id) }
+  }, [open])
 
   // Load config when dialog opens
   useEffect(() => {
@@ -635,7 +670,7 @@ export function PlcConfigDialog({
         onOpenChange(v)
       }
     }}>
-      <DialogContent className="max-w-2xl h-[90vh] sm:h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0 w-[95vw] sm:w-auto" aria-describedby={undefined}>
+      <DialogContent className="max-w-2xl h-[90vh] sm:h-[80vh] flex flex-col border-2 border-primary/20 p-0 gap-0 w-[95vw] sm:w-[42rem]" aria-describedby={undefined}>
         <VisuallyHidden.Root>
           <DialogTitle>PLC Configuration</DialogTitle>
         </VisuallyHidden.Root>
@@ -799,28 +834,67 @@ export function PlcConfigDialog({
           {activeTab === 'cloud' && (
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <div className="space-y-3">
-                <div className="space-y-1">
-                  <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
-                  <Input
-                    id="subsystemId"
-                    value={localConfig.subsystemId}
-                    onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
-                    placeholder="16"
-                    disabled={busy}
-                    className="h-8 text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="apiPassword" className="text-xs">API Password</Label>
-                  <Input
-                    id="apiPassword"
-                    type="text"
-                    value={localConfig.apiPassword || ""}
-                    onChange={(e) => setLocalConfig({ ...localConfig, apiPassword: e.target.value })}
-                    placeholder="Project API password"
-                    disabled={busy}
-                    className="h-8 text-sm"
-                  />
+                {/* Cloud connection status banner — mirrors the PLC banner
+                    on the PLC tab so both tabs have matching vertical
+                    weight. Switching tabs feels like content swap, not a
+                    layout shift. */}
+                {cloudStatus && (
+                  <div className={`px-3 py-2.5 rounded-lg border-2 ${
+                    cloudStatus.connected
+                      ? 'bg-green-50 dark:bg-green-950/30 border-green-500/50'
+                      : 'bg-gray-50 dark:bg-gray-900/50 border-gray-300 dark:border-gray-700'
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2.5 h-2.5 rounded-full ${
+                          cloudStatus.connected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
+                        }`} />
+                        <span className={`text-sm font-medium ${
+                          cloudStatus.connected ? 'text-green-700 dark:text-green-400' : 'text-gray-600 dark:text-gray-400'
+                        }`}>
+                          {cloudStatus.connected
+                            ? `Cloud reachable · ${localConfig.remoteUrl?.replace(/^https?:\/\//, '') || 'unknown'}`
+                            : 'Cloud unreachable'}
+                        </span>
+                      </div>
+                      {(cloudStatus.pendingL2 > 0 || cloudStatus.pendingIo > 0) && (
+                        <span className="text-xs text-amber-700 dark:text-amber-400 font-mono">
+                          {cloudStatus.pendingL2 + cloudStatus.pendingIo} pending
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Subsystem ID + API Password side-by-side. The Remote URL
+                    field was removed in 06928d7 (URL is embedded), so this
+                    grid sits at 1+2 — small for the numeric ID, wide for
+                    the password. Without the grid, the two fields stretch
+                    full-width and the modal reads as a thin column. */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
+                    <Input
+                      id="subsystemId"
+                      value={localConfig.subsystemId}
+                      onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
+                      placeholder="16"
+                      disabled={busy}
+                      className="h-8 text-sm"
+                    />
+                  </div>
+                  <div className="sm:col-span-2 space-y-1">
+                    <Label htmlFor="apiPassword" className="text-xs">API Password</Label>
+                    <Input
+                      id="apiPassword"
+                      type="text"
+                      value={localConfig.apiPassword || ""}
+                      onChange={(e) => setLocalConfig({ ...localConfig, apiPassword: e.target.value })}
+                      placeholder="Project API password"
+                      disabled={busy}
+                      className="h-8 text-sm"
+                    />
+                  </div>
                 </div>
 
                 <Button
@@ -847,25 +921,36 @@ export function PlcConfigDialog({
                 )}
               </div>
 
-              {/* Log takes remaining space */}
-              {pullLog.length > 0 && (
-                <div className="flex-1 min-h-0 rounded border bg-black/95 dark:bg-black flex flex-col overflow-hidden">
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-green-400 uppercase tracking-wider border-b border-gray-800">
-                    <Terminal className="w-3 h-3" />
-                    Log
-                  </div>
-                  <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-0.5">
-                    {pullLog.map((log, i) => (
+              {/* Terminal log — always visible so the panel doesn't disappear
+                  before the first pull. Empty-state hint when there are no
+                  entries yet. */}
+              <div className="flex-1 min-h-0 rounded border bg-black/95 dark:bg-black flex flex-col overflow-hidden">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-green-400 uppercase tracking-wider border-b border-gray-800">
+                  <Terminal className="w-3 h-3" />
+                  Log
+                  {pullLog.length > 0 && (
+                    <span className="ml-auto text-gray-500 normal-case tracking-normal">
+                      {pullLog.length} {pullLog.length === 1 ? 'entry' : 'entries'}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-0.5">
+                  {pullLog.length === 0 ? (
+                    <div className="text-gray-600 italic">
+                      Log entries will appear here when you pull from cloud.
+                    </div>
+                  ) : (
+                    pullLog.map((log, i) => (
                       <div key={i} className={
                         log.includes('ERROR') || log.includes('failed') ? 'text-red-400' :
                         log.includes('retrieved') || log.includes('Success') || log.includes('Pulled') ? 'text-green-400' :
                         'text-gray-400'
                       }>{log}</div>
-                    ))}
-                    <div ref={pullLogEndRef} />
-                  </div>
+                    ))
+                  )}
+                  <div ref={pullLogEndRef} />
                 </div>
-              )}
+              </div>
             </div>
           )}
 

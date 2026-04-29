@@ -140,6 +140,33 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
   const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>(_saved.current.fixedFilters ?? { device: null, mcm: null, subsystem: null })
   const [searchQuery, setSearchQuery] = useState(_saved.current.searchQuery ?? "")
 
+  // First-time default: filter to the active subsystem so techs only see
+  // the project slice they're working on. Persisted state always wins —
+  // if the user explicitly cleared the filter, we don't re-apply it.
+  //
+  // Note: in this codebase the local Subsystems table maps id → "MCM09".
+  // On L2Devices, that value lives in the `Mcm` column (the L2 `Subsystem`
+  // column is the broader process-line grouping like "Non-Conveyable 5 to 1
+  // PH1"). So the default filter targets `mcm`, not `subsystem`.
+  const hasAppliedDefaultSubFilter = useRef(_saved.current.fixedFilters !== undefined)
+  useEffect(() => {
+    if (hasAppliedDefaultSubFilter.current) return
+    let cancelled = false
+    fetch('/api/configuration/runtime')
+      .then(r => r.json())
+      .then((cfg: { subsystemName?: string }) => {
+        if (cancelled) return
+        if (cfg.subsystemName) {
+          setFixedFilters(prev => prev.mcm === null
+            ? { ...prev, mcm: [cfg.subsystemName!] }
+            : prev)
+        }
+        hasAppliedDefaultSubFilter.current = true
+      })
+      .catch(() => { hasAppliedDefaultSubFilter.current = true })
+    return () => { cancelled = true }
+  }, [])
+
   // Persist filter state whenever it changes
   useEffect(() => {
     saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode }, subsystemId)

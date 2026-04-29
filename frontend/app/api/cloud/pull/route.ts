@@ -469,34 +469,36 @@ export async function POST(req: Request, res: Response) {
         const netData = await netRes.json()
         console.log(`[CloudPull] Network data: success=${netData.success}, rings=${netData.rings?.length || 0}`)
         if (netData.success && netData.rings?.length > 0) {
-          getPullStmts().deleteNetworkRings.run(subsystemId)
-
-          for (const ring of netData.rings) {
-            const ringResult = getPullStmts().insertRing.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
-            const ringId = ringResult.lastInsertRowid
-
-            for (const node of (ring.nodes || [])) {
-              const nodeResult = getPullStmts().insertNode.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
-              const nodeId = nodeResult.lastInsertRowid
-
-              const portIdMap = new Map<string, number>()
-              for (const port of (node.ports || [])) {
-                const portResult = getPullStmts().insertPort.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceType || null, port.deviceIp || null, port.statusTag || null, null)
-                if (port.deviceName) portIdMap.set(port.deviceName, Number(portResult.lastInsertRowid))
-              }
-
-              for (const port of (node.ports || [])) {
-                if (port.parentDeviceName && portIdMap.has(port.parentDeviceName)) {
-                  const childId = portIdMap.get(port.deviceName)
-                  const parentId = portIdMap.get(port.parentDeviceName)
-                  if (childId && parentId) {
-                    getPullStmts().updatePortParent.run(parentId, childId)
+          // Wrap nested ring/node/port inserts in a single transaction —
+          // factory MCMs hit ~15k rows here; without batching, each waits
+          // on fsync and the pull crawls.
+          networkPulled = db.transaction(() => {
+            const stmts = getPullStmts()
+            stmts.deleteNetworkRings.run(subsystemId)
+            for (const ring of netData.rings) {
+              const ringResult = stmts.insertRing.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null)
+              const ringId = ringResult.lastInsertRowid
+              for (const node of (ring.nodes || [])) {
+                const nodeResult = stmts.insertNode.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
+                const nodeId = nodeResult.lastInsertRowid
+                const portIdMap = new Map<string, number>()
+                for (const port of (node.ports || [])) {
+                  const portResult = stmts.insertPort.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceType || null, port.deviceIp || null, port.statusTag || null, null)
+                  if (port.deviceName) portIdMap.set(port.deviceName, Number(portResult.lastInsertRowid))
+                }
+                for (const port of (node.ports || [])) {
+                  if (port.parentDeviceName && portIdMap.has(port.parentDeviceName)) {
+                    const childId = portIdMap.get(port.deviceName)
+                    const parentId = portIdMap.get(port.parentDeviceName)
+                    if (childId && parentId) {
+                      stmts.updatePortParent.run(parentId, childId)
+                    }
                   }
                 }
               }
             }
-          }
-          networkPulled = netData.rings.length
+            return netData.rings.length
+          })()
           console.log(`[CloudPull] Network: ${networkPulled} rings pulled directly`)
         }
       }
@@ -513,21 +515,24 @@ export async function POST(req: Request, res: Response) {
       if (estopRes.ok) {
         const estopData = await estopRes.json()
         if (estopData.success && estopData.zones?.length > 0) {
-          for (const zone of estopData.zones) {
-            const zoneResult = getPullStmts().insertEStopZone.run(subsystemId, zone.name)
-            const zoneId = zoneResult.lastInsertRowid
-            for (const epc of (zone.epcs || [])) {
-              const epcResult = getPullStmts().insertEpc.run(zoneId, epc.name, epc.checkTag)
-              const epcId = epcResult.lastInsertRowid
-              for (const io of (epc.ioPoints || [])) {
-                getPullStmts().insertIoPoint.run(epcId, io.tag)
-              }
-              for (const vfd of (epc.vfds || [])) {
-                getPullStmts().insertVfd.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
+          estopPulled = db.transaction(() => {
+            const stmts = getPullStmts()
+            for (const zone of estopData.zones) {
+              const zoneResult = stmts.insertEStopZone.run(subsystemId, zone.name)
+              const zoneId = zoneResult.lastInsertRowid
+              for (const epc of (zone.epcs || [])) {
+                const epcResult = stmts.insertEpc.run(zoneId, epc.name, epc.checkTag)
+                const epcId = epcResult.lastInsertRowid
+                for (const io of (epc.ioPoints || [])) {
+                  stmts.insertIoPoint.run(epcId, io.tag)
+                }
+                for (const vfd of (epc.vfds || [])) {
+                  stmts.insertVfd.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
+                }
               }
             }
-          }
-          estopPulled = estopData.zones.length
+            return estopData.zones.length
+          })()
           console.log(`[CloudPull] EStop: ${estopPulled} zones pulled directly`)
         }
       }
@@ -543,22 +548,24 @@ export async function POST(req: Request, res: Response) {
       if (safetyRes.ok) {
         const safetyData = await safetyRes.json()
         if (safetyData.success) {
-          for (const zone of (safetyData.zones || [])) {
-            const zoneResult = getPullStmts().insertSafetyZone.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
-            const zoneId = zoneResult.lastInsertRowid
-            for (const d of (zone.drives || [])) {
-              getPullStmts().insertSafetyDrive.run(zoneId, d.name)
+          db.transaction(() => {
+            const stmts = getPullStmts()
+            for (const zone of (safetyData.zones || [])) {
+              const zoneResult = stmts.insertSafetyZone.run(subsystemId, zone.name, zone.stoSignal, zone.bssTag)
+              const zoneId = zoneResult.lastInsertRowid
+              for (const d of (zone.drives || [])) {
+                stmts.insertSafetyDrive.run(zoneId, d.name)
+              }
             }
-          }
-
-          if (safetyData.outputs?.length > 0) {
-            const insertOutputStmt = db.prepare(
-              'INSERT INTO SafetyOutputs (SubsystemId, Tag, Description, OutputType) VALUES (?, ?, ?, ?)'
-            )
-            for (const o of safetyData.outputs) {
-              insertOutputStmt.run(subsystemId, o.tag, o.description, o.outputType)
+            if (safetyData.outputs?.length > 0) {
+              const insertOutputStmt = db.prepare(
+                'INSERT INTO SafetyOutputs (SubsystemId, Tag, Description, OutputType) VALUES (?, ?, ?, ?)'
+              )
+              for (const o of safetyData.outputs) {
+                insertOutputStmt.run(subsystemId, o.tag, o.description, o.outputType)
+              }
             }
-          }
+          })()
           console.log(`[Pull] Safety: ${safetyData.zones?.length || 0} zones, ${safetyData.outputs?.length || 0} outputs`)
         }
       }
@@ -576,15 +583,20 @@ export async function POST(req: Request, res: Response) {
       if (plRes.ok) {
         const plData = await plRes.json()
         if (plData.punchlists && plData.punchlists.length > 0) {
-          getPullStmts().deletePunchlists.run(subsystemId)
-          getPullStmts().cleanOrphanPunchlistItems.run()
-          for (const pl of plData.punchlists) {
-            getPullStmts().insertPunchlist.run(pl.id, pl.name, subsystemId)
-            for (const ioId of pl.ioIds) {
-              getPullStmts().insertPunchlistItem.run(pl.id, ioId)
+          punchlistsPulled = db.transaction(() => {
+            const stmts = getPullStmts()
+            stmts.deletePunchlists.run(subsystemId)
+            stmts.cleanOrphanPunchlistItems.run()
+            let count = 0
+            for (const pl of plData.punchlists) {
+              stmts.insertPunchlist.run(pl.id, pl.name, subsystemId)
+              for (const ioId of pl.ioIds) {
+                stmts.insertPunchlistItem.run(pl.id, ioId)
+              }
+              count++
             }
-            punchlistsPulled++
-          }
+            return count
+          })()
           console.log(`[CloudPull] Pulled ${punchlistsPulled} punchlists`)
         }
       }
@@ -592,16 +604,29 @@ export async function POST(req: Request, res: Response) {
       console.log('[CloudPull] Punchlist pull skipped or failed (non-blocking)')
     }
 
-    // Pull L2 (Functional Validation) data
+    // Pull L2 (Functional Validation) data — project-wide, not subsystem-
+    // scoped. The mechanic / FV view spans multiple subsystems (foreman
+    // tracking belts across the whole site) so we pull every L2 device
+    // for the project in one round-trip. The cloud's project endpoint
+    // returns all sheets/devices/cells for every subsystem; we still
+    // need the subsystem's projectId to address it.
     let l2Pulled = 0
     let l2CellsPulled = 0
     let l2Error: string | null = null
     try {
-      const l2Url = `${remoteUrl}/api/sync/l2/${subsystemId}`
-      console.log(`[CloudPull] Fetching L2/FV data from: ${l2Url}`)
+      // Resolve projectId for the current subsystem.
+      const projectRow = db.prepare('SELECT ProjectId FROM Subsystems WHERE id = ?').get(subsystemId) as { ProjectId: number } | undefined
+      const projectId = projectRow?.ProjectId
+      if (!projectId) {
+        l2Error = `Cannot resolve project for subsystem ${subsystemId}`
+        console.warn(`[CloudPull] ${l2Error}`)
+        throw new Error(l2Error)
+      }
+      const l2Url = `${remoteUrl}/api/sync/l2/project/${projectId}`
+      console.log(`[CloudPull] Fetching project-wide L2/FV data from: ${l2Url}`)
       const l2Res = await fetch(l2Url, {
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(30000),
       })
       console.log(`[CloudPull] L2 response status: ${l2Res.status}`)
 
@@ -614,56 +639,76 @@ export async function POST(req: Request, res: Response) {
         console.log(`[CloudPull] L2 response: success=${l2Data.success}, sheets=${l2Data.sheets?.length || 0}, devices=${l2Data.devices?.length || 0}, cellValues=${l2Data.cellValues?.length || 0}`)
 
         if (l2Data.success && l2Data.sheets?.length > 0) {
-          // Only delete existing L2 data when we have fresh data to replace it
-          db.exec('DELETE FROM L2CellValues')
-          db.exec('DELETE FROM L2Devices')
-          db.exec('DELETE FROM L2Columns')
-          db.exec('DELETE FROM L2Sheets')
+          // ALL L2 inserts must run inside a single transaction: SQLite is
+          // configured with `synchronous = FULL`, so every implicit commit
+          // waits on fsync. Without the transaction wrap, 5000+ cells turn
+          // into 5000+ disk syncs (~25 seconds) — the lion's share of the
+          // pull's wall time at factory scale.
+          const skippedDevices: Array<{ id: number; name: string; sheetId: number }> = []
+          const txnResult = db.transaction(() => {
+            db.exec('DELETE FROM L2CellValues')
+            db.exec('DELETE FROM L2Devices')
+            db.exec('DELETE FROM L2Columns')
+            db.exec('DELETE FROM L2Sheets')
 
-          const sheetIdMap = new Map<number, number>()
-          const columnIdMap = new Map<number, number>()
-          const deviceIdMap = new Map<number, number>()
+            const sheetIdMap = new Map<number, number>()
+            const columnIdMap = new Map<number, number>()
+            const deviceIdMap = new Map<number, number>()
+            const stmts = getPullStmts()
+            let devicesIn = 0
+            let cellsIn = 0
 
-          for (const sheet of l2Data.sheets) {
-            const sr = getPullStmts().insertL2Sheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
-            sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
-            if (sheet.columns) {
-              for (const col of sheet.columns) {
-                const cr = getPullStmts().insertL2Col.run(
-                  col.id,
-                  sr.lastInsertRowid,
-                  col.name,
-                  col.columnType,
-                  col.inputType || col.columnType,
-                  col.displayOrder,
-                  col.isSystem ? 1 : 0,
-                  col.isEditable === false ? 0 : 1,
-                  col.includeInProgress ? 1 : 0,
-                  col.isRequired ? 1 : 0,
-                  col.description || null
-                )
-                columnIdMap.set(col.id, cr.lastInsertRowid as number)
+            for (const sheet of l2Data.sheets) {
+              const sr = stmts.insertL2Sheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
+              sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
+              if (sheet.columns) {
+                for (const col of sheet.columns) {
+                  const cr = stmts.insertL2Col.run(
+                    col.id,
+                    sr.lastInsertRowid,
+                    col.name,
+                    col.columnType,
+                    col.inputType || col.columnType,
+                    col.displayOrder,
+                    col.isSystem ? 1 : 0,
+                    col.isEditable === false ? 0 : 1,
+                    col.includeInProgress ? 1 : 0,
+                    col.isRequired ? 1 : 0,
+                    col.description || null
+                  )
+                  columnIdMap.set(col.id, cr.lastInsertRowid as number)
+                }
               }
             }
-          }
-          for (const dev of (l2Data.devices || [])) {
-            const localSheetId = sheetIdMap.get(dev.sheetId)
-            if (!localSheetId) {
-              console.warn(`[CloudPull] L2 device ${dev.id} (${dev.deviceName}) has sheetId=${dev.sheetId} not in sheets — skipping`)
-              continue
+            for (const dev of (l2Data.devices || [])) {
+              const localSheetId = sheetIdMap.get(dev.sheetId)
+              if (!localSheetId) {
+                // Defer the warn — console.warn inside a hot transaction
+                // can starve the loop on slow terminals.
+                skippedDevices.push({ id: dev.id, name: dev.deviceName, sheetId: dev.sheetId })
+                continue
+              }
+              const dr = stmts.insertL2Dev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
+              deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
+              devicesIn++
             }
-            const dr = getPullStmts().insertL2Dev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
-            deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
-            l2Pulled++
-          }
-          for (const cell of (l2Data.cellValues || [])) {
-            const ld = deviceIdMap.get(cell.deviceId)
-            const lc = columnIdMap.get(cell.columnId)
-            if (ld && lc) {
-              getPullStmts().insertL2Cell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
-              l2CellsPulled++
+            for (const cell of (l2Data.cellValues || [])) {
+              const ld = deviceIdMap.get(cell.deviceId)
+              const lc = columnIdMap.get(cell.columnId)
+              if (ld && lc) {
+                stmts.insertL2Cell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
+                cellsIn++
+              }
             }
+            return { devicesIn, cellsIn }
+          })()
+          l2Pulled = txnResult.devicesIn
+          l2CellsPulled = txnResult.cellsIn
+
+          for (const s of skippedDevices) {
+            console.warn(`[CloudPull] L2 device ${s.id} (${s.name}) has sheetId=${s.sheetId} not in sheets — skipped`)
           }
+
           console.log(`[CloudPull] L2 PULL SUCCESS: ${l2Data.sheets.length} sheets, ${l2Pulled} devices, ${l2CellsPulled} cell values`)
 
           // Sync VFD validation flags to PLC for any devices that already have

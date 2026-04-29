@@ -17,6 +17,7 @@ import {
   FileEdit,
   FileText,
   HelpCircle,
+  HardHat,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { cn } from "@/lib/utils"
@@ -402,6 +403,27 @@ export function PlcToolbar({
           >
             <FileEdit className="w-5 h-5 sm:w-6 sm:h-6" />
           </Button>
+
+          {/* Copy mechanics belt-tracking URL — admins only.
+           * Mechanics get this URL pasted into a chat / shortcut on their tablet.
+           * The page itself is unauthenticated; URL-secrecy is acceptable here since
+           * the rest of the tool is open on the same network. */}
+          {currentUser?.isAdmin && (
+            <Button
+              variant="ghost"
+              size="lg"
+              className="h-10 w-10 sm:h-12 sm:w-12 p-0"
+              onClick={() => {
+                const url = `${window.location.origin}/belt-tracking`
+                navigator.clipboard?.writeText(url)
+                  .then(() => alert(`Copied: ${url}\n\nShare with mechanics.`))
+                  .catch(() => alert(url))
+              }}
+              title="Copy mechanics belt-tracking URL"
+            >
+              <HardHat className="w-5 h-5 sm:w-6 sm:h-6" />
+            </Button>
+          )}
         </div>
 
         {/* Divider - hidden on mobile */}

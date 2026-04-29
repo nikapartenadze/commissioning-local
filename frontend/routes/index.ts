@@ -89,6 +89,7 @@ import * as vfdClear from '@/app/api/vfd-commissioning/clear/route'
 import * as vfdTestWrite from '@/app/api/vfd-commissioning/test-write/route'
 import * as vfdControlsVerified from '@/app/api/vfd-commissioning/controls-verified/route'
 import * as deviceIdentity from '@/app/api/device/identity/route'
+import * as beltTracking from '@/app/api/belt-tracking/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -223,6 +224,9 @@ export function createApiRouter(): Router {
   router.get('/api/l2', asyncHandler(l2.GET))
   router.get('/api/l2/overview', asyncHandler(l2Overview.GET))
   router.post('/api/l2/cell', asyncHandler(l2Cell.POST))
+
+  // ── Belt tracking (mechanics-only page) ────────────────────────
+  router.get('/api/belt-tracking', asyncHandler(beltTracking.GET))
 
   // ── Punchlists ─────────────────────────────────────────────────
   router.get('/api/punchlists', asyncHandler(punchlists.GET))

@@ -5,6 +5,11 @@
  *
  * Standalone FV pull — does NOT touch IOs, network, estop etc.
  * Used by the FV page retry button when the initial full pull missed FV data.
+ *
+ * Pulls PROJECT-WIDE L2 data (all subsystems in the project) via the cloud's
+ * /api/sync/l2/project/{projectId} endpoint — one round-trip instead of N
+ * sequential per-subsystem calls. The body still takes subsystemId so we
+ * can resolve the project; the response covers the whole project.
  */
 
 import { Request, Response } from 'express'
@@ -18,8 +23,15 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ success: false, error: 'remoteUrl and subsystemId are required' })
     }
 
-    const l2Url = `${remoteUrl}/api/sync/l2/${subsystemId}`
-    console.log(`[L2Pull] Fetching FV data from: ${l2Url}`)
+    // Resolve project from the configured subsystem
+    const projectRow = db.prepare('SELECT ProjectId FROM Subsystems WHERE id = ?').get(parseInt(String(subsystemId), 10)) as { ProjectId: number } | undefined
+    if (!projectRow?.ProjectId) {
+      return res.status(404).json({ success: false, error: `Cannot resolve project for subsystem ${subsystemId}. Pull subsystem data first.` })
+    }
+    const projectId = projectRow.ProjectId
+
+    const l2Url = `${remoteUrl}/api/sync/l2/project/${projectId}`
+    console.log(`[L2Pull] Fetching project-wide FV data from: ${l2Url}`)
     console.log(`[L2Pull] API key: ${apiPassword ? `set (${apiPassword.length} chars)` : 'NOT SET'}`)
 
     const l2Res = await fetch(l2Url, {
