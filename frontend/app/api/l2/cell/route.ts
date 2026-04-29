@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
+import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 
 const stmts = {
   getCell: db.prepare('SELECT id, Value, Version FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
@@ -56,6 +57,32 @@ export async function POST(req: Request, res: Response) {
 
       return { cellId, version: newVersion, completedChecks: completedCount?.cnt || 0, cloudDeviceId: device?.CloudId, cloudColumnId: column?.CloudId, pendingSyncId }
     })()
+
+    // Fan out the local change to every connected browser via the
+    // /broadcast → /ws bridge, BEFORE the cloud round-trip. This mirrors
+    // how /api/ios/:id/test works and means a tech on one tab and a
+    // mechanic on another see the same Belt Tracked / FV cell value
+    // within milliseconds, not after the cloud SSE echo.
+    try {
+      await fetch(getWsBroadcastUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'L2CellUpdated',
+          cloudDeviceId: result.cloudDeviceId ?? 0,
+          cloudColumnId: result.cloudColumnId ?? 0,
+          localDeviceId: deviceId,
+          localColumnId: columnId,
+          value: value ?? null,
+          version: result.version,
+          updatedBy: updatedBy ?? null,
+          updatedAt: new Date().toISOString(),
+        }),
+      })
+    } catch {
+      // Broadcast is best-effort — sibling browsers will pick up the
+      // change on their next /api/cloud/status poll or SSE echo.
+    }
 
     if (result.cloudDeviceId && result.cloudColumnId) {
       const cloudDeviceId = result.cloudDeviceId
