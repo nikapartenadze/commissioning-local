@@ -61,39 +61,6 @@ try {
     db.exec(`UPDATE L2Columns SET IsEditable = CASE WHEN COALESCE(InputType, ColumnType) = 'readonly' THEN 0 ELSE 1 END`)
     db.exec(`UPDATE L2Columns SET IncludeInProgress = CASE WHEN ColumnType = 'check' THEN 1 ELSE COALESCE(IncludeInProgress, 0) END`)
   } catch { /* non-critical */ }
-  // One-time: Invalidate all Belt Tracked values — they were auto-read from PLC
-  // (CTRL.STS.Track_Belt) which was wrong. Belt Tracked is now manual entry only.
-  // Uses a flag column to avoid re-running on every startup.
-  try {
-    const alreadyDone = db.prepare(
-      `SELECT 1 FROM L2CellValues cv JOIN L2Columns c ON cv.ColumnId = c.id WHERE c.Name = 'Belt Tracked' AND cv.Value = '__invalidated_v2.20__' LIMIT 1`
-    ).get()
-    if (!alreadyDone) {
-      const cleared = db.prepare(`
-        UPDATE L2CellValues SET Value = NULL, UpdatedBy = 'system:belt-tracked-reset', UpdatedAt = datetime('now')
-        WHERE ColumnId IN (SELECT id FROM L2Columns WHERE LOWER(TRIM(Name)) = 'belt tracked')
-          AND Value IS NOT NULL AND Value != ''
-      `).run()
-      if (cleared.changes > 0) {
-        console.log(`[DB] Invalidated ${cleared.changes} Belt Tracked cell(s) — now manual entry only`)
-      }
-      // Write the sentinel flag so this migration never runs again.
-      // Pick the first Belt Tracked cell (or insert one) and set its value to the flag.
-      const flagCol = db.prepare(`SELECT id FROM L2Columns WHERE LOWER(TRIM(Name)) = 'belt tracked' LIMIT 1`).get() as { id: number } | undefined
-      if (flagCol) {
-        const anyDevice = db.prepare(`SELECT DeviceId FROM L2CellValues WHERE ColumnId = ? LIMIT 1`).get(flagCol.id) as { DeviceId: number } | undefined
-        if (anyDevice) {
-          db.prepare(`UPDATE L2CellValues SET Value = '__invalidated_v2.20__' WHERE DeviceId = ? AND ColumnId = ?`).run(anyDevice.DeviceId, flagCol.id)
-        } else {
-          // No cell exists yet — find any device and insert a flag row
-          const anyDev = db.prepare(`SELECT id FROM L2Devices LIMIT 1`).get() as { id: number } | undefined
-          if (anyDev) {
-            db.prepare(`INSERT OR IGNORE INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt) VALUES (?, ?, '__invalidated_v2.20__', 'system:belt-tracked-flag', datetime('now'))`).run(anyDev.id, flagCol.id)
-          }
-        }
-      }
-    }
-  } catch { /* non-critical */ }
   // Indexes for L2 query performance
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_l2cells_device_column ON L2CellValues(DeviceId, ColumnId)') } catch { /* already exists */ }
   // Update query planner statistics (deferred to avoid blocking startup)
