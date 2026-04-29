@@ -17,7 +17,7 @@
 !define APP_PUBLISHER "autStand"
 !define APP_URL "https://commissioning.lci.ge"
 !ifndef APP_VERSION
-  !define APP_VERSION "2.10.0"
+  !define APP_VERSION "2.23.2"
 !endif
 
 !define INSTALL_DIR "$PROGRAMFILES\${APP_SHORT}"
@@ -78,8 +78,10 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   skip_backup:
 
   ; ── Copy app files (replaced on upgrade) ──
-  SetOutPath "$INSTDIR\node"
-  File /r "${PORTABLE_DIR}\node\*.*"
+  ; The portable build places node.exe at the root of the portable dir
+  ; (single ~88MB binary, not a folder). Mirror that layout into $INSTDIR.
+  SetOutPath "$INSTDIR"
+  File "${PORTABLE_DIR}\node.exe"
 
   SetOutPath "$INSTDIR\app"
   File /r "${PORTABLE_DIR}\app\*.*"
@@ -122,20 +124,65 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
   Sleep 1000
 
-  ; Install service
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" install ${SERVICE_NAME} "$INSTDIR\node\node.exe" "--max-old-space-size=256 --optimize-for-size dist-server\server-express.js"'
+  ; Install service — node runs the Express server with a 512MB heap budget.
+  ; Heap was 256MB but tight on laptops doing concurrent WAL + sync queue
+  ; flushes; bumping to 512MB keeps headroom while staying small enough for
+  ; an 8GB tablet.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" install ${SERVICE_NAME} "$INSTDIR\node.exe" "--max-old-space-size=512 --optimize-for-size dist-server\server-express.js"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppDirectory "$INSTDIR\app"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} DisplayName "${SERVICE_DISPLAY}"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} Description "Industrial I/O commissioning tool — PLC testing and validation"'
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} Start SERVICE_AUTO_START'
+
+  ; ── SERVICE LIFECYCLE — battle-tested for laptops on factory floors ──
+  ; Run as LocalSystem (not the installing user). EXPLICIT, even though it's
+  ; the NSSM default, because the worst class of bug is "service stops on
+  ; user logout" — that only happens if ObjectName is a user account.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} ObjectName LocalSystem'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} Type SERVICE_WIN32_OWN_PROCESS'
+
+  ; DELAYED auto-start lets Windows finish booting before we try to bind
+  ; sockets/talk to PLC. Stops the boot-time race where the network adapter
+  ; isn't ready and the service crashes immediately.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} Start SERVICE_DELAYED_AUTO_START'
+
+  ; No console window — service runs headless.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppNoConsole 1'
+
+  ; Restart any time the process exits (crash, OOM, panic, anything).
+  ; Throttle window 1500ms: if process exits in less than that, NSSM
+  ; suspects a config/code crash and waits longer between retries.
+  ; AppRestartDelay 5000ms is the *initial* delay between restart attempts.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppExit Default Restart'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppThrottle 1500'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppRestartDelay 5000'
+
+  ; On stop, kill the entire process tree and graceful-stop sequence: send
+  ; Ctrl+C, then close window, then thread terminate, then process kill.
+  ; AppKillProcessTree=1 ensures any child processes (if a future build
+  ; spawns them) also die cleanly — no orphans blocking upgrades.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppKillProcessTree 1'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStopMethodSkip 0'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStopMethodConsole 5000'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStopMethodWindow 5000'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStopMethodThreads 5000'
+
+  ; ── Logging ──
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStdout "$DATA_DIR\logs\service.log"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStderr "$DATA_DIR\logs\service-error.log"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStdoutCreationDisposition 4'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppStderrCreationDisposition 4'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppRotateFiles 1'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppRotateOnline 1'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppRotateBytes 10485760'
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppExit Default Restart'
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppRestartDelay 5000'
+
+  ; ── SCM-level failure recovery (belt + suspenders) ──
+  ; If NSSM itself dies or gives up, Windows Service Control Manager will
+  ; still restart the service. Reset the failure counter every 24h, and
+  ; restart 5s after first/second failure, 30s after third.
+  nsExec::ExecToLog 'sc.exe failure ${SERVICE_NAME} reset= 86400 actions= restart/5000/restart/5000/restart/30000'
+
+  ; Trigger restart on any failure type (not just non-zero exit code).
+  nsExec::ExecToLog 'sc.exe failureflag ${SERVICE_NAME} 1'
 
   ; ── Firewall Rules ──
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - App"'
@@ -177,8 +224,12 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_SHORT}" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_SHORT}" "NoRepair" 1
 
+  ; ── Service status helper for ops ──
+  File /oname=$INSTDIR\SERVICE-STATUS.bat "templates\SERVICE-STATUS.bat"
+
   ; ── Start Menu Shortcuts ──
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
+  CreateShortCut "$SMPROGRAMS\${APP_NAME}\Service Status.lnk" "$INSTDIR\SERVICE-STATUS.bat" "" "$INSTDIR\app.ico"
   ; Create a URL shortcut to open the app in browser
   FileOpen $0 "$SMPROGRAMS\${APP_NAME}\Open Commissioning Tool.url" w
   FileWrite $0 "[InternetShortcut]$\r$\n"
@@ -216,10 +267,11 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - WebSocket"'
 
   ; Remove app files (NOT data directory)
-  RMDir /r "$INSTDIR\node"
+  Delete "$INSTDIR\node.exe"
   RMDir /r "$INSTDIR\app"
   Delete "$INSTDIR\nssm.exe"
   Delete "$INSTDIR\app.ico"
+  Delete "$INSTDIR\SERVICE-STATUS.bat"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
