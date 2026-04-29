@@ -11,6 +11,10 @@
  * Internal only   → http://127.0.0.1:3102     → Broadcast API (API routes push here)
  */
 
+// MUST BE FIRST. Loads .env into process.env before any other module
+// (especially db-sqlite via routes) reads DATABASE_URL etc.
+import '@/lib/load-env';
+
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { parse } from 'url';
 import path from 'path';
@@ -21,23 +25,6 @@ import { createApiRouter } from './routes';
 import { resolveLogsDirPath } from '@/lib/storage-paths';
 
 // Startup backup is deferred to after server starts listening (see httpServer.listen callback)
-
-// ============================================================================
-// Load .env file manually (production mode doesn't have Vite env loader)
-// ============================================================================
-
-const envPath = path.join(__dirname, '.env');
-if (fs.existsSync(envPath)) {
-  fs.readFileSync(envPath, 'utf8').split('\n').forEach((line: string) => {
-    line = line.trim();
-    if (!line || line.startsWith('#')) return;
-    const idx = line.indexOf('=');
-    if (idx === -1) return;
-    const key = line.substring(0, idx).trim();
-    const value = line.substring(idx + 1).trim();
-    if (!process.env[key]) process.env[key] = value;
-  });
-}
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
