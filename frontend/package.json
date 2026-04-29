@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"vite --port 5173\" \"tsx watch server-express.ts\"",
+    "dev": "cross-env PORT=3010 PLC_WS_PORT=3012 WS_BROADCAST_URL=http://localhost:3112/broadcast concurrently \"vite --port 5173\" \"tsx watch server-express.ts\"",
     "dev:ws": "node scripts/plc-websocket-server.js",
     "build": "vite build",
     "build:server": "tsc -p tsconfig.server.json && tsc-alias -p tsconfig.server.json",
@@ -78,6 +78,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "autoprefixer": "^10.4.20",
     "concurrently": "^8.2.2",
+    "cross-env": "^10.1.0",
     "eslint": "^9.37.0",
     "playwright": "^1.58.2",
     "postcss": "^8.4.41",
