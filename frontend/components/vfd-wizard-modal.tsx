@@ -1090,9 +1090,18 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
         speedSetUp: cells?.speedSetUp ?? null,
       })
       if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
-      // Step 4 "Controls Verified" is persisted in a local DB table (no L2 column).
-      // Restore it on reopen so Step 5 isn't locked.
-      if (cells?.controlsVerified) setCheck4Complete(true)
+      // Step 4 "Controls Verified" is persisted in a local DB table (no L2
+      // column), so a fresh pull on a different laptop won't see the explicit
+      // flag. Trust downstream proof instead: if Belt Tracked or Speed Set Up
+      // are filled, Step 4 *must* have been done — those steps are gated on
+      // it in the wizard. We deliberately do NOT infer Step 4 from the four
+      // ready-gate cells alone, because mid-workflow they are filled by Step
+      // 3 even though the F0/F1/F2 control verification hasn't happened yet.
+      const inferredStepFourDone =
+        Boolean(cells?.controlsVerified) ||
+        Boolean(cells?.beltTracked?.trim()) ||
+        Boolean(cells?.speedSetUp?.trim())
+      if (inferredStepFourDone) setCheck4Complete(true)
       // Step 5 "Calibrate Speed" — mark done if the L2 cell already has a value.
       if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
     })
