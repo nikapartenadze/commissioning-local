@@ -190,6 +190,28 @@ echo.
 echo Access: http://localhost:3000 ^(or your IP on tablets^)
 ) > "%OUTPUT_DIR%\README.txt"
 
+REM ══════════════════════════════════════════════════════════════
+REM  Safety: hard-fail if any database file slipped into the output.
+REM  Distributing a bundled DB would ship one user's data to every
+REM  install / overwrite the customer's existing DB on upgrade.
+REM ══════════════════════════════════════════════════════════════
+echo Verifying no database files in portable output...
+set "DB_LEAK_COUNT=0"
+for /r "%OUTPUT_DIR%" %%f in (*.db *.db-wal *.db-shm) do (
+    echo   LEAK: %%f
+    set /a DB_LEAK_COUNT+=1
+)
+if !DB_LEAK_COUNT! gtr 0 (
+    echo.
+    echo ============================================================
+    echo  BUILD FAILED — !DB_LEAK_COUNT! database file^(s^) found in output.
+    echo  Database files MUST NEVER ship with the installer / portable.
+    echo ============================================================
+    rmdir /s /q "%OUTPUT_DIR%" 2>nul
+    exit /b 2
+)
+echo   OK — no DB files in output.
+
 REM ── Show final size ──
 set "TOTAL_SIZE=0"
 for /f "tokens=3" %%s in ('dir /s "%OUTPUT_DIR%" ^| findstr "File(s)"') do set "TOTAL_SIZE=%%s"

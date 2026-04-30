@@ -102,11 +102,12 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   FileWrite $0 "UPDATE_MANIFEST_URL=$\r$\n"
   FileClose $0
 
-  ; ── Initialize database if first install ──
-  IfFileExists "$DATA_DIR\database.db" db_exists
-    ; First install — copy database from portable build
-    CopyFiles /SILENT "$INSTDIR\app\database.db" "$DATA_DIR\database.db"
-  db_exists:
+  ; ── Database initialization ──
+  ; Intentionally NO bundled DB. The runtime (lib/db-sqlite.ts) creates
+  ; the SQLite file in WAL mode on first launch and applies the schema
+  ; bootstrap. Shipping a default DB risks overwriting customer data on
+  ; upgrade and exposes whatever happened to be in the build's working
+  ; tree at packaging time.
 
   ; ── Preserve config.json across upgrades ──
   IfFileExists "$DATA_DIR\config.json" config_exists
