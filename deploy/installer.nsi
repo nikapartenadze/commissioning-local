@@ -17,7 +17,7 @@
 !define APP_PUBLISHER "autStand"
 !define APP_URL "https://commissioning.lci.ge"
 !ifndef APP_VERSION
-  !define APP_VERSION "2.25.2"
+  !define APP_VERSION "2.25.3"
 !endif
 
 !define INSTALL_DIR "$PROGRAMFILES\${APP_SHORT}"
@@ -48,16 +48,98 @@ RequestExecutionLevel admin
 
 !insertmacro MUI_LANGUAGE "English"
 
+; ── StrContains: returns "1" if the haystack on the stack contains the
+;    needle on the stack, else "0". Used for parsing `sc query` output.
+;    Stack convention: push haystack, push needle, call → push result.
+Function StrContains
+  Exch $R1     ; needle
+  Exch
+  Exch $R2     ; haystack
+  Push $R3
+  Push $R4
+  StrLen $R4 $R1
+  StrCpy $R3 0
+  loop:
+    StrCpy $R0 $R2 $R4 $R3
+    StrCmp $R0 $R1 found
+    StrCmp $R0 "" notfound
+    IntOp $R3 $R3 + 1
+    Goto loop
+  found:
+    StrCpy $R0 "1"
+    Goto done
+  notfound:
+    StrCpy $R0 "0"
+  done:
+    Pop $R4
+    Pop $R3
+    Pop $R2
+    Pop $R1
+    Exch $R0
+FunctionEnd
+
 ; ── Install Section ─────────────────────────────────────────
 Section "Install"
   SetOutPath "$INSTDIR"
   ReadEnvStr $DATA_DIR "ProgramData"
 StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
 
-  ; Stop existing service if upgrading
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE_NAME}'
-  ; Wait for service to stop
-  Sleep 2000
+  ; ══════════════════════════════════════════════════════════════════
+  ; SHUT DOWN THE RUNNING SERVICE BEFORE TOUCHING ANY FILES.
+  ;
+  ; This is the *only* place upgrades are safe. node.exe holds locks on
+  ; its own image and the native modules under app/dist-server/node_modules
+  ; (better-sqlite3.node, ffi-rs.dll). NSIS `File` is silent on locked
+  ; writes — copy is skipped, no error — so if the service is still up
+  ; when we hit it, the user gets a "successful" install that is actually
+  ; the OLD code with a NEW .env. UI keeps reporting the old version.
+  ;
+  ; The safe sequence:
+  ;   1. sc stop                   — request graceful stop
+  ;   2. poll sc query for STOPPED — ride out the AppStopMethod* timeouts
+  ;                                  (up to ~15s combined for Console /
+  ;                                  Window / Threads stop methods)
+  ;   3. nssm remove ... confirm   — kill anything still holding on, drop
+  ;                                  service config (we'll reinstall it
+  ;                                  fresh below)
+  ;   4. taskkill node.exe in $INSTDIR — last-resort fallback if
+  ;                                  someone tampered with NSSM or the
+  ;                                  process is wedged
+  ;   5. settle pause              — let the kernel release file handles
+  ;                                  before we start writing
+  ;
+  ; Each step is best-effort; missing service / first-install just
+  ; no-ops. We only care that no node.exe holds locks on $INSTDIR after.
+  ; ══════════════════════════════════════════════════════════════════
+  DetailPrint "Stopping ${SERVICE_NAME} service before upgrade..."
+  nsExec::ExecToLog 'sc.exe stop ${SERVICE_NAME}'
+
+  ; Poll up to 30 seconds (15× 2s) for STOPPED state. Returns FAST if
+  ; the service is already stopped or doesn't exist.
+  StrCpy $1 0
+  poll_stopped_loop:
+    IntCmp $1 15 poll_stopped_done
+    nsExec::ExecToStack 'cmd.exe /c sc query ${SERVICE_NAME} ^| findstr /C:"STATE"'
+    Pop $2  ; exit code (0 = found)
+    Pop $3  ; output line
+    StrCmp $2 "0" 0 poll_stopped_done   ; service missing → done
+    Push $3
+    Push "STOPPED"
+    Call StrContains
+    Pop $4
+    StrCmp $4 "1" poll_stopped_done
+    Sleep 2000
+    IntOp $1 $1 + 1
+    Goto poll_stopped_loop
+  poll_stopped_done:
+
+  ; Force-remove the service (kills any still-running process).
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
+  ; Last-resort: if a node.exe is still alive in $INSTDIR, kill it. The
+  ; pathname filter avoids touching unrelated node.exe processes the
+  ; user might have running for other tools.
+  nsExec::ExecToLog 'taskkill /F /FI "IMAGENAME eq node.exe" /FI "WINDOWDIR eq $INSTDIR*"'
+  Sleep 1500
 
   ; ── Create data directory (preserved across upgrades) ──
   CreateDirectory "$DATA_DIR"
@@ -80,6 +162,13 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; ── Copy app files (replaced on upgrade) ──
   ; The portable build places node.exe at the root of the portable dir
   ; (single ~88MB binary, not a folder). Mirror that layout into $INSTDIR.
+  ;
+  ; SetOverwrite on  →  if a file is locked, NSIS will retry up to a
+  ; handful of times and then prompt the user with a Retry/Cancel/Ignore
+  ; dialog. We've already taken the steps above to make sure nothing
+  ; SHOULD be locked; this turns silent failure into a visible one if
+  ; the worst happens.
+  SetOverwrite on
   SetOutPath "$INSTDIR"
   File "${PORTABLE_DIR}\node.exe"
 
@@ -121,9 +210,9 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   CopyFiles /SILENT "$DATA_DIR\config.json" "$INSTDIR\app\config.json"
 
   ; ── Install/Update Windows Service ──
-  ; Remove old service if exists (clean reinstall)
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
-  Sleep 1000
+  ; Service was already removed at the top of this section (before the
+  ; file copies, so node.exe couldn't keep locks on the new binaries).
+  ; Just install fresh below — no second remove needed.
 
   ; Install service — node runs the Express server with a 512MB heap budget.
   ; Heap was 256MB but tight on laptops doing concurrent WAL + sync queue
