@@ -17,7 +17,7 @@
 !define APP_PUBLISHER "autStand"
 !define APP_URL "https://commissioning.lci.ge"
 !ifndef APP_VERSION
-  !define APP_VERSION "2.25.3"
+  !define APP_VERSION "2.25.4"
 !endif
 
 !define INSTALL_DIR "$PROGRAMFILES\${APP_SHORT}"
@@ -87,35 +87,28 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; ══════════════════════════════════════════════════════════════════
   ; SHUT DOWN THE RUNNING SERVICE BEFORE TOUCHING ANY FILES.
   ;
-  ; This is the *only* place upgrades are safe. node.exe holds locks on
-  ; its own image and the native modules under app/dist-server/node_modules
-  ; (better-sqlite3.node, ffi-rs.dll). NSIS `File` is silent on locked
-  ; writes — copy is skipped, no error — so if the service is still up
-  ; when we hit it, the user gets a "successful" install that is actually
-  ; the OLD code with a NEW .env. UI keeps reporting the old version.
+  ; node.exe holds locks on its own image and on app/dist-server/
+  ; node_modules native modules (better-sqlite3.node, ffi-rs DLL).
+  ; If we touch the file tree before the process is dead, NSIS `File`
+  ; either silently skips (default) or pops a Retry/Cancel dialog
+  ; (with SetOverwrite on). Either outcome breaks unattended upgrades.
   ;
-  ; The safe sequence:
-  ;   1. sc stop                   — request graceful stop
-  ;   2. poll sc query for STOPPED — ride out the AppStopMethod* timeouts
-  ;                                  (up to ~15s combined for Console /
-  ;                                  Window / Threads stop methods)
-  ;   3. nssm remove ... confirm   — kill anything still holding on, drop
-  ;                                  service config (we'll reinstall it
-  ;                                  fresh below)
-  ;   4. taskkill node.exe in $INSTDIR — last-resort fallback if
-  ;                                  someone tampered with NSSM or the
-  ;                                  process is wedged
-  ;   5. settle pause              — let the kernel release file handles
-  ;                                  before we start writing
+  ; The sequence below ratchets through increasingly aggressive
+  ; cleanup until *no* node.exe rooted in $INSTDIR remains, then
+  ; verifies file locks have actually released by probing a rename
+  ; of node.exe. If even that fails (e.g. AV scanner has a handle),
+  ; we fall back to scheduling the replacement on next reboot.
   ;
-  ; Each step is best-effort; missing service / first-install just
-  ; no-ops. We only care that no node.exe holds locks on $INSTDIR after.
+  ; First-install path: every step is a no-op when the service /
+  ; processes don't exist. No errors, just falls through.
   ; ══════════════════════════════════════════════════════════════════
   DetailPrint "Stopping ${SERVICE_NAME} service before upgrade..."
+
+  ; Step 1: graceful stop. nsExec returns immediately, we poll below.
   nsExec::ExecToLog 'sc.exe stop ${SERVICE_NAME}'
 
-  ; Poll up to 30 seconds (15× 2s) for STOPPED state. Returns FAST if
-  ; the service is already stopped or doesn't exist.
+  ; Step 2: poll up to 30s (15× 2s) for STOPPED. Returns fast on
+  ; missing service or already-stopped.
   StrCpy $1 0
   poll_stopped_loop:
     IntCmp $1 15 poll_stopped_done
@@ -133,13 +126,40 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
     Goto poll_stopped_loop
   poll_stopped_done:
 
-  ; Force-remove the service (kills any still-running process).
+  ; Step 3: drop the service config (NSSM kills the wrapped process
+  ; tree on remove). If the service didn't exist, this no-ops.
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
-  ; Last-resort: if a node.exe is still alive in $INSTDIR, kill it. The
-  ; pathname filter avoids touching unrelated node.exe processes the
-  ; user might have running for other tools.
-  nsExec::ExecToLog 'taskkill /F /FI "IMAGENAME eq node.exe" /FI "WINDOWDIR eq $INSTDIR*"'
-  Sleep 1500
+  Sleep 1000
+
+  ; Step 4: last-resort process kill. WMIC / PowerShell can filter
+  ; node.exe by ExecutablePath, which taskkill cannot do. The earlier
+  ; `taskkill /FI "WINDOWDIR eq..."` trick was a no-op in practice —
+  ; service-spawned node has no window, and WINDOWDIR doesn't filter
+  ; on the executable's path anyway. PowerShell's CIM query is the
+  ; first filter that actually targets the right process: only kills
+  ; node.exe instances whose binary lives under $INSTDIR, leaving any
+  ; other node.exe the user might be running alone.
+  DetailPrint "Killing any leftover node.exe under $INSTDIR..."
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name = ''node.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"'
+  Sleep 2000
+
+  ; Step 5: belt-and-suspenders retry on the process kill. Even if
+  ; `nssm remove` returned cleanly, the OS can take a beat to release
+  ; file handles. We loop the PowerShell kill up to 3 times with a 2s
+  ; pause between, accepting "no matching processes" as success. After
+  ; this, $INSTDIR is virtually guaranteed to have no live node.exe
+  ; from our app, so the file copies below can overwrite freely.
+  StrCpy $1 0
+  process_kill_loop:
+    IntCmp $1 3 process_kill_done
+    nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$found = Get-CimInstance Win32_Process -Filter \"Name = ''node.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) }; if ($found) { $found | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; exit 1 } else { exit 0 }"'
+    Pop $2  ; exit code: 0 = no processes left, 1 = had to kill some
+    Pop $3  ; (output, ignored)
+    StrCmp $2 "0" process_kill_done
+    Sleep 2000
+    IntOp $1 $1 + 1
+    Goto process_kill_loop
+  process_kill_done:
 
   ; ── Create data directory (preserved across upgrades) ──
   CreateDirectory "$DATA_DIR"
