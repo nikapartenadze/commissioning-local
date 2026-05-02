@@ -109,6 +109,40 @@ export function DeviceTestPanel({
     return { passed: p, failed: f, total: ios.length }
   }, [ios, localResults])
 
+  // ----------------------------------------------------------------
+  // Auto-advance between devices.
+  //
+  // Without this, the user has to do "Pass … Pass … Pass … Close →
+  // Begin" every time they finish a device. The "Pass" auto-advances
+  // within a device (currentIo is the first untested IO), but the
+  // device → device transition needs a manual two-tap.
+  //
+  // When the user JUST finished marking the last IO in this device
+  // AND the SCADA traversal suggests a next device that ISN'T this
+  // one, we auto-jump after a brief beat (900 ms) — long enough to
+  // read the "Device complete" confirmation, short enough to feel
+  // snappy. The user can hit Close during the window to cancel.
+  //
+  // Guards:
+  //  - localResults must have at least one entry → only fires when
+  //    the user actually marked something this session, NOT when
+  //    they re-opened an already-complete device just to inspect it
+  //  - the next device must be different → no infinite re-select
+  //  - skip when there's no next target → end of run, just show the
+  //    "Device complete" card
+  // ----------------------------------------------------------------
+  const allDoneNow =
+    ios !== null && ios.length > 0 && ios.every(io => effectiveResult(io) !== null)
+  const userMarkedSomething = Object.keys(localResults).length > 0
+  const nextDeviceDifferent =
+    currentTarget != null && device != null && currentTarget.deviceName !== device.deviceName
+
+  useEffect(() => {
+    if (!allDoneNow || !nextDeviceDifferent || !userMarkedSomething) return
+    const t = window.setTimeout(() => onSelectCurrent(), 900)
+    return () => window.clearTimeout(t)
+  }, [allDoneNow, nextDeviceDifferent, userMarkedSomething, onSelectCurrent])
+
   // ================== EMPTY STATE — no device selected ==================
   if (!device) {
     return (
@@ -227,8 +261,13 @@ export function DeviceTestPanel({
         </div>
       ) : currentIo ? (
         <>
-          {/* Hero IO card — clickable to pan/zoom map to this device */}
+          {/* Hero IO card — clickable to pan/zoom map to this device.
+              key={currentIo.id} forces React to unmount the old card
+              and mount a fresh one each time the user advances to the
+              next IO, which replays the .gm-hero rise animation so
+              the swap reads as the new IO sliding up into place. */}
           <button
+            key={currentIo.id}
             type="button"
             className="gm-hero gm-hero-btn"
             onClick={() => onCenterOnDevice(device.deviceName)}
