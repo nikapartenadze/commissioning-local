@@ -404,17 +404,26 @@ export function PlcToolbar({
             <FileEdit className="w-5 h-5 sm:w-6 sm:h-6" />
           </Button>
 
-          {/* Guided Mode entry — opens SVG-driven guided checkout */}
+          {/* Guided Mode entry — opens SVG-driven guided checkout.
+              Beta: opt-in only via this button so the existing
+              commissioning flow is unaffected. The amber BETA badge
+              flags it as experimental at a glance. */}
           {subsystemId && (
             <Button
               asChild
               variant="ghost"
               size="lg"
-              className="h-10 w-10 sm:h-12 sm:w-12 p-0"
-              title="Guided Mode"
+              className="relative h-10 w-10 sm:h-12 sm:w-12 p-0"
+              title="Guided Mode (beta)"
             >
               <Link to={`/commissioning/${subsystemId}/guided`}>
                 <Map className="w-5 h-5 sm:w-6 sm:h-6" />
+                <span
+                  className="absolute -top-1 -right-1 rounded-sm bg-amber-500 px-1 text-[8px] font-bold uppercase leading-none tracking-tight text-white shadow-sm"
+                  aria-hidden
+                >
+                  Beta
+                </span>
               </Link>
             </Button>
           )}
