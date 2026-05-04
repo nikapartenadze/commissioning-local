@@ -23,6 +23,7 @@ import express from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createApiRouter } from './routes';
 import { resolveLogsDirPath } from '@/lib/storage-paths';
+import { getPlcTags } from '@/lib/plc-client-manager';
 
 // Startup backup is deferred to after server starts listening (see httpServer.listen callback)
 
@@ -313,6 +314,41 @@ broadcastHttpServer.listen(HTTP_PORT, '127.0.0.1', () => {
 plcWss.on('connection', (ws: AliveWebSocket) => {
   plcClients.add(ws);
   ws.isAlive = true;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Send a snapshot of every currently-known tag state immediately on
+  // connect. Without this, a browser that opens its WebSocket *after*
+  // the PLC's bits stabilized never sees those bits' values — the tag
+  // reader only emits on TRANSITIONS, so a tag that is stably TRUE
+  // since before the page loaded never broadcasts. The race is most
+  // visible right after a "Connect to PLC" + page reload sequence
+  // (tags register over a few seconds; the page's GET /api/ios fires
+  // before they're all populated and gets back state=null), and any
+  // subsequent /api/ios re-fetch alone doesn't help because tags that
+  // are stable continue to be stable — they never get re-broadcast.
+  //
+  // The snapshot fires as a one-shot "TagSnapshot" message that the
+  // browser-side websocket-client.ts fans out to its existing
+  // per-IO state callbacks (no page-level changes needed).
+  // ─────────────────────────────────────────────────────────────────────────
+  try {
+    const { tags } = getPlcTags();
+    const states = tags
+      .filter((t) => t.id >= 0 && t.state !== undefined && t.state !== null)
+      .map((t) => ({ id: t.id, state: t.state === 'TRUE' }));
+    if (states.length > 0) {
+      ws.send(JSON.stringify({
+        type: 'TagSnapshot',
+        states,
+        count: states.length,
+      }));
+    }
+  } catch (err) {
+    // Don't fail the connection if snapshot fails; the client will
+    // still receive subsequent change events.
+    console.warn('[WS] Failed to send tag snapshot on connect:', err);
+  }
+
   ws.on('message', (data: WebSocket.Data) => {
     try {
       const msg = JSON.parse(data.toString());
