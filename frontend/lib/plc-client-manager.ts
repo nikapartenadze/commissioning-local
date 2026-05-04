@@ -210,6 +210,36 @@ function setupClientEventListeners(client: PlcClient): void {
         console.warn('[PlcClientManager] VFD validation sync failed:', err);
       }
     }, 3000); // 3 s delay — let tag reader settle first
+
+    // Push a snapshot of every freshly-registered tag to all connected
+    // WebSocket clients. Without this, browsers that opened their
+    // WebSocket BEFORE the user pressed "Connect to PLC" (i.e. the
+    // common case — the page is already up, then they click connect)
+    // never learn the value of any tag that doesn't transition. The
+    // tag reader only emits on transitions; stable bits stay invisible.
+    //
+    // 1500ms delay so the first read cycle completes and tag.state is
+    // populated before we snapshot. Earlier than the 3s validation-
+    // sync above on purpose: state bubbles take precedence over flag
+    // reconciliation for UX.
+    setTimeout(() => {
+      try {
+        const ioTags = client.getIoTags();
+        const states = ioTags
+          .filter((t) => t.id >= 0 && t.state !== undefined && t.state !== null)
+          .map((t) => ({ id: t.id, state: t.state === 'TRUE' }));
+        if (states.length > 0) {
+          broadcastToWebSocket({
+            type: 'TagSnapshot',
+            states,
+            count: states.length,
+          });
+          console.log(`[PlcClientManager] Broadcast TagSnapshot — ${states.length} tag states to all clients`);
+        }
+      } catch (err) {
+        console.warn('[PlcClientManager] TagSnapshot broadcast failed:', err);
+      }
+    }, 1500);
   });
 
   // Broadcast errors
