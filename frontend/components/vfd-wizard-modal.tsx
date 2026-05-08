@@ -10,7 +10,7 @@ import { useUser } from '@/lib/user-context'
 import {
   X, Wifi, WifiOff, Loader2, CheckCircle2, XCircle, AlertTriangle,
   Zap, CircleDot, Send, Play, Square, ChevronRight, RotateCcw,
-  Signal, Fingerprint, Gauge, ArrowRight, Settings2, Lock,
+  Signal, Fingerprint, Gauge, ArrowRight, Settings2, Lock, Repeat,
 } from 'lucide-react'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -120,6 +120,7 @@ interface L2CommissioningCells {
   motorHpField:        string | null
   vfdHpField:          string | null
   checkDirection:      string | null
+  polarity:            string | null
   beltTracked:         string | null
   speedSetUp:          string | null
   controlsVerified:    string | null
@@ -160,6 +161,27 @@ function parseSpeedStamp(stamp: string | null | undefined): { fpm: number; rvs: 
   const rvs = parseFloat(m[2])
   if (!Number.isFinite(fpm) || !Number.isFinite(rvs)) return null
   return { fpm, rvs }
+}
+
+/**
+ * The "Polarity" L2 cell stores the chosen drive direction polarity along
+ * with the operator's initials+date stamp, e.g. "ASH 9/5 · Normal" or
+ * "ASH 9/5 · Inverter". Mirrors the Speed Set Up cell convention.
+ *
+ * Normal   = `Drive_Outputs.DirectionCmd_0` (forward)
+ * Inverter = `Drive_Outputs.DirectionCmd_1` (reverse)
+ */
+type Polarity = 'Normal' | 'Inverter'
+
+function buildPolarityStamp(userName: string | undefined, polarity: Polarity): string {
+  return `${buildInitialsStamp(userName)} · ${polarity}`
+}
+
+function parsePolarityStamp(stamp: string | null | undefined): Polarity | null {
+  if (!stamp) return null
+  if (/\bInverter\b/i.test(stamp)) return 'Inverter'
+  if (/\bNormal\b/i.test(stamp)) return 'Normal'
+  return null
 }
 
 // ── Sub-components ─────────────────────────────────────────────────
@@ -771,7 +793,183 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
   )
 }
 
-function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, onComplete, isComplete }: {
+/**
+ * Step 4 — Polarity Check (the "3.5" check from the new AOI revision).
+ *
+ * Confirms which direction polarity to commit for this drive. Uses the new
+ * `CTRL.CMD.Reverse_Polarity` and `CTRL.CMD.Normal_Polarity` bits added in
+ * the AOI_IOCT_BELT_TRACKING revision (`AOI_IOCT_BELT_TRACKING_AOI.L5X`):
+ *
+ *   Rung 13: SR latch  — Reverse_Polarity local set by CMD.Reverse_Polarity,
+ *                        cleared by CMD.Normal_Polarity.
+ *   Rung 14: routing   — !Reverse_Polarity → Drive_Outputs.DirectionCmd_0 (forward)
+ *                        Reverse_Polarity  → Drive_Outputs.DirectionCmd_1 (reverse)
+ *
+ * Operator workflow: re-bump the motor, observe direction, click either
+ * "Set Normal" (motor was forward) or "Invert Polarity" (motor was reverse).
+ * Both bits are written in one batch so they land in the same PLC scan.
+ * Result is recorded in the L2 cell `Polarity` as "<INITIALS> <DATE> · Normal"
+ * or "<INITIALS> <DATE> · Inverter".
+ */
+function Step4Content({ sts, loading, deviceName, plcConnected, sheetName, userName, initialPolarity, onPolaritySet }: {
+  sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
+  sheetName?: string; userName?: string
+  initialPolarity: Polarity | null
+  onPolaritySet: (polarity: Polarity) => void
+}) {
+  const [bumpSending, setBumpSending] = useState(false)
+  const [bumpCount, setBumpCount] = useState(0)
+  const [chosen, setChosen] = useState<Polarity | null>(initialPolarity)
+  const [sending, setSending] = useState<Polarity | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleBump = async () => {
+    setBumpSending(true)
+    setError(null)
+    try {
+      const result = await writeTag(deviceName, 'Bump', 1, 'BOOL')
+      if (result?.success === false) {
+        setError(`Bump: ${result?.error || 'write failed'}`)
+      } else {
+        setBumpCount(c => c + 1)
+      }
+    } catch (err) {
+      setError(`Bump: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    setTimeout(() => setBumpSending(false), 1500)
+  }
+
+  const handleChoose = async (polarity: Polarity) => {
+    if (sending) return
+    setSending(polarity)
+    setError(null)
+    try {
+      // Write both CMD bits in one batch — only the chosen direction's bit
+      // is asserted; the other is explicitly de-asserted so the SR latch
+      // settles into the right state regardless of prior writes.
+      const reverse = polarity === 'Inverter' ? 1 : 0
+      const normal  = polarity === 'Normal'   ? 1 : 0
+      const res = await fetch('/api/vfd-commissioning/write-tags-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceName,
+          writes: [
+            { field: 'Reverse_Polarity', value: reverse, dataType: 'BOOL' },
+            { field: 'Normal_Polarity',  value: normal,  dataType: 'BOOL' },
+          ],
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || json?.success === false) {
+        throw new Error(json?.error || `HTTP ${res.status}`)
+      }
+
+      // Stamp the L2 cell. Best-effort — if the cloud hasn't deployed the
+      // Polarity column yet the write returns a per-cell error (success is
+      // still true at the envelope level), so we log but don't block the
+      // operator. The PLC write was the operational action; the L2 cell is
+      // the audit record.
+      const stamp = buildPolarityStamp(userName, polarity)
+      writeL2Cells(deviceName, sheetName, userName, [
+        { columnName: 'Polarity', value: stamp },
+      ]).then((l2) => {
+        const failed = (l2?.written || []).filter((w: any) => !w.ok)
+        if (failed.length > 0) {
+          console.warn(`[Step4 Polarity] L2 write failed (column may not be deployed yet):`, failed)
+        }
+      }).catch(() => { /* best-effort */ })
+
+      setChosen(polarity)
+      onPolaritySet(polarity)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSending(null)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-foreground/80 leading-relaxed">
+        Pick the drive's polarity. Bump the motor once to see which way it spins, then
+        choose <strong>Set Normal</strong> if it spun forward or <strong>Invert Polarity</strong> if
+        it spun in reverse. The PLC saves your choice and routes the drive direction
+        commands accordingly.
+      </p>
+
+      <div className="flex items-center gap-3">
+        <Button
+          disabled={!plcConnected || bumpSending}
+          onClick={handleBump}
+          className={cn(
+            "h-11 px-5 text-sm font-bold tracking-wide gap-2",
+            bumpSending
+              ? "bg-amber-500 hover:bg-amber-500 text-white animate-pulse"
+              : "bg-amber-500 hover:bg-amber-600 text-white",
+          )}
+        >
+          <Zap className="h-4 w-4" />
+          {bumpSending ? "Bumping…" : "Bump Motor"}
+        </Button>
+        {bumpCount > 0 && (
+          <span className="text-xs text-muted-foreground">Bumped {bumpCount} time{bumpCount !== 1 ? 's' : ''}</span>
+        )}
+      </div>
+
+      <StatusPill
+        label="Motor is jogging"
+        value={sts.Jogging}
+        loading={loading}
+        trueText="Yes"
+        falseText="No"
+        pendingText="Checking…"
+      />
+
+      <div className="rounded-lg border bg-card p-4 space-y-3">
+        <p className="text-sm font-medium text-foreground">Which direction did the motor spin?</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <ActionButton
+            label={chosen === 'Normal' ? "Normal — Confirmed" : "Forward → Set Normal"}
+            icon={chosen === 'Normal' ? CheckCircle2 : ArrowRight}
+            onClick={() => handleChoose('Normal')}
+            disabled={!plcConnected || sending !== null}
+            sending={sending === 'Normal'}
+            variant={chosen === 'Normal' ? 'outline' : 'primary'}
+          />
+          <ActionButton
+            label={chosen === 'Inverter' ? "Inverter — Confirmed" : "Reverse → Invert Polarity"}
+            icon={chosen === 'Inverter' ? CheckCircle2 : Repeat}
+            onClick={() => handleChoose('Inverter')}
+            disabled={!plcConnected || sending !== null}
+            sending={sending === 'Inverter'}
+            variant={chosen === 'Inverter' ? 'outline' : 'amber'}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Forward routes <code className="font-mono">DirectionCmd_0</code>; Inverter routes <code className="font-mono">DirectionCmd_1</code>.
+          Re-bump after switching to verify it runs the right way.
+        </p>
+      </div>
+
+      {error && (
+        <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400 rounded-lg border border-red-300 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20 p-3">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {chosen && (
+        <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
+          <CheckCircle2 className="h-4 w-4" />
+          Polarity set to <strong>{chosen}</strong>. Continue to step 5.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Step5Content({ sts, stsErrors, loading, deviceName, plcConnected, onComplete, isComplete }: {
   sts: StsState
   stsErrors: StsErrors
   loading: boolean
@@ -855,7 +1053,7 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, onCom
   )
 }
 
-function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onSpeedLogged }: {
+function Step6Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onSpeedLogged }: {
   sts: StsState; stsErrors: StsErrors; loading: boolean; deviceName: string; subsystemId: number; plcConnected: boolean
   sheetName?: string; userName?: string; onSpeedLogged?: () => void
 }) {
@@ -1059,8 +1257,9 @@ const STEPS = [
   { num: 1, label: 'Identity Check', icon: Fingerprint },
   { num: 2, label: 'Horsepower Check', icon: Settings2 },
   { num: 3, label: 'Bump Test', icon: Zap },
-  { num: 4, label: 'Verify Controls', icon: Play },
-  { num: 5, label: 'Calibrate Speed', icon: Gauge },
+  { num: 4, label: 'Polarity Check', icon: Repeat },
+  { num: 5, label: 'Verify Controls', icon: Play },
+  { num: 6, label: 'Calibrate Speed', icon: Gauge },
 ]
 
 // ── Main Modal Component ───────────────────────────────────────────
@@ -1076,33 +1275,53 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   })
   const [stsErrors, setStsErrors] = useState<StsErrors>({})
   const [stsLoading, setStsLoading] = useState(true)
+  // Step 5 "Verify Controls" — persisted in a local DB table (controls-verified
+  // endpoint). Re-numbered from the previous Step 4. Naming kept as
+  // `check4Complete` / `setCheck4Complete` to avoid churning unrelated callers,
+  // but it now gates Step 5 in the new ordering.
   const [check4Complete, setCheck4Complete] = useState(false)
+  // Step 4 "Polarity Check" — derived from the L2 cell `Polarity` (Normal | Inverter).
+  // Locked open after the operator commits a choice; gates entry to Step 5.
+  const [polaritySetDone, setPolaritySetDone] = useState<Polarity | null>(null)
   // Belt Tracked is now a manual entry (filled by mechanical team, not from PLC).
-  // Step 5 (Speed Calibration) is locked until the Belt Tracked L2 cell is filled.
+  // Step 6 (Calibrate Speed) is locked until the Belt Tracked L2 cell is filled.
   const [beltTrackedDone, setBeltTrackedDone] = useState(false)
-  // Speed Set Up tracks whether step 5 (Calibrate Speed) was completed.
+  // Speed Set Up tracks whether step 6 (Calibrate Speed) was completed.
   const [speedSetUpDone, setSpeedSetUpDone] = useState(false)
+  // ── Clear Test button (header) ───────────────────────────────────
+  // Inline two-click confirm so we don't need a confirm-modal component.
+  // First click arms the button for 4 s; second click within that window
+  // POSTs /api/vfd-commissioning/clear and resets local wizard state.
+  const [clearArmed, setClearArmed] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (clearTimerRef.current) clearTimeout(clearTimerRef.current) }, [])
   useEffect(() => {
     readL2CellsForDevice(device.deviceName).then(cells => {
       console.log(`[VFD Wizard] Restoring state for ${device.deviceName}:`, {
+        polarity: cells?.polarity ?? null,
         beltTracked: cells?.beltTracked ?? null,
         controlsVerified: cells?.controlsVerified ?? null,
         speedSetUp: cells?.speedSetUp ?? null,
       })
+      // Step 4 "Polarity" — restore from L2 cell. Tolerates legacy stamps.
+      const parsedPolarity = parsePolarityStamp(cells?.polarity)
+      if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+
       if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
-      // Step 4 "Controls Verified" is persisted in a local DB table (no L2
+      // Step 5 "Controls Verified" is persisted in a local DB table (no L2
       // column), so a fresh pull on a different laptop won't see the explicit
       // flag. Trust downstream proof instead: if Belt Tracked or Speed Set Up
-      // are filled, Step 4 *must* have been done — those steps are gated on
-      // it in the wizard. We deliberately do NOT infer Step 4 from the four
+      // are filled, Step 5 *must* have been done — those steps are gated on
+      // it in the wizard. We deliberately do NOT infer Step 5 from the four
       // ready-gate cells alone, because mid-workflow they are filled by Step
       // 3 even though the F0/F1/F2 control verification hasn't happened yet.
-      const inferredStepFourDone =
+      const inferredStepFiveDone =
         Boolean(cells?.controlsVerified) ||
         Boolean(cells?.beltTracked?.trim()) ||
         Boolean(cells?.speedSetUp?.trim())
-      if (inferredStepFourDone) setCheck4Complete(true)
-      // Step 5 "Calibrate Speed" — mark done if the L2 cell already has a value.
+      if (inferredStepFiveDone) setCheck4Complete(true)
+      // Step 6 "Calibrate Speed" — mark done if the L2 cell already has a value.
       if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
     })
   }, [device.deviceName])
@@ -1208,30 +1427,120 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     }
   }, [plcConnected, device.deviceName])
 
-  // Determine step statuses
-  const getStepStatus = (stepNum: number): 'locked' | 'active' | 'done' | 'failed' => {
-    if (stepNum === activeStep) return 'active'
+  // ── Cascade gating ───────────────────────────────────────────────
+  // Each step's "own" criterion. `true` = passed, `false` = explicitly
+  // failed/cleared, `null` = not yet known (transient — read pending,
+  // PLC handle reconnecting, etc.). We *never* drop a step from done →
+  // locked on a null; only an explicit `false` regresses it. Without
+  // this latch, a momentary STS glitch flashes the cascade red and
+  // snaps the operator back to step 1.
+  const stepDoneOwn: Array<boolean | null> = [
+    sts.Check_Allowed,
+    sts.Valid_Map,
+    sts.Valid_HP,
+    sts.Valid_Direction,
+    polaritySetDone !== null ? true : null,
+    check4Complete ? true : null,
+    speedSetUpDone ? true : null,
+  ]
+  const lastTrueRef = useRef<boolean[]>([false, false, false, false, false, false, false])
+  const stepKey = stepDoneOwn.map(v => v === true ? '1' : v === false ? '0' : '?').join('')
+  useEffect(() => {
+    for (let i = 0; i < stepDoneOwn.length; i++) {
+      const v = stepDoneOwn[i]
+      if (v === true) lastTrueRef.current[i] = true
+      else if (v === false) lastTrueRef.current[i] = false
+      // null → leave cached value alone
+    }
+  }, [stepKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    switch (stepNum) {
-      case 0: return sts.Check_Allowed ? 'done' : (activeStep > 0 ? 'active' : 'active')
-      case 1: return sts.Valid_Map ? 'done' : (sts.Check_Allowed ? (activeStep >= 1 ? 'active' : 'locked') : 'locked')
-      case 2: return sts.Valid_HP ? 'done' : (sts.Valid_Map ? (activeStep >= 2 ? 'active' : 'locked') : 'locked')
-      case 3: return sts.Valid_Direction ? 'done' : (sts.Valid_HP ? (activeStep >= 3 ? 'active' : 'locked') : 'locked')
-      case 4: return check4Complete ? 'done' : (sts.Valid_Direction ? (activeStep >= 4 ? 'active' : 'locked') : 'locked')
-      case 5: return speedSetUpDone ? 'done' : (check4Complete && beltTrackedDone) ? (activeStep >= 5 ? 'active' : 'locked') : 'locked'
-      default: return 'locked'
+  // Cascade: step N is only "done" if every step ≤ N is done by its own
+  // criterion. The moment any step regresses, every downstream step
+  // collapses to "locked" so the operator can't keep mashing buttons
+  // past a broken prerequisite.
+  const stepDone: boolean[] = []
+  {
+    let ok = true
+    for (let i = 0; i < 7; i++) {
+      ok = ok && lastTrueRef.current[i]
+      stepDone.push(ok)
     }
   }
+  const firstBadIndex = stepDone.findIndex(d => !d) // -1 = all done
 
-  // Can user navigate to a step?
+  // Auto-snap activeStep back if it sits past a broken prerequisite.
+  useEffect(() => {
+    if (firstBadIndex !== -1 && activeStep > firstBadIndex) setActiveStep(firstBadIndex)
+  }, [firstBadIndex, activeStep])
+
+  const handleClearTest = useCallback(async () => {
+    if (!clearArmed) {
+      setClearArmed(true)
+      if (clearTimerRef.current) clearTimeout(clearTimerRef.current)
+      clearTimerRef.current = setTimeout(() => setClearArmed(false), 4000)
+      return
+    }
+    if (clearTimerRef.current) { clearTimeout(clearTimerRef.current); clearTimerRef.current = null }
+    setClearArmed(false)
+    setClearing(true)
+    try {
+      const res = await fetch('/api/vfd-commissioning/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceName: device.deviceName,
+          sheetName,
+          clearPlc: plcConnected,
+          updatedBy: userName,
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      // Clean slate. STS bits will follow from the WS reader once the PLC
+      // Invalidate_* pulses propagate; until then the cascade keeps the
+      // operator on whichever step is the first not-yet-reset.
+      setActiveStep(0)
+      setPolaritySetDone(null)
+      setCheck4Complete(false)
+      setSpeedSetUpDone(false)
+      setBeltTrackedDone(false)
+      // Re-arm the auto-backfill so it can run again if STS is still high.
+      backfilledRef.current = false
+      // Refresh from L2 — cells should all be NULL now; mirror the mount
+      // useEffect's restore logic so any racing cell still in flight is
+      // honoured rather than ignored.
+      readL2CellsForDevice(device.deviceName).then(cells => {
+        const parsedPolarity = parsePolarityStamp(cells?.polarity)
+        if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+        if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
+        const inferredStepFiveDone =
+          Boolean(cells?.controlsVerified) ||
+          Boolean(cells?.beltTracked?.trim()) ||
+          Boolean(cells?.speedSetUp?.trim())
+        if (inferredStepFiveDone) setCheck4Complete(true)
+        if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
+      })
+    } catch (err) {
+      console.error('[VfdWizard] Clear failed:', err)
+    } finally {
+      setClearing(false)
+    }
+  }, [clearArmed, device.deviceName, sheetName, plcConnected, userName])
+
+  const getStepStatus = (stepNum: number): 'locked' | 'active' | 'done' | 'failed' => {
+    if (stepNum === activeStep) return 'active'
+    if (stepDone[stepNum]) return 'done'
+    // Distinguish a regression (red) from an unreached step (grey/locked).
+    // Only flag 'failed' on the first broken step *and* only when its bit
+    // is explicitly false — never on a transient null/loading.
+    if (stepNum === firstBadIndex && stepDoneOwn[stepNum] === false) return 'failed'
+    return 'locked'
+  }
+
+  // Navigable: any step up to and including the first broken one. Past
+  // that, the cascade has collapsed and the step is locked.
   const canGoTo = (stepNum: number): boolean => {
     if (stepNum === 0) return true
-    if (stepNum === 1) return sts.Check_Allowed === true
-    if (stepNum === 2) return sts.Valid_Map === true
-    if (stepNum === 3) return sts.Valid_HP === true
-    if (stepNum === 4) return sts.Valid_Direction === true
-    if (stepNum === 5) return check4Complete === true && beltTrackedDone === true
-    return false
+    return firstBadIndex === -1 || stepNum <= firstBadIndex
   }
 
   // Auto-advance when STS confirms current step
@@ -1346,9 +1655,27 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 {device.mcm && <> &middot; {device.mcm}</>}
               </p>
             </div>
-            <Button variant="ghost" size="sm" onClick={onClose} className="h-8 w-8 p-0">
-              <X className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearTest}
+                disabled={clearing}
+                className={cn(
+                  "h-8 px-2 text-xs gap-1.5",
+                  clearArmed && "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/50",
+                )}
+                title={clearArmed ? "Click again to confirm — clears all test data for this VFD" : "Clear all test data for this VFD"}
+              >
+                {clearing
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <RotateCcw className="h-3.5 w-3.5" />}
+                {clearArmed ? "Confirm clear" : "Clear test"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onClose} className="h-8 w-8 p-0">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
           {/* Step content */}
@@ -1357,7 +1684,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
-            {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
+            {activeStep === 4 && <Step4Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} />}
+            {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
               setCheck4Complete(true)
               // Persist to local DB so reopening the wizard remembers this
               fetch('/api/vfd-commissioning/controls-verified', {
@@ -1371,7 +1699,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 })
                 .catch(err => console.error('[VFD Controls] POST error:', err))
             }} isComplete={check4Complete} />}
-            {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
+            {activeStep === 6 && <Step6Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
           </div>
 
           {/* Footer navigation */}
@@ -1397,7 +1725,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
               ))}
             </div>
 
-            {activeStep < 5 ? (
+            {activeStep < 6 ? (
               <div
                 className="relative group"
                 title={!canGoTo(activeStep + 1) ? "This check is not available until the current step is finished" : undefined}
@@ -1405,7 +1733,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 <Button
                   size="sm"
                   disabled={!canGoTo(activeStep + 1)}
-                  onClick={() => setActiveStep(prev => Math.min(5, prev + 1))}
+                  onClick={() => setActiveStep(prev => Math.min(6, prev + 1))}
                   className="h-9 gap-1"
                 >
                   Next <ChevronRight className="h-3.5 w-3.5" />

@@ -9,11 +9,14 @@ import { db } from '@/lib/db-sqlite'
  * table. The L2 spreadsheet (which is local-DB-stored AND cloud-synced) is
  * the single source of truth for "is this VFD commissioned".
  *
- * The six columns the wizard fills:
+ * The columns the wizard fills:
  *   - "Verify Identity"     → from Step 1 (Identity Confirm)
  *   - "Motor HP (Field)"    → from Step 2 (HP Confirm)
  *   - "VFD HP (Field)"      → from Step 2 (HP Confirm)
  *   - "Check Direction"     → from Step 3 (Bump / Direction Confirm)
+ *   - "Polarity"            → from Step 3.5 (Polarity Check). Value is "Normal"
+ *                             or "Inverter" — possibly with an "INITIALS DATE · "
+ *                             prefix per the wizard's stamp convention.
  *   - "Belt Tracked"        → from Step 4 (Belt Tracking complete)
  *   - "Speed Set Up"        → from Step 5 (Calibrate Speed). Stored as a stamp
  *                             "INITIALS DATE · <fpm> FPM @ <rvs> RVS" so the
@@ -31,8 +34,10 @@ import { db } from '@/lib/db-sqlite'
  *           motorHpField:     "5.0"           | null,
  *           vfdHpField:       "5.0"           | null,
  *           checkDirection:   "ASH 9/5"        | null,
+ *           polarity:         "ASH 9/5 · Normal" | "ASH 9/5 · Inverter" | null,
  *           beltTracked:      "ASH 9/5"        | null,
  *           speedSetUp:       "ASH 9/5 · 200 FPM @ 25.30 RVS" | null,
+ *           controlsVerified: "ASH"            | null,
  *         },
  *       },
  *       ...
@@ -49,6 +54,7 @@ const COMMISSIONING_COLUMNS = [
   'Motor HP (Field)',
   'VFD HP (Field)',
   'Check Direction',
+  'Polarity',
   'Belt Tracked',
   'Speed Set Up',
 ] as const
@@ -61,6 +67,7 @@ function columnKey(name: CommissioningColumn): keyof CellSet {
     case 'Motor HP (Field)':   return 'motorHpField'
     case 'VFD HP (Field)':     return 'vfdHpField'
     case 'Check Direction':    return 'checkDirection'
+    case 'Polarity':           return 'polarity'
     case 'Belt Tracked':       return 'beltTracked'
     case 'Speed Set Up':       return 'speedSetUp'
   }
@@ -71,6 +78,7 @@ interface CellSet {
   motorHpField:        string | null
   vfdHpField:          string | null
   checkDirection:      string | null
+  polarity:            string | null
   beltTracked:         string | null
   speedSetUp:          string | null
   controlsVerified:    string | null
@@ -78,12 +86,14 @@ interface CellSet {
 
 const emptyCells = (): CellSet => ({
   verifyIdentity: null, motorHpField: null, vfdHpField: null,
-  checkDirection: null, beltTracked: null, speedSetUp: null,
+  checkDirection: null, polarity: null, beltTracked: null, speedSetUp: null,
   controlsVerified: null,
 })
 
 // One bulk query: for every L2 device on a VFD/APF sheet, give me each of the
-// 6 commissioning column values (NULL if the cell hasn't been written).
+// commissioning column values (NULL if the cell hasn't been written, or if
+// the column itself doesn't exist yet on this sheet — `Polarity` only exists
+// once cloud has been updated, but the LEFT JOIN tolerates its absence).
 const stmtAllCells = db.prepare(`
   SELECT
     d.DeviceName    AS deviceName,
@@ -94,7 +104,7 @@ const stmtAllCells = db.prepare(`
   JOIN L2Sheets   s ON s.id = d.SheetId
   JOIN L2Columns  c ON c.SheetId = d.SheetId
   LEFT JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
-  WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Check Direction', 'Belt Tracked', 'Speed Set Up')
+  WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Check Direction', 'Polarity', 'Belt Tracked', 'Speed Set Up')
     AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
 `)
 
