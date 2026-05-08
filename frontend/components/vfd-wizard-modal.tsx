@@ -28,6 +28,8 @@ interface StsState {
   Valid_HP: boolean | null
   Valid_Direction: boolean | null
   Jogging: boolean | null
+  /** True while Jog_Start_TMR is timing — i.e. the bump pre-roll (5s on the current AOI). */
+  Starting: boolean | null
   RVS: number | null
   KeypadButtonF1: boolean | null
 }
@@ -209,7 +211,8 @@ function StepIndicator({ stepNum, label, status, active }: {
         {status === 'done' ? <CheckCircle2 className="h-4 w-4" /> :
          status === 'failed' ? <XCircle className="h-4 w-4" /> :
          status === 'locked' ? <Lock className="h-3.5 w-3.5" /> :
-         stepNum}
+         /* 1-indexed to match the header which renders `Step {activeStep+1}` */
+         stepNum + 1}
       </div>
       <span className={cn("font-medium", active ? "text-foreground" : "text-muted-foreground")}>{label}</span>
     </div>
@@ -506,9 +509,11 @@ function Step1Content({ sts, loading, deviceName, plcConnected, sheetName, userN
   )
 }
 
-function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, sheetName, userName }: {
+function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onHpFilled }: {
   sts: StsState; loading: boolean; deviceName: string; subsystemId: number; plcConnected: boolean
   sheetName?: string; userName?: string
+  /** Called after a successful Confirm HP write so the parent can gate the cascade on cell completeness, not just on STS.Valid_HP. */
+  onHpFilled?: (motor: string, drive: string) => void
 }) {
   // subsystemId accepted for API parity with other steps but no longer used here —
   // commissioning state is read/written through L2 cells exclusively.
@@ -560,6 +565,7 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
       }
 
       setSent(true)
+      onHpFilled?.(motorHp, driveHp)
     } catch (err) {
       setConfirmError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -651,27 +657,39 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
   )
 }
 
-function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userName }: {
+function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userName, initialPolarity, onPolaritySet }: {
   sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
   sheetName?: string; userName?: string
+  initialPolarity: Polarity | null
+  onPolaritySet: (polarity: Polarity) => void
 }) {
   const [bumpSending, setBumpSending] = useState(false)
-  const [dirSending, setDirSending] = useState(false)
-  const [dirSent, setDirSent] = useState(false)
   const [comment, setComment] = useState('')
   const [bumpCount, setBumpCount] = useState(0)
+  const [chosen, setChosen] = useState<Polarity | null>(initialPolarity)
+  const [confirming, setConfirming] = useState<Polarity | null>(null)
   const [lastWriteError, setLastWriteError] = useState<string | null>(null)
 
   const handleBump = async () => {
     setBumpSending(true)
     setLastWriteError(null)
     try {
+      // CMD.Bump is gated by ONS(ONS.2) on rung 7 — only fires on rising edge.
+      // If CMD.Bump is already 1 from a previous session, writing 1 again is a
+      // no-op: ONS doesn't pulse, Starting never latches, motor never jogs.
+      // Force the edge by writing 0 first, brief settle, then 1.
+      const reset = await writeTag(deviceName, 'Bump', 0, 'BOOL')
+      if (reset?.success === false) {
+        setLastWriteError(`Bump (reset): ${reset?.error || 'write failed'}`)
+        return
+      }
+      await new Promise(r => setTimeout(r, 120))
       const result = await writeTag(deviceName, 'Bump', 1, 'BOOL')
       if (result?.success === false) {
         setLastWriteError(`Bump: ${result?.error || 'write failed'}`)
       } else {
         setBumpCount(c => c + 1)
-        if (process.env.NODE_ENV === 'development') console.log('[Step3] Sent Bump=1')
+        if (process.env.NODE_ENV === 'development') console.log('[Step3] Sent Bump 0→1')
       }
     } catch (err) {
       setLastWriteError(`Bump: ${err instanceof Error ? err.message : String(err)}`)
@@ -679,33 +697,89 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
     setTimeout(() => setBumpSending(false), 1500)
   }
 
-  const handleConfirmDirection = async () => {
-    setDirSending(true)
+  /**
+   * Confirm direction + commit polarity in one atomic operator action:
+   *   1. Write CMD.Reverse_Polarity / CMD.Normal_Polarity in one batch so
+   *      they land in the same PLC scan (rung 13's SR latch settles cleanly).
+   *   2. Write CMD.Valid_Direction = 1 — advances the wizard cascade.
+   *   3. Stamp L2 cells: "Check Direction" with initials/date AND "Polarity"
+   *      with "<INITIALS> <DATE> · Normal|Inverter".
+   * Re-clickable until the operator leaves the step. PLC's Valid_Direction
+   * stays true through polarity flips; only the routing (DirectionCmd_0 vs
+   * DirectionCmd_1) changes.
+   */
+  const handleConfirm = async (polarity: Polarity) => {
+    if (confirming) return
+    setConfirming(polarity)
     setLastWriteError(null)
     try {
-      const result = await writeTag(deviceName, 'Valid_Direction', 1, 'BOOL')
-      if (result?.success === false) {
-        setLastWriteError(`Valid_Direction: ${result?.error || 'write failed'}`)
-      } else {
-        setDirSent(true)
-        if (process.env.NODE_ENV === 'development') console.log('[Step3] Sent Valid_Direction=1')
-
-        // Stamp "Check Direction" in the L2 spreadsheet — INITIALS DATE
-        const stamp = buildInitialsStamp(userName)
-        writeL2Cells(deviceName, sheetName, userName, [
-          { columnName: 'Check Direction', value: stamp },
-        ]).catch(() => { /* best-effort */ })
+      const reverse = polarity === 'Inverter' ? 1 : 0
+      const normal  = polarity === 'Normal'   ? 1 : 0
+      const polRes = await fetch('/api/vfd-commissioning/write-tags-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceName,
+          writes: [
+            { field: 'Reverse_Polarity', value: reverse, dataType: 'BOOL' },
+            { field: 'Normal_Polarity',  value: normal,  dataType: 'BOOL' },
+          ],
+        }),
+      })
+      const polJson = await polRes.json().catch(() => ({}))
+      if (!polRes.ok || polJson?.success === false) {
+        throw new Error(polJson?.error || `polarity write HTTP ${polRes.status}`)
       }
+
+      // Now confirm direction. The PLC's Valid_Direction is gated on Valid_HP,
+      // not on polarity — but we write polarity first so the latched routing
+      // matches the operator's choice before the cascade locks Valid_Direction.
+      const dirRes = await writeTag(deviceName, 'Valid_Direction', 1, 'BOOL')
+      if (dirRes?.success === false) {
+        throw new Error(`Valid_Direction: ${dirRes?.error || 'write failed'}`)
+      }
+
+      // Stamp both L2 cells. Best-effort — if the cloud hasn't deployed the
+      // Polarity column yet the per-cell write returns ok=false but the
+      // envelope is still success; log but don't block. The PLC writes were
+      // the operational action; cells are the audit record.
+      const initials = buildInitialsStamp(userName)
+      const polStamp = buildPolarityStamp(userName, polarity)
+      writeL2Cells(deviceName, sheetName, userName, [
+        { columnName: 'Check Direction', value: initials },
+        { columnName: 'Polarity',        value: polStamp },
+      ]).then((l2) => {
+        const failed = (l2?.written || []).filter((w: any) => !w.ok)
+        if (failed.length > 0) console.warn('[Step3] L2 partial write:', failed)
+      }).catch(() => { /* best-effort */ })
+
+      setChosen(polarity)
+      onPolaritySet(polarity)
     } catch (err) {
-      setLastWriteError(`Valid_Direction: ${err instanceof Error ? err.message : String(err)}`)
+      setLastWriteError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setConfirming(null)
     }
-    setDirSending(false)
   }
+
+  // Three-state phase derived from STS for the bump pill (see Step3Content
+  // notes for AOI rev change — Jog_Start_TMR went 1s → 5s preset, so
+  // Starting is true during the warm-up window; Jogging is true for the 1s
+  // pulse. Idle = neither bit set.
+  const bumpPhase: 'idle' | 'warming-up' | 'jogging' =
+    sts.Jogging === true ? 'jogging'
+    : sts.Starting === true ? 'warming-up'
+    : 'idle'
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-foreground/80 leading-relaxed">
-        Jog the motor for 1 second to check that it runs and to see which direction it spins. The PLC limits the jog to a single 1-second pulse no matter how many times you click.
+        Bump the motor to see which way it spins, then confirm the polarity. The drive
+        warms up for a few seconds before pulsing for 1 second — that's the PLC's
+        safety pre-roll. After bumping, click <strong>Forward → Set Normal</strong> if it
+        spun the right way, or <strong>Reverse → Invert Polarity</strong> if it spun
+        the opposite way. The PLC routes <code className="font-mono">DirectionCmd_0/1</code>
+        accordingly and re-bumping verifies the new direction.
       </p>
 
       <div className="flex items-center gap-3">
@@ -727,16 +801,21 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         )}
       </div>
 
-      <div className="space-y-2">
-        <StatusPill
-          label="Motor is jogging"
-          value={sts.Jogging}
-          loading={loading}
-          trueText="Yes"
-          falseText="No"
-          pendingText="Checking…"
-        />
-      </div>
+      <StatusPill
+        label={
+          bumpPhase === 'warming-up' ? 'Warming up — motor will jog in a moment'
+          : 'Motor is jogging'
+        }
+        value={
+          bumpPhase === 'warming-up' ? null
+          : bumpPhase === 'jogging' ? true
+          : sts.Jogging
+        }
+        loading={loading || bumpPhase === 'warming-up'}
+        trueText="Yes"
+        falseText="No"
+        pendingText={bumpPhase === 'warming-up' ? 'Warming up…' : 'Checking…'}
+      />
 
       <div className="space-y-1.5">
         <label className="text-xs font-medium text-muted-foreground">Direction observation (optional)</label>
@@ -748,23 +827,30 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         />
       </div>
 
-      <div className="rounded-lg border bg-card p-4 space-y-2">
-        <p className="text-sm font-medium text-foreground">Did the motor spin in the correct direction?</p>
-        <div className="flex items-center gap-3">
+      <div className="rounded-lg border bg-card p-4 space-y-3">
+        <p className="text-sm font-medium text-foreground">Which direction did the motor spin?</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <ActionButton
-            label={dirSent || sts.Valid_Direction === true ? "Direction Confirmed" : "Yes — Confirm Direction"}
-            icon={CheckCircle2}
-            onClick={handleConfirmDirection}
-            disabled={!plcConnected || dirSending}
-            sending={dirSending}
-            variant={sts.Valid_Direction === true ? 'outline' : 'primary'}
+            label={chosen === 'Normal' ? "Normal — Confirmed" : "Forward → Set Normal"}
+            icon={chosen === 'Normal' ? CheckCircle2 : ArrowRight}
+            onClick={() => handleConfirm('Normal')}
+            disabled={!plcConnected || confirming !== null}
+            sending={confirming === 'Normal'}
+            variant={chosen === 'Normal' ? 'outline' : 'primary'}
+          />
+          <ActionButton
+            label={chosen === 'Inverter' ? "Inverter — Confirmed" : "Reverse → Invert Polarity"}
+            icon={chosen === 'Inverter' ? CheckCircle2 : Repeat}
+            onClick={() => handleConfirm('Inverter')}
+            disabled={!plcConnected || confirming !== null}
+            sending={confirming === 'Inverter'}
+            variant={chosen === 'Inverter' ? 'outline' : 'amber'}
           />
         </div>
-        {sts.Valid_Direction !== true && (
-          <p className="text-xs text-muted-foreground">
-            If the motor is spinning the wrong way, fix the polarity in the VFD config before retesting. Don't confirm.
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground">
+          Confirming the direction also writes <code className="font-mono">Valid_Direction</code>
+          to the PLC and stamps the spreadsheet. Re-bump after switching to verify the new direction.
+        </p>
       </div>
 
       {lastWriteError && (
@@ -783,193 +869,18 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         pendingText="Checking…"
       />
 
-      {sts.Valid_Direction === true && (
+      {sts.Valid_Direction === true && chosen && (
         <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
           <CheckCircle2 className="h-4 w-4" />
-          Direction confirmed. Continue to step 4.
+          Direction confirmed — polarity set to <strong>{chosen}</strong>. Continue to step 4.
         </div>
       )}
     </div>
   )
 }
 
-/**
- * Step 4 — Polarity Check (the "3.5" check from the new AOI revision).
- *
- * Confirms which direction polarity to commit for this drive. Uses the new
- * `CTRL.CMD.Reverse_Polarity` and `CTRL.CMD.Normal_Polarity` bits added in
- * the AOI_IOCT_BELT_TRACKING revision (`AOI_IOCT_BELT_TRACKING_AOI.L5X`):
- *
- *   Rung 13: SR latch  — Reverse_Polarity local set by CMD.Reverse_Polarity,
- *                        cleared by CMD.Normal_Polarity.
- *   Rung 14: routing   — !Reverse_Polarity → Drive_Outputs.DirectionCmd_0 (forward)
- *                        Reverse_Polarity  → Drive_Outputs.DirectionCmd_1 (reverse)
- *
- * Operator workflow: re-bump the motor, observe direction, click either
- * "Set Normal" (motor was forward) or "Invert Polarity" (motor was reverse).
- * Both bits are written in one batch so they land in the same PLC scan.
- * Result is recorded in the L2 cell `Polarity` as "<INITIALS> <DATE> · Normal"
- * or "<INITIALS> <DATE> · Inverter".
- */
-function Step4Content({ sts, loading, deviceName, plcConnected, sheetName, userName, initialPolarity, onPolaritySet }: {
-  sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
-  sheetName?: string; userName?: string
-  initialPolarity: Polarity | null
-  onPolaritySet: (polarity: Polarity) => void
-}) {
-  const [bumpSending, setBumpSending] = useState(false)
-  const [bumpCount, setBumpCount] = useState(0)
-  const [chosen, setChosen] = useState<Polarity | null>(initialPolarity)
-  const [sending, setSending] = useState<Polarity | null>(null)
-  const [error, setError] = useState<string | null>(null)
 
-  const handleBump = async () => {
-    setBumpSending(true)
-    setError(null)
-    try {
-      const result = await writeTag(deviceName, 'Bump', 1, 'BOOL')
-      if (result?.success === false) {
-        setError(`Bump: ${result?.error || 'write failed'}`)
-      } else {
-        setBumpCount(c => c + 1)
-      }
-    } catch (err) {
-      setError(`Bump: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    setTimeout(() => setBumpSending(false), 1500)
-  }
-
-  const handleChoose = async (polarity: Polarity) => {
-    if (sending) return
-    setSending(polarity)
-    setError(null)
-    try {
-      // Write both CMD bits in one batch — only the chosen direction's bit
-      // is asserted; the other is explicitly de-asserted so the SR latch
-      // settles into the right state regardless of prior writes.
-      const reverse = polarity === 'Inverter' ? 1 : 0
-      const normal  = polarity === 'Normal'   ? 1 : 0
-      const res = await fetch('/api/vfd-commissioning/write-tags-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceName,
-          writes: [
-            { field: 'Reverse_Polarity', value: reverse, dataType: 'BOOL' },
-            { field: 'Normal_Polarity',  value: normal,  dataType: 'BOOL' },
-          ],
-        }),
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok || json?.success === false) {
-        throw new Error(json?.error || `HTTP ${res.status}`)
-      }
-
-      // Stamp the L2 cell. Best-effort — if the cloud hasn't deployed the
-      // Polarity column yet the write returns a per-cell error (success is
-      // still true at the envelope level), so we log but don't block the
-      // operator. The PLC write was the operational action; the L2 cell is
-      // the audit record.
-      const stamp = buildPolarityStamp(userName, polarity)
-      writeL2Cells(deviceName, sheetName, userName, [
-        { columnName: 'Polarity', value: stamp },
-      ]).then((l2) => {
-        const failed = (l2?.written || []).filter((w: any) => !w.ok)
-        if (failed.length > 0) {
-          console.warn(`[Step4 Polarity] L2 write failed (column may not be deployed yet):`, failed)
-        }
-      }).catch(() => { /* best-effort */ })
-
-      setChosen(polarity)
-      onPolaritySet(polarity)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSending(null)
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-foreground/80 leading-relaxed">
-        Pick the drive's polarity. Bump the motor once to see which way it spins, then
-        choose <strong>Set Normal</strong> if it spun forward or <strong>Invert Polarity</strong> if
-        it spun in reverse. The PLC saves your choice and routes the drive direction
-        commands accordingly.
-      </p>
-
-      <div className="flex items-center gap-3">
-        <Button
-          disabled={!plcConnected || bumpSending}
-          onClick={handleBump}
-          className={cn(
-            "h-11 px-5 text-sm font-bold tracking-wide gap-2",
-            bumpSending
-              ? "bg-amber-500 hover:bg-amber-500 text-white animate-pulse"
-              : "bg-amber-500 hover:bg-amber-600 text-white",
-          )}
-        >
-          <Zap className="h-4 w-4" />
-          {bumpSending ? "Bumping…" : "Bump Motor"}
-        </Button>
-        {bumpCount > 0 && (
-          <span className="text-xs text-muted-foreground">Bumped {bumpCount} time{bumpCount !== 1 ? 's' : ''}</span>
-        )}
-      </div>
-
-      <StatusPill
-        label="Motor is jogging"
-        value={sts.Jogging}
-        loading={loading}
-        trueText="Yes"
-        falseText="No"
-        pendingText="Checking…"
-      />
-
-      <div className="rounded-lg border bg-card p-4 space-y-3">
-        <p className="text-sm font-medium text-foreground">Which direction did the motor spin?</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <ActionButton
-            label={chosen === 'Normal' ? "Normal — Confirmed" : "Forward → Set Normal"}
-            icon={chosen === 'Normal' ? CheckCircle2 : ArrowRight}
-            onClick={() => handleChoose('Normal')}
-            disabled={!plcConnected || sending !== null}
-            sending={sending === 'Normal'}
-            variant={chosen === 'Normal' ? 'outline' : 'primary'}
-          />
-          <ActionButton
-            label={chosen === 'Inverter' ? "Inverter — Confirmed" : "Reverse → Invert Polarity"}
-            icon={chosen === 'Inverter' ? CheckCircle2 : Repeat}
-            onClick={() => handleChoose('Inverter')}
-            disabled={!plcConnected || sending !== null}
-            sending={sending === 'Inverter'}
-            variant={chosen === 'Inverter' ? 'outline' : 'amber'}
-          />
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Forward routes <code className="font-mono">DirectionCmd_0</code>; Inverter routes <code className="font-mono">DirectionCmd_1</code>.
-          Re-bump after switching to verify it runs the right way.
-        </p>
-      </div>
-
-      {error && (
-        <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400 rounded-lg border border-red-300 bg-red-50/50 dark:border-red-800 dark:bg-red-950/20 p-3">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {chosen && (
-        <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
-          <CheckCircle2 className="h-4 w-4" />
-          Polarity set to <strong>{chosen}</strong>. Continue to step 5.
-        </div>
-      )}
-    </div>
-  )
-}
-
-function Step5Content({ sts, stsErrors, loading, deviceName, plcConnected, onComplete, isComplete }: {
+function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, onComplete, isComplete }: {
   sts: StsState
   stsErrors: StsErrors
   loading: boolean
@@ -1053,7 +964,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, plcConnected, onCom
   )
 }
 
-function Step6Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onSpeedLogged }: {
+function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onSpeedLogged }: {
   sts: StsState; stsErrors: StsErrors; loading: boolean; deviceName: string; subsystemId: number; plcConnected: boolean
   sheetName?: string; userName?: string; onSpeedLogged?: () => void
 }) {
@@ -1088,19 +999,29 @@ function Step6Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
     return () => { cancelled = true }
   }, [deviceName])
 
-  // Send Run_At_30_RVS command — PLC sets CommandedVelocity to 29.99 (≈30 RVS)
-  // Rung 14: XIC(CTRL.CMD.Run_At_30_RVS) ONS → MOVE(29.99, Drive_Outputs.CommandedVelocity)
+  // Send Run_At_30_RVS command — PLC sets CommandedVelocity to 29.99 (≈30 RVS).
+  // Rung 19: XIC(Valid_Direction)[XIC(CMD.Run_At_30_RVS) ONS MOVE(29.99, CommandedVelocity), ...]
+  // ONS(ONS.8) only fires on a rising edge of CMD.Run_At_30_RVS, so if the bit
+  // is already 1 from a previous session/click, writing 1 again is a no-op —
+  // velocity doesn't change. Force the edge by writing 0 first, brief settle,
+  // then 1. Same pattern as the Bump fix.
   const handleRunAt30 = async () => {
     if (!plcConnected) return
     setRunAt30Sending(true)
     setError(null)
     try {
+      const reset = await writeTag(deviceName, 'Run_At_30_RVS', 0, 'BOOL')
+      if (reset?.success === false) {
+        setError(`Run_At_30_RVS (reset): ${reset?.error || 'write failed'}`)
+        return
+      }
+      await new Promise(r => setTimeout(r, 120))
       const result = await writeTag(deviceName, 'Run_At_30_RVS', 1, 'BOOL')
       if (result?.success === false) {
         setError(result?.error || 'Write failed')
       } else {
         setRunAt30Sent(true)
-        console.log('[Step5] Sent Run_At_30_RVS=1')
+        console.log('[Step5] Sent Run_At_30_RVS 0→1')
         setTimeout(() => setRunAt30Sent(false), 3000)
       }
     } catch (err) {
@@ -1256,10 +1177,13 @@ const STEPS = [
   { num: 0, label: 'VFD Online', icon: Signal },
   { num: 1, label: 'Identity Check', icon: Fingerprint },
   { num: 2, label: 'Horsepower Check', icon: Settings2 },
+  // Bump Test now ALSO captures polarity — the "Set Normal" / "Invert Polarity"
+  // buttons confirm direction and write the Polarity L2 cell in the same action.
+  // Earlier wizard had a separate Step 4 "Polarity Check"; merging keeps the
+  // operator in one screen for the full direction-related decision.
   { num: 3, label: 'Bump Test', icon: Zap },
-  { num: 4, label: 'Polarity Check', icon: Repeat },
-  { num: 5, label: 'Verify Controls', icon: Play },
-  { num: 6, label: 'Calibrate Speed', icon: Gauge },
+  { num: 4, label: 'Verify Controls', icon: Play },
+  { num: 5, label: 'Calibrate Speed', icon: Gauge },
 ]
 
 // ── Main Modal Component ───────────────────────────────────────────
@@ -1270,7 +1194,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   const [activeStep, setActiveStep] = useState(0)
   const [sts, setSts] = useState<StsState>({
     Check_Allowed: null, Valid_Map: null, Valid_HP: null,
-    Valid_Direction: null, Jogging: null, RVS: null,
+    Valid_Direction: null, Jogging: null, Starting: null, RVS: null,
     KeypadButtonF1: null,
   })
   const [stsErrors, setStsErrors] = useState<StsErrors>({})
@@ -1283,6 +1207,11 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // Step 4 "Polarity Check" — derived from the L2 cell `Polarity` (Normal | Inverter).
   // Locked open after the operator commits a choice; gates entry to Step 5.
   const [polaritySetDone, setPolaritySetDone] = useState<Polarity | null>(null)
+  // Step 2 (HP) is "really done" only when both HP cells are filled in L2 *and*
+  // the PLC has Valid_HP=true. Tracking the cells here so the cascade can gate
+  // on actual data being recorded, not just on the PLC bit being latched (which
+  // can be true on test data without anyone ever clicking Confirm HP).
+  const [hpFieldsFilled, setHpFieldsFilled] = useState(false)
   // Belt Tracked is now a manual entry (filled by mechanical team, not from PLC).
   // Step 6 (Calibrate Speed) is locked until the Belt Tracked L2 cell is filled.
   const [beltTrackedDone, setBeltTrackedDone] = useState(false)
@@ -1307,6 +1236,9 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       // Step 4 "Polarity" — restore from L2 cell. Tolerates legacy stamps.
       const parsedPolarity = parsePolarityStamp(cells?.polarity)
       if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+      // Step 2 HP cell completeness — both must be non-empty for the cascade
+      // to consider the step done.
+      setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
 
       if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
       // Step 5 "Controls Verified" is persisted in a local DB table (no L2
@@ -1378,6 +1310,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 `Valid_HP=${s.Valid_HP}`,
                 `Valid_Direction=${s.Valid_Direction}`,
                 `Jogging=${s.Jogging}`,
+                `Starting=${s.Starting}`,
                 `RVS=${s.RVS}`,
                 Object.keys(errs).length ? `errors=${JSON.stringify(errs)}` : '',
               )
@@ -1389,6 +1322,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
               Valid_HP: s.Valid_HP ?? null,
               Valid_Direction: s.Valid_Direction ?? null,
               Jogging: s.Jogging ?? null,
+              Starting: s.Starting ?? null,
               RVS: s.RVS ?? null,
               KeypadButtonF1: s.KeypadButtonF1 ?? null,
             })
@@ -1434,16 +1368,31 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // locked on a null; only an explicit `false` regresses it. Without
   // this latch, a momentary STS glitch flashes the cascade red and
   // snaps the operator back to step 1.
+  // Six steps now: polarity choice was merged into Bump Test.
+  // For steps that require an operator-typed/clicked record AND a PLC bit:
+  //   Step 2 (HP)   — gated on Valid_HP AND both HP cells filled. The PLC bit
+  //                   alone is too loose; on test data Valid_HP can be true
+  //                   from a prior commissioning, but until the operator
+  //                   actually types HP and clicks Confirm, the spreadsheet
+  //                   stays blank. Without this, the cascade marks the step
+  //                   green and the operator walks past without typing.
+  //   Step 3 (Bump) — gated on Valid_Direction AND a polarity choice recorded.
+  //                   Same reasoning: PLC remembers the direction validation
+  //                   from a prior session, but the new "Polarity" cell only
+  //                   gets a value when the operator clicks Forward / Reverse.
   const stepDoneOwn: Array<boolean | null> = [
     sts.Check_Allowed,
     sts.Valid_Map,
-    sts.Valid_HP,
-    sts.Valid_Direction,
-    polaritySetDone !== null ? true : null,
+    sts.Valid_HP === true && hpFieldsFilled ? true
+      : sts.Valid_HP === false ? false
+      : null,
+    sts.Valid_Direction === true && polaritySetDone !== null ? true
+      : sts.Valid_Direction === false ? false
+      : null,
     check4Complete ? true : null,
     speedSetUpDone ? true : null,
   ]
-  const lastTrueRef = useRef<boolean[]>([false, false, false, false, false, false, false])
+  const lastTrueRef = useRef<boolean[]>([false, false, false, false, false, false])
   const stepKey = stepDoneOwn.map(v => v === true ? '1' : v === false ? '0' : '?').join('')
   useEffect(() => {
     for (let i = 0; i < stepDoneOwn.length; i++) {
@@ -1461,7 +1410,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   const stepDone: boolean[] = []
   {
     let ok = true
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 6; i++) {
       ok = ok && lastTrueRef.current[i]
       stepDone.push(ok)
     }
@@ -1503,6 +1452,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setCheck4Complete(false)
       setSpeedSetUpDone(false)
       setBeltTrackedDone(false)
+      setHpFieldsFilled(false)
       // Re-arm the auto-backfill so it can run again if STS is still high.
       backfilledRef.current = false
       // Refresh from L2 — cells should all be NULL now; mirror the mount
@@ -1511,6 +1461,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       readL2CellsForDevice(device.deviceName).then(cells => {
         const parsedPolarity = parsePolarityStamp(cells?.polarity)
         if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+        setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
         if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
         const inferredStepFiveDone =
           Boolean(cells?.controlsVerified) ||
@@ -1548,32 +1499,47 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     if (activeStep === 0 && sts.Check_Allowed === true) setActiveStep(1)
   }, [sts.Check_Allowed, activeStep])
 
-  // Auto-backfill L2 cells for steps that PLC already confirms done.
-  // When a VFD was partially commissioned in a previous session (PLC state set)
-  // but L2 cells weren't written, catch up automatically so progress shows correctly.
+  // Auto-backfill L2 cells for steps the PLC has already validated. The
+  // wizard's Confirm buttons normally write the audit stamps, but if a VFD
+  // was commissioned in a prior session — or the operator opened the
+  // wizard on a device the cascade marks as already-done and never clicks
+  // through Step 1's "Yes, I pressed it" — the L2 cells stay blank even
+  // though the PLC state says it was completed. We catch the obvious gaps
+  // here so the spreadsheet matches PLC truth without manual rework.
+  //
+  // Only stamp from PLC bits that are unambiguous (Valid_Map ⇒ Identity
+  // confirmed; Valid_Direction ⇒ direction confirmed). We do NOT auto-fill
+  // Polarity — there's no way to tell from PLC state alone whether the
+  // operator chose Normal vs Inverter, so we leave that one for the
+  // explicit click in Step 4.
   const backfilledRef = useRef(false)
   useEffect(() => {
     if (backfilledRef.current) return
     if (!sheetName || !userName) return
-    // Wait until we have at least one confirmed PLC state to check
-    if (sts.Valid_Direction == null && sts.Valid_HP == null) return
+    // Wait until we have at least one confirmed PLC bit to act on.
+    if (sts.Valid_Map == null && sts.Valid_Direction == null) return
 
     backfilledRef.current = true
     readL2CellsForDevice(device.deviceName).then(cells => {
       if (!cells) return
       const toWrite: { columnName: string; value: string }[] = []
+      const stamp = buildInitialsStamp(userName)
 
-      // Step 3: Valid_Direction is true but "Check Direction" not stamped
+      // Step 1: Valid_Map true but "Verify Identity" not stamped.
+      if (sts.Valid_Map === true && !cells.verifyIdentity?.trim()) {
+        toWrite.push({ columnName: 'Verify Identity', value: stamp })
+      }
+      // Step 4 (Bump Test): Valid_Direction true but "Check Direction" not stamped.
       if (sts.Valid_Direction === true && !cells.checkDirection?.trim()) {
-        toWrite.push({ columnName: 'Check Direction', value: buildInitialsStamp(userName) })
+        toWrite.push({ columnName: 'Check Direction', value: stamp })
       }
 
       if (toWrite.length > 0) {
-        console.log(`[VfdWizard] Auto-backfilling ${toWrite.length} L2 cell(s) for ${device.deviceName}`)
+        console.log(`[VfdWizard] Auto-backfilling ${toWrite.length} L2 cell(s) for ${device.deviceName}: ${toWrite.map(c => c.columnName).join(', ')}`)
         writeL2Cells(device.deviceName, sheetName, userName, toWrite).catch(() => {})
       }
     })
-  }, [sts.Valid_Direction, sts.Valid_HP, device.deviceName, sheetName, userName])
+  }, [sts.Valid_Map, sts.Valid_Direction, device.deviceName, sheetName, userName])
 
   // Handle escape key
   useEffect(() => {
@@ -1682,10 +1648,9 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
           <div className="flex-1 overflow-y-auto px-6 py-5">
             {activeStep === 0 && <Step0Content sts={sts} loading={stsLoading} />}
             {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
-            {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
-            {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
-            {activeStep === 4 && <Step4Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} />}
-            {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
+            {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onHpFilled={() => setHpFieldsFilled(true)} />}
+            {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} />}
+            {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
               setCheck4Complete(true)
               // Persist to local DB so reopening the wizard remembers this
               fetch('/api/vfd-commissioning/controls-verified', {
@@ -1699,7 +1664,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 })
                 .catch(err => console.error('[VFD Controls] POST error:', err))
             }} isComplete={check4Complete} />}
-            {activeStep === 6 && <Step6Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
+            {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
           </div>
 
           {/* Footer navigation */}
@@ -1725,7 +1690,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
               ))}
             </div>
 
-            {activeStep < 6 ? (
+            {activeStep < 5 ? (
               <div
                 className="relative group"
                 title={!canGoTo(activeStep + 1) ? "This check is not available until the current step is finished" : undefined}
@@ -1733,7 +1698,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 <Button
                   size="sm"
                   disabled={!canGoTo(activeStep + 1)}
-                  onClick={() => setActiveStep(prev => Math.min(6, prev + 1))}
+                  onClick={() => setActiveStep(prev => Math.min(5, prev + 1))}
                   className="h-9 gap-1"
                 >
                   Next <ChevronRight className="h-3.5 w-3.5" />
