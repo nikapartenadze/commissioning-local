@@ -92,6 +92,16 @@ export async function POST(req: Request, res: Response) {
 
     const written: Array<{ columnName: string; ok: boolean; error?: string }> = []
     const cloudPushQueue: Array<{ deviceId: number; columnId: number; cloudDeviceId: number; cloudColumnId: number }> = []
+    // Collected during the transaction; emitted after commit so the open
+    // L2/FV grid in the same browser tab refreshes immediately. Without
+    // this the local UI only updates after the cell round-trips through
+    // cloud SSE (~30 s minimum), which made the wizard's auto-backfill
+    // and Confirm clicks look like no-ops.
+    const localBroadcasts: Array<{
+      cloudDeviceId: number | null; cloudColumnId: number | null
+      localDeviceId: number; localColumnId: number
+      value: string | null; version: number
+    }> = []
 
     db.transaction(() => {
       for (const cell of cells) {
@@ -128,12 +138,44 @@ export async function POST(req: Request, res: Response) {
           })
         }
 
+        localBroadcasts.push({
+          cloudDeviceId: device?.CloudId ?? null,
+          cloudColumnId: column?.CloudId ?? null,
+          localDeviceId: target.deviceId,
+          localColumnId: col.id,
+          value: cell.value ?? null,
+          version: newVersion,
+        })
+
         const completedCount = stmts.countCompleted.get(target.deviceId) as { cnt: number }
         stmts.updateDeviceChecks.run(completedCount?.cnt || 0, target.deviceId)
 
         written.push({ columnName: cell.columnName, ok: true })
       }
     })()
+
+    // Broadcast each successfully-written cell to the local WS so the open
+    // L2/FV grid refreshes in real time. Same envelope shape the cloud SSE
+    // path uses, so the existing `L2CellUpdated` handler in the React side
+    // picks it up without any client-side changes.
+    const updatedAt = new Date().toISOString()
+    for (const b of localBroadcasts) {
+      fetch('http://127.0.0.1:3102/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'L2CellUpdated',
+          cloudDeviceId: b.cloudDeviceId,
+          cloudColumnId: b.cloudColumnId,
+          localDeviceId: b.localDeviceId,
+          localColumnId: b.localColumnId,
+          value: b.value,
+          version: b.version,
+          updatedBy: updatedBy ?? null,
+          updatedAt,
+        }),
+      }).catch(() => { /* best-effort — broadcast bridge may be momentarily down */ })
+    }
 
     // Fire cloud sync pushes (best-effort)
     for (const push of cloudPushQueue) {

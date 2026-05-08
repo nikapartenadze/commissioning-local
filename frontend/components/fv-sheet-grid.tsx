@@ -78,24 +78,38 @@ function baseScrollWidth(colType: string): number {
 // ─── Cell components ────────────────────────────────────────────────────
 
 function CheckCell({ value, onChange }: { value: string | null; onChange: (v: string | null) => void }) {
+  // Display rule (per 2026-04-21-sync-incident-and-fixes.md §6.4):
+  //   empty       → blank
+  //   "fail"      → red X
+  //   anything else (including audit stamps like "SL 5/8" or "ASH 9/5"
+  //                 written by the VFD wizard) → green checkmark
+  // The underlying value is preserved verbatim; only the rendering treats
+  // it as "checked". Hover shows the literal stored value so an operator
+  // can see whose initials are on the cell.
+  const trimmed = (value ?? '').trim()
+  const isEmpty = trimmed === ''
+  const isFail = trimmed.toLowerCase() === 'fail'
+  const isCheck = !isEmpty && !isFail
+
   const handleClick = () => {
-    if (!value) onChange('pass')
-    else if (value === 'pass') onChange('fail')
-    else onChange(null)
+    if (isEmpty) onChange('pass')
+    else if (isFail) onChange(null)
+    else onChange('fail') // any "pass-like" value (pass, initials stamp, etc.) → fail next click
   }
   return (
     <button
       onClick={handleClick}
+      title={value ?? ''}
       className={cn(
         "w-full h-8 rounded-md text-xs font-medium flex items-center justify-center transition-colors",
-        value === 'pass' && "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-        value === 'fail' && "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-        !value && "bg-muted text-muted-foreground hover:bg-muted/80"
+        isCheck && "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+        isFail && "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+        isEmpty && "bg-muted text-muted-foreground hover:bg-muted/80"
       )}
     >
-      {value === 'pass' && <Check className="h-3.5 w-3.5" />}
-      {value === 'fail' && <X className="h-3.5 w-3.5" />}
-      {!value && <span className="opacity-40">-</span>}
+      {isCheck && <Check className="h-3.5 w-3.5" />}
+      {isFail && <X className="h-3.5 w-3.5" />}
+      {isEmpty && <span className="opacity-40">-</span>}
     </button>
   )
 }

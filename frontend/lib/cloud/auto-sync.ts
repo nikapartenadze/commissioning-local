@@ -279,6 +279,29 @@ class AutoSyncService {
       // The oldest pending sync's Version was captured at the moment of the first
       // failed edit — it's what the cloud actually had at that point.
       try {
+        // Step 0 — drop pending rows that have failed too many times. The
+        // strict-version-equality protocol on cloud rejects the push when
+        // cloud's version has moved past local's stored base, and retrying
+        // forever just inflates RetryCount without ever reconciling. Most
+        // common single-user trigger: a network blip mid-push where cloud
+        // committed but the response was lost — cloud is already at the
+        // value we're trying to send, but local doesn't know. Capping the
+        // retries means the stuck row clears itself; if cloud actually
+        // doesn't have the value, the user's next write creates a fresh
+        // pending row at the current version. With 30 s sync intervals, a
+        // cap of 10 = ~5 minutes of trying before we give up on the row.
+        const PENDING_RETRY_CAP = 10
+        const dropped = db.prepare(
+          `DELETE FROM L2PendingSyncs WHERE RetryCount >= ?`
+        ).run(PENDING_RETRY_CAP)
+        if (dropped.changes > 0) {
+          console.warn(
+            `[AutoSync] Dropped ${dropped.changes} L2 pending sync row(s) that exceeded ` +
+            `retry cap (${PENDING_RETRY_CAP}). Cloud likely already has the values — ` +
+            `Pull L2 to verify; click Confirm again in the wizard if any cell is missing.`
+          )
+        }
+
         const l2Pending = db.prepare(
           'SELECT * FROM L2PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
         ).all() as any[]

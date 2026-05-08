@@ -88,6 +88,12 @@ function getTagDefs(deviceName: string): TagDef[] {
     { key: 'Valid_HP',        tagPath: `CBT_${deviceName}.CTRL.STS.Valid_HP`,            dataType: 'BOOL', elemSize: 1 },
     { key: 'Valid_Direction', tagPath: `CBT_${deviceName}.CTRL.STS.Valid_Direction`,     dataType: 'BOOL', elemSize: 1 },
     { key: 'Jogging',         tagPath: `CBT_${deviceName}.CTRL.STS.Jogging`,             dataType: 'BOOL', elemSize: 1 },
+    // Starting = Jog_Start_TMR.TT — true during the bump pre-roll (5s on the
+    // current AOI revision; was 1s before). Without it the wizard shows nothing
+    // for the entire warm-up window and the operator thinks the bump didn't
+    // land. Step 3 (Bump Test) reads it to render a "Warming up" pill before
+    // Jogging fires.
+    { key: 'Starting',        tagPath: `CBT_${deviceName}.CTRL.STS.Starting`,            dataType: 'BOOL', elemSize: 1 },
     { key: 'RVS',             tagPath: `CBT_${deviceName}.CTRL.STS.RVS`,                 dataType: 'REAL', elemSize: 4 },
   ]
 }
@@ -265,6 +271,7 @@ async function pollLoop(reader: WizardReader): Promise<void> {
           ` Valid_HP=${snapshot.Valid_HP}` +
           ` Valid_Direction=${snapshot.Valid_Direction}` +
           ` Jogging=${snapshot.Jogging}` +
+          ` Starting=${snapshot.Starting}` +
           ` RVS=${snapshot.RVS}` +
           errSummary,
         )
