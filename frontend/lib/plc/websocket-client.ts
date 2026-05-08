@@ -78,11 +78,28 @@ export interface WebSocketConnectionOptions {
   enabled?: boolean
 }
 
+/**
+ * Three-tier health for the WS heartbeat. Distinguishes a transient stall
+ * (event-loop blocked by a sync DB write, GC pause, slow disk, …) from a
+ * genuinely broken connection.
+ *
+ *   ok   = ack received within HEARTBEAT_SLOW_MS
+ *   slow = no ack for >= HEARTBEAT_SLOW_MS but < HEARTBEAT_LOST_MS — surface as a small banner
+ *   lost = no ack for >= HEARTBEAT_LOST_MS, OR socket onclose with abnormal code — full modal
+ *
+ * `isHeartbeatLost` (kept for backward compatibility with existing callers)
+ * is now true only in the `lost` state.
+ */
+export type ConnectionHealth = 'ok' | 'slow' | 'lost'
+
 export interface WebSocketConnection {
   isConnected: boolean
   isConfigReloading: boolean
   isTesting: boolean
   isHeartbeatLost: boolean
+  connectionHealth: ConnectionHealth
+  /** Seconds since the last ack at the moment the most recent transition logged. Useful for status badges. */
+  lastAckAgeSec: number
   connect: () => void
   disconnect: () => void
   onIOUpdate: (callback: (update: IOUpdate) => void) => void
@@ -122,6 +139,13 @@ const DEFAULT_RECONNECT_INTERVAL = 3000
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 const WS_DEBUG = false // Set to true to enable WebSocket logging
 
+// Heartbeat thresholds. Sized so that a single slow `better-sqlite3` write
+// or GC pause (typical: a few hundred ms; pathological: a few seconds)
+// never trips the lost state.
+const HEARTBEAT_INTERVAL_MS = 3000
+const HEARTBEAT_SLOW_MS = 10000   // 'slow' — transient banner
+const HEARTBEAT_LOST_MS = 25000   // 'lost' — full modal
+
 function getDefaultWebSocketUrl(): string {
   if (typeof window === 'undefined') {
     return DEFAULT_WS_URL
@@ -147,6 +171,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const [isConfigReloading, setIsConfigReloading] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [isHeartbeatLost, setIsHeartbeatLost] = useState(false)
+  const [connectionHealth, setConnectionHealth] = useState<ConnectionHealth>('ok')
+  const [lastAckAgeSec, setLastAckAgeSec] = useState(0)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectAttemptsRef = useRef(0)
@@ -156,6 +182,30 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const lastAckRef = useRef<number>(Date.now())
   const serverVersionRef = useRef<string | null>(null)
   const isHeartbeatLostRef = useRef(false)
+  const connectionHealthRef = useRef<ConnectionHealth>('ok')
+
+  /**
+   * Single funnel for connection-health transitions. Updates both the ref
+   * (read by tick callbacks without re-rendering) and React state (read by
+   * UI). Logs each transition with the lastAck age so future incidents
+   * leave a breadcrumb in the browser console.
+   */
+  const updateHealth = useCallback((next: ConnectionHealth) => {
+    if (connectionHealthRef.current === next) return
+    const prev = connectionHealthRef.current
+    const ageMs = Date.now() - lastAckRef.current
+    connectionHealthRef.current = next
+    setConnectionHealth(next)
+    setLastAckAgeSec(Math.round(ageMs / 1000))
+    setIsHeartbeatLost(next === 'lost')
+    isHeartbeatLostRef.current = next === 'lost'
+    // Always log — heartbeat issues are exactly the kind of thing we want
+    // a trail for, even when WS_DEBUG is off.
+    const msg = `[PlcWebSocket] connection health: ${prev} → ${next} (lastAck ${Math.round(ageMs / 1000)}s ago)`
+    if (next === 'lost') console.error(msg)
+    else if (next === 'slow') console.warn(msg)
+    else console.info(msg)
+  }, [])
 
   // Callback refs
   const ioCallbacksRef = useRef<Set<(update: IOUpdate) => void>>(new Set())
@@ -417,15 +467,17 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           const ackMsg = message as unknown as { serverVersion: string; timestamp: number }
           lastAckRef.current = Date.now()
 
-          if (isHeartbeatLostRef.current) {
-            // Connection restored
-            if (serverVersionRef.current && serverVersionRef.current !== ackMsg.serverVersion) {
-              // Server version changed — full page reload
-              window.location.reload()
-            }
-            setIsHeartbeatLost(false)
-            isHeartbeatLostRef.current = false
+          // Server version changed across a 'lost' gap → assume the binary
+          // was upgraded, full page reload picks up new client assets.
+          if (isHeartbeatLostRef.current
+            && serverVersionRef.current
+            && serverVersionRef.current !== ackMsg.serverVersion) {
+            window.location.reload()
           }
+
+          // Any ack puts us back in the green state, including transitions
+          // through 'slow'. updateHealth no-ops if already 'ok'.
+          updateHealth('ok')
 
           if (!serverVersionRef.current) {
             serverVersionRef.current = ackMsg.serverVersion
@@ -501,8 +553,13 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           })
         }
 
-        // Start heartbeat
+        // Start heartbeat — reset the timestamp BEFORE the first tick so a
+        // stale `lastAckRef` left over from a previous connection doesn't
+        // immediately trip the slow/lost thresholds. Also reset the health
+        // state, so a modal that was visible at disconnect drops as soon
+        // as the WS comes back (without waiting for the first ack).
         lastAckRef.current = Date.now()
+        updateHealth('ok')
         if (heartbeatIntervalRef.current) {
           clearInterval(heartbeatIntervalRef.current)
         }
@@ -510,12 +567,13 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             wsRef.current.send(JSON.stringify({ type: 'Heartbeat' }))
           }
-          // Check if we've missed acks for too long (10s = ~3 missed heartbeats)
-          if (Date.now() - lastAckRef.current > 10000) {
-            setIsHeartbeatLost(true)
-            isHeartbeatLostRef.current = true
+          const age = Date.now() - lastAckRef.current
+          if (age > HEARTBEAT_LOST_MS) {
+            updateHealth('lost')
+          } else if (age > HEARTBEAT_SLOW_MS) {
+            updateHealth('slow')
           }
-        }, 3000)
+        }, HEARTBEAT_INTERVAL_MS)
       }
 
       ws.onmessage = handleMessage
@@ -537,6 +595,9 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
         const isNormalClose = event.code === 1005 || event.code === 1000
 
         if (!isManualDisconnectRef.current && !isNormalClose) {
+          // The socket actually died — promote to 'lost' immediately so the
+          // modal shows without waiting for the heartbeat threshold.
+          updateHealth('lost')
           const errorEvent: ErrorEvent = {
             source: 'websocket',
             message: 'Lost connection to server',
@@ -720,6 +781,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     isConfigReloading,
     isTesting,
     isHeartbeatLost,
+    connectionHealth,
+    lastAckAgeSec,
     connect,
     disconnect,
     onIOUpdate,

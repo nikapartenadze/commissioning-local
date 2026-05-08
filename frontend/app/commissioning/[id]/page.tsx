@@ -41,6 +41,7 @@ import { ErrorBoundary } from "@/components/error-boundary"
 import { GuidedTour } from "@/components/guided-tour"
 import { NamePrompt } from "@/components/name-prompt"
 import { ConnectionLostOverlay } from "@/components/connection-lost-overlay"
+import { ConnectionSlowBanner } from "@/components/connection-slow-banner"
 import { logger } from "@/lib/logger"
 import type { AppUpdateStatusResponse, CloudSyncStatusResponse } from "@/lib/cloud/types"
 
@@ -1881,6 +1882,7 @@ export default function CommissioningPage() {
   return (
     <ErrorBoundary>
     <ConnectionLostOverlay visible={signalR.isHeartbeatLost} />
+    <ConnectionSlowBanner visible={signalR.connectionHealth === 'slow'} lastAckAgeSec={signalR.lastAckAgeSec} />
     {!userLoading && !currentUser && (
       <NamePrompt onNameSet={(name) => setCurrentUser({ fullName: name, isAdmin: true, loginTime: new Date() })} />
     )}
