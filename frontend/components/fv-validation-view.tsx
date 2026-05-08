@@ -450,14 +450,27 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
       sheetName: sheetNameById.get(d.SheetId) || '',
     }))
 
-  const activeSheetData = data.sheets[activeSheet]
+  // Clamp at render time. The persisted `activeSheet` index can outlive its
+  // data — e.g. switching subsystems shrinks `data.sheets` and the useEffect
+  // clamp below only catches up on the *next* render. Without this guard,
+  // `data.sheets[activeSheet]` returns undefined and the `.id` deref below
+  // throws before the effect ever fires.
+  const safeActiveSheet = activeSheet >= 0 && activeSheet < data.sheets.length ? activeSheet : 0
+  const activeSheetData = data.sheets[safeActiveSheet]
+  if (!activeSheetData) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+        No L2 sheets configured for this subsystem.
+      </div>
+    )
+  }
   const activeColumns = data.columns
     .filter(c => c.SheetId === activeSheetData.id)
     .sort((a, b) => a.DisplayOrder - b.DisplayOrder)
   const activeDevices = data.devices
     .filter(d => d.SheetId === activeSheetData.id)
     .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
-  const activeStats = sheetStats[activeSheet]
+  const activeStats = sheetStats[safeActiveSheet]
 
   // Is the currently selected sheet a VFD/APF sheet?
   const isActiveSheetVfd = vfdSheetIds.has(activeSheetData.id)

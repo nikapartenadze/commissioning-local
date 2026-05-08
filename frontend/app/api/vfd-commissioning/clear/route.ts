@@ -20,7 +20,9 @@ import {
  * what the wizard does. Because L2 cells are now the single source of truth,
  * "clear" means clearing those L2 cells (NULL-ing the Value) AND syncing the
  * deletion to the cloud, plus an optional set of PLC invalidate pulses so
- * STS.Valid_Map / Valid_HP / Valid_Direction drop back to false.
+ * STS.Valid_Map / Valid_HP / Valid_Direction drop back to false. The PLC
+ * polarity latch (CTRL.Reverse_Polarity in the AOI) is also reset to its
+ * default-forward state by writing Normal_Polarity=1, Reverse_Polarity=0.
  *
  * Request body:
  *   { deviceName, sheetName?, clearPlc?: true }
@@ -34,6 +36,7 @@ const COMMISSIONING_COLUMNS = [
   'Motor HP (Field)',
   'VFD HP (Field)',
   'Check Direction',
+  'Polarity',
   'Belt Tracked',
   'Speed Set Up',
 ]
@@ -85,6 +88,47 @@ async function pulseInvalidate(
   } finally {
     try { plc_tag_destroy(handle) } catch { /* ignore */ }
   }
+}
+
+// Drop the AOI's Reverse_Polarity latch back to default-forward by setting
+// CMD.Normal_Polarity=1 and CMD.Reverse_Polarity=0. Per rung 13 of
+// AOI_IOCT_BELT_TRACKING the latch only clears when Normal_Polarity is high
+// AND Reverse_Polarity is low, so both writes are required.
+async function writeBoolBit(
+  gateway: string,
+  path: string,
+  tagPath: string,
+  value: 0 | 1,
+  timeoutMs: number,
+): Promise<{ ok: boolean; error?: string }> {
+  const handle = createTag({
+    gateway, path, name: tagPath, elemSize: 1, elemCount: 1, timeout: timeoutMs,
+  })
+  if (handle < 0) return { ok: false, error: `createTag ${tagPath}: ${getStatusMessage(handle)}` }
+  try {
+    const r = plc_tag_read(handle, timeoutMs)
+    if (r !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `read: ${getStatusMessage(r)}` }
+    const s = plc_tag_set_int8(handle, 0, value)
+    if (s !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `set: ${getStatusMessage(s)}` }
+    const w = plc_tag_write(handle, timeoutMs)
+    if (w !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `write: ${getStatusMessage(w)}` }
+    return { ok: true }
+  } finally {
+    try { plc_tag_destroy(handle) } catch { /* ignore */ }
+  }
+}
+
+async function resetPolarityLatch(
+  gateway: string,
+  path: string,
+  deviceName: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; error?: string }> {
+  const normal = await writeBoolBit(gateway, path, `CBT_${deviceName}.CTRL.CMD.Normal_Polarity`, 1, timeoutMs)
+  if (!normal.ok) return { ok: false, error: `Normal_Polarity: ${normal.error}` }
+  const reverse = await writeBoolBit(gateway, path, `CBT_${deviceName}.CTRL.CMD.Reverse_Polarity`, 0, timeoutMs)
+  if (!reverse.ok) return { ok: false, error: `Reverse_Polarity: ${reverse.error}` }
+  return { ok: true }
 }
 
 export async function POST(req: Request, res: Response) {
@@ -197,7 +241,7 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
-    // 4. Optional: PLC invalidate pulses
+    // 4. Optional: PLC invalidate pulses + polarity latch reset
     const plcWrites: Array<{ field: string; ok: boolean; error?: string }> = []
     let plcAttempted = false
     if (clearPlc) {
@@ -213,6 +257,10 @@ export async function POST(req: Request, res: Response) {
           const r = await pulseInvalidate(connectionConfig.ip, connectionConfig.path, deviceName, field, timeoutMs)
           plcWrites.push({ field, ok: r.ok, error: r.error })
         }
+        // Reset Reverse_Polarity latch back to default-forward (older AOIs
+        // without these CMD bits will fail with tag-not-found — logged, not fatal).
+        const polarity = await resetPolarityLatch(connectionConfig.ip, connectionConfig.path, deviceName, timeoutMs)
+        plcWrites.push({ field: 'Polarity_Reset', ok: polarity.ok, error: polarity.error })
       }
     }
 
