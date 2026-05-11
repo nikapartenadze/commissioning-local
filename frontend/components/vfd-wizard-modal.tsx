@@ -1070,7 +1070,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   return (
     <div className="space-y-4">
       <p className="text-sm text-foreground/80 leading-relaxed">
-        Set the motor to 30 RVS, then have mechanics measure the belt speed in FPM with a tachometer. Type the FPM below and click Log Speed.
+        Calibrate the FPM ↔ RVS pair at 30 RVS. <strong>Start the belt from the VFD keypad (F1) first</strong> — this step only changes the speed setpoint of a belt that is already running. Then click <em>Send 30 RVS Setpoint</em>, tach the actual belt FPM, and click <em>Save Measurement</em>. The FPM/RVS pair is recorded to the commissioning spreadsheet for SCADA to bulk-apply to the PLC later.
       </p>
 
       {/* Live current speed from PLC — STS.RVS is continuously updated */}
@@ -1092,17 +1092,17 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
         )}
       </div>
 
-      {/* Run at 30 RVS button — sends CMD.Run_At_30_RVS to PLC */}
+      {/* Send 30 RVS setpoint — writes CMD.Run_At_30_RVS to the AOI */}
       <div className="rounded-lg border bg-card p-4 space-y-2">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold">Set speed to 30 RVS</p>
+            <p className="text-sm font-semibold">Send 30 RVS speed setpoint</p>
             <p className="text-xs text-muted-foreground">
-              Sends a command to the PLC to set motor speed to 30 RVS for tachometer measurement.
+              Writes the AOI's commanded velocity to 30 RVS. The belt must already be running (start it from the VFD keypad with F1). This command does <strong>not</strong> start a stopped belt — it only changes the speed of one that's already moving.
             </p>
           </div>
           <ActionButton
-            label={runAt30Sent ? "Speed Set" : "Run at 30 RVS"}
+            label={runAt30Sent ? "Setpoint Sent" : "Send 30 RVS Setpoint"}
             icon={runAt30Sent ? CheckCircle2 : Play}
             onClick={handleRunAt30}
             disabled={!plcConnected}
@@ -1114,9 +1114,9 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
 
       <div className="rounded-lg border bg-card p-4 space-y-3">
         <div>
-          <p className="text-sm font-semibold">Log the FPM measurement</p>
+          <p className="text-sm font-semibold">Record the FPM ↔ RVS pair</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Type the FPM the mechanic just tached at the current RVS, then click Log Speed.
+            Saves the measured FPM and current PLC RVS to the commissioning spreadsheet. This does <strong>not</strong> write the speed back to the PLC — SCADA bulk-applies these values to the drive parameters during the VFD parameter download.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1132,7 +1132,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
           </div>
           <div className="self-end">
             <ActionButton
-              label="Log Speed"
+              label="Save Measurement"
               icon={Send}
               onClick={handleLog}
               disabled={!plcConnected || !fpm}
