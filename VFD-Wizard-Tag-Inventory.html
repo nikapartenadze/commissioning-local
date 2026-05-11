@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VFD/APF Wizard — PLC Tag Inventory</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --read: #56d364;
+    --write: #f0883e;
+    --reset: #d2a8ff;
+    --code-bg: #0d1117;
+    --hover: #21262d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #ffffff;
+      --panel: #f6f8fa;
+      --panel-2: #ffffff;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --muted: #656d76;
+      --accent: #0969da;
+      --read: #1a7f37;
+      --write: #bc4c00;
+      --reset: #8250df;
+      --code-bg: #f6f8fa;
+      --hover: #eaeef2;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 36px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 15px; margin: 22px 0 10px; color: var(--text); }
+  p { margin: 8px 0; }
+  .lede { color: var(--muted); margin-bottom: 24px; }
+  code, kbd {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    background: var(--code-bg);
+    padding: 1.5px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0 4px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--panel-2);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  tr:last-child td { border-bottom: 0; }
+  tr:hover td { background: var(--hover); }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .badge.read   { color: var(--read);   border: 1px solid var(--read); }
+  .badge.write  { color: var(--write);  border: 1px solid var(--write); }
+  .badge.reset  { color: var(--reset);  border: 1px solid var(--reset); }
+  .badge.bool   { color: var(--accent); border: 1px solid var(--accent); }
+  .badge.real   { color: #ffa657;       border: 1px solid #ffa657; }
+  .step-pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--accent);
+    color: #fff;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-right: 4px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 12px 0;
+  }
+  .panel.warn { border-left: 3px solid var(--write); }
+  .panel.note { border-left: 3px solid var(--accent); }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 18px;
+    margin: 18px 0 28px;
+    font-size: 13px;
+  }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ul { margin: 6px 0 0; }
+  .meta {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 18px;
+  }
+  .src {
+    color: var(--muted);
+    font-size: 11.5px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .src a { color: var(--accent); text-decoration: none; }
+  .src a:hover { text-decoration: underline; }
+  hr { border: 0; border-top: 1px solid var(--border); margin: 28px 0; }
+  .col-narrow { width: 90px; }
+  .col-medium { width: 150px; }
+  .nowrap { white-space: nowrap; }
+  @media (max-width: 720px) {
+    body { padding: 18px 12px 60px; }
+    table { font-size: 12.5px; }
+    th, td { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+
+<h1>VFD / APF Wizard — PLC Tag Inventory</h1>
+<p class="lede">Every PLC tag the wizard reads, writes, or resets, with the source file and line that owns it. <code>&lt;dev&gt;</code> is the device name (e.g. <code>NCP1_7_VFD</code>).</p>
+<div class="meta">
+  App: <code>frontend/</code> (local commissioning tool) &middot; Wizard component: <code>components/vfd-wizard-modal.tsx</code> &middot; Server routes: <code>app/api/vfd-commissioning/*</code>
+</div>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ul>
+    <li><a href="#reads">1. Reads — continuous 50 ms poll</a></li>
+    <li><a href="#writes">2. Writes — operator commands by step</a></li>
+    <li><a href="#clear">3. Clear / Reset path</a></li>
+    <li><a href="#l2">4. L2 spreadsheet cells (non-PLC writes)</a></li>
+    <li><a href="#routes">5. Server routes &amp; how the path is built</a></li>
+    <li><a href="#notes">6. Notes, quirks, and traps</a></li>
+  </ul>
+</div>
+
+<h2 id="reads">1. Reads — continuous 50 ms poll</h2>
+<p>Started when the wizard opens, stopped when it closes (or after 2 min idle). Sequential reads only — parallel reads are deliberately avoided so writes can land between cycles.</p>
+<p class="src">Source: <code>frontend/lib/vfd-wizard-reader.ts:83-99</code> &middot; broadcasts <code>VfdTagUpdate</code> over WS port 3000 via the <code>3102/broadcast</code> bridge.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th class="col-medium">Key</th>
+      <th>Full tag path</th>
+      <th class="col-narrow">Type</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>KeypadButtonF1</code></td>
+      <td><code>&lt;dev&gt;:I.KeypadButtonF1</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>Step 1 — detects when operator presses F1 on the VFD keypad. <strong>Only tag not under <code>CBT_*.CTRL.STS</code></strong>; it's a direct module input.</td>
+    </tr>
+    <tr>
+      <td><code>Check_Allowed</code></td>
+      <td><code>CBT_&lt;dev&gt;.CTRL.STS.Check_Allowed</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>Master gate — PLC asserts the wizard may run (drive ready, safety ok, etc.).</td>
+    </tr>
+    <tr>
+      <td><code>Valid_Map</code></td>
+      <td><code>CBT_&lt;dev&gt;.CTRL.STS.Valid_Map</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>Step 1 done-flag (identity verified).</td>
+    </tr>
+    <tr>
+      <td><code>Valid_HP</code></td>
+      <td><code>CBT_&lt;dev&gt;.CTRL.STS.Valid_HP</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>Step 2 done-flag (HP confirmed).</td>
+    </tr>
+    <tr>
+      <td><code>Valid_Direction</code></td>
+      <td><code>CBT_&lt;dev&gt;.CTRL.STS.Valid_Direction</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>Step 3 done-flag (polarity + direction confirmed). Gated on <code>Valid_HP</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Jogging</code></td>
+      <td><code>CBT_&lt;dev&gt;.CTRL.STS.Jogging</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>Step 3 bump pill — true during the 1 s pulse.</td>
+    </tr>
+    <tr>
+      <td><code>Starting</code></td>
+      <td><code>CBT_&lt;dev&gt;.CTRL.STS.Starting</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>Step 3 bump pill — <code>Jog_Start_TMR.TT</code> proxy, true during the 5 s warm-up (was 1 s on the older AOI).</td>
+    </tr>
+    <tr>
+      <td><code>RVS</code></td>
+      <td><code>CBT_&lt;dev&gt;.CTRL.STS.RVS</code></td>
+      <td><span class="badge real">REAL</span></td>
+      <td>Steps 4–5 — live commanded velocity. PLC rung 14 continuously mirrors <code>Drive_Outputs.CommandedVelocity</code> here.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="writes">2. Writes — operator commands by step</h2>
+<p>All write targets sit under <code>CBT_&lt;dev&gt;.CTRL.CMD.*</code> (the server prefixes <code>CBT_</code> automatically). Sites in <code>frontend/components/vfd-wizard-modal.tsx</code>.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th class="col-narrow">Step</th>
+      <th>Tag (CMD.*)</th>
+      <th class="col-narrow">Type</th>
+      <th>Value</th>
+      <th>Site</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="step-pill">1</span> Verify Identity</td>
+      <td><code>Valid_Map</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>1</code></td>
+      <td class="nowrap"><code>:379</code></td>
+      <td>Confirms identity after F1 press.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">2</span> HP</td>
+      <td><code>Valid_HP</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>1</code></td>
+      <td class="nowrap"><code>:562</code></td>
+      <td>L2 cells <em>Motor HP (Field)</em> + <em>VFD HP (Field)</em> are written first; PLC pulse is second.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">3</span> Bump</td>
+      <td><code>Bump</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>0</code> then <code>1</code></td>
+      <td class="nowrap"><code>:681,&nbsp;:687</code></td>
+      <td>Rising-edge required (ONS on rung 7). Force <code>0</code> first so a stale latched <code>1</code> still produces an edge.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">3</span> Polarity (batch, ~1 s loop)</td>
+      <td><code>Reverse_Polarity</code> + <code>Normal_Polarity</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td>mutually exclusive <code>1</code>/<code>0</code></td>
+      <td class="nowrap"><code>:724–725</code></td>
+      <td>Written via <code>write-tags-batch</code> in a continuous ~1 s loop so both land in the same PLC scan (rung 13 SR latch).</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">3</span> Confirm Direction</td>
+      <td><code>Valid_Direction</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>1</code></td>
+      <td class="nowrap"><code>:737</code></td>
+      <td>Written after the polarity pair so the routing matches before the cascade locks.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">5</span> Calibrate Speed</td>
+      <td><code>Run_At_30_RVS</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>0</code> then <code>1</code></td>
+      <td class="nowrap"><code>:1013,&nbsp;:1019</code></td>
+      <td>Rising-edge (ONS on rung 19). PLC moves <code>29.99</code> into <code>CommandedVelocity</code>. <strong>Setpoint only</strong> — does not start a stopped drive; belt must already be running (e.g., via F1 keypad).</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="panel note">
+  <strong>Step 4 — Controls Verified</strong> writes <em>no PLC tag</em>. It only persists a local row in SQLite (<code>VfdControlsVerified</code>) so reopening the wizard remembers the tech already verified keypad F0/F1/F2 controls. See <code>app/api/vfd-commissioning/controls-verified/route.ts</code>.
+</div>
+
+<div class="panel warn">
+  <strong>Step 5 — what the buttons actually do (read this carefully).</strong>
+  <ul style="margin-top:6px">
+    <li><strong>"Send 30 RVS Setpoint"</strong> is a <em>speed setpoint</em>, not a Start command. It writes one BOOL (<code>CMD.Run_At_30_RVS</code>) which the AOI's rung 19 turns into <code>MOVE(29.99, CommandedVelocity)</code>. If the drive is sitting at 0 with no active run command, this changes nothing visible — VFDs need a Run command, not just a setpoint. The expected workflow is: start the belt from the VFD keypad (F1) → click <em>Send 30 RVS Setpoint</em> → the running belt's speed changes to 30 RVS.</li>
+    <li><strong>"Save Measurement"</strong> is a record-only action. It writes the L2 cell <em>Speed Set Up</em> with <code>&lt;INITIALS&gt; · &lt;FPM&gt; FPM @ &lt;RVS&gt; RVS</code>. <em>Zero</em> PLC writes. SCADA bulk-applies these FPM/RVS pairs to drive parameters during the VFD parameter download — this is by design, not a bug.</li>
+  </ul>
+</div>
+
+<h2 id="clear">3. Clear / Reset path</h2>
+<p>Triggered by the wizard's "Clear Test" button. All under <code>CBT_&lt;dev&gt;.CTRL.CMD.*</code>.</p>
+<p class="src">Source: <code>frontend/app/api/vfd-commissioning/clear/route.ts:68-132</code></p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Tag (CMD.*)</th>
+      <th class="col-narrow">Type</th>
+      <th>Value</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>Invalidate_Map</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>1</code> (pulse)</td>
+      <td>Drops <code>STS.Valid_Map</code> back to false.</td>
+    </tr>
+    <tr>
+      <td><code>Invalidate_HP</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>1</code> (pulse)</td>
+      <td>Drops <code>STS.Valid_HP</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Invalidate_Direction</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>1</code> (pulse)</td>
+      <td>Drops <code>STS.Valid_Direction</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Normal_Polarity</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>1</code></td>
+      <td>Half of the latch reset — required.</td>
+    </tr>
+    <tr>
+      <td><code>Reverse_Polarity</code></td>
+      <td><span class="badge bool">BOOL</span></td>
+      <td><code>0</code></td>
+      <td>Other half. Per AOI rung 13 the latch only clears when <code>Normal=1</code> AND <code>Reverse=0</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="panel note">
+  Clear also NULLs the L2 cells: <em>Verify Identity</em>, <em>Motor HP (Field)</em>, <em>VFD HP (Field)</em>, <em>Check Direction</em>, <em>Polarity</em>, <em>Belt Tracked</em>, <em>Speed Set Up</em>, and deletes the local <code>VfdControlsVerified</code> row. See <code>clear/route.ts:34-42</code>.
+</div>
+
+<h2 id="l2">4. L2 spreadsheet cells (non-PLC writes)</h2>
+<p>Written via <code>/api/vfd-commissioning/write-l2-cells</code> alongside the PLC writes. These are the durable audit record.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th class="col-narrow">Step</th>
+      <th>L2 column</th>
+      <th>Value format</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="step-pill">1</span></td>
+      <td><em>Verify Identity</em></td>
+      <td><code>&lt;INITIALS&gt; &lt;DATE&gt;</code></td>
+      <td>Stamped on F1 confirmation.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">2</span></td>
+      <td><em>Motor HP (Field)</em></td>
+      <td>numeric HP</td>
+      <td>From operator input.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">2</span></td>
+      <td><em>VFD HP (Field)</em></td>
+      <td>numeric HP</td>
+      <td>From operator input.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">3</span></td>
+      <td><em>Check Direction</em></td>
+      <td><code>&lt;INITIALS&gt; &lt;DATE&gt;</code></td>
+      <td>Stamped on polarity confirm.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">3</span></td>
+      <td><em>Polarity</em></td>
+      <td><code>&lt;INITIALS&gt; &lt;DATE&gt; · Normal|Inverter</code></td>
+      <td>Stamped together with Check Direction.</td>
+    </tr>
+    <tr>
+      <td><span class="step-pill">5</span></td>
+      <td><em>Speed Set Up</em></td>
+      <td><code>&lt;INITIALS&gt; · &lt;FPM&gt; FPM @ &lt;RVS&gt; RVS</code></td>
+      <td>Captures the FPM↔RVS pair so it survives later cell rewrites.</td>
+    </tr>
+    <tr>
+      <td>—</td>
+      <td><em>Belt Tracked</em></td>
+      <td><code>Yes</code> / empty</td>
+      <td><strong>Not written by the wizard.</strong> Owned by cloud <code>/belt-tracking</code> page; arrives locally over SSE.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="routes">5. Server routes &amp; how the path is built</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Route</th>
+      <th>Method</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><code>/api/vfd-commissioning/wizard-open</code></td><td>POST</td><td>Spin up the 50 ms reader for this device.</td></tr>
+    <tr><td><code>/api/vfd-commissioning/wizard-close</code></td><td>POST</td><td>Tear down the reader.</td></tr>
+    <tr><td><code>/api/vfd-commissioning/read-tags</code></td><td>POST</td><td>One-shot snapshot read (used outside the poll loop).</td></tr>
+    <tr><td><code>/api/vfd-commissioning/write-tag</code></td><td>POST</td><td>Single CMD write. Default path: <code>CBT_&lt;dev&gt;.CTRL.CMD.&lt;field&gt;</code>.</td></tr>
+    <tr><td><code>/api/vfd-commissioning/write-tags-batch</code></td><td>POST</td><td>Multi-tag write, loops re-writing for ~1 s so values land in same PLC scan.</td></tr>
+    <tr><td><code>/api/vfd-commissioning/write-l2-cells</code></td><td>POST</td><td>L2 spreadsheet cell writes (not PLC).</td></tr>
+    <tr><td><code>/api/vfd-commissioning/controls-verified</code></td><td>POST</td><td>Local-only Step 4 state.</td></tr>
+    <tr><td><code>/api/vfd-commissioning/state</code></td><td>GET</td><td>Returns the persisted Step 4 row + last-known cell state.</td></tr>
+    <tr><td><code>/api/vfd-commissioning/clear</code></td><td>POST</td><td>Invalidate pulses + polarity latch reset + L2 cell NULLs.</td></tr>
+    <tr><td><code>/api/vfd-commissioning/test-write</code></td><td>POST</td><td>Diagnostic only.</td></tr>
+  </tbody>
+</table>
+
+<p class="src">Path build logic: <code>app/api/vfd-commissioning/write-tag/route.ts:53-56</code> and <code>write-tags-batch/route.ts:58-61</code>.</p>
+
+<h2 id="notes">6. Notes, quirks, and traps</h2>
+
+<div class="panel warn">
+  <strong>Rising-edge writes need a manual reset to 0 first.</strong> <code>CMD.Bump</code> and <code>CMD.Run_At_30_RVS</code> are gated by ONS instructions on the PLC. Rung 15 fills the CMD region with <code>0</code> every scan (~10 ms), so normally the bit returns to <code>0</code> on its own — but if a previous session crashed mid-write or the scan is stalled, writing <code>1</code> on top of a latched <code>1</code> produces no edge. The wizard always writes <code>0</code> first, then <code>1</code>.
+</div>
+
+<div class="panel warn">
+  <strong>The <code>write-tag</code> route has a <code>Speed_FPM</code> branch that targets STS, not CMD.</strong> If <code>field === 'Speed_FPM'</code> and <code>dataType !== 'BOOL'</code>, the path becomes <code>CBT_&lt;dev&gt;.CTRL.STS.Speed_FPM</code>. The wizard does not currently invoke this branch — there is no UI write to <code>Speed_FPM</code> — but the code path exists. See <code>write-tag/route.ts:53-56</code>.
+</div>
+
+<div class="panel warn">
+  <strong>Batch route header mentions <code>Override_RVS</code> + <code>RVS</code>.</strong> Those writes are not currently issued by the wizard. Today the only batch use is the polarity pair (<code>Reverse_Polarity</code> + <code>Normal_Polarity</code>) on Step 3.
+</div>
+
+<div class="panel note">
+  <strong>REAL writes/reads use uint32 bit reinterpretation.</strong> <code>ffi-rs</code>'s <code>DataType.Float</code> is broken (returns <em>"JsNumber can only be double type"</em>); the codebase reads via <code>plc_tag_get_uint32</code> and reinterprets, and writes via <code>plc_tag_set_int32(floatToInt32Bits(v))</code>. Don't switch back to native float helpers without retesting on hardware. See <code>vfd-wizard-reader.ts:33-40</code>, <code>write-tag/route.ts:19-24,&nbsp;105-109</code>.
+</div>
+
+<div class="panel note">
+  <strong>BOOL writes use <code>plc_tag_set_int8</code>, not <code>plc_tag_set_bit</code>.</strong> Matches the proven <code>plc-client.ts</code> approach. Switching helpers has historically broken writes silently.
+</div>
+
+<div class="panel note">
+  <strong>Reader stays robust to missing tags.</strong> If a handle fails to create (older AOI without that bit, mis-named device, PLC unreachable), the reader retries every 3 s in the background and always broadcasts <em>every</em> key in the snapshot (<code>null</code> for missing) so the UI can show disconnected vs connected per-tag. See <code>vfd-wizard-reader.ts:74,&nbsp;187-300</code>.
+</div>
+
+<hr>
+<p class="src">Generated from working tree state. Re-derive after schema or AOI changes — confirm tag names match the deployed AOI revision before relying on this list.</p>
+
+</body>
+</html>
