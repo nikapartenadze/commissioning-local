@@ -3,8 +3,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, ShieldAlert, Search, X, ChevronDown, ChevronRight, OctagonX, Play, Square } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Loader2, ShieldAlert, Search, X, ChevronDown, ChevronRight, OctagonX, Play, Square, CheckCircle2, XCircle, RotateCcw } from 'lucide-react'
 import { authFetch } from '@/lib/api-config'
+import { useUser } from '@/lib/user-context'
 import { cn } from '@/lib/utils'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -28,6 +30,10 @@ interface Epc {
   ioPoints: IoPoint[]
   mustStopVfds: Vfd[]
   keepRunningVfds: Vfd[]
+  result: 'pass' | 'fail' | null
+  comments: string | null
+  testedBy: string | null
+  testedAt: string | null
 }
 
 interface Zone {
@@ -105,6 +111,7 @@ function EpcSummary({ epc }: { epc: Epc }) {
 // ── Main Component ─────────────────────────────────────────────────
 
 export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
+  const { currentUser, isServerDevice } = useUser()
   const [data, setData] = useState<EStopStatusResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -112,6 +119,8 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const [selectedEpc, setSelectedEpc] = useState<number | null>(null)
   const [expandedZones, setExpandedZones] = useState<Set<number>>(new Set())
   const [pulling, setPulling] = useState(false)
+  const [submittingResult, setSubmittingResult] = useState<'pass' | 'fail' | 'reset' | null>(null)
+  const [resultError, setResultError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const lastDataRef = useRef<string>('')
   const triedCloudPull = useRef(false)
@@ -187,6 +196,60 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
     return () => { clearInterval(id); abortRef.current?.abort() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subsystemId])
+
+  const submitEpcResult = useCallback(async (
+    epc: Epc,
+    zoneName: string,
+    action: { result: 'pass' | 'fail' } | { reset: true },
+  ) => {
+    if (!subsystemId) {
+      setResultError('Subsystem not selected — cannot record EPC check.')
+      return
+    }
+    setSubmittingResult('reset' in action ? 'reset' : action.result)
+    setResultError(null)
+    try {
+      const body: Record<string, unknown> = {
+        subsystemId,
+        zoneName,
+        checkTag: epc.checkTag,
+        testedBy: currentUser?.fullName ?? null,
+      }
+      if ('reset' in action) {
+        body.reset = true
+      } else {
+        body.result = action.result
+      }
+      const res = await authFetch('/api/estop/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => null) as { error?: string; reason?: string } | null
+        const message = errorBody?.reason === 'server-laptop-no-testing'
+          ? 'Server Laptop cannot author test results. Mark from a Client Laptop.'
+          : errorBody?.error || `HTTP ${res.status}`
+        throw new Error(message)
+      }
+      // Refresh the next poll cycle picks it up, but force one now for instant feedback
+      setData(prev => prev && {
+        ...prev,
+        zones: prev.zones.map(z => z.name !== zoneName ? z : {
+          ...z,
+          epcs: z.epcs.map(e => e.checkTag !== epc.checkTag ? e : 'reset' in action ? {
+            ...e, result: null, comments: null, testedBy: null, testedAt: null,
+          } : {
+            ...e, result: action.result, testedBy: currentUser?.fullName ?? null, testedAt: new Date().toISOString(),
+          }),
+        }),
+      })
+    } catch (err) {
+      setResultError(err instanceof Error ? err.message : 'Failed to record result')
+    } finally {
+      setSubmittingResult(null)
+    }
+  }, [currentUser?.fullName, subsystemId])
 
   const handleManualPull = async () => {
     setPulling(true)
@@ -338,14 +401,24 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                             'flex items-center gap-2 px-3 py-2.5 rounded-lg border text-left transition-all hover:shadow-md',
                             selectedEpc === epc.id
                               ? 'border-primary bg-primary/5 shadow-md ring-1 ring-primary/30'
-                              : 'border-border hover:border-muted-foreground/30'
+                              : epc.result === 'pass'
+                                ? 'border-emerald-500/40 hover:border-emerald-500/60'
+                                : epc.result === 'fail'
+                                  ? 'border-red-500/40 hover:border-red-500/60'
+                                  : 'border-border hover:border-muted-foreground/30'
                           )}
                         >
                           <StatusDot active={epc.checkTagValue} size="lg" />
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <p className="text-xs font-mono font-medium truncate">{epc.name}</p>
                             <EpcSummary epc={epc} />
                           </div>
+                          {epc.result === 'pass' && (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" aria-label="Passed" />
+                          )}
+                          {epc.result === 'fail' && (
+                            <XCircle className="w-4 h-4 text-red-500 shrink-0" aria-label="Failed" />
+                          )}
                         </button>
                       ))}
                     </div>
@@ -372,6 +445,86 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
               </div>
 
               <CardContent className="p-4 space-y-5">
+                {/* Pass/Fail check result */}
+                <div className="rounded-lg border p-3 bg-muted/20">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Pull Cord Check</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        {selectedEpcData.result === 'pass' && (
+                          <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                            <CheckCircle2 className="w-3 h-3 mr-1" /> Passed
+                          </Badge>
+                        )}
+                        {selectedEpcData.result === 'fail' && (
+                          <Badge className="bg-red-500/15 text-red-700 dark:text-red-300 border border-red-500/30">
+                            <XCircle className="w-3 h-3 mr-1" /> Failed
+                          </Badge>
+                        )}
+                        {!selectedEpcData.result && (
+                          <Badge variant="outline" className="text-muted-foreground">Not tested</Badge>
+                        )}
+                        {selectedEpcData.testedBy && (
+                          <span className="text-xs text-muted-foreground truncate">
+                            by <span className="font-medium">{selectedEpcData.testedBy}</span>
+                            {selectedEpcData.testedAt && (
+                              <> · {new Date(selectedEpcData.testedAt).toLocaleString()}</>
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant={selectedEpcData.result === 'pass' ? 'default' : 'outline'}
+                        className={cn(
+                          'gap-1',
+                          selectedEpcData.result === 'pass' && 'bg-emerald-600 hover:bg-emerald-700 text-white',
+                        )}
+                        disabled={isServerDevice || submittingResult !== null}
+                        onClick={() => submitEpcResult(selectedEpcData, selectedZoneName, { result: 'pass' })}
+                      >
+                        {submittingResult === 'pass' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                        Pass
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={selectedEpcData.result === 'fail' ? 'default' : 'outline'}
+                        className={cn(
+                          'gap-1',
+                          selectedEpcData.result === 'fail' && 'bg-red-600 hover:bg-red-700 text-white',
+                        )}
+                        disabled={isServerDevice || submittingResult !== null}
+                        onClick={() => submitEpcResult(selectedEpcData, selectedZoneName, { result: 'fail' })}
+                      >
+                        {submittingResult === 'fail' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                        Fail
+                      </Button>
+                      {selectedEpcData.result && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="gap-1 text-muted-foreground"
+                          disabled={isServerDevice || submittingResult !== null}
+                          onClick={() => submitEpcResult(selectedEpcData, selectedZoneName, { reset: true })}
+                          title="Clear this result"
+                        >
+                          {submittingResult === 'reset' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  {resultError && (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-2">{resultError}</p>
+                  )}
+                  {isServerDevice && (
+                    <p className="text-xs text-amber-700 dark:text-amber-300 mt-2">
+                      Server Laptop cannot author test results — open this view on a Client Laptop to record pass/fail.
+                    </p>
+                  )}
+                </div>
+
                 {/* IO Points */}
                 {selectedEpcData.ioPoints.length > 0 && (
                   <div>

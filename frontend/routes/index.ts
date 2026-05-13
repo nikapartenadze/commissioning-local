@@ -65,6 +65,7 @@ import * as networkFiomPorts from '@/app/api/network/fiom-ports/route'
 import * as changeRequests from '@/app/api/change-requests/route'
 import * as changeRequestById from '@/app/api/change-requests/[id]/route'
 import * as estopStatus from '@/app/api/estop/status/route'
+import * as estopCheck from '@/app/api/estop/check/route'
 import * as safetyZones from '@/app/api/safety/zones/route'
 import * as safetyBypass from '@/app/api/safety/bypass/route'
 import * as safetyStatus from '@/app/api/safety/status/route'
@@ -208,6 +209,7 @@ export function createApiRouter(): Router {
 
   // ── EStop ──────────────────────────────────────────────────────
   router.get('/api/estop/status', asyncHandler(estopStatus.GET))
+  router.post('/api/estop/check', noTestingOnServerLaptop, asyncHandler(estopCheck.POST))
 
   // ── Safety ─────────────────────────────────────────────────────
   router.get('/api/safety/zones', asyncHandler(safetyZones.GET))
