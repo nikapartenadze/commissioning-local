@@ -144,13 +144,39 @@ export async function POST(req: Request, res: Response) {
       }
       totalSynced += batchSynced
 
+      // For conflicts: rebase pending row's Version to cloud's current version so
+      // the next push lands. The cloud's value-match short-circuit already handled
+      // the lost-ACK case, so reaching this branch means values genuinely differ
+      // and local is authoritative per CLAUDE.md.
+      const conflictsByKey = new Map<string, number>()
+      for (const c of (l2Data?.conflicts || []) as Array<{ deviceId: number; columnId: number; cloudVersion: number }>) {
+        if (typeof c?.cloudVersion === 'number') {
+          conflictsByKey.set(`${c.deviceId}-${c.columnId}`, c.cloudVersion)
+        }
+      }
+      const rebaseStmt = db.prepare(
+        `UPDATE L2PendingSyncs SET Version = ?, RetryCount = 0, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
+      )
+      const incrementStmt = db.prepare(
+        'UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
+      )
+
       const conflicted = batch.filter(u => !updatedKeys.has(`${u.deviceId}-${u.columnId}`))
       totalFailed += conflicted.length
+      let rebasedCount = 0
       for (const u of conflicted) {
-        try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run('version conflict', u.pendingId) } catch { /* ignore */ }
+        const cloudVersion = conflictsByKey.get(`${u.deviceId}-${u.columnId}`)
+        if (typeof cloudVersion === 'number') {
+          try {
+            rebaseStmt.run(cloudVersion, 'rebased after version conflict', u.deviceId, u.columnId)
+            rebasedCount++
+          } catch { /* ignore */ }
+        } else {
+          try { incrementStmt.run('version conflict (no cloudVersion)', u.pendingId) } catch { /* ignore */ }
+        }
       }
       if (conflicted.length > 0) {
-        errors.push(`${conflicted.length} version conflicts (will retry)`)
+        errors.push(`${conflicted.length} version conflicts (${rebasedCount} rebased — retry to clear)`)
       }
     }
 
