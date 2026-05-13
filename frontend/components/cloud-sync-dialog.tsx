@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { CheckCircle2, XCircle, Loader2, Cloud, Upload, RefreshCw, ChevronDown, ChevronRight } from "lucide-react"
+import { CheckCircle2, XCircle, Loader2, Cloud, Upload, RefreshCw, ChevronDown, ChevronRight, Trash2, X } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import type { CloudSyncStatusResponse } from "@/lib/cloud/types"
 
@@ -91,6 +91,51 @@ export function CloudSyncDialog({
       setItemsError(error instanceof Error ? error.message : 'Failed to load pending items')
       setPendingItems([])
     } finally {
+      setItemsLoading(false)
+    }
+  }
+
+  const handleDropOne = async (id: number, label: string) => {
+    if (!window.confirm(
+      `Drop pending sync for ${label}?\n\n` +
+      `This removes the retry queue entry only. The cell value stays in local data; ` +
+      `the cloud's current value becomes authoritative for this cell. Use this when ` +
+      `you've confirmed cloud already has the right value or you don't want local's ` +
+      `value to overwrite cloud.`
+    )) {
+      return
+    }
+    try {
+      setItemsLoading(true)
+      const resp = await authFetch(`${API_ENDPOINTS.cloudSyncL2Items}?id=${id}`, { method: 'DELETE' })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      await Promise.all([loadPendingItems(), loadStatus()])
+    } catch (error) {
+      setItemsError(error instanceof Error ? error.message : 'Failed to drop pending row')
+      setItemsLoading(false)
+    }
+  }
+
+  const handleClearAll = async () => {
+    const count = pendingItems?.length ?? 0
+    if (count === 0) return
+    if (!window.confirm(
+      `Force-clear ALL ${count} pending FV sync row(s)?\n\n` +
+      `This removes the retry queue entries only. Local cell values stay put. ` +
+      `For any cell where local and cloud values differ, cloud's value becomes ` +
+      `authoritative from this point on. Use when you need to move on (switch ` +
+      `subsystem, unblock cloud pull) and don't need local's queued edits to ` +
+      `land on cloud.`
+    )) {
+      return
+    }
+    try {
+      setItemsLoading(true)
+      const resp = await authFetch(API_ENDPOINTS.cloudSyncL2Items, { method: 'DELETE' })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      await Promise.all([loadPendingItems(), loadStatus()])
+    } catch (error) {
+      setItemsError(error instanceof Error ? error.message : 'Failed to clear pending rows')
       setItemsLoading(false)
     }
   }
@@ -257,15 +302,30 @@ export function CloudSyncDialog({
                 {pendingL2 > 0 && <Badge variant="secondary" className="ml-1">{pendingL2}</Badge>}
               </span>
               {itemsExpanded && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => { e.stopPropagation(); void loadPendingItems() }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); void loadPendingItems() } }}
-                  className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:bg-muted cursor-pointer"
-                  aria-label="Refresh pending items"
-                >
-                  {itemsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                <span className="flex items-center gap-1">
+                  {pendingItems && pendingItems.length > 0 && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); void handleClearAll() }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); void handleClearAll() } }}
+                      className="inline-flex items-center gap-1 px-2 h-7 rounded-md text-xs text-destructive border border-destructive/30 hover:bg-destructive/10 cursor-pointer"
+                      aria-label="Force clear all pending rows"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Force clear all
+                    </span>
+                  )}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); void loadPendingItems() }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); void loadPendingItems() } }}
+                    className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:bg-muted cursor-pointer"
+                    aria-label="Refresh pending items"
+                  >
+                    {itemsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  </span>
                 </span>
               )}
             </button>
@@ -293,6 +353,7 @@ export function CloudSyncDialog({
                           <th className="px-3 py-2 font-medium">v (local/base)</th>
                           <th className="px-3 py-2 font-medium">Retries</th>
                           <th className="px-3 py-2 font-medium">Last Error</th>
+                          <th className="px-3 py-2 font-medium w-8"></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -302,6 +363,7 @@ export function CloudSyncDialog({
                           const col = it.columnName || `cloudCol#${it.cloudColumnId}`
                           const value = it.localValue ?? it.pendingValue
                           const stuck = (it.retryCount ?? 0) >= 3
+                          const dropLabel = `${device} · ${col}`
                           return (
                             <tr key={it.id} className={`border-t ${stuck ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''}`}>
                               <td className="px-3 py-2 align-top">
@@ -323,6 +385,17 @@ export function CloudSyncDialog({
                               <td className="px-3 py-2 align-top max-w-[16rem] break-words">
                                 {it.lastError ? <span className="text-muted-foreground">{it.lastError}</span> : <span className="text-muted-foreground italic">—</span>}
                               </td>
+                              <td className="px-2 py-2 align-top">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDropOne(it.id, dropLabel)}
+                                  className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                  aria-label={`Drop pending sync for ${dropLabel}`}
+                                  title="Drop this pending row (cloud value wins)"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </td>
                             </tr>
                           )
                         })}
@@ -332,6 +405,8 @@ export function CloudSyncDialog({
                 )}
                 <div className="px-3 py-2 text-[11px] text-muted-foreground border-t">
                   Rebased rows clear on the next push attempt. Rows highlighted in amber have retried ≥3 times.
+                  Use the <X className="inline h-3 w-3" /> on a row (or Force clear all) to drop pending entries
+                  and let cloud&apos;s value win — useful when switching subsystems and the queue is blocking the pull.
                 </div>
               </div>
             )}

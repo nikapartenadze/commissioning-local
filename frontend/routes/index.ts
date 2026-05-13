@@ -161,6 +161,7 @@ export function createApiRouter(): Router {
   router.post('/api/cloud/sync-l2', asyncHandler(cloudSyncL2.POST))
   router.get('/api/cloud/sync-l2', asyncHandler(cloudSyncL2.GET))
   router.get('/api/cloud/sync-l2/items', asyncHandler(cloudSyncL2Items.GET))
+  router.delete('/api/cloud/sync-l2/items', asyncHandler(cloudSyncL2Items.DELETE))
   router.get('/api/cloud/sync-pull', asyncHandler(cloudSyncPull.GET))
   router.get('/api/cloud/status', asyncHandler(cloudStatus.GET))
   router.post('/api/cloud/status', asyncHandler(cloudStatus.POST))
