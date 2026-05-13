@@ -154,8 +154,13 @@ export async function POST(req: Request, res: Response) {
           conflictsByKey.set(`${c.deviceId}-${c.columnId}`, c.cloudVersion)
         }
       }
+      // Increment RetryCount on rebase so the 10-strike cap still fires for
+      // rows that can't resolve. Resetting to 0 (earlier code) caused a
+      // livelock that left rows in L2PendingSyncs forever and permanently
+      // blocked /api/cloud/pull (totalPendingCount > 0 → 409). See v2.27
+      // regression notes.
       const rebaseStmt = db.prepare(
-        `UPDATE L2PendingSyncs SET Version = ?, RetryCount = 0, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
+        `UPDATE L2PendingSyncs SET Version = ?, RetryCount = RetryCount + 1, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
       )
       const incrementStmt = db.prepare(
         'UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'

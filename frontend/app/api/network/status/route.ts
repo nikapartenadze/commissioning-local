@@ -6,6 +6,14 @@ let createdTags = new Set<string>()
 let failedTags = new Set<string>()
 let lastConnectedState = false
 
+// Diagnostic: per-tag last-known value, used to log transitions like
+// "X:I.ConnectionFaulted false → true". The IO grid greys out rows whose
+// device has ConnectionFaulted=true, but the decision is made client-side
+// from this endpoint's response — so the only persistent record of WHY a
+// device went grey lives here. Module-level on purpose: resets on service
+// restart, which is fine.
+const previousTagValues = new Map<string, boolean | null>()
+
 export async function GET(req: Request, res: Response) {
   try {
     const subsystemId = parseInt(req.query.subsystemId as string || '')
@@ -73,6 +81,25 @@ export async function GET(req: Request, res: Response) {
     for (const tagName of tagArray) {
       if (failedTags.has(tagName)) { results[tagName] = null; continue }
       results[tagName] = client.readTagCached(tagName)
+    }
+
+    // Log every transition (false↔true↔null). Catches the "device went red
+    // right when operator did X" question without spamming logs during steady
+    // state. Skips the first observation of a tag so we don't dump every tag
+    // on first boot.
+    for (const tagName of tagArray) {
+      const next = results[tagName]
+      if (!previousTagValues.has(tagName)) {
+        previousTagValues.set(tagName, next)
+        continue
+      }
+      const prev = previousTagValues.get(tagName)
+      if (prev !== next) {
+        previousTagValues.set(tagName, next)
+        const prevStr = prev === null ? 'null' : String(prev)
+        const nextStr = next === null ? 'null' : String(next)
+        console.log(`[NetworkStatus] ${tagName} ${prevStr} → ${nextStr}`)
+      }
     }
 
     return res.json({ success: true, connected: true, tags: results })
