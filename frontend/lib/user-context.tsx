@@ -13,19 +13,29 @@ interface UserContextType {
   setCurrentUser: (user: User | null) => void
   logout: () => void
   isLoading: boolean
+  /**
+   * True when this browser is running on the Server Laptop itself (loopback
+   * IP). Used to gate testing UI — the Server Laptop is sync/PLC-broker only,
+   * not a testing terminal. Authoritative enforcement lives in the API
+   * middleware noTestingOnServerLaptop; this flag is for UX (hide buttons,
+   * show a banner) so users aren't pointed at actions that will 403.
+   */
+  isServerDevice: boolean
 }
 
 const UserContext = createContext<UserContextType>({
   currentUser: null,
   setCurrentUser: () => {},
   logout: () => {},
-  isLoading: true
+  isLoading: true,
+  isServerDevice: false,
 })
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUserState] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isMounted, setIsMounted] = useState(false)
+  const [isServerDevice, setIsServerDevice] = useState(false)
 
   useEffect(() => {
     setIsMounted(true)
@@ -53,6 +63,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
 
       if (cancelled) return
+
+      setIsServerDevice(isServerDevice)
 
       if (isServerDevice) {
         // Force the canonical name regardless of what the user typed previously.
@@ -108,7 +120,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <UserContext.Provider value={{ currentUser, setCurrentUser, logout, isLoading }}>
+    <UserContext.Provider value={{ currentUser, setCurrentUser, logout, isLoading, isServerDevice }}>
       {children}
     </UserContext.Provider>
   )
