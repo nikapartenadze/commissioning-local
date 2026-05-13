@@ -18,11 +18,14 @@ const stmts = {
   getLatestPendingForCell: db.prepare('SELECT id FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ? ORDER BY id DESC LIMIT 1'),
   // Get the OLDEST pending sync version for a cell — this is the version the cloud actually has
   getOldestPendingVersion: db.prepare('SELECT MIN(Version) as version FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ?'),
-  // Rebase pending rows for a cell against the cloud's current version so the next
-  // retry's base version matches what cloud actually has. Resets RetryCount so the
-  // 10-strike cap doesn't drop a row that's now unblocked.
+  // Rebase pending rows for a cell against the cloud's current version so the
+  // next retry's base version matches what cloud actually has. Increments
+  // RetryCount so the 10-strike cap still fires on rows that can't resolve —
+  // earlier code reset it to 0 which created a livelock that permanently
+  // blocked the /api/cloud/pull endpoint (totalPendingCount > 0 → 409). See
+  // v2.27 regression report for the full story.
   rebasePendingForCell: db.prepare(
-    `UPDATE L2PendingSyncs SET Version = ?, RetryCount = 0, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
+    `UPDATE L2PendingSyncs SET Version = ?, RetryCount = RetryCount + 1, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
   ),
 }
 
