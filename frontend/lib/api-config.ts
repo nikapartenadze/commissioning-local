@@ -188,6 +188,7 @@ export const API_ENDPOINTS = {
   // Cloud Sync
   cloudSync: '/api/cloud/sync',
   cloudSyncL2: '/api/cloud/sync-l2',
+  cloudSyncL2Items: '/api/cloud/sync-l2/items',
   cloudPull: '/api/cloud/pull',
   cloudStatus: '/api/cloud/status',
   updateStatus: '/api/update/status',

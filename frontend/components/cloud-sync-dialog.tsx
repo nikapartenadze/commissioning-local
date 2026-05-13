@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { CheckCircle2, XCircle, Loader2, Cloud, Upload, RefreshCw } from "lucide-react"
+import { CheckCircle2, XCircle, Loader2, Cloud, Upload, RefreshCw, ChevronDown, ChevronRight } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import type { CloudSyncStatusResponse } from "@/lib/cloud/types"
 
@@ -18,6 +18,28 @@ interface CloudSyncDialogProps {
 type SyncTarget = 'io' | 'l2'
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error'
 
+interface L2PendingItem {
+  id: number
+  cloudDeviceId: number
+  cloudColumnId: number
+  pendingValue: string | null
+  baseVersion: number
+  updatedBy: string | null
+  retryCount: number
+  lastError: string | null
+  createdAt: string
+  localDeviceId: number | null
+  deviceName: string | null
+  mcm: string | null
+  localColumnId: number | null
+  columnName: string | null
+  sheetName: string | null
+  sheetDisplayName: string | null
+  localValue: string | null
+  localVersion: number | null
+  localUpdatedAt: string | null
+}
+
 export function CloudSyncDialog({
   open,
   onOpenChange,
@@ -30,6 +52,10 @@ export function CloudSyncDialog({
   const [errorMessage, setErrorMessage] = useState("")
   const [statusLoading, setStatusLoading] = useState(false)
   const [operationalStatus, setOperationalStatus] = useState<CloudSyncStatusResponse | null>(initialStatus)
+  const [itemsExpanded, setItemsExpanded] = useState(false)
+  const [pendingItems, setPendingItems] = useState<L2PendingItem[] | null>(null)
+  const [itemsLoading, setItemsLoading] = useState(false)
+  const [itemsError, setItemsError] = useState<string | null>(null)
 
   const loadStatus = async () => {
     try {
@@ -48,6 +74,24 @@ export function CloudSyncDialog({
       })
     } finally {
       setStatusLoading(false)
+    }
+  }
+
+  const loadPendingItems = async () => {
+    try {
+      setItemsLoading(true)
+      setItemsError(null)
+      const response = await authFetch(API_ENDPOINTS.cloudSyncL2Items)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const data = await response.json() as { items: L2PendingItem[] }
+      setPendingItems(Array.isArray(data.items) ? data.items : [])
+    } catch (error) {
+      setItemsError(error instanceof Error ? error.message : 'Failed to load pending items')
+      setPendingItems([])
+    } finally {
+      setItemsLoading(false)
     }
   }
 
@@ -104,6 +148,11 @@ export function CloudSyncDialog({
       setSyncStatus('error')
     } finally {
       await loadStatus()
+      // If the items panel is open, refresh it too so the user sees what
+      // actually drained vs what's still stuck after the click.
+      if (itemsExpanded) {
+        await loadPendingItems()
+      }
     }
   }
 
@@ -111,7 +160,18 @@ export function CloudSyncDialog({
     setSyncStatus('idle')
     setUploadedCount(0)
     setErrorMessage("")
+    setItemsExpanded(false)
+    setPendingItems(null)
+    setItemsError(null)
     onOpenChange(false)
+  }
+
+  const toggleItemsExpanded = () => {
+    const next = !itemsExpanded
+    setItemsExpanded(next)
+    if (next && pendingItems === null) {
+      void loadPendingItems()
+    }
   }
 
   const pendingIo = operationalStatus?.pendingIoSyncCount ?? operationalStatus?.pendingSyncCount ?? 0
@@ -181,6 +241,98 @@ export function CloudSyncDialog({
             {operationalStatus?.error && (
               <div className="text-xs text-amber-700 dark:text-amber-300 mt-2">
                 {operationalStatus.error}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border">
+            <button
+              type="button"
+              onClick={toggleItemsExpanded}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm font-medium hover:bg-muted/30 transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                {itemsExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                FV Queue Details
+                {pendingL2 > 0 && <Badge variant="secondary" className="ml-1">{pendingL2}</Badge>}
+              </span>
+              {itemsExpanded && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); void loadPendingItems() }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); void loadPendingItems() } }}
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:bg-muted cursor-pointer"
+                  aria-label="Refresh pending items"
+                >
+                  {itemsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                </span>
+              )}
+            </button>
+
+            {itemsExpanded && (
+              <div className="border-t">
+                {itemsError && (
+                  <div className="px-3 py-2 text-xs text-destructive">{itemsError}</div>
+                )}
+                {!itemsError && itemsLoading && pendingItems === null && (
+                  <div className="px-3 py-4 text-xs text-muted-foreground flex items-center gap-2">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading queue…
+                  </div>
+                )}
+                {!itemsError && pendingItems !== null && pendingItems.length === 0 && (
+                  <div className="px-3 py-4 text-xs text-muted-foreground">FV queue is empty.</div>
+                )}
+                {!itemsError && pendingItems !== null && pendingItems.length > 0 && (
+                  <div className="max-h-72 overflow-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/30 sticky top-0">
+                        <tr className="text-left">
+                          <th className="px-3 py-2 font-medium">Device · Column</th>
+                          <th className="px-3 py-2 font-medium">Local Value</th>
+                          <th className="px-3 py-2 font-medium">v (local/base)</th>
+                          <th className="px-3 py-2 font-medium">Retries</th>
+                          <th className="px-3 py-2 font-medium">Last Error</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pendingItems.map((it) => {
+                          const sheet = it.sheetDisplayName || it.sheetName || '—'
+                          const device = it.deviceName || `cloudDev#${it.cloudDeviceId}`
+                          const col = it.columnName || `cloudCol#${it.cloudColumnId}`
+                          const value = it.localValue ?? it.pendingValue
+                          const stuck = (it.retryCount ?? 0) >= 3
+                          return (
+                            <tr key={it.id} className={`border-t ${stuck ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''}`}>
+                              <td className="px-3 py-2 align-top">
+                                <div className="font-mono font-medium">{device}</div>
+                                <div className="text-muted-foreground">{sheet} · {col}</div>
+                              </td>
+                              <td className="px-3 py-2 align-top max-w-[18rem] break-words">
+                                {value === null ? <span className="italic text-muted-foreground">(empty)</span> : <span className="font-mono">{value}</span>}
+                                {it.updatedBy && <div className="text-muted-foreground mt-0.5">by {it.updatedBy}</div>}
+                              </td>
+                              <td className="px-3 py-2 align-top font-mono whitespace-nowrap">
+                                {it.localVersion ?? '?'} / {it.baseVersion}
+                              </td>
+                              <td className="px-3 py-2 align-top">
+                                <span className={stuck ? 'font-semibold text-amber-700 dark:text-amber-400' : ''}>
+                                  {it.retryCount ?? 0}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 align-top max-w-[16rem] break-words">
+                                {it.lastError ? <span className="text-muted-foreground">{it.lastError}</span> : <span className="text-muted-foreground italic">—</span>}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="px-3 py-2 text-[11px] text-muted-foreground border-t">
+                  Rebased rows clear on the next push attempt. Rows highlighted in amber have retried ≥3 times.
+                </div>
               </div>
             )}
           </div>

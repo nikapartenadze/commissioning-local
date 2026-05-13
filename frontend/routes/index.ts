@@ -39,6 +39,7 @@ import * as plcMarkFailed from '@/app/api/plc/mark-failed/route'
 import * as cloudPull from '@/app/api/cloud/pull/route'
 import * as cloudSync from '@/app/api/cloud/sync/route'
 import * as cloudSyncL2 from '@/app/api/cloud/sync-l2/route'
+import * as cloudSyncL2Items from '@/app/api/cloud/sync-l2/items/route'
 import * as cloudSyncPull from '@/app/api/cloud/sync-pull/route'
 import * as cloudStatus from '@/app/api/cloud/status/route'
 import * as cloudAutoSync from '@/app/api/cloud/auto-sync/route'
@@ -159,6 +160,7 @@ export function createApiRouter(): Router {
   router.get('/api/cloud/sync', asyncHandler(cloudSync.GET))
   router.post('/api/cloud/sync-l2', asyncHandler(cloudSyncL2.POST))
   router.get('/api/cloud/sync-l2', asyncHandler(cloudSyncL2.GET))
+  router.get('/api/cloud/sync-l2/items', asyncHandler(cloudSyncL2Items.GET))
   router.get('/api/cloud/sync-pull', asyncHandler(cloudSyncPull.GET))
   router.get('/api/cloud/status', asyncHandler(cloudStatus.GET))
   router.post('/api/cloud/status', asyncHandler(cloudStatus.POST))
