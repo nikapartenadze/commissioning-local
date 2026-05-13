@@ -18,6 +18,12 @@ const stmts = {
   getLatestPendingForCell: db.prepare('SELECT id FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ? ORDER BY id DESC LIMIT 1'),
   // Get the OLDEST pending sync version for a cell — this is the version the cloud actually has
   getOldestPendingVersion: db.prepare('SELECT MIN(Version) as version FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ?'),
+  // Rebase pending rows for a cell against the cloud's current version so the next
+  // retry's base version matches what cloud actually has. Resets RetryCount so the
+  // 10-strike cap doesn't drop a row that's now unblocked.
+  rebasePendingForCell: db.prepare(
+    `UPDATE L2PendingSyncs SET Version = ?, RetryCount = 0, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
+  ),
 }
 
 export async function POST(req: Request, res: Response) {
@@ -129,8 +135,26 @@ export async function POST(req: Request, res: Response) {
           return
         }
 
-        // Conflict (or unknown shape) — leave pendingSync, background sync will retry
-        console.warn(`[L2 Sync] Push for device ${cloudDeviceId} col ${cloudColumnId} not in updates response — leaving pendingSync for background retry`)
+        // Cloud reported a version conflict with the cloud's current version. Rebase the
+        // pending row(s) to that version so the next retry's base matches. Cloud's
+        // protocol treats "same value, any version" as an idempotent no-op, so the
+        // only way to land here is values genuinely differ — local is authoritative
+        // per CLAUDE.md, so we want local's value to win on the next attempt.
+        const conflict = data?.conflicts?.find?.(
+          (c: any) => c.deviceId === cloudDeviceId && c.columnId === cloudColumnId,
+        )
+        if (conflict && typeof conflict.cloudVersion === 'number') {
+          try {
+            stmts.rebasePendingForCell.run(conflict.cloudVersion, 'rebased after version conflict', cloudDeviceId, cloudColumnId)
+            console.log(`[L2 Sync] Rebased pending for device ${cloudDeviceId} col ${cloudColumnId} to cloud version ${conflict.cloudVersion} — next push will succeed`)
+          } catch (err) {
+            console.warn(`[L2 Sync] Failed to rebase pending for device ${cloudDeviceId} col ${cloudColumnId}:`, err instanceof Error ? err.message : err)
+          }
+          return
+        }
+
+        // Unknown response shape — leave pendingSync, background sync's retry cap will eventually drop it
+        console.warn(`[L2 Sync] Push for device ${cloudDeviceId} col ${cloudColumnId} not in updates response and no conflict info — leaving pendingSync for background retry`)
       })
     }
 
