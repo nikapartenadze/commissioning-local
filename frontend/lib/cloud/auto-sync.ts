@@ -382,18 +382,48 @@ class AutoSyncService {
               }
             }
 
-            // For conflicts: increment retry count so they retry on next loop
-            const conflictedUpdates = l2Updates
-              .filter(u => !updatedKeys.has(`${u.deviceId}-${u.columnId}`))
+            // For conflicts: rebase pending row's Version to the cloud's current
+            // version so the next retry sends the right base. Cloud's protocol
+            // already treats "same value, any version" as an idempotent no-op
+            // (lost-ACK case), so reaching the conflict branch means values
+            // genuinely differ — local is the authority per CLAUDE.md, so we
+            // want the local value to win on the next attempt.
+            const conflictsByKey = new Map<string, number>()
+            for (const c of (l2Data.conflicts || []) as Array<{ deviceId: number; columnId: number; cloudVersion: number }>) {
+              if (typeof c?.cloudVersion === 'number') {
+                conflictsByKey.set(`${c.deviceId}-${c.columnId}`, c.cloudVersion)
+              }
+            }
 
+            const rebaseStmt = db.prepare(
+              `UPDATE L2PendingSyncs SET Version = ?, RetryCount = 0, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
+            )
+            const incrementStmt = db.prepare(
+              'UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
+            )
+
+            const conflictedUpdates = l2Updates.filter(u => !updatedKeys.has(`${u.deviceId}-${u.columnId}`))
+            let rebasedCount = 0
             for (const u of conflictedUpdates) {
-              try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run('version conflict', u.pendingId) } catch (e) { console.warn('[AutoSync] Failed to update L2 retry count:', e) }
+              const cloudVersion = conflictsByKey.get(`${u.deviceId}-${u.columnId}`)
+              if (typeof cloudVersion === 'number') {
+                try {
+                  rebaseStmt.run(cloudVersion, 'rebased after version conflict', u.deviceId, u.columnId)
+                  rebasedCount++
+                } catch (e) {
+                  console.warn('[AutoSync] Failed to rebase L2 pending:', e)
+                }
+              } else {
+                // No conflict info from cloud — defensive fallback to the old behavior so
+                // the retry cap still kicks in if the row is unrecoverable.
+                try { incrementStmt.run('version conflict (no cloudVersion)', u.pendingId) } catch (e) { console.warn('[AutoSync] Failed to update L2 retry count:', e) }
+              }
             }
 
             const updatedCount = l2Data.updatedCount ?? successCount
             const conflictCount = l2Data.conflictCount ?? conflictedUpdates.length
             if (conflictCount > 0) {
-              console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud (${conflictCount} conflicts — will retry with stored base version)`)
+              console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud (${conflictCount} conflicts, ${rebasedCount} rebased to cloud version — next loop should succeed)`)
             } else if (updatedCount > 0) {
               console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud`)
             }
