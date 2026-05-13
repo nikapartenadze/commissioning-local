@@ -6,6 +6,7 @@ const CommissioningPage = lazy(() => import('../app/commissioning/[id]/page'))
 const SetupPage = lazy(() => import('../app/setup/page'))
 const GuidePage = lazy(() => import('../app/guide/page'))
 const GuideScreenshots = lazy(() => import('../app/guide/screenshots/page'))
+const DiagramPage = lazy(() => import('../app/diagram/page'))
 
 function Loading() {
   return (
@@ -30,4 +31,5 @@ export const router = createBrowserRouter([
   { path: '/setup', element: <LazyPage Component={SetupPage} /> },
   { path: '/guide', element: <LazyPage Component={GuidePage} /> },
   { path: '/guide/screenshots', element: <LazyPage Component={GuideScreenshots} /> },
+  { path: '/diagram', element: <LazyPage Component={DiagramPage} /> },
 ])

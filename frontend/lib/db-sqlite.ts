@@ -255,6 +255,20 @@ export function initializeSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_estopvfds_epcid ON EStopVfds(EpcId);
 
+    -- SCADA MCM layout SVGs pulled from cloud. One row per MCM name. The
+    -- local renderer inlines svgContent into the DOM (after DOMPurify) so
+    -- guided mode and the "Show on Diagram" panel show device positions
+    -- and can highlight the active device by its tag-named element id.
+    -- McmName matches Subsystem.name on cloud (e.g. "MCM09").
+    CREATE TABLE IF NOT EXISTS McmDiagrams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      McmName TEXT NOT NULL UNIQUE,
+      SvgContent TEXT NOT NULL,
+      ServerUploadedAt TEXT,
+      FetchedAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_mcmdiagrams_mcmname ON McmDiagrams(McmName);
+
     -- Per-EPC pass/fail test results. Keyed by (SubsystemId, ZoneName, CheckTag)
     -- — NOT by EStopEpcs.id — because the cloud-pull route DELETEs and re-inserts
     -- all EStop* rows on every refresh, which would otherwise wipe test history.

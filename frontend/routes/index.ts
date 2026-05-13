@@ -46,6 +46,8 @@ import * as cloudAutoSync from '@/app/api/cloud/auto-sync/route'
 import * as cloudPullNetwork from '@/app/api/cloud/pull-network/route'
 import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
+import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
+import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
 import * as updateStatus from '@/app/api/update/status/route'
 import * as updateInstall from '@/app/api/update/install/route'
 import * as history from '@/app/api/history/route'
@@ -172,6 +174,8 @@ export function createApiRouter(): Router {
   router.post('/api/cloud/pull-network', asyncHandler(cloudPullNetwork.POST))
   router.post('/api/cloud/pull-estop', asyncHandler(cloudPullEstop.POST))
   router.post('/api/cloud/pull-l2', asyncHandler(cloudPullL2.POST))
+  router.post('/api/cloud/pull-mcm-diagram', asyncHandler(cloudPullMcmDiagram.POST))
+  router.get('/api/mcm-diagram/:mcm', asyncHandler(mcmDiagram.GET))
 
   // ── App Updates ───────────────────────────────────────────────────────────
   router.get('/api/update/status', asyncHandler(updateStatus.GET))
