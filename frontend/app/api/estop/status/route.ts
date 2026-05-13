@@ -6,6 +6,9 @@ const selectZones = db.prepare('SELECT * FROM EStopZones')
 const selectEpcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?')
 const selectIoPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?')
 const selectVfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?')
+const selectEpcChecks = db.prepare(
+  'SELECT SubsystemId, ZoneName, CheckTag, Result, Comments, TestedBy, TestedAt FROM EStopEpcChecks WHERE SubsystemId = ?'
+)
 
 let createdTags = new Set<string>()
 let failedTags = new Set<string>()
@@ -67,17 +70,39 @@ export async function GET(req: Request, res: Response) {
       }
     }
 
+    // Build a per-(ZoneName, CheckTag) lookup of recorded check results. We
+    // index by zoneName+checkTag (not epc.id) so results survive when the
+    // cloud-pull recreates EStopEpcs rows with new IDs.
+    const checksLookup = new Map<string, { Result: string | null; Comments: string | null; TestedBy: string | null; TestedAt: string | null }>()
+    try {
+      const subsystemIds = new Set<number>()
+      for (const zone of zones) {
+        if (typeof zone.SubsystemId === 'number') subsystemIds.add(zone.SubsystemId)
+      }
+      for (const sid of Array.from(subsystemIds)) {
+        const rows = selectEpcChecks.all(sid) as Array<{ SubsystemId: number; ZoneName: string; CheckTag: string; Result: string | null; Comments: string | null; TestedBy: string | null; TestedAt: string | null }>
+        for (const row of rows) {
+          checksLookup.set(`${row.ZoneName}|${row.CheckTag}`, row)
+        }
+      }
+    } catch { /* table may not be ready on first boot; treat as no results */ }
+
     const result = zones.map((zone: any) => ({
       id: zone.id, name: zone.Name,
       epcs: zone.epcs.map((epc: any) => {
         const mustStopVfds = epc.vfds.filter((v: any) => v.mustStop)
         const keepRunningVfds = epc.vfds.filter((v: any) => !v.mustStop)
+        const check = checksLookup.get(`${zone.Name}|${epc.CheckTag}`)
         return {
           id: epc.id, name: epc.Name, checkTag: epc.CheckTag,
           checkTagValue: connected ? (tagValues[epc.CheckTag] ?? null) : null,
           ioPoints: epc.ioPoints.map((io: any) => ({ id: io.id, tag: io.Tag, value: connected ? (tagValues[io.Tag] ?? null) : null })),
           mustStopVfds: mustStopVfds.map((vfd: any) => ({ id: vfd.id, tag: vfd.Tag, stoTag: vfd.StoTag, stoActive: connected ? (tagValues[vfd.StoTag] ?? null) : null })),
           keepRunningVfds: keepRunningVfds.map((vfd: any) => ({ id: vfd.id, tag: vfd.Tag, stoTag: vfd.StoTag, stoActive: connected ? (tagValues[vfd.StoTag] ?? null) : null })),
+          result: check?.Result ?? null,
+          comments: check?.Comments ?? null,
+          testedBy: check?.TestedBy ?? null,
+          testedAt: check?.TestedAt ?? null,
         }
       }),
     }))

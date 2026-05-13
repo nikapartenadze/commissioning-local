@@ -255,6 +255,28 @@ export function initializeSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_estopvfds_epcid ON EStopVfds(EpcId);
 
+    -- Per-EPC pass/fail test results. Keyed by (SubsystemId, ZoneName, CheckTag)
+    -- — NOT by EStopEpcs.id — because the cloud-pull route DELETEs and re-inserts
+    -- all EStop* rows on every refresh, which would otherwise wipe test history.
+    -- CheckTag is the stable PLC tag name; using it as the identity means results
+    -- survive across pulls even if the EStopEpcs.id changes.
+    CREATE TABLE IF NOT EXISTS EStopEpcChecks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      ZoneName TEXT NOT NULL,
+      CheckTag TEXT NOT NULL,
+      Result TEXT,
+      Comments TEXT,
+      TestedBy TEXT,
+      TestedAt TEXT,
+      Version INTEGER NOT NULL DEFAULT 1,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      UpdatedAt TEXT,
+      UNIQUE(SubsystemId, ZoneName, CheckTag)
+    );
+    CREATE INDEX IF NOT EXISTS idx_estopepcchecks_subsystemid ON EStopEpcChecks(SubsystemId);
+    CREATE INDEX IF NOT EXISTS idx_estopepcchecks_checktag ON EStopEpcChecks(CheckTag);
+
     CREATE TABLE IF NOT EXISTS SafetyZones (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       SubsystemId INTEGER NOT NULL REFERENCES Subsystems(id) ON DELETE CASCADE,
