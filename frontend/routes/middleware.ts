@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction, RequestHandler } from 'express'
 import { verifyAuth } from '@/lib/auth/middleware'
 import type { DecodedToken } from '@/lib/auth/jwt'
+import { isLoopbackIp } from '@/lib/device-identity'
 
 // Extend Express Request to carry auth user and fix param types
 declare global {
@@ -21,6 +22,28 @@ export const authMiddleware: RequestHandler = (req, res, next) => {
     return
   }
   req.user = result.user!
+  next()
+}
+
+/**
+ * Express middleware: refuse test/fire/reset actions when the request originates
+ * from the Server Laptop itself (loopback IP). The Server Laptop is the sync
+ * and PLC-broker host; operators on it shouldn't author test results. History
+ * was getting entries like "Server Laptop failed IO" because the browser on
+ * the server machine was being used as a testing terminal — block that path
+ * authoritatively. Remote (Client Laptop) browsers are untouched.
+ *
+ * Apply to: pass/fail, reset, fire-output, mark-passed/failed, safety/fire.
+ */
+export const noTestingOnServerLaptop: RequestHandler = (req, res, next) => {
+  const ip = (req.ip && req.ip.length > 0 ? req.ip : req.socket?.remoteAddress) || ''
+  if (isLoopbackIp(ip)) {
+    res.status(403).json({
+      error: 'Server Laptop cannot author test results. Mark IOs from a Client Laptop browser instead.',
+      reason: 'server-laptop-no-testing',
+    })
+    return
+  }
   next()
 }
 

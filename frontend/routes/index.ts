@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { authMiddleware, adminMiddleware } from './middleware'
+import { authMiddleware, adminMiddleware, noTestingOnServerLaptop } from './middleware'
 
 // Import route handlers
 import * as authLogin from '@/app/api/auth/login/route'
@@ -136,10 +136,10 @@ export function createApiRouter(): Router {
   router.put('/api/ios/assign/by-keyword', adminMiddleware, asyncHandler(iosAssignByKeyword.PUT))
   router.get('/api/ios/:id', asyncHandler(ioById.GET))
   router.put('/api/ios/:id', asyncHandler(ioById.PUT))
-  router.post('/api/ios/:id/test', asyncHandler(ioTest.POST))
-  router.post('/api/ios/:id/reset', authMiddleware, asyncHandler(ioReset.POST))
+  router.post('/api/ios/:id/test', noTestingOnServerLaptop, asyncHandler(ioTest.POST))
+  router.post('/api/ios/:id/reset', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioReset.POST))
   router.get('/api/ios/:id/state', authMiddleware, asyncHandler(ioState.GET))
-  router.post('/api/ios/:id/fire-output', authMiddleware, asyncHandler(ioFireOutput.POST))
+  router.post('/api/ios/:id/fire-output', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioFireOutput.POST))
   router.patch('/api/ios/:id/punchlist', authMiddleware, asyncHandler(ioPunchlist.PATCH))
 
   // ── PLC ────────────────────────────────────────────────────────
@@ -150,9 +150,9 @@ export function createApiRouter(): Router {
   router.post('/api/plc/toggle-testing', asyncHandler(plcToggleTesting.POST))
   router.get('/api/plc/toggle-testing', asyncHandler(plcToggleTesting.GET))
   router.post('/api/plc/test-connection', asyncHandler(plcTestConnection.POST))
-  router.post('/api/plc/fire-output', asyncHandler(plcFireOutput.POST))
-  router.post('/api/plc/mark-passed', asyncHandler(plcMarkPassed.POST))
-  router.post('/api/plc/mark-failed', asyncHandler(plcMarkFailed.POST))
+  router.post('/api/plc/fire-output', noTestingOnServerLaptop, asyncHandler(plcFireOutput.POST))
+  router.post('/api/plc/mark-passed', noTestingOnServerLaptop, asyncHandler(plcMarkPassed.POST))
+  router.post('/api/plc/mark-failed', noTestingOnServerLaptop, asyncHandler(plcMarkFailed.POST))
 
   // ── Cloud ──────────────────────────────────────────────────────
   router.post('/api/cloud/pull', asyncHandler(cloudPull.POST))
@@ -214,7 +214,7 @@ export function createApiRouter(): Router {
   router.post('/api/safety/bypass', authMiddleware, asyncHandler(safetyBypass.POST))
   router.get('/api/safety/bypass', asyncHandler(safetyBypass.GET))
   router.get('/api/safety/status', asyncHandler(safetyStatus.GET))
-  router.post('/api/safety/fire', authMiddleware, asyncHandler(safetyFire.POST))
+  router.post('/api/safety/fire', noTestingOnServerLaptop, authMiddleware, asyncHandler(safetyFire.POST))
   router.get('/api/safety/outputs', asyncHandler(safetyOutputs.GET))
 
   // ── Sync (cloud-facing endpoints) ─────────────────────────────
