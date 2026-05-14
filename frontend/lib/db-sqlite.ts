@@ -42,6 +42,7 @@ try {
     'ALTER TABLE L2Columns ADD COLUMN IsEditable INTEGER DEFAULT 1',
     'ALTER TABLE L2Columns ADD COLUMN IncludeInProgress INTEGER DEFAULT 0',
     'ALTER TABLE TestHistories ADD COLUMN Source TEXT',
+    'ALTER TABLE EStopEpcChecks ADD COLUMN FailureMode TEXT',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
