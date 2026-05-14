@@ -3,7 +3,7 @@ import { generateToken } from '@/lib/auth/jwt';
 import { verifyPin } from '@/lib/auth/password';
 import { db } from '@/lib/db-sqlite';
 import userRepository from '@/lib/db/repositories/user-repository';
-import { ensureDiagnosticData } from '@/lib/db/seed-diagnostics';
+import { ensureDiagnosticData, ensureRequiredDiagnosticRows } from '@/lib/db/seed-diagnostics';
 
 // In-memory rate limiting store
 interface RateLimitEntry {
@@ -108,6 +108,7 @@ export async function POST(req: Request, res: Response) {
     // Ensure default data exists on first login attempt
     await userRepository.ensureDefaultAdmin();
     await ensureDiagnosticData();
+    ensureRequiredDiagnosticRows();
 
     let user: { id: number; fullName: string; isAdmin: boolean; isActive: boolean; pin: string } | undefined;
 
