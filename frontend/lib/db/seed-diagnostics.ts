@@ -1,4 +1,5 @@
 import { db } from '@/lib/db-sqlite';
+import type Database from 'better-sqlite3';
 
 // Static diagnostic data — auto-seeded on first login if table is empty
 const DIAGNOSTICS = [
@@ -68,5 +69,36 @@ export async function ensureDiagnosticData(): Promise<void> {
     console.log(`[DB] Auto-seeded ${DIAGNOSTICS.length} diagnostic entries`);
   } catch (e) {
     console.warn('[DB] Failed to seed diagnostics:', (e as Error).message);
+  }
+}
+
+// Rows that must exist on every install — keyed on (TagType, FailureMode).
+// `ensureRequiredDiagnosticRowsOn` runs on every startup and is idempotent;
+// it only fills in rows that are missing and never overwrites existing ones.
+const REQUIRED_ROWS = [
+  { tagType: 'EPC', failureMode: 'Needs proper tension' },
+  { tagType: 'EPC', failureMode: 'Other' },
+  { tagType: 'TPE Dark Operated', failureMode: 'Needs alignment' },
+];
+
+function diagnosticStepsFor(tagType: string, failureMode: string): string {
+  const entry = DIAGNOSTICS.find(d => d.tagType === tagType && d.failureMode === failureMode);
+  return entry?.diagnosticSteps ?? `# ${tagType} — ${failureMode}\n\nNo diagnostic steps available yet.`;
+}
+
+export function ensureRequiredDiagnosticRowsOn(database: Database.Database): void {
+  const stmt = database.prepare(
+    'INSERT OR IGNORE INTO TagTypeDiagnostics (TagType, FailureMode, DiagnosticSteps) VALUES (?, ?, ?)'
+  );
+  for (const row of REQUIRED_ROWS) {
+    stmt.run(row.tagType, row.failureMode, diagnosticStepsFor(row.tagType, row.failureMode));
+  }
+}
+
+export function ensureRequiredDiagnosticRows(): void {
+  try {
+    ensureRequiredDiagnosticRowsOn(db);
+  } catch (e) {
+    console.warn('[DB] Failed to ensure required diagnostic rows:', (e as Error).message);
   }
 }
