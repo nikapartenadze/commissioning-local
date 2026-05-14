@@ -253,14 +253,13 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
             if ('reset' in action) {
               return { ...e, result: null, comments: null, failureMode: null, testedBy: null, testedAt: null }
             }
-            const isFail = action.result === 'fail'
             return {
               ...e,
               result: action.result,
               testedBy: currentUser?.fullName ?? null,
               testedAt: new Date().toISOString(),
-              failureMode: isFail ? ((action as { failureMode?: string }).failureMode ?? null) : null,
-              comments: isFail ? ((action as { comments?: string }).comments ?? null) : e.comments,
+              failureMode: action.result === 'fail' ? (action.failureMode ?? null) : null,
+              comments: action.result === 'fail' ? (action.comments ?? null) : e.comments,
             }
           }),
         }),
@@ -612,7 +611,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
       </div>
       <FailCommentDialog
         open={failDialogOpen}
-        onOpenChange={setFailDialogOpen}
+        onOpenChange={(open) => {
+          setFailDialogOpen(open)
+          if (!open) setPendingFailEpc(null)
+        }}
         io={
           pendingFailEpc
             ? {
