@@ -8,6 +8,7 @@ import { Loader2, ShieldAlert, Search, X, ChevronDown, ChevronRight, OctagonX, P
 import { authFetch } from '@/lib/api-config'
 import { useUser } from '@/lib/user-context'
 import { cn } from '@/lib/utils'
+import { FailCommentDialog } from '@/components/fail-comment-dialog'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ interface Epc {
   keepRunningVfds: Vfd[]
   result: 'pass' | 'fail' | null
   comments: string | null
+  failureMode: string | null
   testedBy: string | null
   testedAt: string | null
 }
@@ -121,6 +123,8 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const [pulling, setPulling] = useState(false)
   const [submittingResult, setSubmittingResult] = useState<'pass' | 'fail' | 'reset' | null>(null)
   const [resultError, setResultError] = useState<string | null>(null)
+  const [failDialogOpen, setFailDialogOpen] = useState(false)
+  const [pendingFailEpc, setPendingFailEpc] = useState<{ epc: Epc; zoneName: string } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const lastDataRef = useRef<string>('')
   const triedCloudPull = useRef(false)
@@ -200,7 +204,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const submitEpcResult = useCallback(async (
     epc: Epc,
     zoneName: string,
-    action: { result: 'pass' | 'fail' } | { reset: true },
+    action:
+      | { result: 'pass' }
+      | { result: 'fail'; failureMode?: string; comments?: string }
+      | { reset: true },
   ) => {
     if (!subsystemId) {
       setResultError('Subsystem not selected — cannot record EPC check.')
@@ -219,6 +226,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         body.reset = true
       } else {
         body.result = action.result
+        if (action.result === 'fail') {
+          if (action.failureMode) body.failureMode = action.failureMode
+          if (action.comments) body.comments = action.comments
+        }
       }
       const res = await authFetch('/api/estop/check', {
         method: 'POST',
@@ -237,10 +248,20 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         ...prev,
         zones: prev.zones.map(z => z.name !== zoneName ? z : {
           ...z,
-          epcs: z.epcs.map(e => e.checkTag !== epc.checkTag ? e : 'reset' in action ? {
-            ...e, result: null, comments: null, testedBy: null, testedAt: null,
-          } : {
-            ...e, result: action.result, testedBy: currentUser?.fullName ?? null, testedAt: new Date().toISOString(),
+          epcs: z.epcs.map(e => {
+            if (e.checkTag !== epc.checkTag) return e
+            if ('reset' in action) {
+              return { ...e, result: null, comments: null, failureMode: null, testedBy: null, testedAt: null }
+            }
+            const isFail = action.result === 'fail'
+            return {
+              ...e,
+              result: action.result,
+              testedBy: currentUser?.fullName ?? null,
+              testedAt: new Date().toISOString(),
+              failureMode: isFail ? ((action as { failureMode?: string }).failureMode ?? null) : null,
+              comments: isFail ? ((action as { comments?: string }).comments ?? null) : e.comments,
+            }
           }),
         }),
       })
@@ -496,7 +517,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                           selectedEpcData.result === 'fail' && 'bg-red-600 hover:bg-red-700 text-white',
                         )}
                         disabled={isServerDevice || submittingResult !== null}
-                        onClick={() => submitEpcResult(selectedEpcData, selectedZoneName, { result: 'fail' })}
+                        onClick={() => {
+                          setPendingFailEpc({ epc: selectedEpcData, zoneName: selectedZoneName })
+                          setFailDialogOpen(true)
+                        }}
                       >
                         {submittingResult === 'fail' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
                         Fail
@@ -586,6 +610,29 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           </div>
         )}
       </div>
+      <FailCommentDialog
+        open={failDialogOpen}
+        onOpenChange={setFailDialogOpen}
+        io={
+          pendingFailEpc
+            ? {
+                name: pendingFailEpc.epc.name,
+                description: pendingFailEpc.epc.checkTag,
+                tagType: 'EPC',
+              }
+            : null
+        }
+        onSubmit={(_io, comment, failureMode) => {
+          if (!pendingFailEpc) return
+          submitEpcResult(pendingFailEpc.epc, pendingFailEpc.zoneName, {
+            result: 'fail',
+            failureMode,
+            comments: comment || undefined,
+          })
+          setPendingFailEpc(null)
+        }}
+        onCancel={() => setPendingFailEpc(null)}
+      />
     </div>
   )
 }
