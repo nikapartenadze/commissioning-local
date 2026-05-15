@@ -7,6 +7,7 @@ const SetupPage = lazy(() => import('../app/setup/page'))
 const GuidePage = lazy(() => import('../app/guide/page'))
 const GuideScreenshots = lazy(() => import('../app/guide/screenshots/page'))
 const DiagramPage = lazy(() => import('../app/diagram/page'))
+const GuidedPage = lazy(() => import('../app/commissioning/[id]/guided/page'))
 
 function Loading() {
   return (
@@ -27,6 +28,7 @@ function LazyPage({ Component }: { Component: React.LazyExoticComponent<any> }) 
 export const router = createBrowserRouter([
   { path: '/', element: <Navigate to="/commissioning/_" replace /> },
   { path: '/commissioning', element: <LazyPage Component={CommissioningRedirect} /> },
+  { path: '/commissioning/:id/guided', element: <LazyPage Component={GuidedPage} /> },
   { path: '/commissioning/:id', element: <LazyPage Component={CommissioningPage} /> },
   { path: '/setup', element: <LazyPage Component={SetupPage} /> },
   { path: '/guide', element: <LazyPage Component={GuidePage} /> },
