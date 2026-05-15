@@ -200,6 +200,36 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           break
         }
 
+        // Sent by the server right after the WebSocket opens — bulk
+        // snapshot of every currently-known tag state. We fan it out as
+        // individual UpdateState-shaped events so the existing per-IO
+        // subscribers (in commissioning page.tsx, etc.) update their
+        // state bubbles without needing any new code path. See the
+        // server-side comment in server-express.ts for the why.
+        case 'TagSnapshot': {
+          const snapshot = message as unknown as { states: Array<{ id: number; state: boolean }> }
+          if (Array.isArray(snapshot.states)) {
+            for (const s of snapshot.states) {
+              const update: IOUpdate = {
+                Id: s.id,
+                Result: 'Not Tested',
+                State: s.state ? 'TRUE' : 'FALSE',
+                Timestamp: undefined,
+                Comments: undefined,
+              }
+              ioCallbacksRef.current.forEach((cb) => {
+                try { cb(update) } catch (error) {
+                  console.error('[PlcWebSocket] Error in IO callback (snapshot):', error)
+                }
+              })
+            }
+            if (process.env.NODE_ENV === 'development') {
+              WS_DEBUG && console.log(`[PlcWebSocket] Applied TagSnapshot — ${snapshot.states.length} states`)
+            }
+          }
+          break
+        }
+
         case 'UpdateIO': {
           const ioMsg = message as UpdateIOMessage
           const update: IOUpdate = {
