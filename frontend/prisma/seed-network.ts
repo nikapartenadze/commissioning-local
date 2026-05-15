@@ -95,6 +95,8 @@ function getDeviceType(name: string): string {
   if (name.includes('VFD')) return 'VFD'
   if (name.includes('FIOM')) return 'FIOM'
   if (name.includes('PMM')) return 'PMM'
+  if (name.includes('VSU')) return 'VSU'
+  if (/(^|_)VR(_|$)/.test(name)) return 'VR'
   return 'Unknown'
 }
 

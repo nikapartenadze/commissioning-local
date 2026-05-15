@@ -103,6 +103,10 @@ const DEVICE_TYPE_COLORS: Record<string, string> = {
   PMM: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
   POINT_IO: 'bg-primary/10 text-primary border-primary/30',
   SIO: 'bg-green-500/10 text-green-400 border-green-500/30',
+  VSU: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+  VR: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
+  EX: 'bg-orange-500/10 text-orange-400 border-orange-500/30',
+  LPE: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
 }
 
 function getDeviceType(name: string): string {
@@ -110,6 +114,10 @@ function getDeviceType(name: string): string {
   if (name.includes('FIOM')) return 'FIOM'
   if (name.includes('PMM')) return 'PMM'
   if (name.includes('SIO')) return 'SIO'
+  if (name.includes('VSU')) return 'VSU'
+  if (/(^|_)VR(_|$)/.test(name)) return 'VR'
+  if (/(^|_)EX(_|$)/.test(name)) return 'EX'
+  if (name.includes('LPE')) return 'LPE'
   if (name.includes('POINT')) return 'POINT_IO'
   return 'Unknown'
 }
@@ -1003,6 +1011,51 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                 tagStates={tagStates}
               />
             </div>
+
+            {/* VSU satellite devices — connection-monitored, not part of the ring */}
+            {(() => {
+              const vsuDevices = ring.nodes.flatMap(node =>
+                node.ports
+                  .filter(p => p.deviceName && !p.parentPortId && getDeviceType(p.deviceName) === 'VSU')
+                  .map(p => ({ nodeId: node.id, dpmName: node.name, port: p }))
+              )
+              if (vsuDevices.length === 0) return null
+              return (
+                <div className="mt-3 pt-3 border-t border-border">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                      VSU Devices
+                    </span>
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0">{vsuDevices.length}</Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {vsuDevices.map(({ nodeId, dpmName, port }) => {
+                      const status = getStatusColor(port.statusTag, tagStates)
+                      return (
+                        <button
+                          key={port.id}
+                          onClick={() => {
+                            setExpandedNodeId(nodeId)
+                            setTableSearch(port.deviceName!)
+                          }}
+                          className={cn(
+                            "flex items-center gap-2 px-2.5 py-1.5 rounded-md border text-xs transition-all hover:scale-105",
+                            status === 'green' && 'border-green-600 bg-green-600/10 text-green-700 dark:text-green-300',
+                            status === 'red' && 'border-red-600 bg-red-600/10 text-red-700 dark:text-red-300',
+                            status === 'gray' && 'border-gray-500 bg-gray-500/10 text-muted-foreground',
+                          )}
+                          title={`${port.deviceName}\nDPM: ${dpmName}\nStatus tag: ${port.statusTag ?? '—'}`}
+                        >
+                          <StatusDot status={status} />
+                          <span className="font-mono">{port.deviceName}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })()}
+
             <p className="text-xs text-center text-muted-foreground pt-1">
               Click a DPM node to view connected devices
             </p>
