@@ -1370,13 +1370,25 @@ export default function CommissioningPage() {
       if (response.ok) {
         toast({ title: `${io.name} marked as Passed` })
       } else {
-        const errorText = await response.text()
-        logger.error('Failed to mark IO as passed:', response.status, errorText)
+        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
+        logger.error('Failed to mark IO as passed:', response.status, errorBody)
         // Rollback optimistic update
         setIos(prevIos => prevIos.map(i =>
           i.id === io.id ? { ...i, result: previousResult, timestamp: previousTimestamp } : i
         ))
-        toast({ title: "Failed to mark as passed", description: errorText, variant: "destructive" })
+        if (errorBody?.reason === 'server-laptop-no-testing') {
+          toast({
+            title: "Cannot test from Server Laptop",
+            description: "Testing actions must be performed from a Client Laptop browser.",
+            variant: "destructive",
+          })
+        } else {
+          toast({
+            title: "Failed to mark as passed",
+            description: errorBody?.error || `HTTP ${response.status}`,
+            variant: "destructive",
+          })
+        }
       }
     } catch (error) {
       logger.error('Error marking IO as passed:', error)
@@ -1448,13 +1460,25 @@ export default function CommissioningPage() {
       if (response.ok) {
         toast({ title: `${io.name} marked as Failed`, variant: "destructive" })
       } else {
-        const errorText = await response.text()
-        logger.error('Failed to mark IO as failed:', response.status, errorText)
+        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
+        logger.error('Failed to mark IO as failed:', response.status, errorBody)
         // Rollback optimistic update
         setIos(prevIos => prevIos.map(i =>
           i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
         ))
-        toast({ title: "Failed to mark as failed", description: errorText, variant: "destructive" })
+        if (errorBody?.reason === 'server-laptop-no-testing') {
+          toast({
+            title: "Cannot test from Server Laptop",
+            description: "Testing actions must be performed from a Client Laptop browser.",
+            variant: "destructive",
+          })
+        } else {
+          toast({
+            title: "Failed to mark as failed",
+            description: errorBody?.error || `HTTP ${response.status}`,
+            variant: "destructive",
+          })
+        }
       }
     } catch (error) {
       logger.error('Error marking IO as failed:', error)
@@ -1490,13 +1514,27 @@ export default function CommissioningPage() {
         if (DEBUG_OTHER) {
           console.log('✅ IO cleared via backend')
         }
+        toast({ title: `${io.name} result cleared` })
       } else {
-        logger.error('Failed to clear IO:', response.status)
+        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
+        logger.error('Failed to clear IO:', response.status, errorBody)
         // Rollback optimistic update
         setIos(prevIos => prevIos.map(i =>
           i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
         ))
-        toast({ title: "Failed to clear result", variant: "destructive" })
+        if (errorBody?.reason === 'server-laptop-no-testing') {
+          toast({
+            title: "Cannot clear from Server Laptop",
+            description: "Testing actions must be performed from a Client Laptop browser.",
+            variant: "destructive",
+          })
+        } else {
+          toast({
+            title: "Failed to clear result",
+            description: errorBody?.error || `HTTP ${response.status}`,
+            variant: "destructive",
+          })
+        }
       }
     } catch (error) {
       logger.error('Error clearing IO:', error)
@@ -2317,7 +2355,6 @@ export default function CommissioningPage() {
                 onClick={() => {
                   if (confirmClearIo) {
                     handleClearResult(confirmClearIo)
-                    toast({ title: `${confirmClearIo.name} result cleared` })
                     setConfirmClearIo(null)
                   }
                 }}
