@@ -30,21 +30,37 @@ export async function GET(req: Request, res: Response) {
     return res.status(400).json({ error: 'Device name is required' })
   }
 
-  // Primary lookup by exact NetworkDeviceName. If empty, retry with a
-  // "_PD" suffix — the SVG labels laser photoeyes as e.g. "UL17_24_LPE1"
-  // while the DB stores the matching photo-detector module as
-  // "UL17_24_LPE1_PD". Same alias rule as /api/guided/devices.
-  const stmt = db.prepare(`
+  // Resolve the device's IOs via four overlapping rules — see
+  // /api/guided/devices for the full reasoning. Single SQL query keeps
+  // the per-click latency low.
+  //
+  //   1) NetworkDeviceName = ?              (VFD / FIOM)
+  //   2) NetworkDeviceName = ? || '_PD'     (laser photoeye alias)
+  //   3) Description LIKE '? %'             (physical-device IOs whose
+  //                                          identity lives in the
+  //                                          Description column —
+  //                                          photoeyes, beacons, EPCs)
+  //   4) Description LIKE '?_%'             (component sub-IOs, e.g.
+  //                                          beacon's _A amber and _H
+  //                                          horn lines)
+  const rows = db.prepare(`
     SELECT id, Name, Description, Result, Comments
       FROM Ios
-     WHERE SubsystemId = ?
-       AND NetworkDeviceName = ?
+     WHERE SubsystemId = @sub
+       AND (
+            NetworkDeviceName = @name
+         OR NetworkDeviceName = @namePd
+         OR Description LIKE @descSpace
+         OR Description LIKE @descUnder
+       )
      ORDER BY "Order", id
-  `)
-  let rows = stmt.all(subsystemId, deviceName) as IoRow[]
-  if (rows.length === 0 && !deviceName.endsWith('_PD')) {
-    rows = stmt.all(subsystemId, deviceName + '_PD') as IoRow[]
-  }
+  `).all({
+    sub: subsystemId,
+    name: deviceName,
+    namePd: deviceName + '_PD',
+    descSpace: deviceName + ' %',
+    descUnder: deviceName + '_%',
+  }) as IoRow[]
 
   const ios: IoSummary[] = rows.map(r => ({
     id: r.id,
