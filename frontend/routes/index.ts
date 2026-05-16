@@ -47,6 +47,7 @@ import * as cloudPullNetwork from '@/app/api/cloud/pull-network/route'
 import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
 import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
+import * as cloudPullRoadmap from '@/app/api/cloud/pull-roadmap/route'
 import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
 import * as updateStatus from '@/app/api/update/status/route'
 import * as updateInstall from '@/app/api/update/install/route'
@@ -178,6 +179,7 @@ export function createApiRouter(): Router {
   router.post('/api/cloud/pull-estop', asyncHandler(cloudPullEstop.POST))
   router.post('/api/cloud/pull-l2', asyncHandler(cloudPullL2.POST))
   router.post('/api/cloud/pull-mcm-diagram', asyncHandler(cloudPullMcmDiagram.POST))
+  router.post('/api/cloud/pull-roadmap', asyncHandler(cloudPullRoadmap.POST))
   router.get('/api/mcm-diagram/:mcm', asyncHandler(mcmDiagram.GET))
 
   // ── App Updates ───────────────────────────────────────────────────────────
