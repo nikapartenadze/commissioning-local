@@ -48,6 +48,7 @@ import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
 import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
 import * as cloudPullRoadmap from '@/app/api/cloud/pull-roadmap/route'
+import * as guidedResetSubsystem from '@/app/api/guided/reset-subsystem/route'
 import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
 import * as updateStatus from '@/app/api/update/status/route'
 import * as updateInstall from '@/app/api/update/install/route'
@@ -267,6 +268,7 @@ export function createApiRouter(): Router {
   router.get('/api/maps/subsystem/:id', asyncHandler(guidedMapById.GET))
   router.get('/api/guided/devices', asyncHandler(guidedDevices.GET))
   router.get('/api/guided/devices/:name', asyncHandler(guidedDeviceByName.GET))
+  router.post('/api/guided/reset-subsystem', asyncHandler(guidedResetSubsystem.POST))
   router.get('/api/roadmap', asyncHandler(roadmap.GET))
 
   // ── Global Error Handler ──────────────────────────────────────

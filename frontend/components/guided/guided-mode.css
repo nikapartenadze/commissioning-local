@@ -936,32 +936,112 @@
 }
 
 /* Per-IO inline clear button — sits at the end of a tested IO row and
- * undoes the Pass/Fail mark. In-memory only on the demo branch; persists
- * once Pass/Fail are wired through /api/test. */
+ * undoes the Pass/Fail mark. Bigger + clearer than the first pass:
+ * the operator needs to see and tap it on a tablet. */
 .gm-io-clear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin-left: 4px;
-  border-radius: 4px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--gm-text-faint);
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  margin-left: 6px;
+  border-radius: 5px;
+  background: rgba(255, 122, 0, 0.10);
+  border: 1px solid rgba(255, 122, 0, 0.35);
+  color: var(--gm-orange);
   cursor: pointer;
   transition: all 120ms;
   flex-shrink: 0;
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
+.gm-io-clear::after { content: 'CLEAR'; }
 .gm-io-clear:hover {
-  color: var(--gm-orange);
-  border-color: var(--gm-border-strong);
-  background: rgba(255, 122, 0, 0.08);
+  background: rgba(255, 122, 0, 0.20);
+  border-color: var(--gm-orange);
+  color: #ffb160;
 }
+.gm-io-clear:active { transform: scale(0.96); }
 
 .gm-roadmap-step-secondary button:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* ──────────────── DEVICE NAVIGATION STRIP (panel-head) ────────────────
+ * Unconditional Prev/Next walking through state.devices. Lives at the
+ * bottom of the panel-head so it's always reachable regardless of
+ * pass/fail state. */
+.gm-device-nav {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--gm-border);
+}
+.gm-device-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 5px;
+  background: var(--gm-bg-deep);
+  border: 1px solid var(--gm-border);
+  color: var(--gm-text-dim);
+  font-family: var(--gm-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 120ms;
+  min-width: 0;
+  overflow: hidden;
+}
+.gm-device-nav-btn span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gm-device-nav-btn:hover:not(:disabled) {
+  color: var(--gm-orange);
+  border-color: var(--gm-orange);
+  background: rgba(255, 122, 0, 0.06);
+}
+.gm-device-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.gm-device-nav-btn--next {
+  background: rgba(255, 122, 0, 0.06);
+  border-color: rgba(255, 122, 0, 0.30);
+  color: var(--gm-orange);
+}
+.gm-device-nav-btn--next:hover:not(:disabled) {
+  background: rgba(255, 122, 0, 0.14);
+}
+
+/* ──────────────── FIRE OUTPUT BUTTON ────────────────
+ * Used only for IOs that pattern-match as outputs (DO/AO/:O./:SO.).
+ * Visually distinct from Pass (green) and Fail (red) — uses amber so
+ * the operator's eye can split the three actions at a glance. */
+.gm-actions--single {
+  grid-template-columns: 1fr;
+}
+.gm-action-fire {
+  background: var(--gm-amber);
+  color: #1a1408;
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.4) inset;
+}
+.gm-action-fire:hover {
+  background: #ffce4d;
+  box-shadow:
+    0 0 18px rgba(251, 191, 36, 0.4),
+    0 0 0 1px rgba(251, 191, 36, 0.6) inset;
 }
 
 .gm-io-tag {
