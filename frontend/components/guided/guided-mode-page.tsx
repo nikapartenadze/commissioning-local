@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Crosshair, GitBranch, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Crosshair, GitBranch, ChevronDown, PanelRightClose, PanelRightOpen, Moon, Sun } from 'lucide-react'
+import { useTheme } from 'next-themes'
 import { useGuidedSession } from '@/lib/guided/use-guided-session'
 import { findCurrentTarget } from '@/lib/guided/device-state'
 import { GuidedTestingMap, type GuidedTestingMapHandle } from './guided-testing-map'
@@ -25,6 +26,7 @@ export function GuidedModePage() {
   const [selectedRoadmapId, setSelectedRoadmapId] = useState<number | null>(null)
   const [flowMode, setFlowMode] = useState<'scada' | 'roadmap'>('scada')
   const [isPulling, setIsPulling] = useState(false)
+  const [panelCollapsed, setPanelCollapsed] = useState(false)
   const roadmap = useRoadmapSession()
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
 
@@ -220,12 +222,21 @@ export function GuidedModePage() {
             onPullRoadmaps={pullRoadmaps}
             isPulling={isPulling}
           />
-          <div className="gm-prototype-badge">Prototype · No Writes</div>
+          <ThemeToggleChip />
+          <button
+            type="button"
+            className="gm-icon-btn"
+            onClick={() => setPanelCollapsed(c => !c)}
+            title={panelCollapsed ? 'Show side panel' : 'Hide side panel'}
+            aria-label={panelCollapsed ? 'Show side panel' : 'Hide side panel'}
+          >
+            {panelCollapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
+          </button>
         </div>
       </header>
 
       {/* ─────────── BODY ─────────── */}
-      <div className="gm-body">
+      <div className={`gm-body${panelCollapsed ? ' gm-body--panel-hidden' : ''}`}>
         {/* MAP PANE */}
         <div className="gm-map">
           <div className="gm-map-stage" ref={mapContainerRef}>
@@ -332,10 +343,37 @@ export function GuidedModePage() {
           onRoadmapPass={() => roadmap.advance('passed')}
           onRoadmapFail={() => roadmap.advance('failed')}
           onRoadmapSkip={() => roadmap.skipCurrent()}
+          onRoadmapPrevious={() => roadmap.previous()}
           onRoadmapEnd={() => { roadmap.end(); setFlowMode('scada'); setSelectedRoadmapId(null) }}
         />
       </div>
     </div>
+  )
+}
+
+/**
+ * Lightweight theme toggle sized to match the cockpit chrome. Uses next-themes
+ * (already wired in App.tsx). Note: Guided Mode itself is intentionally
+ * dark-only — the toggle changes the rest of the app's theme, so the operator
+ * sees the new theme when they navigate back to the SCADA grid or other pages.
+ */
+function ThemeToggleChip() {
+  const { theme, setTheme, resolvedTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  if (!mounted) return <span className="gm-icon-btn" aria-hidden />
+  const current = (theme === 'system' ? resolvedTheme : theme) ?? 'dark'
+  const next = current === 'light' ? 'dark' : 'light'
+  return (
+    <button
+      type="button"
+      className="gm-icon-btn"
+      onClick={() => setTheme(next)}
+      title={`Switch to ${next} theme`}
+      aria-label={`Switch to ${next} theme`}
+    >
+      {current === 'light' ? <Sun size={14} /> : <Moon size={14} />}
+    </button>
   )
 }
 
