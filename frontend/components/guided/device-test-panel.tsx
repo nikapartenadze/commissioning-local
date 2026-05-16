@@ -316,19 +316,36 @@ export function DeviceTestPanel({
           </div>
           <div className="gm-card-body">
             All {counts.total} IOs accounted for ({counts.passed} passed, {counts.failed} failed).
+            <br />
+            <span style={{ fontSize: 11, color: 'var(--gm-text-dim)' }}>
+              Hit the ↺ button on any IO below to clear it and re-test.
+            </span>
           </div>
           {currentTarget && currentTarget.deviceName !== device.deviceName && (
             <button className="gm-cta" onClick={onSelectCurrent}>
               Next: {currentTarget.deviceName} <ArrowRight size={14} />
             </button>
           )}
-          <button
-            className="gm-secondary"
-            onClick={onClose}
-            style={{ marginTop: 12, marginLeft: 0, width: 'auto', padding: '0 14px' }}
-          >
-            Close
-          </button>
+          <div className="gm-card-actions-row">
+            <button
+              className="gm-secondary"
+              onClick={() => {
+                // Clear every result on this device so the user can re-walk it.
+                const cleared: Record<number, IoResult> = {}
+                for (const io of ios ?? []) cleared[io.id] = null
+                setLocalResults(prev => ({ ...prev, ...cleared }))
+              }}
+              title="Reset all results on this device back to untested"
+            >
+              <RotateCcw size={12} /> Clear all results
+            </button>
+            <button
+              className="gm-secondary"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          </div>
         </div>
       ) : currentIo ? (
         <>
@@ -394,8 +411,9 @@ export function DeviceTestPanel({
         </>
       ) : null}
 
-      {/* IO list */}
-      {ios !== null && ios.length > 0 && !allDone && (
+      {/* IO list — always visible when IOs exist so per-IO clear (↺) stays
+          reachable even after the device hits 'Device complete'. */}
+      {ios !== null && ios.length > 0 && (
         <div className="gm-iolist-section">
           <div className="gm-iolist-head">
             <span>Device IOs</span>

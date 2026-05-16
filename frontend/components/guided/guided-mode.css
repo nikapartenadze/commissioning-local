@@ -922,6 +922,19 @@
   text-overflow: ellipsis;
 }
 
+/* Row holding the "Clear all results" and "Close" buttons inside the
+ * Device-complete card. Side-by-side, equal weight. */
+.gm-card-actions-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.gm-card-actions-row .gm-secondary {
+  flex: 1;
+  min-width: 0;
+}
+
 /* Per-IO inline clear button — sits at the end of a tested IO row and
  * undoes the Pass/Fail mark. In-memory only on the demo branch; persists
  * once Pass/Fail are wired through /api/test. */
