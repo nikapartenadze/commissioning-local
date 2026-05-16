@@ -269,7 +269,24 @@ export function initializeSchema() {
       FetchedAt TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_mcmdiagrams_mcmname ON McmDiagrams(McmName);
+  `)
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS Roadmaps (
+      Id           INTEGER PRIMARY KEY,
+      ProjectId    INTEGER NOT NULL,
+      Mcm          TEXT NOT NULL,
+      Name         TEXT NOT NULL,
+      Description  TEXT,
+      StepsJson    TEXT NOT NULL,
+      PathJson     TEXT,
+      IsPublished  INTEGER NOT NULL DEFAULT 0,
+      UpdatedAt    TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_roadmaps_mcm ON Roadmaps(Mcm);
+  `)
+
+  db.exec(`
     -- Per-EPC pass/fail test results. Keyed by (SubsystemId, ZoneName, CheckTag)
     -- — NOT by EStopEpcs.id — because the cloud-pull route DELETEs and re-inserts
     -- all EStop* rows on every refresh, which would otherwise wipe test history.
