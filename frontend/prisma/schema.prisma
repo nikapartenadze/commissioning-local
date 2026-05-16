@@ -228,6 +228,7 @@ model EStopEpc {
   zone         EStopZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
   ioPoints     EStopIoPoint[]
   vfds         EStopVfd[]
+  relatedEpcs  EStopRelatedEpc[]
   @@index([zoneId])
   @@map("EStopEpcs")
 }
@@ -250,6 +251,16 @@ model EStopVfd {
   epc      EStopEpc @relation(fields: [epcId], references: [id], onDelete: Cascade)
   @@index([epcId])
   @@map("EStopVfds")
+}
+
+model EStopRelatedEpc {
+  id       Int      @id @default(autoincrement())
+  epcId    Int      @map("EpcId")
+  tag      String   @map("Tag")
+  mustDrop Boolean  @map("MustDrop")
+  epc      EStopEpc @relation(fields: [epcId], references: [id], onDelete: Cascade)
+  @@index([epcId])
+  @@map("EStopRelatedEpcs")
 }
 
 model SafetyZone {

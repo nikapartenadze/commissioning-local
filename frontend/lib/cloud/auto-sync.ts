@@ -804,6 +804,17 @@ class AutoSyncService {
               for (const vfd of vfds) {
                 if (vfd.StoTag) tags[vfd.StoTag] = getPlcClient().readTagCached(vfd.StoTag)
               }
+
+              // 2026 Zone Matrix: include the cross-EPC dependency tags
+              // (ESTOPs_Must_Drop / ESTOPs_Must_Stay_OK) so the cloud
+              // view can render their live state. Guarded for older
+              // databases that don't yet have the table.
+              try {
+                const related = db.prepare('SELECT * FROM EStopRelatedEpcs WHERE EpcId = ?').all(epc.id) as any[]
+                for (const rel of related) {
+                  if (rel.Tag) tags[rel.Tag] = getPlcClient().readTagCached(rel.Tag)
+                }
+              } catch { /* table absent on pre-migration DBs */ }
             }
           }
         }

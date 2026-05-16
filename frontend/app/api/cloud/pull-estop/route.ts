@@ -43,8 +43,9 @@ export async function POST(req: Request, res: Response) {
     const insertEpcStmt = db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)')
     const insertIoPointStmt = db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)')
     const insertVfdStmt = db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)')
+    const insertRelatedEpcStmt = db.prepare('INSERT INTO EStopRelatedEpcs (EpcId, Tag, MustDrop) VALUES (?, ?, ?)')
 
-    let totalEpcs = 0, totalIoPoints = 0, totalVfds = 0
+    let totalEpcs = 0, totalIoPoints = 0, totalVfds = 0, totalRelatedEpcs = 0
 
     for (const zone of data.zones) {
       const zoneResult = insertZoneStmt.run(subsystemId, zone.name)
@@ -55,11 +56,12 @@ export async function POST(req: Request, res: Response) {
         const epcId = epcResult.lastInsertRowid
         for (const io of (epc.ioPoints || [])) { totalIoPoints++; insertIoPointStmt.run(epcId, io.tag) }
         for (const vfd of (epc.vfds || [])) { totalVfds++; insertVfdStmt.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0) }
+        for (const rel of (epc.relatedEpcs || [])) { totalRelatedEpcs++; insertRelatedEpcStmt.run(epcId, rel.tag, rel.mustDrop ? 1 : 0) }
       }
     }
 
-    console.log(`[PullEStop] Imported ${data.zones.length} zones, ${totalEpcs} EPCs, ${totalIoPoints} IO points, ${totalVfds} VFDs`)
-    return res.json({ success: true, zones: data.zones.length, epcs: totalEpcs, ioPoints: totalIoPoints, vfds: totalVfds })
+    console.log(`[PullEStop] Imported ${data.zones.length} zones, ${totalEpcs} EPCs, ${totalIoPoints} IO points, ${totalVfds} VFDs, ${totalRelatedEpcs} related EPCs`)
+    return res.json({ success: true, zones: data.zones.length, epcs: totalEpcs, ioPoints: totalIoPoints, vfds: totalVfds, relatedEpcs: totalRelatedEpcs })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     console.error('[PullEStop] Error:', message)

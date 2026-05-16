@@ -6,6 +6,7 @@ const selectZones = db.prepare('SELECT * FROM EStopZones')
 const selectEpcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?')
 const selectIoPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?')
 const selectVfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?')
+const selectRelatedEpcs = db.prepare('SELECT * FROM EStopRelatedEpcs WHERE EpcId = ?')
 const selectEpcChecks = db.prepare(
   'SELECT SubsystemId, ZoneName, CheckTag, Result, Comments, FailureMode, TestedBy, TestedAt FROM EStopEpcChecks WHERE SubsystemId = ?'
 )
@@ -33,6 +34,13 @@ export async function GET(req: Request, res: Response) {
           epc.ioPoints = selectIoPoints.all(epc.id) as any[]
           epc.vfds = selectVfds.all(epc.id) as any[]
           for (const vfd of epc.vfds) vfd.mustStop = !!vfd.MustStop
+          // EStopRelatedEpcs may not exist yet on databases created before
+          // the 2026 Zone Matrix migration. Treat absence as "no relations"
+          // rather than failing the whole status read.
+          try {
+            epc.relatedEpcs = selectRelatedEpcs.all(epc.id) as any[]
+            for (const r of epc.relatedEpcs) r.mustDrop = !!r.MustDrop
+          } catch { epc.relatedEpcs = [] }
         }
       }
     } catch { return res.json({ success: true, connected, zones: [] }) }
@@ -45,6 +53,7 @@ export async function GET(req: Request, res: Response) {
         allTags.add(epc.CheckTag)
         for (const io of epc.ioPoints) allTags.add(io.Tag)
         for (const vfd of epc.vfds) allTags.add(vfd.StoTag)
+        for (const rel of (epc.relatedEpcs || [])) allTags.add(rel.Tag)
       }
     }
 
@@ -92,13 +101,54 @@ export async function GET(req: Request, res: Response) {
       epcs: zone.epcs.map((epc: any) => {
         const mustStopVfds = epc.vfds.filter((v: any) => v.mustStop)
         const keepRunningVfds = epc.vfds.filter((v: any) => !v.mustStop)
+        const related: any[] = epc.relatedEpcs || []
+        const mustDropTags = related.filter((r: any) => r.mustDrop)
+        const mustStayOkTags = related.filter((r: any) => !r.mustDrop)
         const check = checksLookup.get(`${zone.Name}|${epc.CheckTag}`)
+        const checkTagValue = connected ? (tagValues[epc.CheckTag] ?? null) : null
+
+        // Auto verdict — only meaningful once the cord has been pulled
+        // (CheckTag reads false). Resting state is "ready".
+        let autoVerdict: 'ready' | 'pass' | 'fail' | 'unknown' = 'unknown'
+        if (!connected || checkTagValue === null) {
+          autoVerdict = 'unknown'
+        } else if (checkTagValue === true) {
+          autoVerdict = 'ready'
+        } else {
+          let allPass = true
+          let anyUnknown = false
+          for (const v of mustStopVfds) {
+            const got = tagValues[v.StoTag]
+            if (got === null || got === undefined) { anyUnknown = true; break }
+            if (got !== true) allPass = false
+          }
+          if (!anyUnknown) for (const v of keepRunningVfds) {
+            const got = tagValues[v.StoTag]
+            if (got === null || got === undefined) { anyUnknown = true; break }
+            if (got !== false) allPass = false
+          }
+          if (!anyUnknown) for (const r of mustDropTags) {
+            const got = tagValues[r.Tag]
+            if (got === null || got === undefined) { anyUnknown = true; break }
+            if (got !== false) allPass = false
+          }
+          if (!anyUnknown) for (const r of mustStayOkTags) {
+            const got = tagValues[r.Tag]
+            if (got === null || got === undefined) { anyUnknown = true; break }
+            if (got !== true) allPass = false
+          }
+          autoVerdict = anyUnknown ? 'unknown' : (allPass ? 'pass' : 'fail')
+        }
+
         return {
           id: epc.id, name: epc.Name, checkTag: epc.CheckTag,
-          checkTagValue: connected ? (tagValues[epc.CheckTag] ?? null) : null,
+          checkTagValue,
           ioPoints: epc.ioPoints.map((io: any) => ({ id: io.id, tag: io.Tag, value: connected ? (tagValues[io.Tag] ?? null) : null })),
           mustStopVfds: mustStopVfds.map((vfd: any) => ({ id: vfd.id, tag: vfd.Tag, stoTag: vfd.StoTag, stoActive: connected ? (tagValues[vfd.StoTag] ?? null) : null })),
           keepRunningVfds: keepRunningVfds.map((vfd: any) => ({ id: vfd.id, tag: vfd.Tag, stoTag: vfd.StoTag, stoActive: connected ? (tagValues[vfd.StoTag] ?? null) : null })),
+          mustDropTags: mustDropTags.map((r: any) => ({ id: r.id, tag: r.Tag, value: connected ? (tagValues[r.Tag] ?? null) : null })),
+          mustStayOkTags: mustStayOkTags.map((r: any) => ({ id: r.id, tag: r.Tag, value: connected ? (tagValues[r.Tag] ?? null) : null })),
+          autoVerdict,
           result: check?.Result ?? null,
           comments: check?.Comments ?? null,
           failureMode: check?.FailureMode ?? null,

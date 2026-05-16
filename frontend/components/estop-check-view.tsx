@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Loader2, ShieldAlert, Search, X, ChevronDown, ChevronRight, OctagonX, Play, Square, CheckCircle2, XCircle, RotateCcw } from 'lucide-react'
+import { Loader2, ShieldAlert, Search, X, ChevronDown, ChevronRight, OctagonX, Play, Square, CheckCircle2, XCircle, RotateCcw, ArrowDown, ShieldCheck } from 'lucide-react'
 import { authFetch } from '@/lib/api-config'
 import { useUser } from '@/lib/user-context'
 import { cn } from '@/lib/utils'
@@ -23,6 +23,16 @@ interface Vfd {
   stoActive: boolean | null
 }
 
+// 2026 Zone Matrix sibling-EPC tags. `value` mirrors the live PLC read for
+// the row. mustDrop split lives on the server — these are already
+// pre-bucketed into mustDropTags / mustStayOkTags on the wire.
+interface RelatedTag {
+  tag: string
+  value: boolean | null
+}
+
+type AutoVerdict = 'ready' | 'pass' | 'fail' | 'unknown'
+
 interface Epc {
   id: number
   name: string
@@ -31,6 +41,9 @@ interface Epc {
   ioPoints: IoPoint[]
   mustStopVfds: Vfd[]
   keepRunningVfds: Vfd[]
+  mustDropTags?: RelatedTag[]
+  mustStayOkTags?: RelatedTag[]
+  autoVerdict?: AutoVerdict
   result: 'pass' | 'fail' | null
   comments: string | null
   failureMode: string | null
@@ -87,13 +100,19 @@ function VfdBadge({ vfd, expectStoActive }: { vfd: Vfd; expectStoActive: boolean
 }
 
 function EpcSummary({ epc }: { epc: Epc }) {
+  const mustDrop = epc.mustDropTags ?? []
+  const mustStayOk = epc.mustStayOkTags ?? []
   const mustStopOk = epc.mustStopVfds.filter(v => v.stoActive === true).length
   const mustStopBad = epc.mustStopVfds.filter(v => v.stoActive === false).length
   const keepRunOk = epc.keepRunningVfds.filter(v => v.stoActive === false).length
   const keepRunBad = epc.keepRunningVfds.filter(v => v.stoActive === true).length
-  const totalVfds = epc.mustStopVfds.length + epc.keepRunningVfds.length
-  const totalOk = mustStopOk + keepRunOk
-  const totalBad = mustStopBad + keepRunBad
+  const dropOk = mustDrop.filter(r => r.value === false).length
+  const dropBad = mustDrop.filter(r => r.value === true).length
+  const stayOk = mustStayOk.filter(r => r.value === true).length
+  const stayBad = mustStayOk.filter(r => r.value === false).length
+  const totalChecks = epc.mustStopVfds.length + epc.keepRunningVfds.length + mustDrop.length + mustStayOk.length
+  const totalOk = mustStopOk + keepRunOk + dropOk + stayOk
+  const totalBad = mustStopBad + keepRunBad + dropBad + stayBad
   const noData = totalOk === 0 && totalBad === 0
 
   return (
@@ -102,11 +121,51 @@ function EpcSummary({ epc }: { epc: Epc }) {
         <span>No PLC data</span>
       ) : (
         <>
-          {totalOk > 0 && <span className="text-emerald-600 dark:text-emerald-400">{totalOk}/{totalVfds} OK</span>}
+          {totalOk > 0 && <span className="text-emerald-600 dark:text-emerald-400">{totalOk}/{totalChecks} OK</span>}
           {totalBad > 0 && <span className="text-red-600 dark:text-red-400">{totalBad} FAIL</span>}
         </>
       )}
     </div>
+  )
+}
+
+// Suggest-only verdict pill driven by the server-computed autoVerdict. Pure
+// indicator — clicking still requires the tech to use Pass/Fail buttons.
+function AutoVerdictPill({ verdict, size = 'sm' }: { verdict: AutoVerdict | undefined; size?: 'xs' | 'sm' }) {
+  const v = verdict ?? 'unknown'
+  const cls = size === 'xs'
+    ? 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border'
+    : 'inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold uppercase border'
+  if (v === 'pass') return <span className={cn(cls, 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30')}>Auto: Pass</span>
+  if (v === 'fail') return <span className={cn(cls, 'bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/30')}>Auto: Fail</span>
+  if (v === 'ready') return <span className={cn(cls, 'bg-muted text-muted-foreground border-border')}>Ready</span>
+  return <span className={cn(cls, 'bg-muted/50 text-muted-foreground border-border')}>Wait</span>
+}
+
+// Tag readout for the two related-EPC sections. `expectedTrue` flips the
+// pass/fail polarity: must-drop expects FALSE, must-stay-ok expects TRUE.
+function RelatedTagBadge({ tag, value, expectedTrue }: { tag: string; value: boolean | null; expectedTrue: boolean }) {
+  const isPass = value !== null && value === expectedTrue
+  const isFail = value !== null && value !== expectedTrue
+  const bg = isPass
+    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+    : isFail
+      ? 'bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/30'
+      : 'bg-muted text-muted-foreground border-border'
+  const label = value === null
+    ? 'WAIT'
+    : isPass
+      ? (expectedTrue ? 'OK' : 'DROPPED')
+      : (expectedTrue ? 'FAULT' : 'NOT DROPPED')
+  return (
+    <span
+      className={cn('inline-flex items-center gap-1.5 px-3 py-1 text-xs font-mono rounded-md border', bg)}
+      title={`${tag} = ${value === null ? 'N/A' : value}`}
+    >
+      <span className={cn('w-2 h-2 rounded-full', isPass ? 'bg-emerald-500' : isFail ? 'bg-red-500' : 'bg-gray-400')} />
+      {tag}
+      <span className="ml-1 text-[10px] font-bold opacity-80">{label}</span>
+    </span>
   )
 }
 
@@ -323,7 +382,9 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           zone.name.toLowerCase().includes(search) ||
           epc.ioPoints.some(io => io.tag.toLowerCase().includes(search)) ||
           epc.mustStopVfds.some(v => v.tag.toLowerCase().includes(search) || v.stoTag.toLowerCase().includes(search)) ||
-          epc.keepRunningVfds.some(v => v.tag.toLowerCase().includes(search) || v.stoTag.toLowerCase().includes(search))
+          epc.keepRunningVfds.some(v => v.tag.toLowerCase().includes(search) || v.stoTag.toLowerCase().includes(search)) ||
+          (epc.mustDropTags ?? []).some(r => r.tag.toLowerCase().includes(search)) ||
+          (epc.mustStayOkTags ?? []).some(r => r.tag.toLowerCase().includes(search))
         )
         return epcs.length > 0 ? { ...zone, epcs } : null
       }).filter((z): z is Zone => z !== null)
@@ -337,17 +398,25 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
     ? allZones.find(z => z.epcs.some(e => e.id === selectedEpc))?.name ?? ''
     : ''
 
-  // Filter VFDs within detail if searching
+  // Filter VFDs + related-EPC tags within detail if searching
   const detailMustStop = selectedEpcData && search
     ? selectedEpcData.mustStopVfds.filter(v => v.tag.toLowerCase().includes(search) || v.stoTag.toLowerCase().includes(search))
     : selectedEpcData?.mustStopVfds ?? []
   const detailKeepRun = selectedEpcData && search
     ? selectedEpcData.keepRunningVfds.filter(v => v.tag.toLowerCase().includes(search) || v.stoTag.toLowerCase().includes(search))
     : selectedEpcData?.keepRunningVfds ?? []
-  // If search doesn't match any VFDs specifically, show all
-  const showAllVfds = search && detailMustStop.length === 0 && detailKeepRun.length === 0
+  const detailMustDrop = selectedEpcData && search
+    ? (selectedEpcData.mustDropTags ?? []).filter(r => r.tag.toLowerCase().includes(search))
+    : (selectedEpcData?.mustDropTags ?? [])
+  const detailMustStayOk = selectedEpcData && search
+    ? (selectedEpcData.mustStayOkTags ?? []).filter(r => r.tag.toLowerCase().includes(search))
+    : (selectedEpcData?.mustStayOkTags ?? [])
+  // If search doesn't match anything in any sub-list, show all
+  const showAllVfds = search && detailMustStop.length === 0 && detailKeepRun.length === 0 && detailMustDrop.length === 0 && detailMustStayOk.length === 0
   const finalMustStop = showAllVfds ? (selectedEpcData?.mustStopVfds ?? []) : detailMustStop
   const finalKeepRun = showAllVfds ? (selectedEpcData?.keepRunningVfds ?? []) : detailKeepRun
+  const finalMustDrop = showAllVfds ? (selectedEpcData?.mustDropTags ?? []) : detailMustDrop
+  const finalMustStayOk = showAllVfds ? (selectedEpcData?.mustStayOkTags ?? []) : detailMustStayOk
 
   return (
     <div className="p-4 space-y-4">
@@ -431,7 +500,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                           <StatusDot active={epc.checkTagValue} size="lg" />
                           <div className="min-w-0 flex-1">
                             <p className="text-xs font-mono font-medium truncate">{epc.name}</p>
-                            <EpcSummary epc={epc} />
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <AutoVerdictPill verdict={epc.autoVerdict} size="xs" />
+                              <EpcSummary epc={epc} />
+                            </div>
                           </div>
                           {epc.result === 'pass' && (
                             <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" aria-label="Passed" />
@@ -461,7 +533,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                     <p className="text-xs text-muted-foreground font-mono">{selectedEpcData.checkTag}</p>
                   </div>
                 </div>
-                <Badge variant="outline" className="text-xs">{selectedZoneName}</Badge>
+                <div className="flex items-center gap-2">
+                  <AutoVerdictPill verdict={selectedEpcData.autoVerdict} />
+                  <Badge variant="outline" className="text-xs">{selectedZoneName}</Badge>
+                </div>
               </div>
 
               <CardContent className="p-4 space-y-5">
@@ -571,13 +646,30 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   </div>
                 )}
 
+                {/* Other ESTOPs — Must Drop together (2026 Zone Matrix) */}
+                {finalMustDrop.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <ArrowDown className="w-3.5 h-3.5 text-red-500" />
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Other ESTOPs — Must Drop <span className="normal-case opacity-60">({finalMustDrop.length})</span>
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {finalMustDrop.map(r => (
+                        <RelatedTagBadge key={r.tag} tag={r.tag} value={r.value} expectedTrue={false} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Must Stop VFDs */}
                 {finalMustStop.length > 0 && (
                   <div>
                     <div className="flex items-center gap-2 mb-2">
                       <Square className="w-3.5 h-3.5 text-red-500" />
                       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Must Stop <span className="normal-case opacity-60">({finalMustStop.length})</span>
+                        VFDs — Must Stop <span className="normal-case opacity-60">({finalMustStop.length})</span>
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
@@ -588,13 +680,30 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   </div>
                 )}
 
-                {/* Keep Running VFDs */}
+                {/* Other ESTOPs — Must Stay OK (2026 Zone Matrix) */}
+                {finalMustStayOk.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Other ESTOPs — Must Stay OK <span className="normal-case opacity-60">({finalMustStayOk.length})</span>
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {finalMustStayOk.map(r => (
+                        <RelatedTagBadge key={r.tag} tag={r.tag} value={r.value} expectedTrue={true} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Keep Running VFDs — empty in 2026 Zone Matrix data, kept for legacy 5-col imports */}
                 {finalKeepRun.length > 0 && (
                   <div>
                     <div className="flex items-center gap-2 mb-2">
                       <Play className="w-3.5 h-3.5 text-emerald-500" />
                       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Keep Running <span className="normal-case opacity-60">({finalKeepRun.length})</span>
+                        VFDs — Keep Running <span className="normal-case opacity-60">({finalKeepRun.length})</span>
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
