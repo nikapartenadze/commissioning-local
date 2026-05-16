@@ -256,6 +256,18 @@ export function initializeSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_estopvfds_epcid ON EStopVfds(EpcId);
 
+    -- Holds the 2026 "Zone Matrix" CSV columns ESTOPs_Must_Drop and
+    -- ESTOPs_Must_Stay_OK. Each row is a PLC tag (typically a sibling
+    -- VFD's :SI.InNNData pull-cord input) that must either drop with
+    -- this EPC (MustDrop=1) or stay healthy during this test (MustDrop=0).
+    CREATE TABLE IF NOT EXISTS EStopRelatedEpcs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      EpcId INTEGER NOT NULL REFERENCES EStopEpcs(id) ON DELETE CASCADE,
+      Tag TEXT NOT NULL,
+      MustDrop INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_estoprelatedepcs_epcid ON EStopRelatedEpcs(EpcId);
+
     -- SCADA MCM layout SVGs pulled from cloud. One row per MCM name. The
     -- local renderer inlines svgContent into the DOM (after DOMPurify) so
     -- guided mode and the "Show on Diagram" panel show device positions
