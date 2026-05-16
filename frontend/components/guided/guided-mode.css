@@ -312,14 +312,24 @@
 .guided-svg svg path[data-status] {
   transition: fill 220ms ease, stroke 220ms ease;
 }
-.guided-svg svg g[data-status]:not([data-status="no_ios"]),
-.guided-svg svg path[data-status]:not([data-status="no_ios"]) {
+/* Every status-stamped device is clickable; the panel handles the
+ * "no IOs configured" empty state so the operator gets feedback. */
+.guided-svg svg g[data-status],
+.guided-svg svg path[data-status] {
   cursor: pointer;
 }
+/* Hover brightness — only on devices that actually have IOs, so the
+ * inert no_ios shapes stay visually muted on hover. */
 .guided-svg svg g[data-status]:not([data-status="no_ios"]):hover rect,
 .guided-svg svg g[data-status]:not([data-status="no_ios"]):hover path,
 .guided-svg svg path[data-status]:not([data-status="no_ios"]):hover {
   filter: brightness(1.08);
+}
+.guided-svg svg g[data-status="no_ios"]:hover rect,
+.guided-svg svg g[data-status="no_ios"]:hover path,
+.guided-svg svg path[data-status="no_ios"]:hover {
+  filter: brightness(1.15);
+  opacity: 0.85 !important;
 }
 
 /* CURRENT TARGET — orange glow + pulsing stroke. Drop-shadow filter

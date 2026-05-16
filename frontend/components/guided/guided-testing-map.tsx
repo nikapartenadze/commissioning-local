@@ -175,7 +175,10 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
 
   // Click delegation — find the closest device element to the click target.
   // <g> devices contain children, so we use closest(); <path> devices ARE
-  // the leaf, so closest() returns them directly.
+  // the leaf, so closest() returns them directly. no_ios devices are also
+  // clickable: the panel surfaces a "No IOs configured" state so the
+  // operator gets feedback instead of a silent no-op (the visual map
+  // shows photoeyes that don't have their own DB rows yet).
   useEffect(() => {
     const root = containerRef.current
     if (!root) return
@@ -183,7 +186,6 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
       const target = e.target as Element
       const el = target.closest(STATUS_SELECTOR)
       if (!el) return
-      if (el.getAttribute('data-status') === 'no_ios') return
       const id = el.getAttribute('id')
       if (id) onDeviceClick(id)
     }
