@@ -5,13 +5,6 @@ import { computeDeviceState } from '@/lib/guided/device-state'
 import { readBundledSvg } from '@/app/api/maps/subsystem/[id]/route'
 import type { Device } from '@/lib/guided/types'
 
-interface IoCountRow {
-  deviceName: string
-  total: number
-  passed: number
-  failed: number
-}
-
 /**
  * GET /api/guided/devices?subsystemId=...&skipped=A,B,C
  *
@@ -47,48 +40,61 @@ export async function GET(req: Request, res: Response) {
 
   const orderedIds = parseDeviceIdsFromSvg(svg)
 
-  const rows = db.prepare(`
-    SELECT NetworkDeviceName as deviceName,
-           COUNT(*) as total,
-           SUM(CASE WHEN Result = 'Passed' THEN 1 ELSE 0 END) as passed,
-           SUM(CASE WHEN Result = 'Failed' THEN 1 ELSE 0 END) as failed
+  // Pull every IO for this subsystem ONCE. We compute counts per SVG
+  // device in JS rather than per-id SQL because each SVG id can match an
+  // IO three different ways:
+  //   1) NetworkDeviceName === id              (VFDs / FIOMs)
+  //   2) NetworkDeviceName === id + '_PD'      (laser photoeyes — LPE alias)
+  //   3) Description starts with "id " or
+  //      "id_"                                (photoeyes / beacons / EPCs
+  //                                            whose physical name lives
+  //                                            in the IO's Description
+  //                                            field while NetworkDeviceName
+  //                                            is the parent FIOM or VFD)
+  //
+  // With 228 IOs × 138 SVG ids that's ~31k cheap comparisons — well under
+  // the cost of a single per-id round-trip.
+  interface IoRow {
+    NetworkDeviceName: string | null
+    Description: string | null
+    Result: string | null
+  }
+  const allIos = db.prepare(`
+    SELECT NetworkDeviceName, Description, Result
       FROM Ios
      WHERE SubsystemId = ?
-       AND NetworkDeviceName IS NOT NULL
-       AND NetworkDeviceName != ''
-     GROUP BY NetworkDeviceName
-  `).all(subsystemId) as IoCountRow[]
-
-  // Build the lookup keyed by NetworkDeviceName, plus a small alias layer:
-  // SCADA SVGs label laser photoeyes "UL17_24_LPE1" while the DB stores the
-  // matching photo-detector module as "UL17_24_LPE1_PD". Anything with a
-  // _PD suffix gets an additional alias entry without it so the SVG id can
-  // resolve to the same IO count without a schema change.
-  const countsByName = new Map<string, IoCountRow>()
-  for (const r of rows) {
-    countsByName.set(r.deviceName, r)
-    if (r.deviceName.endsWith('_PD')) {
-      const stripped = r.deviceName.slice(0, -3)
-      // Only add the alias if it doesn't collide with another real device name.
-      if (!countsByName.has(stripped)) {
-        countsByName.set(stripped, r)
-      }
-    }
-  }
+  `).all(subsystemId) as IoRow[]
 
   const devices: Device[] = orderedIds.map((deviceName, order) => {
-    const counts = countsByName.get(deviceName) ?? { deviceName, total: 0, passed: 0, failed: 0 }
+    let total = 0, passed = 0, failed = 0
+    const exactSpace = deviceName + ' '
+    const underscoreSub = deviceName + '_'
+    const pdAlias = deviceName + '_PD'
+    for (const r of allIos) {
+      const ndn = r.NetworkDeviceName
+      const matchesNDN = ndn === deviceName || ndn === pdAlias
+      let matchesDesc = false
+      if (!matchesNDN && r.Description) {
+        const d = r.Description
+        matchesDesc = d.startsWith(exactSpace) || d.startsWith(underscoreSub)
+      }
+      if (matchesNDN || matchesDesc) {
+        total++
+        if (r.Result === 'Passed') passed++
+        else if (r.Result === 'Failed') failed++
+      }
+    }
     const state = computeDeviceState(
-      { total: counts.total, passed: counts.passed, failed: counts.failed },
+      { total, passed, failed },
       skippedSet.has(deviceName),
     )
     return {
       deviceName,
       order,
-      totalIos: counts.total,
-      passedIos: counts.passed,
-      failedIos: counts.failed,
-      untestedIos: counts.total - counts.passed - counts.failed,
+      totalIos: total,
+      passedIos: passed,
+      failedIos: failed,
+      untestedIos: total - passed - failed,
       state,
     }
   })
