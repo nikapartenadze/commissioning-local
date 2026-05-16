@@ -57,6 +57,18 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
   const transformRef = useRef<ReactZoomPanPinchContentRef | null>(null)
   const hasAutoCenteredRef = useRef(false)
 
+  /**
+   * Selectors used everywhere we iterate device elements. Both <g> groups
+   * (composite devices like VFD/FIOM) and flat <path> elements (photoeyes,
+   * beacons, pushbuttons, EPCs in the Inkscape export) carry device ids.
+   */
+  const DEVICE_SELECTOR = 'svg g[id], svg path[id]'
+  const STATUS_SELECTOR = 'svg g[data-status], svg path[data-status]'
+
+  function findDeviceElement(root: HTMLElement, deviceName: string): Element | null {
+    return root.querySelector(`svg [id="${CSS.escape(deviceName)}"]`)
+  }
+
   useImperativeHandle(
     ref,
     () => ({
@@ -64,10 +76,10 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
         const root = containerRef.current
         const transform = transformRef.current
         if (!root || !transform) return
-        const g = root.querySelector(`svg g[id="${CSS.escape(deviceName)}"]`)
-        if (!g || !(g instanceof SVGGraphicsElement)) return
+        const el = findDeviceElement(root, deviceName)
+        if (!el || !(el instanceof SVGGraphicsElement)) return
         // 1.6× zoom, 400ms ease-out is comfortable on tablet
-        transform.zoomToElement(g as unknown as HTMLElement, 1.6, 400)
+        transform.zoomToElement(el as unknown as HTMLElement, 1.6, 400)
       },
     }),
     [],
@@ -78,14 +90,17 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
     const root = containerRef.current
     if (!root) return
     const stateByName = new Map(devices.map(d => [d.deviceName, d.state]))
-    const groups = root.querySelectorAll<SVGGElement>('svg g[id]')
-    groups.forEach(g => {
-      const id = g.getAttribute('id')
+    const els = root.querySelectorAll<SVGElement>(DEVICE_SELECTOR)
+    els.forEach(el => {
+      const id = el.getAttribute('id')
       if (!id) return
       const state = stateByName.get(id) ?? 'no_ios'
-      g.setAttribute('data-status', state)
+      el.setAttribute('data-status', state)
       const colors = STATE_FILL[state]
-      const shapes = g.querySelectorAll<SVGElement>(':scope > rect, :scope > path')
+      // For <g> apply to direct shape children; for a bare <path> apply to itself.
+      const shapes: SVGElement[] = el.tagName.toLowerCase() === 'g'
+        ? Array.from(el.querySelectorAll<SVGElement>(':scope > rect, :scope > path, :scope > polygon, :scope > circle, :scope > ellipse'))
+        : [el]
       shapes.forEach(shape => {
         shape.setAttribute('fill', colors.fill)
         shape.setAttribute('stroke', colors.stroke)
@@ -109,10 +124,10 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
   useEffect(() => {
     const root = containerRef.current
     if (!root) return
-    root.querySelectorAll('svg g[data-current]').forEach(g => g.removeAttribute('data-current'))
+    root.querySelectorAll('svg [data-current]').forEach(el => el.removeAttribute('data-current'))
     if (activeDevice) {
-      const g = root.querySelector(`svg g[id="${CSS.escape(activeDevice.deviceName)}"]`)
-      g?.setAttribute('data-current', 'true')
+      const el = findDeviceElement(root, activeDevice.deviceName)
+      el?.setAttribute('data-current', 'true')
     }
   }, [activeDevice])
 
@@ -124,25 +139,24 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
     const svgRoot = root.querySelector('svg')
     if (!svgRoot) return
 
-    // Clear stale locks
-    svgRoot.querySelectorAll<SVGGElement>('g[id]').forEach(g => {
-      g.removeAttribute('data-roadmap-locked')
+    // Clear stale locks across both <g> and <path> device elements
+    svgRoot.querySelectorAll<SVGElement>('g[id], path[id]').forEach(el => {
+      el.removeAttribute('data-roadmap-locked')
     })
 
     if (!lockedDevices || lockedDevices.size === 0) return
 
     // Stamp lock on every device that's not in the allow-set
-    svgRoot.querySelectorAll<SVGGElement>('g[id]').forEach(g => {
-      const id = g.getAttribute('id')
+    svgRoot.querySelectorAll<SVGElement>('g[id], path[id]').forEach(el => {
+      const id = el.getAttribute('id')
       if (!id) return
       if (!lockedDevices.has(id)) {
-        g.setAttribute('data-roadmap-locked', 'true')
+        el.setAttribute('data-roadmap-locked', 'true')
       }
     })
   }, [lockedDevices, svgMarkup])
 
   // Auto-center on the active device the first time we have both an SVG and a target.
-  // Subsequent target changes leave the user's pan/zoom alone — they can hit "Recenter".
   useEffect(() => {
     if (hasAutoCenteredRef.current) return
     if (!svgMarkup || !activeDevice) return
@@ -150,25 +164,27 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
     const transform = transformRef.current
     if (!root || !transform) return
     const t = window.setTimeout(() => {
-      const g = root.querySelector(`svg g[id="${CSS.escape(activeDevice.deviceName)}"]`)
-      if (g instanceof SVGGraphicsElement) {
-        transform.zoomToElement(g as unknown as HTMLElement, 1.6, 600)
+      const el = findDeviceElement(root, activeDevice.deviceName)
+      if (el instanceof SVGGraphicsElement) {
+        transform.zoomToElement(el as unknown as HTMLElement, 1.6, 600)
         hasAutoCenteredRef.current = true
       }
     }, 120)
     return () => window.clearTimeout(t)
   }, [svgMarkup, activeDevice])
 
-  // Click delegation — find the device <g> closest to the click target.
+  // Click delegation — find the closest device element to the click target.
+  // <g> devices contain children, so we use closest(); <path> devices ARE
+  // the leaf, so closest() returns them directly.
   useEffect(() => {
     const root = containerRef.current
     if (!root) return
     function handleClick(e: Event) {
       const target = e.target as Element
-      const group = target.closest('g[data-status]') as SVGGElement | null
-      if (!group) return
-      if (group.getAttribute('data-status') === 'no_ios') return
-      const id = group.getAttribute('id')
+      const el = target.closest(STATUS_SELECTOR)
+      if (!el) return
+      if (el.getAttribute('data-status') === 'no_ios') return
+      const id = el.getAttribute('id')
       if (id) onDeviceClick(id)
     }
     root.addEventListener('click', handleClick)
