@@ -20,6 +20,10 @@ interface Props {
   activeDevice: Device | null
   /** Called when an interactive device is clicked. */
   onDeviceClick: (deviceName: string) => void
+  /** When non-null and non-empty, every device id NOT in this set gets
+   *  data-roadmap-locked="true". CSS dims and disables pointer events on
+   *  locked devices. Used by roadmap-driven flow mode. */
+  lockedDevices?: Set<string> | null
 }
 
 export interface GuidedTestingMapHandle {
@@ -46,7 +50,7 @@ const STATE_FILL: Record<DeviceState, { fill: string; stroke: string }> = {
  * predictably and we want the pulsing animation.
  */
 export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(function GuidedTestingMap(
-  { svgMarkup, devices, activeDevice, onDeviceClick },
+  { svgMarkup, devices, activeDevice, onDeviceClick, lockedDevices },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -111,6 +115,31 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
       g?.setAttribute('data-current', 'true')
     }
   }, [activeDevice])
+
+  // Stamp data-roadmap-locked on every device outside the allow-set so CSS can
+  // dim and disable pointer events on non-target devices during roadmap playback.
+  useEffect(() => {
+    const root = containerRef.current
+    if (!root) return
+    const svgRoot = root.querySelector('svg')
+    if (!svgRoot) return
+
+    // Clear stale locks
+    svgRoot.querySelectorAll<SVGGElement>('g[id]').forEach(g => {
+      g.removeAttribute('data-roadmap-locked')
+    })
+
+    if (!lockedDevices || lockedDevices.size === 0) return
+
+    // Stamp lock on every device that's not in the allow-set
+    svgRoot.querySelectorAll<SVGGElement>('g[id]').forEach(g => {
+      const id = g.getAttribute('id')
+      if (!id) return
+      if (!lockedDevices.has(id)) {
+        g.setAttribute('data-roadmap-locked', 'true')
+      }
+    })
+  }, [lockedDevices, svgMarkup])
 
   // Auto-center on the active device the first time we have both an SVG and a target.
   // Subsequent target changes leave the user's pan/zoom alone — they can hit "Recenter".
