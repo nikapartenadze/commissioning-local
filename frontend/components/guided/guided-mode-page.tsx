@@ -5,7 +5,6 @@ import { useGuidedSession } from '@/lib/guided/use-guided-session'
 import { findCurrentTarget } from '@/lib/guided/device-state'
 import { GuidedTestingMap, type GuidedTestingMapHandle } from './guided-testing-map'
 import { DeviceTestPanel } from './device-test-panel'
-import { RoadmapPlaybackBanner } from './roadmap-playback-banner'
 import { RoadmapPathOverlay } from './roadmap-path-overlay'
 import { RoadmapPicker } from './roadmap-picker'
 import { useRoadmapSession } from '@/lib/guided/use-roadmap-session'
@@ -294,32 +293,17 @@ export function GuidedModePage() {
             </button>
           )}
 
-          {/* Roadmap playback banner + path overlay */}
+          {/* Roadmap path overlay — arrows drawn on the map */}
           {flowMode === 'roadmap' && (roadmap.state.status === 'playing' || roadmap.state.status === 'complete') && (
-            <>
-              <RoadmapPathOverlay
-                path={roadmap.state.path}
-                currentStepIndex={roadmap.state.currentStepIndex}
-                containerRef={mapContainerRef}
-              />
-              <RoadmapPlaybackBanner
-                step={currentStep}
-                currentIndex={roadmap.state.currentStepIndex}
-                totalSteps={roadmap.state.steps.length}
-                isComplete={roadmap.state.status === 'complete'}
-                passedCount={roadmap.state.stepResults.filter(r => r.result === 'passed').length}
-                failedCount={roadmap.state.stepResults.filter(r => r.result === 'failed').length}
-                skippedCount={roadmap.state.stepResults.filter(r => r.result === 'skipped').length}
-                onPass={() => roadmap.advance('passed')}
-                onFail={() => roadmap.advance('failed')}
-                onSkip={() => roadmap.skipCurrent()}
-                onEnd={() => { roadmap.end(); setFlowMode('scada'); setSelectedRoadmapId(null) }}
-              />
-            </>
+            <RoadmapPathOverlay
+              path={roadmap.state.path}
+              currentStepIndex={roadmap.state.currentStepIndex}
+              containerRef={mapContainerRef}
+            />
           )}
         </div>
 
-        {/* PANEL */}
+        {/* PANEL — also hosts the roadmap step directive when playing */}
         <DeviceTestPanel
           device={selectedDevice}
           currentTarget={currentTarget}
@@ -330,12 +314,25 @@ export function GuidedModePage() {
           onCenterOnDevice={(name) => mapRef.current?.centerOnDevice(name)}
           onSkip={(name) => {
             skipDevice(name)
-            // After skip, auto-select the new current target so the panel stays useful
             window.setTimeout(() => {
               const next = findCurrentTarget(state.devices.filter(d => d.deviceName !== name))
               if (next) openDevice(next.deviceName)
             }, 0)
           }}
+          roadmapActive={flowMode === 'roadmap' && roadmap.state.status !== 'idle' && roadmap.state.status !== 'cancelled'}
+          roadmapStatus={roadmap.state.status}
+          roadmapStep={currentStep}
+          roadmapStepIndex={roadmap.state.currentStepIndex}
+          roadmapTotalSteps={roadmap.state.steps.length}
+          roadmapResults={{
+            passed: roadmap.state.stepResults.filter(r => r.result === 'passed').length,
+            failed: roadmap.state.stepResults.filter(r => r.result === 'failed').length,
+            skipped: roadmap.state.stepResults.filter(r => r.result === 'skipped').length,
+          }}
+          onRoadmapPass={() => roadmap.advance('passed')}
+          onRoadmapFail={() => roadmap.advance('failed')}
+          onRoadmapSkip={() => roadmap.skipCurrent()}
+          onRoadmapEnd={() => { roadmap.end(); setFlowMode('scada'); setSelectedRoadmapId(null) }}
         />
       </div>
     </div>
