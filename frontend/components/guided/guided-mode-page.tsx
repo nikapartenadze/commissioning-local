@@ -65,6 +65,7 @@ export function GuidedModePage() {
   // step's advance condition is met.
   useEffect(() => {
     if (!currentStep) return
+    let cancelled = false
     const dev = state.devices.find(d => d.deviceName === currentStep.deviceName)
     const deviceState = dev?.state ?? 'untested'
     if (currentStep.kind === 'io' && currentStep.ioName) {
@@ -72,6 +73,7 @@ export function GuidedModePage() {
       fetch(`/api/guided/devices/${encodeURIComponent(currentStep.deviceName)}?subsystemId=${subsystemId}`)
         .then(r => r.json())
         .then(d => {
+          if (cancelled) return
           const io = (d.ios ?? []).find((x: any) => x.name === currentStep.ioName)
           const ioResult = (io?.result as 'Passed' | 'Failed' | null) ?? null
           if (shouldAdvanceStep(currentStep, deviceState, ioResult)) {
@@ -79,7 +81,7 @@ export function GuidedModePage() {
           }
         })
         .catch(() => {})
-      return
+      return () => { cancelled = true }
     }
     if (shouldAdvanceStep(currentStep, deviceState, null)) {
       roadmap.advance(deviceState === 'failed' ? 'failed' : 'passed')
