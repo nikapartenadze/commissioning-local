@@ -5,6 +5,12 @@ import { useGuidedSession } from '@/lib/guided/use-guided-session'
 import { findCurrentTarget } from '@/lib/guided/device-state'
 import { GuidedTestingMap, type GuidedTestingMapHandle } from './guided-testing-map'
 import { DeviceTestPanel } from './device-test-panel'
+import { RoadmapPlaybackBanner } from './roadmap-playback-banner'
+import { RoadmapPathOverlay } from './roadmap-path-overlay'
+import { RoadmapPicker } from './roadmap-picker'
+import { useRoadmapSession } from '@/lib/guided/use-roadmap-session'
+import { shouldAdvanceStep } from '@/lib/guided/roadmap-advance'
+import type { Roadmap } from '@/lib/guided/roadmap-types'
 import './guided-mode.css'
 
 export function GuidedModePage() {
@@ -15,6 +21,83 @@ export function GuidedModePage() {
   const mapRef = useRef<GuidedTestingMapHandle | null>(null)
 
   const { state, openDevice, closeDevice, skipDevice } = useGuidedSession(subsystemId)
+
+  const [roadmaps, setRoadmaps] = useState<Roadmap[]>([])
+  const [selectedRoadmapId, setSelectedRoadmapId] = useState<number | null>(null)
+  const [flowMode, setFlowMode] = useState<'scada' | 'roadmap'>('scada')
+  const [isPulling, setIsPulling] = useState(false)
+  const roadmap = useRoadmapSession()
+  const mapContainerRef = useRef<HTMLDivElement | null>(null)
+
+  // Load cached roadmaps for this subsystem
+  useEffect(() => {
+    if (!subsystemId || isNaN(subsystemId)) return
+    let cancelled = false
+    fetch(`/api/roadmap?subsystemId=${subsystemId}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setRoadmaps(d.roadmaps ?? []) })
+      .catch(err => { console.error('[Roadmap] load:', err); if (!cancelled) setRoadmaps([]) })
+    return () => { cancelled = true }
+  }, [subsystemId])
+
+  async function pullRoadmaps() {
+    setIsPulling(true)
+    try {
+      await fetch('/api/cloud/pull-roadmap', { method: 'POST' })
+      const refreshed = await (await fetch(`/api/roadmap?subsystemId=${subsystemId}`)).json()
+      setRoadmaps(refreshed.roadmaps ?? [])
+    } catch (e) { console.error('[Roadmap] pull failed:', e) }
+    finally { setIsPulling(false) }
+  }
+
+  function startSelectedRoadmap(id: number) {
+    const r = roadmaps.find(x => x.id === id)
+    if (!r) return
+    setSelectedRoadmapId(id)
+    roadmap.start(r.id, r.stepsJson, r.pathJson ?? null)
+  }
+
+  const currentStep = roadmap.state.status === 'playing'
+    ? roadmap.state.steps[roadmap.state.currentStepIndex] ?? null
+    : null
+
+  // Auto-advance check: whenever device/IO state changes, see if the current
+  // step's advance condition is met.
+  useEffect(() => {
+    if (!currentStep) return
+    const dev = state.devices.find(d => d.deviceName === currentStep.deviceName)
+    const deviceState = dev?.state ?? 'untested'
+    if (currentStep.kind === 'io' && currentStep.ioName) {
+      // Fetch the device's IOs and look up the target IO's result
+      fetch(`/api/guided/devices/${encodeURIComponent(currentStep.deviceName)}?subsystemId=${subsystemId}`)
+        .then(r => r.json())
+        .then(d => {
+          const io = (d.ios ?? []).find((x: any) => x.name === currentStep.ioName)
+          const ioResult = (io?.result as 'Passed' | 'Failed' | null) ?? null
+          if (shouldAdvanceStep(currentStep, deviceState, ioResult)) {
+            roadmap.advance(ioResult === 'Failed' ? 'failed' : 'passed')
+          }
+        })
+        .catch(() => {})
+      return
+    }
+    if (shouldAdvanceStep(currentStep, deviceState, null)) {
+      roadmap.advance(deviceState === 'failed' ? 'failed' : 'passed')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep?.deviceName, currentStep?.ioName, currentStep?.kind, state.devices, subsystemId])
+
+  // When roadmap is active, force-select the current step's device and pan to it
+  useEffect(() => {
+    if (!currentStep) return
+    openDevice(currentStep.deviceName)
+    mapRef.current?.centerOnDevice(currentStep.deviceName)
+  }, [currentStep?.deviceName, openDevice])
+
+  // Locked-device set for the map
+  const lockedDevices = currentStep
+    ? new Set<string>([currentStep.deviceName])
+    : null
 
   // Load SVG once we know the subsystem
   useEffect(() => {
@@ -127,7 +210,15 @@ export function GuidedModePage() {
         </div>
 
         <div className="gm-header-right">
-          <FlowModeChip />
+          <FlowModeChip
+            flowMode={flowMode}
+            setFlowMode={setFlowMode}
+            roadmaps={roadmaps}
+            selectedRoadmapId={selectedRoadmapId}
+            onSelectRoadmap={startSelectedRoadmap}
+            onPullRoadmaps={pullRoadmaps}
+            isPulling={isPulling}
+          />
           <div className="gm-prototype-badge">Prototype · No Writes</div>
         </div>
       </header>
@@ -136,7 +227,7 @@ export function GuidedModePage() {
       <div className="gm-body">
         {/* MAP PANE */}
         <div className="gm-map">
-          <div className="gm-map-stage">
+          <div className="gm-map-stage" ref={mapContainerRef}>
             {svgMarkup === null ? (
               <div className="gm-loading">
                 <div className="gm-spinner" />
@@ -158,6 +249,7 @@ export function GuidedModePage() {
                 devices={state.devices}
                 activeDevice={selectedDevice ?? currentTarget}
                 onDeviceClick={openDevice}
+                lockedDevices={lockedDevices}
               />
             )}
           </div>
@@ -199,6 +291,30 @@ export function GuidedModePage() {
               {selectedDevice ? 'Recenter' : 'Find target'}
             </button>
           )}
+
+          {/* Roadmap playback banner + path overlay */}
+          {flowMode === 'roadmap' && (roadmap.state.status === 'playing' || roadmap.state.status === 'complete') && (
+            <>
+              <RoadmapPathOverlay
+                path={roadmap.state.path}
+                currentStepIndex={roadmap.state.currentStepIndex}
+                containerRef={mapContainerRef}
+              />
+              <RoadmapPlaybackBanner
+                step={currentStep}
+                currentIndex={roadmap.state.currentStepIndex}
+                totalSteps={roadmap.state.steps.length}
+                isComplete={roadmap.state.status === 'complete'}
+                passedCount={roadmap.state.stepResults.filter(r => r.result === 'passed').length}
+                failedCount={roadmap.state.stepResults.filter(r => r.result === 'failed').length}
+                skippedCount={roadmap.state.stepResults.filter(r => r.result === 'skipped').length}
+                onPass={() => roadmap.advance('passed')}
+                onFail={() => roadmap.advance('failed')}
+                onSkip={() => roadmap.skipCurrent()}
+                onEnd={() => { roadmap.end(); setFlowMode('scada'); setSelectedRoadmapId(null) }}
+              />
+            </>
+          )}
         </div>
 
         {/* PANEL */}
@@ -224,52 +340,41 @@ export function GuidedModePage() {
   )
 }
 
-/**
- * Stub for the ordering-mode picker. The traversal algorithm is currently
- * SCADA document order (the order devices appear in the SVG file). Future
- * modes will let operators sequence by device type ("VFDs first"), by
- * failure history ("retest failed"), or follow a custom route.
- *
- * Rendered as a non-interactive chip in Phase 1 — the menu opens on click
- * but only the current mode is enabled. Wiring multiple algorithms is a
- * Phase 2 task once we know which modes operators actually want.
- */
-function FlowModeChip() {
+function FlowModeChip({ flowMode, setFlowMode, roadmaps, selectedRoadmapId, onSelectRoadmap, onPullRoadmaps, isPulling }: {
+  flowMode: 'scada' | 'roadmap'
+  setFlowMode: (m: 'scada' | 'roadmap') => void
+  roadmaps: Roadmap[]
+  selectedRoadmapId: number | null
+  onSelectRoadmap: (id: number) => void
+  onPullRoadmaps: () => void
+  isPulling: boolean
+}) {
   const [open, setOpen] = useState(false)
+  const label = flowMode === 'roadmap' ? 'Roadmap' : 'SCADA order'
   return (
     <div style={{ position: 'relative' }}>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="gm-flow-chip"
-        title="Ordering algorithm"
-      >
+      <button type="button" onClick={() => setOpen(o => !o)} className="gm-flow-chip" title="Ordering algorithm">
         <GitBranch size={11} />
-        <span>Flow: SCADA order</span>
+        <span>Flow: {label}</span>
         <ChevronDown size={11} style={{ opacity: 0.6 }} />
       </button>
       {open && (
         <div className="gm-flow-menu" onMouseLeave={() => setOpen(false)}>
-          <div className="gm-flow-item" data-active="true">
-            <span className="gm-flow-dot" />
-            <span>SCADA document order</span>
-            <span className="gm-flow-hint">current</span>
+          <div className="gm-flow-item" data-active={flowMode === 'scada'} onClick={() => { setFlowMode('scada'); setOpen(false) }}>
+            <span className="gm-flow-dot" /><span>SCADA document order</span>
           </div>
-          <div className="gm-flow-item" data-disabled="true">
-            <span className="gm-flow-dot" />
-            <span>By device type</span>
-            <span className="gm-flow-hint">soon</span>
+          <div className="gm-flow-item" data-active={flowMode === 'roadmap'} onClick={() => setFlowMode('roadmap')}>
+            <span className="gm-flow-dot" /><span>Roadmap</span>
           </div>
-          <div className="gm-flow-item" data-disabled="true">
-            <span className="gm-flow-dot" />
-            <span>Failed-first retest</span>
-            <span className="gm-flow-hint">soon</span>
-          </div>
-          <div className="gm-flow-item" data-disabled="true">
-            <span className="gm-flow-dot" />
-            <span>Custom route</span>
-            <span className="gm-flow-hint">soon</span>
-          </div>
+          {flowMode === 'roadmap' && (
+            <RoadmapPicker
+              roadmaps={roadmaps}
+              selectedRoadmapId={selectedRoadmapId}
+              onSelect={onSelectRoadmap}
+              onPull={onPullRoadmaps}
+              isPulling={isPulling}
+            />
+          )}
         </div>
       )}
     </div>
