@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Crosshair, GitBranch, ChevronDown, PanelRightClose, PanelRightOpen, Moon, Sun } from 'lucide-react'
+import { ArrowLeft, Crosshair, GitBranch, ChevronDown, PanelRightClose, PanelRightOpen, Moon, Sun, RotateCcw } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { useGuidedSession } from '@/lib/guided/use-guided-session'
 import { findCurrentTarget } from '@/lib/guided/device-state'
@@ -160,6 +160,20 @@ export function GuidedModePage() {
   const isCurrent =
     !!selectedDevice && !!currentTarget && selectedDevice.deviceName === currentTarget.deviceName
 
+  // Unconditional neighbour-device navigation based on SVG document order.
+  // Used by the panel's "Prev / Next" navigation pad so the operator can
+  // walk the floor regardless of pass/fail state. Falls back to null at
+  // the boundaries.
+  const deviceNav = useMemo(() => {
+    if (!selectedDevice || state.devices.length === 0) return { prev: null, next: null }
+    const idx = state.devices.findIndex(d => d.deviceName === selectedDevice.deviceName)
+    if (idx < 0) return { prev: null, next: null }
+    return {
+      prev: idx > 0 ? state.devices[idx - 1]!.deviceName : null,
+      next: idx < state.devices.length - 1 ? state.devices[idx + 1]!.deviceName : null,
+    }
+  }, [selectedDevice, state.devices])
+
   function selectCurrent() {
     if (!currentTarget) return
     mapRef.current?.centerOnDevice(currentTarget.deviceName)
@@ -170,6 +184,19 @@ export function GuidedModePage() {
     const target = selectedDevice ?? currentTarget
     if (!target) return
     mapRef.current?.centerOnDevice(target.deviceName)
+  }
+
+  async function resetSubsystem() {
+    if (!window.confirm(`Reset all test results for subsystem ${subsystemId}?\n\nThis clears Ios.Result / TestedBy / Timestamp / Comments locally so you can re-walk the demo from scratch.`)) return
+    try {
+      const r = await fetch('/api/guided/reset-subsystem', { method: 'POST' })
+      const d = await r.json()
+      if (!r.ok || !d.success) throw new Error(d.error ?? `HTTP ${r.status}`)
+      // Force a refetch of the device list so the panel state matches.
+      window.location.reload()
+    } catch (e) {
+      alert(`Reset failed: ${e instanceof Error ? e.message : e}`)
+    }
   }
 
   // We intentionally do NOT auto-pan whenever selectedDevice changes —
@@ -223,6 +250,15 @@ export function GuidedModePage() {
             isPulling={isPulling}
           />
           <ThemeToggleChip />
+          <button
+            type="button"
+            className="gm-icon-btn"
+            onClick={resetSubsystem}
+            title="Reset all test results for this subsystem (demo only)"
+            aria-label="Reset subsystem test results"
+          >
+            <RotateCcw size={14} />
+          </button>
           <button
             type="button"
             className="gm-icon-btn"
@@ -330,6 +366,10 @@ export function GuidedModePage() {
               if (next) openDevice(next.deviceName)
             }, 0)
           }}
+          onNextDevice={() => deviceNav.next && openDevice(deviceNav.next)}
+          onPrevDevice={() => deviceNav.prev && openDevice(deviceNav.prev)}
+          nextDeviceName={deviceNav.next}
+          prevDeviceName={deviceNav.prev}
           roadmapActive={flowMode === 'roadmap' && roadmap.state.status !== 'idle' && roadmap.state.status !== 'cancelled'}
           roadmapStatus={roadmap.state.status}
           roadmapStep={currentStep}

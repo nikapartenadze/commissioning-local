@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, ChevronLeft, LogOut, RotateCcw } from 'lucide-react'
+import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, ChevronLeft, LogOut, RotateCcw, Power } from 'lucide-react'
 import type { Device, IoSummary } from '@/lib/guided/types'
 import type { RoadmapStep } from '@/lib/guided/roadmap-types'
 
@@ -23,6 +23,13 @@ interface Props {
   onSkip: (deviceName: string) => void
   /** Pan/zoom the SVG map to the named device. */
   onCenterOnDevice: (deviceName: string) => void
+  /** Unconditional next-device navigation. Parent walks state.devices
+   *  forward from the current device, regardless of pass/fail state.
+   *  Null when there is no next device (already at the end). */
+  onNextDevice?: () => void
+  onPrevDevice?: () => void
+  nextDeviceName?: string | null
+  prevDeviceName?: string | null
 
   /* ──────────────── Roadmap-mode props (optional) ──────────────── */
   /** True when the operator is running an authored roadmap (not free SCADA flow). */
@@ -63,6 +70,10 @@ export function DeviceTestPanel({
   onClose,
   onSkip,
   onCenterOnDevice,
+  onNextDevice,
+  onPrevDevice,
+  nextDeviceName = null,
+  prevDeviceName = null,
   roadmapActive = false,
   roadmapStatus = 'idle',
   roadmapStep = null,
@@ -289,6 +300,31 @@ export function DeviceTestPanel({
             ← Back to current target ({currentTarget.deviceName})
           </button>
         )}
+        {/* Unconditional device navigation — walks state.devices regardless
+            of pass/fail state, so the operator is never stuck on a single
+            device with no Next button. */}
+        <div className="gm-device-nav">
+          <button
+            type="button"
+            className="gm-device-nav-btn"
+            onClick={() => onPrevDevice?.()}
+            disabled={!onPrevDevice || !prevDeviceName}
+            title={prevDeviceName ? `Previous device: ${prevDeviceName}` : 'No previous device'}
+          >
+            <ChevronLeft size={14} />
+            <span>Prev</span>
+          </button>
+          <button
+            type="button"
+            className="gm-device-nav-btn gm-device-nav-btn--next"
+            onClick={() => onNextDevice?.()}
+            disabled={!onNextDevice || !nextDeviceName}
+            title={nextDeviceName ? `Next device: ${nextDeviceName}` : 'No next device'}
+          >
+            <span>{nextDeviceName ? `Next · ${nextDeviceName}` : 'Next'}</span>
+            <ChevronRight size={14} />
+          </button>
+        </div>
       </div>
       )}
 
@@ -389,6 +425,25 @@ export function DeviceTestPanel({
                   <X size={18} /> Fail
                 </button>
               </div>
+
+              {/* Fire output — only shown for IOs that pattern-match as outputs
+                  (DO / AO / :O. / :SO.). In demo mode this is a visual fire
+                  (panel flashes the IO blue); Phase 2 hooks this to a real
+                  PLC tag write. */}
+              {isOutputIo(currentIo.name) && (
+                <div className="gm-actions gm-actions--single">
+                  <button
+                    className="gm-action gm-action-fire"
+                    onClick={() => {
+                      setFlashIoId(currentIo.id)
+                      window.setTimeout(() => setFlashIoId(p => (p === currentIo.id ? null : p)), 700)
+                    }}
+                    title="Fire this output (demo: visual flash only — real PLC write is Phase 2)"
+                  >
+                    <Power size={17} /> Fire output
+                  </button>
+                </div>
+              )}
 
               <div className="gm-secondary-row">
                 <button
@@ -620,6 +675,18 @@ function RoadmapCompleteCard({
 function shortIoCode(name: string): string {
   const idx = name.lastIndexOf(':')
   return idx >= 0 ? name.slice(idx + 1) : name
+}
+
+/**
+ * Cheap heuristic for output-vs-input IO based on the tag name. Patterns
+ * seen in the local Ios table:
+ *   - Outputs: name ends with `_DO`, `_AO`, contains `:O.`, `:SO.`,
+ *     contains `_DO.` / `_AO.` mid-string (FIOM output pin paths).
+ *   - Inputs (NOT output): `_DI`, `:I.`, `:SI.`, `_AI`.
+ * Used to decide whether to surface the "Fire output" button.
+ */
+function isOutputIo(name: string): boolean {
+  return /(?:_DO\b|_AO\b|_DO\.|_AO\.|:O\.|:SO\.|:AO\.)/i.test(name)
 }
 
 function simulateSwap(
