@@ -38,7 +38,7 @@ interface SubsystemRow { Name: string | null }
 interface DiagramRow { SvgContent: string }
 
 export async function GET(req: Request, res: Response) {
-  const id = parseInt(req.params.id, 10)
+  const id = parseInt(String(req.params.id), 10)
   if (Number.isInteger(id) && id > 0) {
     const sub = db.prepare(`SELECT Name FROM Subsystems WHERE id = ?`).get(id) as SubsystemRow | undefined
     if (sub?.Name) {
