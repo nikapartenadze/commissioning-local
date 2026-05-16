@@ -968,4 +968,105 @@
   border-top-color: var(--gm-orange);
   animation: gm-spin 1s linear infinite;
 }
+
+/* ─── Roadmap lock mode ─── */
+.guided-svg g[data-roadmap-locked="true"] {
+  pointer-events: none;
+}
+.guided-svg g[data-roadmap-locked="true"] :where(rect, path) {
+  opacity: 0.35;
+  filter: grayscale(0.6);
+}
+
+/* ─── Roadmap playback banner ─── */
+.gm-roadmap-banner {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  background: linear-gradient(180deg, rgba(15,23,42,0.96) 0%, rgba(15,23,42,1) 100%);
+  color: #f8fafc;
+  border-radius: 10px;
+  padding: 14px 18px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  z-index: 20;
+}
+.gm-roadmap-banner__step {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #93c5fd;
+}
+.gm-roadmap-banner__instr {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.gm-roadmap-banner__io {
+  font-size: 12px;
+  color: #cbd5e1;
+  margin-top: 4px;
+}
+.gm-roadmap-banner__io code {
+  background: rgba(255,255,255,0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.gm-roadmap-banner__transit {
+  font-size: 11px;
+  color: #f59e0b;
+  margin-top: 2px;
+  font-style: italic;
+}
+.gm-roadmap-banner__buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.gm-roadmap-banner__btn {
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.1);
+  color: #f8fafc;
+  border: 1px solid rgba(255,255,255,0.18);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.gm-roadmap-banner__btn--pass { background: #16a34a; border-color: #16a34a; }
+.gm-roadmap-banner__btn--fail { background: #dc2626; border-color: #dc2626; }
+.gm-roadmap-banner__btn--end  { background: transparent; }
+.gm-roadmap-banner--complete .gm-roadmap-banner__instr { font-size: 22px; }
+
+/* ─── Roadmap picker (inside FlowModeChip menu) ─── */
+.gm-roadmap-picker {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 6px;
+}
+.gm-roadmap-picker__select {
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--gm-border, #e2e8f0);
+  background: var(--gm-bg, white);
+}
+.gm-roadmap-picker__pull {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--gm-border, #e2e8f0);
+  background: var(--gm-bg, white);
+  cursor: pointer;
+}
+.gm-roadmap-picker__pull:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ─── Path overlay arrow animation ─── */
+@keyframes gm-dash {
+  to { stroke-dashoffset: -28; }
+}
+.gm-roadmap-path-overlay { pointer-events: none; }
 @keyframes gm-spin { to { transform: rotate(360deg); } }
