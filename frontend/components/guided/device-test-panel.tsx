@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, ChevronLeft, LogOut, RotateCcw, Power } from 'lucide-react'
 import type { Device, IoSummary } from '@/lib/guided/types'
 import type { RoadmapStep } from '@/lib/guided/roadmap-types'
+import { useUser } from '@/lib/user-context'
 
 type IoResult = 'Passed' | 'Failed' | null
 
@@ -47,6 +48,10 @@ interface Props {
   onRoadmapSkip?: () => void
   onRoadmapPrevious?: () => void
   onRoadmapEnd?: () => void
+
+  /** Fired after a Pass/Fail/Clear is persisted so the parent can refetch
+   *  /api/guided/devices and let the map recolor from DB truth. */
+  onResultsChanged?: () => void
 }
 
 /**
@@ -85,11 +90,15 @@ export function DeviceTestPanel({
   onRoadmapSkip,
   onRoadmapPrevious,
   onRoadmapEnd,
+  onResultsChanged,
 }: Props) {
+  const { currentUser } = useUser()
   const [ios, setIos] = useState<IoSummary[] | null>(null)
   const [localResults, setLocalResults] = useState<Record<number, IoResult>>({})
   const [swap, setSwap] = useState<SwapEvent | null>(null)
   const [flashIoId, setFlashIoId] = useState<number | null>(null)
+  const [pendingIoId, setPendingIoId] = useState<number | null>(null)
+  const [persistError, setPersistError] = useState<string | null>(null)
 
   // Reset local state whenever device changes
   useEffect(() => {
@@ -127,16 +136,85 @@ export function DeviceTestPanel({
     return io.result
   }
 
-  function markResult(ioId: number, result: IoResult) {
+  // Re-fetch this device's IOs from the server. Used after a successful
+  // persistence so the row reflects what's actually in the DB rather than
+  // our optimistic localResults shadow.
+  async function reloadDeviceIos() {
+    if (!device) return
+    try {
+      const r = await fetch(`/api/guided/devices/${encodeURIComponent(device.deviceName)}?subsystemId=${subsystemId}`)
+      const data = await r.json()
+      setIos(data.ios ?? [])
+    } catch (err) {
+      console.error('[DeviceTestPanel] Failed to reload device IOs:', err)
+    }
+  }
+
+  /** Mark an IO Passed/Failed AND persist to the local DB (POST /api/guided/test).
+   *  Optimistic: shows the colour change immediately, then reconciles with
+   *  the server response. On failure, rolls back and surfaces a banner. */
+  async function markResult(ioId: number, result: IoResult) {
+    if (result === null) { clearResult(ioId); return }
+    // Optimistic flash + colour
     setLocalResults(s => ({ ...s, [ioId]: result }))
     setFlashIoId(ioId)
     window.setTimeout(() => setFlashIoId(p => (p === ioId ? null : p)), 600)
+    setPendingIoId(ioId)
+    setPersistError(null)
+    try {
+      const r = await fetch('/api/guided/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ioId,
+          result,
+          currentUser: currentUser?.fullName,
+        }),
+      })
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}))
+        throw new Error(e.error ?? `HTTP ${r.status}`)
+      }
+      // Reconcile: pull what the server saved + drop the local override
+      await reloadDeviceIos()
+      setLocalResults(s => { const n = { ...s }; delete n[ioId]; return n })
+      onResultsChanged?.()
+    } catch (err) {
+      console.error('[DeviceTestPanel] markResult failed:', err)
+      setLocalResults(s => { const n = { ...s }; delete n[ioId]; return n })
+      setPersistError(err instanceof Error ? err.message : 'Failed to save')
+      window.setTimeout(() => setPersistError(null), 4000)
+    } finally {
+      setPendingIoId(p => (p === ioId ? null : p))
+    }
   }
 
-  /** Clear a previously-marked IO back to untested (in-memory only — same
-   *  scope as markResult; persistence is Phase 2 work). */
-  function clearResult(ioId: number) {
+  /** Clear a previously-marked IO back to untested. Persists via the existing
+   *  POST /api/ios/:id/reset (which also wipes Comments and emits a sync). */
+  async function clearResult(ioId: number) {
     setLocalResults(s => ({ ...s, [ioId]: null }))
+    setPendingIoId(ioId)
+    setPersistError(null)
+    try {
+      const r = await fetch('/api/guided/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ioId, currentUser: currentUser?.fullName }),
+      })
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}))
+        throw new Error(e.error ?? `HTTP ${r.status}`)
+      }
+      await reloadDeviceIos()
+      setLocalResults(s => { const n = { ...s }; delete n[ioId]; return n })
+      onResultsChanged?.()
+    } catch (err) {
+      console.error('[DeviceTestPanel] clearResult failed:', err)
+      setPersistError(err instanceof Error ? err.message : 'Failed to clear')
+      window.setTimeout(() => setPersistError(null), 4000)
+    } finally {
+      setPendingIoId(p => (p === ioId ? null : p))
+    }
   }
 
   const currentIo = useMemo<IoSummary | null>(() => {
@@ -379,13 +457,20 @@ export function DeviceTestPanel({
           <div className="gm-card-actions-row">
             <button
               className="gm-secondary"
-              onClick={() => {
-                // Clear every result on this device so the user can re-walk it.
-                const cleared: Record<number, IoResult> = {}
-                for (const io of ios ?? []) cleared[io.id] = null
-                setLocalResults(prev => ({ ...prev, ...cleared }))
+              onClick={async () => {
+                // Persist a reset for every IO on this device so the user can re-walk it.
+                const list = ios ?? []
+                for (const io of list) {
+                  const r = effectiveResult(io)
+                  if (r === 'Passed' || r === 'Failed') {
+                    // Sequential rather than Promise.all so a 4xx on one IO doesn't
+                    // leave the rest in a half-rolled state.
+                    // eslint-disable-next-line no-await-in-loop
+                    await clearResult(io.id)
+                  }
+                }
               }}
-              title="Reset all results on this device back to untested"
+              title="Reset all results on this device back to untested (persists to DB)"
             >
               <RotateCcw size={12} /> Clear all results
             </button>
@@ -432,13 +517,27 @@ export function DeviceTestPanel({
           {!roadmapActive && (
             <>
               <div className="gm-actions">
-                <button className="gm-action gm-action-pass" onClick={() => markResult(currentIo.id, 'Passed')}>
-                  <Check size={18} /> Pass
+                <button
+                  className="gm-action gm-action-pass"
+                  onClick={() => markResult(currentIo.id, 'Passed')}
+                  disabled={pendingIoId === currentIo.id}
+                >
+                  <Check size={18} /> {pendingIoId === currentIo.id ? 'Saving…' : 'Pass'}
                 </button>
-                <button className="gm-action gm-action-fail" onClick={() => markResult(currentIo.id, 'Failed')}>
-                  <X size={18} /> Fail
+                <button
+                  className="gm-action gm-action-fail"
+                  onClick={() => markResult(currentIo.id, 'Failed')}
+                  disabled={pendingIoId === currentIo.id}
+                >
+                  <X size={18} /> {pendingIoId === currentIo.id ? 'Saving…' : 'Fail'}
                 </button>
               </div>
+
+              {persistError && (
+                <div className="gm-persist-error" role="alert">
+                  Could not save: {persistError}
+                </div>
+              )}
 
               {/* Fire output — only shown for IOs that pattern-match as outputs
                   (DO / AO / :O. / :SO.). In demo mode this is a visual fire

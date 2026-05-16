@@ -20,7 +20,7 @@ export function GuidedModePage() {
   const [svgError, setSvgError] = useState<string | null>(null)
   const mapRef = useRef<GuidedTestingMapHandle | null>(null)
 
-  const { state, openDevice, closeDevice, skipDevice } = useGuidedSession(subsystemId)
+  const { state, openDevice, closeDevice, skipDevice, refreshDevices } = useGuidedSession(subsystemId)
 
   const [roadmaps, setRoadmaps] = useState<Roadmap[]>([])
   const [selectedRoadmapId, setSelectedRoadmapId] = useState<number | null>(null)
@@ -370,6 +370,7 @@ export function GuidedModePage() {
           onPrevDevice={() => deviceNav.prev && openDevice(deviceNav.prev)}
           nextDeviceName={deviceNav.next}
           prevDeviceName={deviceNav.prev}
+          onResultsChanged={refreshDevices}
           roadmapActive={flowMode === 'roadmap' && roadmap.state.status !== 'idle' && roadmap.state.status !== 'cancelled'}
           roadmapStatus={roadmap.state.status}
           roadmapStep={currentStep}
