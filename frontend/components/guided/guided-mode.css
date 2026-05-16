@@ -270,22 +270,27 @@
  * CSS only handles transitions and the current-target glow filter.
  */
 .guided-svg svg g[data-status] rect,
-.guided-svg svg g[data-status] path {
+.guided-svg svg g[data-status] path,
+.guided-svg svg path[data-status] {
   transition: fill 220ms ease, stroke 220ms ease;
 }
-.guided-svg svg g[data-status]:not([data-status="no_ios"]) {
+.guided-svg svg g[data-status]:not([data-status="no_ios"]),
+.guided-svg svg path[data-status]:not([data-status="no_ios"]) {
   cursor: pointer;
 }
 .guided-svg svg g[data-status]:not([data-status="no_ios"]):hover rect,
-.guided-svg svg g[data-status]:not([data-status="no_ios"]):hover path {
+.guided-svg svg g[data-status]:not([data-status="no_ios"]):hover path,
+.guided-svg svg path[data-status]:not([data-status="no_ios"]):hover {
   filter: brightness(1.08);
 }
 
 /* CURRENT TARGET — orange glow + pulsing stroke. Drop-shadow filter
  * paints around the actual rect/path geometry so rotated devices
- * still get a clean halo. */
+ * still get a clean halo. Apply to both <g>-housed shapes and the
+ * flat <path> devices (photoeyes etc.). */
 .guided-svg svg g[data-current="true"] rect,
-.guided-svg svg g[data-current="true"] path {
+.guided-svg svg g[data-current="true"] path,
+.guided-svg svg path[data-current="true"] {
   stroke: #ff7a00 !important;
   stroke-width: 3.5 !important;
   filter:
@@ -970,10 +975,12 @@
 }
 
 /* ─── Roadmap lock mode ─── */
-.guided-svg g[data-roadmap-locked="true"] {
+.guided-svg g[data-roadmap-locked="true"],
+.guided-svg path[data-roadmap-locked="true"] {
   pointer-events: none;
 }
-.guided-svg g[data-roadmap-locked="true"] :where(rect, path) {
+.guided-svg g[data-roadmap-locked="true"] :where(rect, path),
+.guided-svg path[data-roadmap-locked="true"] {
   opacity: 0.35;
   filter: grayscale(0.6);
 }

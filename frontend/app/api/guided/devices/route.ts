@@ -59,9 +59,22 @@ export async function GET(req: Request, res: Response) {
      GROUP BY NetworkDeviceName
   `).all(subsystemId) as IoCountRow[]
 
-  const countsByName = new Map<string, IoCountRow>(
-    rows.map(r => [r.deviceName, r]),
-  )
+  // Build the lookup keyed by NetworkDeviceName, plus a small alias layer:
+  // SCADA SVGs label laser photoeyes "UL17_24_LPE1" while the DB stores the
+  // matching photo-detector module as "UL17_24_LPE1_PD". Anything with a
+  // _PD suffix gets an additional alias entry without it so the SVG id can
+  // resolve to the same IO count without a schema change.
+  const countsByName = new Map<string, IoCountRow>()
+  for (const r of rows) {
+    countsByName.set(r.deviceName, r)
+    if (r.deviceName.endsWith('_PD')) {
+      const stripped = r.deviceName.slice(0, -3)
+      // Only add the alias if it doesn't collide with another real device name.
+      if (!countsByName.has(stripped)) {
+        countsByName.set(stripped, r)
+      }
+    }
+  }
 
   const devices: Device[] = orderedIds.map((deviceName, order) => {
     const counts = countsByName.get(deviceName) ?? { deviceName, total: 0, passed: 0, failed: 0 }
