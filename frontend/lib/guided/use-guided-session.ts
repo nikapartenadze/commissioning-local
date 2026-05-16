@@ -99,6 +99,9 @@ export function useGuidedSession(subsystemId: number) {
   const closeDevice = useCallback(() => dispatch({ type: 'CLOSE_DEVICE' }), [])
   const skipDevice = useCallback((deviceName: string) => dispatch({ type: 'SKIP_DEVICE', deviceName }), [])
   const unskipDevice = useCallback((deviceName: string) => dispatch({ type: 'UNSKIP_DEVICE', deviceName }), [])
+  /** Re-fetch /api/guided/devices. Use after persisting a pass/fail/clear so
+   *  the device list (and the map colors derived from it) reflects DB truth. */
+  const refreshDevices = useCallback(() => dispatch({ type: 'REFRESH' }), [])
 
-  return { state, openDevice, closeDevice, skipDevice, unskipDevice }
+  return { state, openDevice, closeDevice, skipDevice, unskipDevice, refreshDevices }
 }

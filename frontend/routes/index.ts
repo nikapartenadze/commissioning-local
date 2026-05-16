@@ -97,6 +97,8 @@ import * as vfdControlsVerified from '@/app/api/vfd-commissioning/controls-verif
 import * as deviceIdentity from '@/app/api/device/identity/route'
 import * as guidedMapById from '@/app/api/maps/subsystem/[id]/route'
 import * as guidedDevices from '@/app/api/guided/devices/route'
+import * as guidedTest from '@/app/api/guided/test/route'
+import * as guidedClear from '@/app/api/guided/clear/route'
 import * as guidedDeviceByName from '@/app/api/guided/devices/[name]/route'
 import * as roadmap from '@/app/api/roadmap/route'
 
@@ -269,6 +271,8 @@ export function createApiRouter(): Router {
   router.get('/api/guided/devices', asyncHandler(guidedDevices.GET))
   router.get('/api/guided/devices/:name', asyncHandler(guidedDeviceByName.GET))
   router.post('/api/guided/reset-subsystem', asyncHandler(guidedResetSubsystem.POST))
+  router.post('/api/guided/test', asyncHandler(guidedTest.POST))
+  router.post('/api/guided/clear', asyncHandler(guidedClear.POST))
   router.get('/api/roadmap', asyncHandler(roadmap.GET))
 
   // ── Global Error Handler ──────────────────────────────────────
