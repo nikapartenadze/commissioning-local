@@ -336,13 +336,27 @@ export function DeviceTestPanel({
         </div>
       ) : noIos ? (
         <div className="gm-card-empty">
-          <div className="gm-card-title">No IOs configured</div>
+          <div className="gm-card-title">No IOs to test for this device</div>
           <div className="gm-card-body">
-            This device exists in the SCADA map but has no IOs in the current subsystem snapshot.
+            <strong style={{ color: 'var(--gm-text)' }}>{device.deviceName}</strong> is
+            on the SCADA layout but has no IO points in the local DB.
+            <br /><br />
+            This is normal for photoeyes (TPE), beacons (BCN), pushbuttons,
+            and EPCs — their signals live as pin inputs on the parent FIOM
+            module. Open the matching <code style={{
+              fontFamily: 'var(--gm-mono)', fontSize: 11,
+              background: 'rgba(255,255,255,0.06)', padding: '1px 5px',
+              borderRadius: 3,
+            }}>FIOM</code> for this row to find and test those pins.
           </div>
-          <button className="gm-cta" onClick={() => onSkip(device.deviceName)}>
-            Skip device <ArrowRight size={14} />
-          </button>
+          <div className="gm-card-actions-row">
+            <button className="gm-secondary" onClick={onClose}>Close</button>
+            {nextDeviceName && (
+              <button className="gm-cta" onClick={() => onNextDevice?.()} style={{ flex: 1 }}>
+                Next · {nextDeviceName} <ArrowRight size={14} />
+              </button>
+            )}
+          </div>
         </div>
       ) : allDone ? (
         <div className="gm-card-done">
