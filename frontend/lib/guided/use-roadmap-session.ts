@@ -19,6 +19,7 @@ export type RoadmapAction =
   | { type: 'START'; roadmapId: number; steps: RoadmapStep[]; path: RoadmapPath | null }
   | { type: 'ADVANCE'; result: 'passed' | 'failed' }
   | { type: 'SKIP_CURRENT' }
+  | { type: 'PREVIOUS' }
   | { type: 'END' }
 
 export function roadmapReducer(state: RoadmapSessionState, action: RoadmapAction): RoadmapSessionState {
@@ -53,6 +54,22 @@ export function roadmapReducer(state: RoadmapSessionState, action: RoadmapAction
         status: nextIdx >= state.steps.length ? 'complete' : 'playing',
       }
     }
+    case 'PREVIOUS': {
+      // Undo the last advance/skip: step back one and clear that step's
+      // result. Works during 'playing' (we're past step 1) and
+      // 'complete' (let the operator re-do the final step).
+      if (state.status !== 'playing' && state.status !== 'complete') return state
+      if (state.currentStepIndex <= 0) return state
+      const prevIdx = state.currentStepIndex - 1
+      const nextResults = state.stepResults.slice()
+      nextResults[prevIdx] = { result: null }
+      return {
+        ...state,
+        currentStepIndex: prevIdx,
+        stepResults: nextResults,
+        status: 'playing',
+      }
+    }
     case 'END':
       return { ...initialRoadmapState, status: 'cancelled' }
     default:
@@ -67,6 +84,7 @@ export function useRoadmapSession() {
   const advance = useCallback((result: 'passed' | 'failed') =>
     dispatch({ type: 'ADVANCE', result }), [])
   const skipCurrent = useCallback(() => dispatch({ type: 'SKIP_CURRENT' }), [])
+  const previous = useCallback(() => dispatch({ type: 'PREVIOUS' }), [])
   const end = useCallback(() => dispatch({ type: 'END' }), [])
-  return { state, start, advance, skipCurrent, end }
+  return { state, start, advance, skipCurrent, previous, end }
 }

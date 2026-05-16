@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, LogOut } from 'lucide-react'
+import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, ChevronLeft, LogOut, RotateCcw } from 'lucide-react'
 import type { Device, IoSummary } from '@/lib/guided/types'
 import type { RoadmapStep } from '@/lib/guided/roadmap-types'
 
@@ -38,6 +38,7 @@ interface Props {
   onRoadmapPass?: () => void
   onRoadmapFail?: () => void
   onRoadmapSkip?: () => void
+  onRoadmapPrevious?: () => void
   onRoadmapEnd?: () => void
 }
 
@@ -71,6 +72,7 @@ export function DeviceTestPanel({
   onRoadmapPass,
   onRoadmapFail,
   onRoadmapSkip,
+  onRoadmapPrevious,
   onRoadmapEnd,
 }: Props) {
   const [ios, setIos] = useState<IoSummary[] | null>(null)
@@ -118,6 +120,12 @@ export function DeviceTestPanel({
     setLocalResults(s => ({ ...s, [ioId]: result }))
     setFlashIoId(ioId)
     window.setTimeout(() => setFlashIoId(p => (p === ioId ? null : p)), 600)
+  }
+
+  /** Clear a previously-marked IO back to untested (in-memory only — same
+   *  scope as markResult; persistence is Phase 2 work). */
+  function clearResult(ioId: number) {
+    setLocalResults(s => ({ ...s, [ioId]: null }))
   }
 
   const currentIo = useMemo<IoSummary | null>(() => {
@@ -239,7 +247,9 @@ export function DeviceTestPanel({
           onPass={onRoadmapPass ?? (() => {})}
           onFail={onRoadmapFail ?? (() => {})}
           onSkip={onRoadmapSkip ?? (() => {})}
+          onPrevious={onRoadmapPrevious ?? (() => {})}
           onEnd={onRoadmapEnd ?? (() => {})}
+          canGoPrevious={roadmapStepIndex > 0}
         />
       )}
 
@@ -364,13 +374,11 @@ export function DeviceTestPanel({
               </div>
 
               <div className="gm-secondary-row">
-                <button className="gm-secondary" onClick={() => onSkip(device.deviceName)}>
-                  <SkipForward size={12} /> Skip device
-                </button>
                 <button
                   className="gm-secondary"
                   data-variant="amber"
                   onClick={() => simulateSwap(currentIo, ios, setSwap)}
+                  title="Inject a fake wrong-IO trigger to preview swap-detection UI"
                 >
                   <AlertTriangle size={12} /> Simulate swap
                 </button>
@@ -430,6 +438,17 @@ export function DeviceTestPanel({
                       {state === 'current' ? 'Active' : state}
                     </span>
                   )}
+                  {(r === 'Passed' || r === 'Failed') && (
+                    <button
+                      type="button"
+                      className="gm-io-clear"
+                      onClick={(e) => { e.stopPropagation(); clearResult(io.id) }}
+                      title="Clear this result (undo Pass/Fail)"
+                      aria-label="Clear this result"
+                    >
+                      <RotateCcw size={11} />
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -462,7 +481,7 @@ export function DeviceTestPanel({
  */
 function RoadmapStepDirective({
   step, currentIndex, totalSteps, device, counts, onCenterOnDevice,
-  onPass, onFail, onSkip, onEnd,
+  onPass, onFail, onSkip, onPrevious, onEnd, canGoPrevious,
 }: {
   step: RoadmapStep
   currentIndex: number
@@ -473,7 +492,9 @@ function RoadmapStepDirective({
   onPass: () => void
   onFail: () => void
   onSkip: () => void
+  onPrevious: () => void
   onEnd: () => void
+  canGoPrevious: boolean
 }) {
   const counter = `${String(currentIndex + 1).padStart(2, '0')} / ${String(totalSteps).padStart(2, '0')}`
   return (
@@ -527,6 +548,14 @@ function RoadmapStepDirective({
       </div>
 
       <div className="gm-roadmap-step-secondary">
+        <button
+          type="button"
+          onClick={onPrevious}
+          disabled={!canGoPrevious}
+          title="Undo and go back to the previous step"
+        >
+          <ChevronLeft size={12} /> Previous
+        </button>
         <button type="button" onClick={onSkip}>
           <SkipForward size={11} /> Skip
         </button>
