@@ -33,9 +33,21 @@ export async function GET(req: Request, res: Response) {
       : [],
   )
 
-  const svg = await readBundledSvg()
+  // Use the same SVG that GET /api/maps/subsystem/:id serves — McmDiagrams
+  // cache by subsystem name first, bundled MCM09 fallback otherwise. Reading
+  // a different SVG here is the bug that made every device look unmapped
+  // when the visible map was a different MCM.
+  interface SubsystemRow { Name: string | null }
+  interface DiagramRow { SvgContent: string }
+  let svg: string | null = null
+  const sub = db.prepare(`SELECT Name FROM Subsystems WHERE id = ?`).get(subsystemId) as SubsystemRow | undefined
+  if (sub?.Name) {
+    const row = db.prepare(`SELECT SvgContent FROM McmDiagrams WHERE McmName = ?`).get(sub.Name) as DiagramRow | undefined
+    if (row?.SvgContent) svg = row.SvgContent
+  }
+  if (svg === null) svg = await readBundledSvg()
   if (svg === null) {
-    return res.status(500).json({ error: 'No bundled map available for ordering' })
+    return res.status(500).json({ error: 'No map available for ordering (no cache row and no bundled fallback)' })
   }
 
   const orderedIds = parseDeviceIdsFromSvg(svg)
