@@ -24,6 +24,10 @@ interface Props {
    *  data-roadmap-locked="true". CSS dims and disables pointer events on
    *  locked devices. Used by roadmap-driven flow mode. */
   lockedDevices?: Set<string> | null
+  /** Devices currently flagged as faulted by the PLC tag reader
+   *  (<deviceName>:I.ConnectionFaulted = TRUE). Stamps data-faulted="true"
+   *  on the SVG element so CSS can grey/hatch the shape. */
+  faultedDevices?: Set<string>
 }
 
 export interface GuidedTestingMapHandle {
@@ -50,7 +54,7 @@ const STATE_FILL: Record<DeviceState, { fill: string; stroke: string }> = {
  * predictably and we want the pulsing animation.
  */
 export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(function GuidedTestingMap(
-  { svgMarkup, devices, activeDevice, onDeviceClick, lockedDevices },
+  { svgMarkup, devices, activeDevice, onDeviceClick, lockedDevices, faultedDevices },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -118,6 +122,22 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
       })
     })
   }, [svgMarkup, devices])
+
+  // Stamp data-faulted on every device the PLC tag reader has flagged as
+  // ConnectionFaulted. CSS turns those into a hatched grey shape so the
+  // operator can see at a glance which devices are unreachable.
+  useEffect(() => {
+    const root = containerRef.current
+    if (!root) return
+    root.querySelectorAll('svg [data-faulted]').forEach(el => el.removeAttribute('data-faulted'))
+    if (!faultedDevices || faultedDevices.size === 0) return
+    root.querySelectorAll<SVGElement>('svg g[id], svg path[id]').forEach(el => {
+      const id = el.getAttribute('id')
+      if (id && faultedDevices.has(id)) {
+        el.setAttribute('data-faulted', 'true')
+      }
+    })
+  }, [faultedDevices, svgMarkup, devices])
 
   // Mark the active device with data-current="true" — the single source of
   // focus highlight on the map.

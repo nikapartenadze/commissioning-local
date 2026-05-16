@@ -19,7 +19,14 @@ if (fs.existsSync(envPath)) {
     const idx = line.indexOf('=');
     if (idx === -1) continue;
     const key = line.substring(0, idx).trim();
-    const value = line.substring(idx + 1).trim();
+    let value = line.substring(idx + 1).trim();
+    if (value.length >= 2) {
+      const first = value[0];
+      const last = value[value.length - 1];
+      if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+        value = value.slice(1, -1);
+      }
+    }
     if (!process.env[key]) process.env[key] = value;
   }
 }

@@ -45,6 +45,62 @@
   letter-spacing: -0.005em;
 }
 
+/* ── Light theme overrides ─────────────────────────────────────────
+ * next-themes adds `class="dark"` to <html> for dark mode; absence of
+ * that class is light. Override cockpit variables to Autstand's warm
+ * cream/gold tones (mirrors app/globals.css :root values) so Guided
+ * tracks the global theme toggle. A few hardcoded dark surfaces below
+ * (legend, recenter pill, swap banner, signal row, IO hover) also
+ * need targeted light values because they bypass the variables. */
+html:not(.dark) .gm-root {
+  --gm-bg-deep:        #ebe7da;
+  --gm-bg-surface:     #f1eee4;
+  --gm-bg-elevated:    #f7f4ec;
+  --gm-bg-canvas:      #fafaf5;
+  --gm-bg-canvas-grid: #d4cebd;
+
+  --gm-border:         #c8c2af;
+  --gm-border-strong:  #a8a18a;
+
+  --gm-text:           #1a1f2a;
+  --gm-text-dim:       #4a5260;
+  --gm-text-faint:     #7e8492;
+
+  --gm-orange:         #d96400;
+  --gm-orange-dim:     #ffe0c2;
+  --gm-orange-glow:    rgba(217, 100, 0, 0.30);
+
+  --gm-green:          #16a34a;
+  --gm-green-deep:     #d3f2dc;
+  --gm-red:            #c81e1e;
+  --gm-red-deep:       #fcd9d9;
+  --gm-amber:          #b8780a;
+  --gm-amber-deep:     #fdedc4;
+  --gm-grey:           #6b7280;
+}
+
+html:not(.dark) .gm-root .gm-flow-menu {
+  box-shadow: 0 10px 28px rgba(60, 50, 30, 0.18);
+}
+html:not(.dark) .gm-root .gm-legend {
+  background: rgba(247, 244, 236, 0.96);
+}
+html:not(.dark) .gm-root .gm-recenter {
+  background: rgba(247, 244, 236, 0.92);
+}
+html:not(.dark) .gm-root .gm-swap-banner {
+  background: rgba(247, 244, 236, 0.98);
+  box-shadow: 0 8px 32px rgba(60, 50, 30, 0.16),
+              0 0 0 1px rgba(184, 120, 10, 0.18),
+              0 0 24px rgba(184, 120, 10, 0.14);
+}
+html:not(.dark) .gm-root .gm-signal {
+  background: rgba(0, 0, 0, 0.04);
+}
+html:not(.dark) .gm-root .gm-io:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
 /* ──────────────────────── HEADER STRIP ──────────────────────── */
 .gm-header {
   height: 56px;
@@ -339,8 +395,8 @@
 .guided-svg svg g[data-current="true"] rect,
 .guided-svg svg g[data-current="true"] path,
 .guided-svg svg path[data-current="true"] {
-  stroke: #ff7a00 !important;
-  stroke-width: 3.5 !important;
+  stroke: var(--gm-orange) !important;
+  stroke-width: 2 !important;
   filter:
     drop-shadow(0 0 14px rgba(255, 122, 0, 0.85))
     drop-shadow(0 0 4px rgba(255, 122, 0, 1));
@@ -893,7 +949,7 @@
      because nothing fills it. The previous 3-col layout pushed the button
      into an implicit 4th column with no allocated width, so "CLEAR" text
      overflowed the row on narrow panels. */
-  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 10px;
   padding: 8px 8px 8px 4px;
@@ -938,9 +994,12 @@
 }
 
 /* Row holding the "Clear all results" and "Close" buttons inside the
- * Device-complete card. Side-by-side, equal weight. */
+ * Device-complete card. Side-by-side, equal weight. The row owns the
+ * top margin so children don't double-stack their own margins (which
+ * is what made the CTA sit 14px below the Close button before). */
 .gm-card-actions-row {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-top: 14px;
   flex-wrap: wrap;
@@ -948,6 +1007,11 @@
 .gm-card-actions-row .gm-secondary {
   flex: 1;
   min-width: 0;
+  height: 40px;
+}
+.gm-card-actions-row .gm-cta {
+  margin-top: 0;
+  height: 40px;
 }
 
 /* Per-IO inline clear button — sits at the end of a tested IO row and
@@ -980,6 +1044,51 @@
   color: #ffb160;
 }
 .gm-io-clear:active { transform: scale(0.96); }
+
+/* Installation-tracker pill, mirrors the regular grid's badge at
+ * enhanced-io-data-grid.tsx:1358-1362. Green when fully installed,
+ * red with the percent otherwise. Solid fill on both themes so it
+ * reads from any backdrop. */
+.gm-io-install {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 4px;
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: #ffffff;
+}
+.gm-io-install[data-installed="true"]  { background: #059669; }   /* emerald-600 */
+.gm-io-install[data-installed="false"] { background: #dc2626; }   /* red-600 */
+
+/* Live PLC tag state dot — mirrors enhanced-io-data-grid.tsx:750-763.
+ * Sized small (10px) so it sits naturally next to the IO name without
+ * crowding the row. Glow lets it stand out against either theme. */
+.gm-io-statedot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: #9ca3af;     /* unknown / no signal */
+}
+.gm-io-statedot[data-state="TRUE"]  {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.65);
+}
+.gm-io-statedot[data-state="FALSE"] {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.55);
+}
 
 /* Inline error banner under Pass/Fail when persisting fails. Kept compact
    so it doesn't push the IO list off-screen on tablets. */
@@ -1172,6 +1281,25 @@
 .guided-svg path[data-roadmap-locked="true"] {
   opacity: 0.35;
   filter: grayscale(0.6);
+}
+
+/* ─── Faulted devices (PLC :I.ConnectionFaulted = TRUE) ───
+ * Greyed out + diagonal hatch so the operator sees instantly the device
+ * is unreachable. Pointer events stay enabled so clicking opens the
+ * drawer with a fault banner explaining why Pass/Fail is disabled.
+ * Hatch is on a pseudo-overlay so it doesn't fight the SVG's own
+ * inline fill/stroke attributes. */
+.guided-svg g[data-faulted="true"] :where(rect, path),
+.guided-svg path[data-faulted="true"] {
+  fill: #6b7280 !important;
+  stroke: #374151 !important;
+  opacity: 0.55;
+}
+.guided-svg g[data-faulted="true"]::after,
+.guided-svg path[data-faulted="true"]::after {
+  /* SVG doesn't render ::after, so this is just declarative. The fill
+   * + opacity above is what carries the visual signal. */
+  content: '';
 }
 
 /* ──────────────── ROADMAP STEP DIRECTIVE (top of panel) ────────────────

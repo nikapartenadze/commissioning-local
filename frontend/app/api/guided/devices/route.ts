@@ -71,10 +71,15 @@ export async function GET(req: Request, res: Response) {
     Description: string | null
     Result: string | null
   }
+  // Mirror the regular IO grid (enhanced-io-data-grid.tsx) and progress
+  // counters (commissioning/[id]/page.tsx): SPARE IOs are excluded from
+  // counts and display. A device whose IOs are all spares should land
+  // in `no_ios`, not `untested`.
   const allIos = db.prepare(`
     SELECT NetworkDeviceName, Description, Result
       FROM Ios
      WHERE SubsystemId = ?
+       AND (Description IS NULL OR UPPER(Description) NOT LIKE '%SPARE%')
   `).all(subsystemId) as IoRow[]
 
   const devices: Device[] = orderedIds.map((deviceName, order) => {
