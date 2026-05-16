@@ -64,6 +64,43 @@ interface EnhancedIoDataGridProps {
   onToggleMute?: (ioId: number) => void
 }
 
+// Natural sort: "X2" before "X10", "UL26_19" before "UL26_20".
+function naturalCompare(a: string, b: string): number {
+  const ax = (a || '').match(/(\d+)|(\D+)/g) || []
+  const bx = (b || '').match(/(\d+)|(\D+)/g) || []
+  const len = Math.min(ax.length, bx.length)
+  for (let i = 0; i < len; i++) {
+    const av = ax[i]
+    const bv = bx[i]
+    const an = /^\d+$/.test(av)
+    const bn = /^\d+$/.test(bv)
+    if (an && bn) {
+      const d = parseInt(av, 10) - parseInt(bv, 10)
+      if (d !== 0) return d
+    } else if (av !== bv) {
+      return av < bv ? -1 : 1
+    }
+  }
+  return ax.length - bx.length
+}
+
+// Top-level lane = leading "UL<digits>" prefix. Everything else → "Other".
+function extractLane(name: string): string {
+  const m = (name || '').match(/^(UL\d+)/i)
+  return m ? m[1].toUpperCase() : 'Other'
+}
+
+// UL lanes by numeric id ascending, "Other" last.
+function compareLanes(a: string, b: string): number {
+  if (a === b) return 0
+  if (a === 'Other') return 1
+  if (b === 'Other') return -1
+  const an = parseInt(a.replace(/^UL/i, ''), 10)
+  const bn = parseInt(b.replace(/^UL/i, ''), 10)
+  if (!isNaN(an) && !isNaN(bn)) return an - bn
+  return a < b ? -1 : 1
+}
+
 // Column widths — responsive via hook
 function useColumnWidths() {
   const [width, setWidth] = useState(1200)
@@ -153,6 +190,11 @@ function CopyButton({ text, title }: { text: string; title: string }) {
 
 // Row height for better touch targets
 const ROW_HEIGHT = 56
+const LANE_HEADER_HEIGHT = 36
+
+type VirtualRow =
+  | { type: 'header'; lane: string; count: number }
+  | { type: 'io'; io: IoItem; ioIndex: number }
 
 export function EnhancedIoDataGrid({
   ios,
@@ -189,6 +231,13 @@ export function EnhancedIoDataGrid({
   const [showResultColumn, setShowResultColumn] = useState(true)
   const [showTimestampColumn, setShowTimestampColumn] = useState(true)
   const [sortMode, setSortMode] = useState<'default' | 'failed-first' | 'not-tested-first'>('default')
+  const [groupByLane, setGroupByLane] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem('io-grid-group-by-lane') === 'true'
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem('io-grid-group-by-lane', String(groupByLane)) } catch { /* ignore */ }
+  }, [groupByLane])
   const [showDiagnosticDialog, setShowDiagnosticDialog] = useState(false)
   const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
   const [moduleHealth, setModuleHealth] = useState<Record<string, 'ok' | 'warning' | 'error'>>({})
@@ -542,7 +591,10 @@ export function EnhancedIoDataGrid({
       })
     })
 
-    if (sortMode === 'default') return filtered
+    // Always natural-sort by IO name so X2 < X10 and UL26_19 < UL26_20.
+    const sorted = [...filtered].sort((a, b) => naturalCompare(a.name, b.name))
+
+    if (sortMode === 'default') return sorted
 
     const sortOrder = (result: string | null): number => {
       if (sortMode === 'failed-first') {
@@ -556,7 +608,8 @@ export function EnhancedIoDataGrid({
       return 2
     }
 
-    return [...filtered].sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
+    // Array.sort is stable since ES2019 — natural order is preserved within each bucket.
+    return sorted.sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
   }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, punchlistIoSet])
 
   useEffect(() => {
@@ -564,6 +617,33 @@ export function EnhancedIoDataGrid({
       onFilteredDataChange(filteredIos)
     }
   }, [filteredIos, onFilteredDataChange])
+
+  // Flat virtualized item list. Either a lane header or an IO row.
+  // ioIndex tracks the position in filteredIos so shift-click selection still works.
+  const virtualItems = useMemo<VirtualRow[]>(() => {
+    if (!groupByLane) {
+      return filteredIos.map((io, ioIndex) => ({ type: 'io' as const, io, ioIndex }))
+    }
+    const groups = new Map<string, IoItem[]>()
+    for (const io of filteredIos) {
+      const lane = extractLane(io.name)
+      const bucket = groups.get(lane)
+      if (bucket) bucket.push(io)
+      else groups.set(lane, [io])
+    }
+    const laneNames = Array.from(groups.keys()).sort(compareLanes)
+    const result: VirtualRow[] = []
+    let ioIndex = 0
+    for (const lane of laneNames) {
+      const items = groups.get(lane)!
+      result.push({ type: 'header', lane, count: items.length })
+      for (const io of items) {
+        result.push({ type: 'io', io, ioIndex })
+        ioIndex++
+      }
+    }
+    return result
+  }, [filteredIos, groupByLane])
 
   // Virtual scrolling setup
   const parentRef = useRef<HTMLDivElement>(null)
@@ -654,9 +734,9 @@ export function EnhancedIoDataGrid({
   }, []) // parentRef is stable; touchState is a ref
 
   const virtualizer = useVirtualizer({
-    count: filteredIos.length,
+    count: virtualItems.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: (index) => virtualItems[index]?.type === 'header' ? LANE_HEADER_HEIGHT : ROW_HEIGHT,
     overscan: 8,
   })
 
@@ -788,6 +868,20 @@ export function EnhancedIoDataGrid({
           <span className="font-bold">{filteredIos.length}</span>
           <span className="text-muted-foreground ml-1">/ {ios.length}</span>
         </div>
+
+        {/* Group by Lane toggle */}
+        <button
+          onClick={() => setGroupByLane(v => !v)}
+          className={cn(
+            "h-[44px] px-3 text-sm rounded font-medium whitespace-nowrap border",
+            groupByLane
+              ? "bg-primary text-primary-foreground border-primary"
+              : "bg-background hover:bg-accent"
+          )}
+          title={groupByLane ? "Grouped by lane — click for flat list" : "Group rows by lane (UL17, UL20, …)"}
+        >
+          {groupByLane ? 'Grouped' : 'Group by Lane'}
+        </button>
 
         {/* Assign Mode Toggle — disabled for now
         {currentUser?.isAdmin && (
@@ -1105,7 +1199,32 @@ export function EnhancedIoDataGrid({
             }}
           >
             {virtualizer.getVirtualItems().map((virtualRow) => {
-              const io = filteredIos[virtualRow.index]
+              const item = virtualItems[virtualRow.index]
+              if (!item) return null
+              if (item.type === 'header') {
+                return (
+                  <div
+                    key={`lane-${item.lane}`}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    className="absolute left-0 flex items-stretch bg-[#C6941A]/15 border-y border-[#C6941A]/40"
+                    style={{
+                      transform: `translateY(${virtualRow.start}px)`,
+                      height: `${LANE_HEADER_HEIGHT}px`,
+                      width: `${totalWidth}px`,
+                    }}
+                  >
+                    <div className="sticky left-0 z-[6] flex items-center gap-3 px-4 bg-[#C6941A]/30 border-r border-[#C6941A]/40 text-sm font-bold uppercase tracking-wider text-foreground">
+                      <span>{item.lane}</span>
+                      <span className="text-xs font-normal normal-case text-muted-foreground">
+                        {item.count} IO{item.count === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                  </div>
+                )
+              }
+              const io = item.io
+              const ioIndex = item.ioIndex
               // Only show device status for IOs with a matching network topology device
               const rowDeviceName = io.hasNetworkDevice ? io.networkDeviceName : null
               const deviceStatus = rowDeviceName ? deviceStatuses.get(rowDeviceName) : undefined
@@ -1127,7 +1246,7 @@ export function EnhancedIoDataGrid({
                   }}
                   onClick={() => {
                     if (assignMode) {
-                      toggleSelection(io.id, virtualRow.index, false)
+                      toggleSelection(io.id, ioIndex, false)
                     } else if (isTesting) {
                       onRowClick?.(io)
                     }
@@ -1139,7 +1258,7 @@ export function EnhancedIoDataGrid({
                        className="w-10 flex items-center justify-center flex-shrink-0"
                        onClick={(e) => {
                          e.stopPropagation()
-                         toggleSelection(io.id, virtualRow.index, e.shiftKey)
+                         toggleSelection(io.id, ioIndex, e.shiftKey)
                        }}
                      >
                        <input
