@@ -986,7 +986,7 @@
 .gm-roadmap-step {
   position: relative;
   flex-shrink: 0;
-  padding: 18px 22px 16px 26px;
+  padding: 16px 18px 14px 22px;
   border-bottom: 1px solid var(--gm-border);
   background:
     linear-gradient(180deg, rgba(255, 122, 0, 0.05) 0%, transparent 80%),
@@ -1066,11 +1066,82 @@
   border: 1px solid rgba(255, 122, 0, 0.2);
 }
 
+/* Inline device chip + IO counts row (replaces hidden .gm-panel-head) */
+.gm-roadmap-step-device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--gm-border);
+}
+.gm-roadmap-step-device {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+  background: var(--gm-bg-deep);
+  border: 1px solid var(--gm-border);
+  border-radius: 4px;
+  font-family: var(--gm-mono);
+  color: var(--gm-text);
+  cursor: pointer;
+  transition: all 120ms;
+}
+.gm-roadmap-step-device:hover {
+  border-color: var(--gm-orange);
+  color: var(--gm-orange);
+}
+.gm-roadmap-step-device-label {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gm-text-faint);
+}
+.gm-roadmap-step-device-name {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gm-roadmap-step-device svg { opacity: 0.55; }
+.gm-roadmap-step-device:hover svg { opacity: 1; }
+
+.gm-roadmap-step-iostats {
+  display: flex;
+  gap: 8px;
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--gm-text-faint);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.gm-roadmap-step-iostats strong {
+  color: var(--gm-text);
+  font-weight: 600;
+  margin-right: 3px;
+}
+.gm-roadmap-step-iostats span[data-state="passed"] strong { color: var(--gm-green); }
+.gm-roadmap-step-iostats span[data-state="failed"] strong { color: var(--gm-red); }
+
 .gm-roadmap-step-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
-  margin-top: 16px;
+  margin-top: 14px;
+}
+.gm-roadmap-step-actions .gm-action {
+  height: 50px;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  min-width: 0;
 }
 
 .gm-roadmap-step-secondary {

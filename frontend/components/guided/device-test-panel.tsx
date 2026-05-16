@@ -227,12 +227,15 @@ export function DeviceTestPanel({
 
   return (
     <aside className="gm-panel">
-      {/* Roadmap directive (replaces bottom banner) — top-of-panel when playing */}
+      {/* Roadmap directive (replaces bottom banner AND the device head when playing) */}
       {roadmapActive && roadmapStatus === 'playing' && roadmapStep && (
         <RoadmapStepDirective
           step={roadmapStep}
           currentIndex={roadmapStepIndex}
           totalSteps={roadmapTotalSteps}
+          device={device}
+          counts={counts}
+          onCenterOnDevice={onCenterOnDevice}
           onPass={onRoadmapPass ?? (() => {})}
           onFail={onRoadmapFail ?? (() => {})}
           onSkip={onRoadmapSkip ?? (() => {})}
@@ -240,7 +243,9 @@ export function DeviceTestPanel({
         />
       )}
 
-      {/* Header */}
+      {/* Header — hidden when the roadmap directive is driving the panel
+          (the directive carries the device chip + IO counts inline) */}
+      {!(roadmapActive && roadmapStatus === 'playing') && (
       <div className="gm-panel-head">
         <div className="gm-panel-eyebrow" data-state={isCurrent ? undefined : 'browsing'}>
           {isCurrent ? 'Now Testing' : 'Browsing'}
@@ -275,6 +280,7 @@ export function DeviceTestPanel({
           </button>
         )}
       </div>
+      )}
 
       {/* Body — hero card + IO list */}
       {ios === null ? (
@@ -455,11 +461,15 @@ export function DeviceTestPanel({
  * Skip/End controls; the per-IO action row below is hidden during playback.
  */
 function RoadmapStepDirective({
-  step, currentIndex, totalSteps, onPass, onFail, onSkip, onEnd,
+  step, currentIndex, totalSteps, device, counts, onCenterOnDevice,
+  onPass, onFail, onSkip, onEnd,
 }: {
   step: RoadmapStep
   currentIndex: number
   totalSteps: number
+  device: Device
+  counts: { total: number; passed: number; failed: number }
+  onCenterOnDevice: (name: string) => void
   onPass: () => void
   onFail: () => void
   onSkip: () => void
@@ -469,8 +479,8 @@ function RoadmapStepDirective({
   return (
     <section className="gm-roadmap-step" aria-label={`Roadmap step ${currentIndex + 1} of ${totalSteps}`}>
       <div className="gm-roadmap-step-eyebrow">
-        <span>Roadmap directive</span>
-        <span className="gm-roadmap-step-counter">STEP {counter}</span>
+        <span>Step {counter}</span>
+        <span className="gm-roadmap-step-counter">Roadmap</span>
       </div>
 
       <p className="gm-roadmap-step-instruction">{step.instructionText}</p>
@@ -481,6 +491,25 @@ function RoadmapStepDirective({
           <span>{step.transitText}</span>
         </div>
       )}
+
+      {/* Inline device chip + IO counts (replaces the hidden gm-panel-head) */}
+      <div className="gm-roadmap-step-device-row">
+        <button
+          type="button"
+          className="gm-roadmap-step-device"
+          onClick={() => onCenterOnDevice(device.deviceName)}
+          title="Show on map"
+        >
+          <span className="gm-roadmap-step-device-label">Device</span>
+          <span className="gm-roadmap-step-device-name">{device.deviceName}</span>
+          <MapPin size={11} />
+        </button>
+        <div className="gm-roadmap-step-iostats">
+          <span><strong>{counts.total}</strong> IO{counts.total === 1 ? '' : 's'}</span>
+          {counts.passed > 0 && <span data-state="passed"><strong>{counts.passed}</strong> ok</span>}
+          {counts.failed > 0 && <span data-state="failed"><strong>{counts.failed}</strong> fail</span>}
+        </div>
+      </div>
 
       {step.kind === 'io' && step.ioName && (
         <div className="gm-roadmap-step-io">
@@ -499,7 +528,7 @@ function RoadmapStepDirective({
 
       <div className="gm-roadmap-step-secondary">
         <button type="button" onClick={onSkip}>
-          <SkipForward size={11} /> Skip step
+          <SkipForward size={11} /> Skip
         </button>
         <button type="button" data-variant="end" onClick={onEnd}>
           <LogOut size={11} /> End walkdown
