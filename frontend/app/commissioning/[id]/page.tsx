@@ -1323,11 +1323,14 @@ export default function CommissioningPage() {
   }
 
   const handleMarkPassed = async (io: IoItem) => {
-    // Temporary bypass: allow testing even when installation is not complete
-    if (false && io.installationStatus && io.installationStatus !== 'complete') {
+    // Installation gate — client-side mirror of /api/ios/[id]/test.
+    // Pass is blocked when an installation-tracker record exists and
+    // isn't `complete`; null InstallationStatus means no tracker data
+    // yet and we fall through (don't lock out legacy IOs).
+    if (io.installationStatus && io.installationStatus !== 'complete') {
       toast({
-        title: "Cannot test — device not installed",
-        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before testing.`,
+        title: "Cannot pass — device not installed",
+        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before passing.`,
         variant: "destructive"
       })
       return

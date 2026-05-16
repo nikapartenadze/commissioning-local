@@ -8,6 +8,8 @@ interface IoRow {
   Description: string | null
   Result: string | null
   Comments: string | null
+  InstallationStatus: string | null
+  InstallationPercent: number | null
 }
 
 /**
@@ -43,8 +45,12 @@ export async function GET(req: Request, res: Response) {
   //   4) Description LIKE '?_%'             (component sub-IOs, e.g.
   //                                          beacon's _A amber and _H
   //                                          horn lines)
+  // SPAREs are hidden in Guided mode (matches the regular IO grid at
+  // enhanced-io-data-grid.tsx:526-527). They cannot be passed or failed
+  // from here — the path for spares is "Skip" in the value-change dialog.
   const rows = db.prepare(`
-    SELECT id, Name, Description, Result, Comments
+    SELECT id, Name, Description, Result, Comments,
+           InstallationStatus, InstallationPercent
       FROM Ios
      WHERE SubsystemId = @sub
        AND (
@@ -53,6 +59,7 @@ export async function GET(req: Request, res: Response) {
          OR Description LIKE @descSpace
          OR Description LIKE @descUnder
        )
+       AND (Description IS NULL OR UPPER(Description) NOT LIKE '%SPARE%')
      ORDER BY "Order", id
   `).all({
     sub: subsystemId,
@@ -69,6 +76,8 @@ export async function GET(req: Request, res: Response) {
     result: r.Result === 'Passed' || r.Result === 'Failed' ? r.Result as 'Passed' | 'Failed' : null,
     comments: r.Comments,
     ioDirection: null, // Phase 2: classify from name pattern using existing helper
+    installationStatus: r.InstallationStatus,
+    installationPercent: r.InstallationPercent,
   }))
 
   return res.json({ deviceName, ios })

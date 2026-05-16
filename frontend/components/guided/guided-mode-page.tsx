@@ -10,6 +10,7 @@ import { RoadmapPathOverlay } from './roadmap-path-overlay'
 import { RoadmapPicker } from './roadmap-picker'
 import { useRoadmapSession } from '@/lib/guided/use-roadmap-session'
 import { shouldAdvanceStep } from '@/lib/guided/roadmap-advance'
+import { usePlcWebSocket } from '@/lib/plc/websocket-client'
 import type { Roadmap } from '@/lib/guided/roadmap-types'
 import './guided-mode.css'
 
@@ -21,6 +22,33 @@ export function GuidedModePage() {
   const mapRef = useRef<GuidedTestingMapHandle | null>(null)
 
   const { state, openDevice, closeDevice, skipDevice, refreshDevices } = useGuidedSession(subsystemId)
+
+  /* Live device-fault set. The tag reader broadcasts DeviceFaultChanged
+   * messages whenever a `<deviceName>:I.ConnectionFaulted` PLC tag flips.
+   * We keep the set at this level (rather than inside the map or panel)
+   * so both surfaces — the SVG grey-out and the panel's Pass/Fail gate —
+   * see the same truth. */
+  const ws = usePlcWebSocket()
+  const [faultedDevices, setFaultedDevices] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    const handler = (tagName: string, faulted: boolean) => {
+      // Tag is "<DEVICE>:I.ConnectionFaulted"; the device portion is the prefix.
+      const deviceName = tagName.split(':')[0]
+      if (!deviceName) return
+      setFaultedDevices(prev => {
+        const has = prev.has(deviceName)
+        if (faulted && !has) {
+          const next = new Set(prev); next.add(deviceName); return next
+        }
+        if (!faulted && has) {
+          const next = new Set(prev); next.delete(deviceName); return next
+        }
+        return prev
+      })
+    }
+    ws.onDeviceFaultChanged(handler)
+    return () => { ws.offDeviceFaultChanged(handler) }
+  }, [ws])
 
   const [roadmaps, setRoadmaps] = useState<Roadmap[]>([])
   const [selectedRoadmapId, setSelectedRoadmapId] = useState<number | null>(null)
@@ -298,6 +326,7 @@ export function GuidedModePage() {
                 activeDevice={selectedDevice ?? currentTarget}
                 onDeviceClick={openDevice}
                 lockedDevices={lockedDevices}
+                faultedDevices={faultedDevices}
               />
             )}
           </div>
@@ -356,6 +385,7 @@ export function GuidedModePage() {
           currentTarget={currentTarget}
           subsystemId={subsystemId}
           isCurrent={isCurrent}
+          faultedDevices={faultedDevices}
           onSelectCurrent={selectCurrent}
           onClose={closeDevice}
           onCenterOnDevice={(name) => mapRef.current?.centerOnDevice(name)}

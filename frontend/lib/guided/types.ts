@@ -17,6 +17,15 @@ export interface IoSummary {
   result: 'Passed' | 'Failed' | null
   comments: string | null
   ioDirection: 'input' | 'output' | 'analog_input' | 'analog_output' | null
+  /**
+   * Installed-progress, 0..1. `null` if the cloud hasn't synced an
+   * installation-tracker value for this IO yet. The regular grid renders
+   * "Installed" at 1.0 and "<floor(pct*100)>%" otherwise — Guided mirrors
+   * that. See enhanced-io-data-grid.tsx:1358-1362.
+   */
+  installationPercent: number | null
+  /** Raw installation-tracker status (e.g. 'complete'). Used by the Pass gate. */
+  installationStatus: string | null
 }
 
 export interface Device {

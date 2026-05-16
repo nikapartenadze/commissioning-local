@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, ChevronLeft, LogOut, RotateCcw, Power } from 'lucide-react'
 import type { Device, IoSummary } from '@/lib/guided/types'
 import type { RoadmapStep } from '@/lib/guided/roadmap-types'
 import { useUser } from '@/lib/user-context'
+import { usePlcWebSocket, type IOUpdate } from '@/lib/plc/websocket-client'
+import { FailCommentDialog } from '@/components/fail-comment-dialog'
 
 type IoResult = 'Passed' | 'Failed' | null
 
@@ -52,6 +54,11 @@ interface Props {
   /** Fired after a Pass/Fail/Clear is persisted so the parent can refetch
    *  /api/guided/devices and let the map recolor from DB truth. */
   onResultsChanged?: () => void
+
+  /** Devices currently flagged with a PLC connection fault. When the
+   *  selected device is in this set, Pass/Fail are blocked and a banner
+   *  explains why — matches the regular grid's faulted-row treatment. */
+  faultedDevices?: Set<string>
 }
 
 /**
@@ -91,6 +98,7 @@ export function DeviceTestPanel({
   onRoadmapPrevious,
   onRoadmapEnd,
   onResultsChanged,
+  faultedDevices,
 }: Props) {
   const { currentUser } = useUser()
   const [ios, setIos] = useState<IoSummary[] | null>(null)
@@ -99,6 +107,9 @@ export function DeviceTestPanel({
   const [flashIoId, setFlashIoId] = useState<number | null>(null)
   const [pendingIoId, setPendingIoId] = useState<number | null>(null)
   const [persistError, setPersistError] = useState<string | null>(null)
+  /** When set, the FailCommentDialog is shown and the user is choosing a
+   *  failure mode + (optional) comment before the Fail is persisted. */
+  const [failDialogIo, setFailDialogIo] = useState<IoSummary | null>(null)
 
   // Reset local state whenever device changes
   useEffect(() => {
@@ -124,7 +135,7 @@ export function DeviceTestPanel({
       if ((e.target as HTMLElement)?.tagName === 'INPUT') return
       const k = e.key.toLowerCase()
       if (k === 'p' && currentIo) markResult(currentIo.id, 'Passed')
-      else if (k === 'f' && currentIo) markResult(currentIo.id, 'Failed')
+      else if (k === 'f' && currentIo) setFailDialogIo(currentIo)
       else if (k === 's' && device) onSkip(device.deviceName)
     }
     window.addEventListener('keydown', onKey)
@@ -153,8 +164,36 @@ export function DeviceTestPanel({
   /** Mark an IO Passed/Failed AND persist to the local DB (POST /api/guided/test).
    *  Optimistic: shows the colour change immediately, then reconciles with
    *  the server response. On failure, rolls back and surfaces a banner. */
-  async function markResult(ioId: number, result: IoResult) {
+  async function markResult(
+    ioId: number,
+    result: IoResult,
+    opts?: { comments?: string; failureMode?: string },
+  ) {
     if (result === null) { clearResult(ioId); return }
+    // Faulted-device gate — mirrors the regular grid + /api/ios/[id]/test.
+    // Block both Pass and Fail when the parent network device is reporting
+    // ConnectionFaulted=TRUE, because we don't trust the signal in either
+    // direction while the device is unreachable.
+    if (device && faultedDevices?.has(device.deviceName)) {
+      setPersistError(`Cannot test — ${device.deviceName} has a PLC connection fault. Fix the fault first.`)
+      window.setTimeout(() => setPersistError(null), 4000)
+      return
+    }
+    // Installation gate — mirror /api/guided/test (server enforces too).
+    // Block Pass when an install-tracker record says the IO isn't fully
+    // installed yet. Fail stays allowed.
+    if (result === 'Passed') {
+      const targetIo = ios?.find(i => i.id === ioId)
+      if (
+        targetIo?.installationStatus &&
+        targetIo.installationStatus !== 'complete'
+      ) {
+        const pct = Math.floor((targetIo.installationPercent ?? 0) * 100)
+        setPersistError(`Cannot pass — install at ${pct}%. Device must be fully installed first.`)
+        window.setTimeout(() => setPersistError(null), 4000)
+        return
+      }
+    }
     // Optimistic flash + colour
     setLocalResults(s => ({ ...s, [ioId]: result }))
     setFlashIoId(ioId)
@@ -169,6 +208,8 @@ export function DeviceTestPanel({
           ioId,
           result,
           currentUser: currentUser?.fullName,
+          comments: opts?.comments,
+          failureMode: opts?.failureMode,
         }),
       })
       if (!r.ok) {
@@ -232,6 +273,36 @@ export function DeviceTestPanel({
     }
     return { passed: p, failed: f, total: ios.length }
   }, [ios, localResults])
+
+  /** Pass is blocked when the install-tracker says the device isn't fully
+   * installed. Mirrors the server gate in /api/guided/test. Fail stays
+   * allowed so techs can flag uninstalled IOs. */
+  const passBlockedByInstall =
+    !!currentIo?.installationStatus && currentIo.installationStatus !== 'complete'
+  /** Parent device has an active PLC connection fault. Same handling as
+   *  the regular grid: block both Pass and Fail; explain why. */
+  const deviceFaulted = !!(device && faultedDevices?.has(device.deviceName))
+  const passBlockedReason = deviceFaulted
+    ? `Cannot test — ${device?.deviceName} has a PLC connection fault. Fix the fault first.`
+    : passBlockedByInstall && currentIo
+      ? `Cannot pass — install at ${Math.floor((currentIo.installationPercent ?? 0) * 100)}%. Device must be fully installed first.`
+      : null
+
+  /* Live PLC tag state, sourced from the WS broadcast that the tag reader
+   * publishes (every state change + a TagSnapshot on connect). Mirrors the
+   * regular grid's circle indicator at enhanced-io-data-grid.tsx:750-763.
+   * Stored as a ref-backed map so callbacks don't re-bind on every render. */
+  const ws = usePlcWebSocket()
+  const [tagStates, setTagStates] = useState<Record<number, 'TRUE' | 'FALSE'>>({})
+  useEffect(() => {
+    const handler = (u: IOUpdate) => {
+      if (u.State === 'TRUE' || u.State === 'FALSE') {
+        setTagStates(prev => (prev[u.Id] === u.State ? prev : { ...prev, [u.Id]: u.State as 'TRUE' | 'FALSE' }))
+      }
+    }
+    ws.onIOUpdate(handler)
+    return () => { ws.offIOUpdate(handler) }
+  }, [ws])
 
   // ----------------------------------------------------------------
   // Auto-advance between devices.
@@ -520,18 +591,25 @@ export function DeviceTestPanel({
                 <button
                   className="gm-action gm-action-pass"
                   onClick={() => markResult(currentIo.id, 'Passed')}
-                  disabled={pendingIoId === currentIo.id}
+                  disabled={pendingIoId === currentIo.id || passBlockedByInstall || deviceFaulted}
+                  title={passBlockedReason ?? undefined}
                 >
                   <Check size={18} /> {pendingIoId === currentIo.id ? 'Saving…' : 'Pass'}
                 </button>
                 <button
                   className="gm-action gm-action-fail"
-                  onClick={() => markResult(currentIo.id, 'Failed')}
-                  disabled={pendingIoId === currentIo.id}
+                  onClick={() => setFailDialogIo(currentIo)}
+                  disabled={pendingIoId === currentIo.id || deviceFaulted}
+                  title={deviceFaulted ? passBlockedReason ?? undefined : undefined}
                 >
                   <X size={18} /> {pendingIoId === currentIo.id ? 'Saving…' : 'Fail'}
                 </button>
               </div>
+              {passBlockedReason && (
+                <div className="gm-persist-error" role="status" style={{ background: 'rgba(220, 38, 38, 0.08)', borderColor: 'rgba(220, 38, 38, 0.35)', color: 'var(--gm-red)' }}>
+                  {passBlockedReason}
+                </div>
+              )}
 
               {persistError && (
                 <div className="gm-persist-error" role="alert">
@@ -616,9 +694,27 @@ export function DeviceTestPanel({
                     <Icon size={state === 'pending' ? 12 : 14} />
                   </span>
                   <div className="gm-io-text">
-                    <div className="gm-io-name">{shortIoCode(io.name)}</div>
+                    <div className="gm-io-name">
+                      <span
+                        className="gm-io-statedot"
+                        data-state={tagStates[io.id] ?? 'UNKNOWN'}
+                        title={`PLC tag: ${tagStates[io.id] ?? 'no signal yet'}`}
+                      />
+                      {shortIoCode(io.name)}
+                    </div>
                     {io.description && <div className="gm-io-desc">{io.description}</div>}
                   </div>
+                  {io.installationPercent != null && (
+                    <span
+                      className="gm-io-install"
+                      data-installed={io.installationPercent >= 1.0 ? 'true' : 'false'}
+                      title={`Installation: ${Math.floor(io.installationPercent * 100)}%`}
+                    >
+                      {io.installationPercent >= 1.0
+                        ? 'Installed'
+                        : `${Math.floor(io.installationPercent * 100)}%`}
+                    </span>
+                  )}
                   {state !== 'pending' && (
                     <span className="gm-io-tag" data-state={state}>
                       {state === 'current' ? 'Active' : state}
@@ -649,13 +745,29 @@ export function DeviceTestPanel({
           swap={swap}
           onAccept={() => {
             // Accept swap: actual IO passes, expected IO fails (with swap comment in real impl)
-            markResult(currentIo.id, 'Failed')
+            markResult(currentIo.id, 'Failed', { failureMode: 'Wrong wiring' })
             markResult(swap.actualIoId, 'Passed')
             setSwap(null)
           }}
           onDismiss={() => setSwap(null)}
         />
       )}
+
+      {/* Failure-mode dialog — same component the regular grid uses. Renders
+       *  with the global app theme rather than the cockpit palette; a future
+       *  pass can re-skin if the cockpit aesthetic needs to extend here. */}
+      <FailCommentDialog
+        open={failDialogIo !== null}
+        onOpenChange={(open) => { if (!open) setFailDialogIo(null) }}
+        io={failDialogIo ? { name: failDialogIo.name, description: failDialogIo.description } : null}
+        onSubmit={(io, comment, failureMode) => {
+          if (failDialogIo) {
+            markResult(failDialogIo.id, 'Failed', { comments: comment, failureMode })
+          }
+          setFailDialogIo(null)
+        }}
+        onCancel={() => setFailDialogIo(null)}
+      />
     </aside>
   )
 }
