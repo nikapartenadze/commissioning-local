@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin } from 'lucide-react'
+import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, LogOut } from 'lucide-react'
 import type { Device, IoSummary } from '@/lib/guided/types'
+import type { RoadmapStep } from '@/lib/guided/roadmap-types'
 
 type IoResult = 'Passed' | 'Failed' | null
 
@@ -22,6 +23,22 @@ interface Props {
   onSkip: (deviceName: string) => void
   /** Pan/zoom the SVG map to the named device. */
   onCenterOnDevice: (deviceName: string) => void
+
+  /* ──────────────── Roadmap-mode props (optional) ──────────────── */
+  /** True when the operator is running an authored roadmap (not free SCADA flow). */
+  roadmapActive?: boolean
+  /** Reducer status — used to swap the body for the completion summary. */
+  roadmapStatus?: 'idle' | 'playing' | 'complete' | 'cancelled'
+  /** The directive shown at the top of the panel while playing. */
+  roadmapStep?: RoadmapStep | null
+  /** 0-based index used to render "STEP n / m". */
+  roadmapStepIndex?: number
+  roadmapTotalSteps?: number
+  roadmapResults?: { passed: number; failed: number; skipped: number }
+  onRoadmapPass?: () => void
+  onRoadmapFail?: () => void
+  onRoadmapSkip?: () => void
+  onRoadmapEnd?: () => void
 }
 
 /**
@@ -45,6 +62,16 @@ export function DeviceTestPanel({
   onClose,
   onSkip,
   onCenterOnDevice,
+  roadmapActive = false,
+  roadmapStatus = 'idle',
+  roadmapStep = null,
+  roadmapStepIndex = 0,
+  roadmapTotalSteps = 0,
+  roadmapResults = { passed: 0, failed: 0, skipped: 0 },
+  onRoadmapPass,
+  onRoadmapFail,
+  onRoadmapSkip,
+  onRoadmapEnd,
 }: Props) {
   const [ios, setIos] = useState<IoSummary[] | null>(null)
   const [localResults, setLocalResults] = useState<Record<number, IoResult>>({})
@@ -143,6 +170,21 @@ export function DeviceTestPanel({
     return () => window.clearTimeout(t)
   }, [allDoneNow, nextDeviceDifferent, userMarkedSomething, onSelectCurrent])
 
+  // ================== ROADMAP COMPLETE — replaces the entire panel ==================
+  if (roadmapActive && roadmapStatus === 'complete') {
+    return (
+      <aside className="gm-panel">
+        <RoadmapCompleteCard
+          total={roadmapTotalSteps}
+          passed={roadmapResults.passed}
+          failed={roadmapResults.failed}
+          skipped={roadmapResults.skipped}
+          onEnd={onRoadmapEnd ?? (() => {})}
+        />
+      </aside>
+    )
+  }
+
   // ================== EMPTY STATE — no device selected ==================
   if (!device) {
     return (
@@ -185,6 +227,19 @@ export function DeviceTestPanel({
 
   return (
     <aside className="gm-panel">
+      {/* Roadmap directive (replaces bottom banner) — top-of-panel when playing */}
+      {roadmapActive && roadmapStatus === 'playing' && roadmapStep && (
+        <RoadmapStepDirective
+          step={roadmapStep}
+          currentIndex={roadmapStepIndex}
+          totalSteps={roadmapTotalSteps}
+          onPass={onRoadmapPass ?? (() => {})}
+          onFail={onRoadmapFail ?? (() => {})}
+          onSkip={onRoadmapSkip ?? (() => {})}
+          onEnd={onRoadmapEnd ?? (() => {})}
+        />
+      )}
+
       {/* Header */}
       <div className="gm-panel-head">
         <div className="gm-panel-eyebrow" data-state={isCurrent ? undefined : 'browsing'}>
@@ -290,35 +345,38 @@ export function DeviceTestPanel({
             </div>
           </button>
 
-          {/* Primary actions */}
-          <div className="gm-actions">
-            <button className="gm-action gm-action-pass" onClick={() => markResult(currentIo.id, 'Passed')}>
-              <Check size={18} /> Pass
-            </button>
-            <button className="gm-action gm-action-fail" onClick={() => markResult(currentIo.id, 'Failed')}>
-              <X size={18} /> Fail
-            </button>
-          </div>
+          {/* Per-IO actions are hidden in roadmap mode: the directive at top owns Pass/Fail/Skip */}
+          {!roadmapActive && (
+            <>
+              <div className="gm-actions">
+                <button className="gm-action gm-action-pass" onClick={() => markResult(currentIo.id, 'Passed')}>
+                  <Check size={18} /> Pass
+                </button>
+                <button className="gm-action gm-action-fail" onClick={() => markResult(currentIo.id, 'Failed')}>
+                  <X size={18} /> Fail
+                </button>
+              </div>
 
-          {/* Secondary: skip / simulate */}
-          <div className="gm-secondary-row">
-            <button className="gm-secondary" onClick={() => onSkip(device.deviceName)}>
-              <SkipForward size={12} /> Skip device
-            </button>
-            <button
-              className="gm-secondary"
-              data-variant="amber"
-              onClick={() => simulateSwap(currentIo, ios, setSwap)}
-            >
-              <AlertTriangle size={12} /> Simulate swap
-            </button>
-          </div>
+              <div className="gm-secondary-row">
+                <button className="gm-secondary" onClick={() => onSkip(device.deviceName)}>
+                  <SkipForward size={12} /> Skip device
+                </button>
+                <button
+                  className="gm-secondary"
+                  data-variant="amber"
+                  onClick={() => simulateSwap(currentIo, ios, setSwap)}
+                >
+                  <AlertTriangle size={12} /> Simulate swap
+                </button>
+              </div>
 
-          <div className="gm-keys-hint">
-            <span><span className="gm-key">P</span>pass</span>
-            <span><span className="gm-key">F</span>fail</span>
-            <span><span className="gm-key">S</span>skip device</span>
-          </div>
+              <div className="gm-keys-hint">
+                <span><span className="gm-key">P</span>pass</span>
+                <span><span className="gm-key">F</span>fail</span>
+                <span><span className="gm-key">S</span>skip device</span>
+              </div>
+            </>
+          )}
         </>
       ) : null}
 
@@ -388,6 +446,97 @@ export function DeviceTestPanel({
         />
       )}
     </aside>
+  )
+}
+
+/**
+ * RoadmapStepDirective — the scripted "do this now" block that lives at the
+ * very top of the panel while a roadmap is playing. Owns its own Pass/Fail/
+ * Skip/End controls; the per-IO action row below is hidden during playback.
+ */
+function RoadmapStepDirective({
+  step, currentIndex, totalSteps, onPass, onFail, onSkip, onEnd,
+}: {
+  step: RoadmapStep
+  currentIndex: number
+  totalSteps: number
+  onPass: () => void
+  onFail: () => void
+  onSkip: () => void
+  onEnd: () => void
+}) {
+  const counter = `${String(currentIndex + 1).padStart(2, '0')} / ${String(totalSteps).padStart(2, '0')}`
+  return (
+    <section className="gm-roadmap-step" aria-label={`Roadmap step ${currentIndex + 1} of ${totalSteps}`}>
+      <div className="gm-roadmap-step-eyebrow">
+        <span>Roadmap directive</span>
+        <span className="gm-roadmap-step-counter">STEP {counter}</span>
+      </div>
+
+      <p className="gm-roadmap-step-instruction">{step.instructionText}</p>
+
+      {step.transitText && (
+        <div className="gm-roadmap-step-transit">
+          <ChevronRight size={13} />
+          <span>{step.transitText}</span>
+        </div>
+      )}
+
+      {step.kind === 'io' && step.ioName && (
+        <div className="gm-roadmap-step-io">
+          Targeting IO <code>{step.ioName}</code>
+        </div>
+      )}
+
+      <div className="gm-roadmap-step-actions">
+        <button className="gm-action gm-action-pass" onClick={onPass}>
+          <Check size={18} /> Pass
+        </button>
+        <button className="gm-action gm-action-fail" onClick={onFail}>
+          <X size={18} /> Fail
+        </button>
+      </div>
+
+      <div className="gm-roadmap-step-secondary">
+        <button type="button" onClick={onSkip}>
+          <SkipForward size={11} /> Skip step
+        </button>
+        <button type="button" data-variant="end" onClick={onEnd}>
+          <LogOut size={11} /> End walkdown
+        </button>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * RoadmapCompleteCard — replaces the entire panel body when the operator
+ * has worked through every step of the authored route.
+ */
+function RoadmapCompleteCard({
+  total, passed, failed, skipped, onEnd,
+}: {
+  total: number; passed: number; failed: number; skipped: number; onEnd: () => void
+}) {
+  return (
+    <section className="gm-roadmap-done">
+      <div className="gm-roadmap-done-eyebrow">Walkdown complete</div>
+      <div className="gm-roadmap-done-title">
+        {total} of {total} steps closed out
+      </div>
+
+      <div className="gm-roadmap-done-summary">
+        <span data-state="passed"><strong>{passed}</strong>passed</span>
+        <span data-state="failed"><strong>{failed}</strong>failed</span>
+        <span data-state="skipped"><strong>{skipped}</strong>skipped</span>
+      </div>
+
+      <div className="gm-roadmap-done-actions">
+        <button className="gm-cta" onClick={onEnd}>
+          Return to SCADA flow <ArrowRight size={14} />
+        </button>
+      </div>
+    </section>
   )
 }
 
