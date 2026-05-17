@@ -106,7 +106,19 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
         ? Array.from(el.querySelectorAll<SVGElement>(':scope > rect, :scope > path, :scope > polygon, :scope > circle, :scope > ellipse'))
         : [el]
       shapes.forEach(shape => {
-        shape.setAttribute('fill', colors.fill)
+        // Stash the source fill on the first pass so state transitions can
+        // honor it forever — without this we'd overwrite "none" to a real
+        // color and lose the signal that this shape is an open line.
+        if (!shape.hasAttribute('data-orig-fill')) {
+          shape.setAttribute('data-orig-fill', shape.getAttribute('fill') ?? '')
+        }
+        // EPC cables and similar open-path devices author fill="none" on
+        // <path> deliberately. Filling them closes the curve into a blob.
+        // Closed shapes (rect/circle/ellipse/polygon) always take the state fill.
+        const isOpenLinePath =
+          shape.tagName.toLowerCase() === 'path' &&
+          shape.getAttribute('data-orig-fill') === 'none'
+        shape.setAttribute('fill', isOpenLinePath ? 'none' : colors.fill)
         shape.setAttribute('stroke', colors.stroke)
         shape.setAttribute('stroke-width', '1.5')
         if (state === 'skipped') {
