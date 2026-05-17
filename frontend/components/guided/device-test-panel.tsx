@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, ChevronLeft, LogOut, RotateCcw, Power } from 'lucide-react'
+import { ArrowRight, Check, X, Activity, Zap, AlertTriangle, SkipForward, MapPin, ChevronRight, ChevronLeft, LogOut, RotateCcw, Power, History, MessageSquarePlus, Pencil } from 'lucide-react'
 import type { Device, IoSummary } from '@/lib/guided/types'
 import type { RoadmapStep } from '@/lib/guided/roadmap-types'
 import { useUser } from '@/lib/user-context'
 import { usePlcWebSocket, type IOUpdate } from '@/lib/plc/websocket-client'
 import { FailCommentDialog } from '@/components/fail-comment-dialog'
+import { TestHistoryDialog } from '@/components/test-history-dialog'
+
+type HistoryRecord = {
+  id: number
+  result: string | null
+  state: string | null
+  comments: string | null
+  testedBy: string | null
+  timestamp: string
+}
 
 type IoResult = 'Passed' | 'Failed' | null
 
@@ -110,6 +120,25 @@ export function DeviceTestPanel({
   /** When set, the FailCommentDialog is shown and the user is choosing a
    *  failure mode + (optional) comment before the Fail is persisted. */
   const [failDialogIo, setFailDialogIo] = useState<IoSummary | null>(null)
+  /** Pending Fire-output toggle (real PLC write). Locks the button while
+   *  the request is in flight so a quick double-tap doesn't double-fire. */
+  const [firingIoId, setFiringIoId] = useState<number | null>(null)
+  /** Test-history dialog state — reuses the same component the regular grid
+   *  uses, fetched on demand from /api/history/:ioId. */
+  const [historyIo, setHistoryIo] = useState<IoSummary | null>(null)
+  const [historyData, setHistoryData] = useState<HistoryRecord[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  /** Inline-comment editor: which IO is being edited and what's typed.
+   *  Mirrors the regular grid's editingCommentId / editingCommentValue. */
+  const [editingCommentId, setEditingCommentId] = useState<number | null>(null)
+  const [editingCommentValue, setEditingCommentValue] = useState('')
+  /** "Departing ghost" — the IO that was the active hero before the user
+   *  passed or failed it. Rendered as a separate, decorative card that
+   *  slides up and out of the stage so the next IO can rise into the slot.
+   *  Cleared after the depart animation finishes (560 ms). Carries the
+   *  verdict so the leaving card tints green/red one last time. */
+  const [departingIo, setDepartingIo] = useState<{ io: IoSummary; result: 'Passed' | 'Failed' } | null>(null)
+  const prevCurrentIoRef = useRef<IoSummary | null>(null)
 
   // Reset local state whenever device changes
   useEffect(() => {
@@ -258,10 +287,129 @@ export function DeviceTestPanel({
     }
   }
 
+  /** Toggle a real PLC output. Mirrors the regular grid's Fire-output flow
+   *  (POST /api/ios/:id/fire-output with action: 'toggle'). The PLC tag
+   *  reader will broadcast the new state over WS so the dot updates on
+   *  its own — we don't need to set tagStates manually. */
+  async function fireOutput(io: IoSummary) {
+    if (isSafetyOutput(io.name)) {
+      setPersistError('Safety outputs cannot be fired from here — driven by the safety PLC.')
+      window.setTimeout(() => setPersistError(null), 4000)
+      return
+    }
+    setFiringIoId(io.id)
+    setPersistError(null)
+    setFlashIoId(io.id)
+    window.setTimeout(() => setFlashIoId(p => (p === io.id ? null : p)), 700)
+    try {
+      const r = await fetch(`/api/ios/${io.id}/fire-output`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'toggle' }),
+      })
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}))
+        throw new Error(e.error ?? `HTTP ${r.status}`)
+      }
+    } catch (err) {
+      console.error('[DeviceTestPanel] fireOutput failed:', err)
+      setPersistError(err instanceof Error ? err.message : 'Failed to fire output')
+      window.setTimeout(() => setPersistError(null), 4000)
+    } finally {
+      setFiringIoId(p => (p === io.id ? null : p))
+    }
+  }
+
+  /** Open the test-history dialog for an IO. Fetches lazily from
+   *  /api/history/:ioId — same endpoint the regular grid uses. */
+  async function showHistory(io: IoSummary) {
+    setHistoryIo(io)
+    setHistoryData([])
+    setHistoryLoading(true)
+    try {
+      const r = await fetch(`/api/history/${io.id}`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const rows = await r.json()
+      setHistoryData(Array.isArray(rows) ? rows : [])
+    } catch (err) {
+      console.error('[DeviceTestPanel] showHistory failed:', err)
+      setHistoryData([])
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  /** Save an edited comment on an already-tested IO. Uses PUT /api/ios/:id
+   *  (comment-only update — preserves Result/Timestamp). Same endpoint the
+   *  regular grid uses via API_ENDPOINTS.ioComment. */
+  async function saveComment(ioId: number, comment: string) {
+    const trimmed = comment.trim()
+    setIos(prev => prev?.map(i => i.id === ioId ? { ...i, comments: trimmed || null } : i) ?? prev)
+    setEditingCommentId(null)
+    setEditingCommentValue('')
+    try {
+      const r = await fetch(`/api/ios/${ioId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comments: trimmed, currentUser: currentUser?.fullName }),
+      })
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}))
+        throw new Error(e.error ?? `HTTP ${r.status}`)
+      }
+      await reloadDeviceIos()
+      onResultsChanged?.()
+    } catch (err) {
+      console.error('[DeviceTestPanel] saveComment failed:', err)
+      setPersistError(err instanceof Error ? err.message : 'Failed to save comment')
+      window.setTimeout(() => setPersistError(null), 4000)
+      // Reconcile from server so the row doesn't show the bad optimistic value.
+      await reloadDeviceIos()
+    }
+  }
+
   const currentIo = useMemo<IoSummary | null>(() => {
     if (!ios) return null
     return ios.find(io => effectiveResult(io) === null) ?? null
   }, [ios, localResults])
+
+  /* Hero IO transition orchestrator.
+   *
+   * When the user passes/fails the current IO, `localResults` updates and
+   * `currentIo` advances to the next untested IO. We detect that swap here
+   * and stamp a "departing ghost" carrying the verdict of the IO that just
+   * left. The ghost is rendered alongside the new hero by the JSX below and
+   * animates out via CSS keyframes; we clear it after the animation budget
+   * (560 ms) so the stage is clean before any subsequent swap.
+   *
+   * Gates:
+   *  - Only animates forward progress (prev had Passed/Failed). Clearing a
+   *    completed IO can move currentIo backward — we let that swap happen
+   *    instantly so the operator's correction reads as immediate, not as
+   *    another scripted reveal.
+   *  - Device changes set ios=null, which clears prevCurrentIoRef. The
+   *    first IO of a new device arrives without a ghost — the device-
+   *    level UI is already changing, so a card-level transition would
+   *    just add noise. */
+  useEffect(() => {
+    if (!ios) { prevCurrentIoRef.current = null; return }
+    const prev = prevCurrentIoRef.current
+    if (currentIo && prev && prev.id !== currentIo.id) {
+      const prevVerdict =
+        localResults[prev.id] !== undefined
+          ? localResults[prev.id]
+          : ios.find(i => i.id === prev.id)?.result ?? null
+      if (prevVerdict === 'Passed' || prevVerdict === 'Failed') {
+        setDepartingIo({ io: prev, result: prevVerdict })
+        const t = window.setTimeout(() => {
+          setDepartingIo(d => (d?.io.id === prev.id ? null : d))
+        }, 560)
+        prevCurrentIoRef.current = currentIo
+        return () => window.clearTimeout(t)
+      }
+    }
+    prevCurrentIoRef.current = currentIo
+  }, [currentIo?.id, ios, localResults])
 
   const counts = useMemo(() => {
     if (!ios) return { passed: 0, failed: 0, total: 0 }
@@ -555,34 +703,69 @@ export function DeviceTestPanel({
         </div>
       ) : currentIo ? (
         <>
-          {/* Hero IO card — clickable to pan/zoom map to this device.
-              key={currentIo.id} forces React to unmount the old card
-              and mount a fresh one each time the user advances to the
-              next IO, which replays the .gm-hero rise animation so
-              the swap reads as the new IO sliding up into place. */}
-          <button
-            key={currentIo.id}
-            type="button"
-            className="gm-hero gm-hero-btn"
-            onClick={() => onCenterOnDevice(device.deviceName)}
-            title="Show on map"
-          >
-            <div className="gm-hero-eyebrow-row">
-              <span className="gm-hero-eyebrow">Current IO</span>
-              <span className="gm-hero-locate"><MapPin size={11} /> Show on map</span>
-            </div>
-            <div className="gm-hero-name">{currentIo.name}</div>
-            {currentIo.description && (
-              <div className="gm-hero-desc">{currentIo.description}</div>
+          {/* Hero IO card lives inside a positioned stage so the previous
+              IO can render as a "departing ghost" stacked above the new one
+              and slide up and out while the new card rises into the slot.
+              key={currentIo.id} on the live button forces a remount on
+              every swap, replaying the gm-hero-arrive animation. */}
+          <div className="gm-hero-stage">
+            {departingIo && (
+              <div
+                key={`depart-${departingIo.io.id}`}
+                className="gm-hero gm-hero--departing"
+                data-result={departingIo.result}
+                aria-hidden="true"
+              >
+                <div className="gm-hero-eyebrow-row">
+                  <span className="gm-hero-eyebrow" data-result={departingIo.result}>
+                    {departingIo.result === 'Passed' ? 'Passed' : 'Failed'}
+                  </span>
+                  <span className="gm-hero-stamp" data-result={departingIo.result}>
+                    {departingIo.result === 'Passed' ? <Check size={11} /> : <X size={11} />}
+                    <span>{departingIo.result === 'Passed' ? 'OK' : 'NG'}</span>
+                  </span>
+                </div>
+                <div className="gm-hero-name">{departingIo.io.name}</div>
+                {departingIo.io.description && (
+                  <div className="gm-hero-desc">{departingIo.io.description}</div>
+                )}
+                <div className="gm-signal gm-signal--quiet">
+                  <span className="gm-signal-dot gm-signal-dot--quiet" />
+                  <span className="gm-signal-text">
+                    Logged — advancing to next IO
+                  </span>
+                </div>
+              </div>
             )}
+            <button
+              key={currentIo.id}
+              type="button"
+              className="gm-hero gm-hero-btn gm-hero--arriving"
+              onClick={() => onCenterOnDevice(device.deviceName)}
+              title="Show on map"
+            >
+              <div className="gm-hero-eyebrow-row">
+                <span className="gm-hero-eyebrow">Current IO</span>
+                <span className="gm-hero-locate"><MapPin size={11} /> Show on map</span>
+              </div>
+              <div className="gm-hero-name">{currentIo.name}</div>
+              {currentIo.description && (
+                <div className="gm-hero-desc">{currentIo.description}</div>
+              )}
 
-            <div className="gm-signal">
-              <span className="gm-signal-dot" />
-              <span className="gm-signal-text">
-                Watching for signal on <strong>{shortIoCode(currentIo.name)}</strong>…
-              </span>
-            </div>
-          </button>
+              <div className="gm-signal">
+                <span className="gm-signal-dot" />
+                <span className="gm-signal-text">
+                  Watching for signal on <strong>{shortIoCode(currentIo.name)}</strong>…
+                </span>
+              </div>
+              {/* Scan-rail overlay — a one-shot orange light sweeps across
+                  the arriving card to mark the new IO locking into place.
+                  Animation is keyed off the .gm-hero--arriving mount so it
+                  replays per swap, alongside the rise. */}
+              <span className="gm-hero-scanrail" aria-hidden="true" />
+            </button>
+          </div>
 
           {/* Per-IO actions are hidden in roadmap mode: the directive at top owns Pass/Fail/Skip */}
           {!roadmapActive && (
@@ -618,34 +801,43 @@ export function DeviceTestPanel({
               )}
 
               {/* Fire output — only shown for IOs that pattern-match as outputs
-                  (DO / AO / :O. / :SO.). In demo mode this is a visual fire
-                  (panel flashes the IO blue); Phase 2 hooks this to a real
-                  PLC tag write. */}
+                  (DO / AO / :O. / :SO.). Toggles the real PLC bit via the
+                  same endpoint the regular grid uses. Safety outputs (:SO.)
+                  are server-side rejected; we surface that as a banner. */}
               {isOutputIo(currentIo.name) && (
                 <div className="gm-actions gm-actions--single">
                   <button
                     className="gm-action gm-action-fire"
-                    onClick={() => {
-                      setFlashIoId(currentIo.id)
-                      window.setTimeout(() => setFlashIoId(p => (p === currentIo.id ? null : p)), 700)
-                    }}
-                    title="Fire this output (demo: visual flash only — real PLC write is Phase 2)"
+                    onClick={() => fireOutput(currentIo)}
+                    disabled={firingIoId === currentIo.id || isSafetyOutput(currentIo.name) || deviceFaulted}
+                    title={
+                      isSafetyOutput(currentIo.name)
+                        ? 'Safety outputs are driven by the safety PLC and cannot be fired from here'
+                        : deviceFaulted
+                          ? 'Device is faulted — fix the fault before firing outputs'
+                          : 'Toggle this output on the PLC'
+                    }
                   >
-                    <Power size={17} /> Fire output
+                    <Power size={17} /> {firingIoId === currentIo.id ? 'Firing…' : 'Fire output'}
                   </button>
                 </div>
               )}
 
-              <div className="gm-secondary-row">
-                <button
-                  className="gm-secondary"
-                  data-variant="amber"
-                  onClick={() => simulateSwap(currentIo, ios, setSwap)}
-                  title="Inject a fake wrong-IO trigger to preview swap-detection UI"
-                >
-                  <AlertTriangle size={12} /> Simulate swap
-                </button>
-              </div>
+              {/* Dev-only: the swap detector is mocked. Hide in production so
+                  field testers don't try to use a fake feature. Real wrong-
+                  wiring detection arrives with Phase 2. */}
+              {import.meta.env.DEV && (
+                <div className="gm-secondary-row">
+                  <button
+                    className="gm-secondary"
+                    data-variant="amber"
+                    onClick={() => simulateSwap(currentIo, ios, setSwap)}
+                    title="Inject a fake wrong-IO trigger to preview swap-detection UI"
+                  >
+                    <AlertTriangle size={12} /> Simulate swap
+                  </button>
+                </div>
+              )}
 
               <div className="gm-keys-hint">
                 <span><span className="gm-key">P</span>pass</span>
@@ -678,6 +870,8 @@ export function DeviceTestPanel({
                 : r === 'Failed' ? X
                 : isCurr ? Activity
                 : Zap
+              const isTested = r === 'Passed' || r === 'Failed'
+              const isEditingComment = editingCommentId === io.id
               return (
                 <div
                   key={io.id}
@@ -690,46 +884,117 @@ export function DeviceTestPanel({
                     transition: 'background 600ms',
                   } : undefined}
                 >
-                  <span className="gm-io-icon" data-state={state}>
-                    <Icon size={state === 'pending' ? 12 : 14} />
-                  </span>
-                  <div className="gm-io-text">
-                    <div className="gm-io-name">
-                      <span
-                        className="gm-io-statedot"
-                        data-state={tagStates[io.id] ?? 'UNKNOWN'}
-                        title={`PLC tag: ${tagStates[io.id] ?? 'no signal yet'}`}
-                      />
-                      {shortIoCode(io.name)}
+                  <div className="gm-io-row">
+                    <span className="gm-io-icon" data-state={state}>
+                      <Icon size={state === 'pending' ? 12 : 14} />
+                    </span>
+                    <div className="gm-io-text">
+                      <div className="gm-io-name">
+                        <span
+                          className="gm-io-statedot"
+                          data-state={tagStates[io.id] ?? 'UNKNOWN'}
+                          title={`PLC tag: ${tagStates[io.id] ?? 'no signal yet'}`}
+                        />
+                        {shortIoCode(io.name)}
+                      </div>
+                      {io.description && <div className="gm-io-desc">{io.description}</div>}
                     </div>
-                    {io.description && <div className="gm-io-desc">{io.description}</div>}
+                    {io.installationPercent != null && (
+                      <span
+                        className="gm-io-install"
+                        data-installed={io.installationPercent >= 1.0 ? 'true' : 'false'}
+                        title={`Installation: ${Math.floor(io.installationPercent * 100)}%`}
+                      >
+                        {io.installationPercent >= 1.0
+                          ? 'Installed'
+                          : `${Math.floor(io.installationPercent * 100)}%`}
+                      </span>
+                    )}
+                    {state !== 'pending' && (
+                      <span className="gm-io-tag" data-state={state}>
+                        {state === 'current' ? 'Active' : state}
+                      </span>
+                    )}
+                    {isTested && (
+                      <button
+                        type="button"
+                        className="gm-io-iconbtn"
+                        onClick={(e) => { e.stopPropagation(); showHistory(io) }}
+                        title="View test history"
+                        aria-label="View test history"
+                      >
+                        <History size={12} />
+                      </button>
+                    )}
+                    {isTested && (
+                      <button
+                        type="button"
+                        className="gm-io-clear"
+                        onClick={(e) => { e.stopPropagation(); clearResult(io.id) }}
+                        title="Clear this result (undo Pass/Fail)"
+                        aria-label="Clear this result"
+                      >
+                        <RotateCcw size={11} />
+                      </button>
+                    )}
                   </div>
-                  {io.installationPercent != null && (
-                    <span
-                      className="gm-io-install"
-                      data-installed={io.installationPercent >= 1.0 ? 'true' : 'false'}
-                      title={`Installation: ${Math.floor(io.installationPercent * 100)}%`}
-                    >
-                      {io.installationPercent >= 1.0
-                        ? 'Installed'
-                        : `${Math.floor(io.installationPercent * 100)}%`}
-                    </span>
-                  )}
-                  {state !== 'pending' && (
-                    <span className="gm-io-tag" data-state={state}>
-                      {state === 'current' ? 'Active' : state}
-                    </span>
-                  )}
-                  {(r === 'Passed' || r === 'Failed') && (
-                    <button
-                      type="button"
-                      className="gm-io-clear"
-                      onClick={(e) => { e.stopPropagation(); clearResult(io.id) }}
-                      title="Clear this result (undo Pass/Fail)"
-                      aria-label="Clear this result"
-                    >
-                      <RotateCcw size={11} />
-                    </button>
+
+                  {/* Comment line — shown when the IO has been tested.
+                      Click to edit, Enter saves, Esc cancels. Uses the same
+                      PUT /api/ios/:id path the regular grid uses. */}
+                  {isTested && (
+                    <div className="gm-io-comment">
+                      {isEditingComment ? (
+                        <input
+                          type="text"
+                          className="gm-io-comment-input"
+                          autoFocus
+                          value={editingCommentValue}
+                          onChange={(e) => setEditingCommentValue(e.target.value)}
+                          onBlur={() => saveComment(io.id, editingCommentValue)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              saveComment(io.id, editingCommentValue)
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault()
+                              setEditingCommentId(null)
+                              setEditingCommentValue('')
+                            }
+                          }}
+                          maxLength={500}
+                          placeholder="Add a note…"
+                        />
+                      ) : io.comments ? (
+                        <button
+                          type="button"
+                          className="gm-io-comment-text"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setEditingCommentId(io.id)
+                            setEditingCommentValue(io.comments ?? '')
+                          }}
+                          title="Click to edit"
+                        >
+                          <Pencil size={10} />
+                          <span>{io.comments}</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="gm-io-comment-add"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setEditingCommentId(io.id)
+                            setEditingCommentValue('')
+                          }}
+                          title="Add a note to this result"
+                        >
+                          <MessageSquarePlus size={11} />
+                          <span>Add note</span>
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               )
@@ -767,6 +1032,18 @@ export function DeviceTestPanel({
           setFailDialogIo(null)
         }}
         onCancel={() => setFailDialogIo(null)}
+      />
+
+      {/* Test-history dialog — reuses the same component the regular grid
+       *  mounts, so the UX is consistent across surfaces. While loading we
+       *  pass an empty array; the dialog renders its own "no history" state
+       *  for that brief window. */}
+      <TestHistoryDialog
+        open={historyIo !== null}
+        onOpenChange={(open) => { if (!open) { setHistoryIo(null); setHistoryData([]) } }}
+        ioName={historyIo?.name ?? ''}
+        ioDescription={historyIo?.description ?? null}
+        history={historyLoading ? [] : historyData}
       />
     </aside>
   )
@@ -912,6 +1189,13 @@ function shortIoCode(name: string): string {
  */
 function isOutputIo(name: string): boolean {
   return /(?:_DO\b|_AO\b|_DO\.|_AO\.|:O\.|:SO\.|:AO\.)/i.test(name)
+}
+
+/** Safety outputs are controlled by the safety PLC and cannot be fired
+ *  directly. The server enforces this too (`/api/ios/:id/fire-output`),
+ *  but disabling the button up-front avoids a wasted round-trip. */
+function isSafetyOutput(name: string): boolean {
+  return /:SO\./i.test(name)
 }
 
 function simulateSwap(

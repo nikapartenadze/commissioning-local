@@ -388,23 +388,37 @@ html:not(.dark) .gm-root .gm-io:hover {
   opacity: 0.85 !important;
 }
 
-/* CURRENT TARGET — orange glow + pulsing stroke. Drop-shadow filter
- * paints around the actual rect/path geometry so rotated devices
- * still get a clean halo. Apply to both <g>-housed shapes and the
- * flat <path> devices (photoeyes etc.). */
+/* CURRENT TARGET — orange glow + pulsing stroke.
+ *
+ * Performance: drop-shadow is the most expensive CSS filter — each
+ * application is an offscreen blur + composite pass. The previous version
+ * stacked TWO drop-shadows on every child shape (rect, path, …) of the
+ * active device. A VFD/FIOM <g> has 5-15 children, so that was 10-30
+ * filter passes per frame; at the auto-center zoom (1.6×), each pass
+ * blurs at the scaled raster, which CPU-saturates the renderer and
+ * causes the "freeze when zoomed in" symptom.
+ *
+ * The fix is structural: ONE drop-shadow applied to the GROUP, not each
+ * child. The halo wraps the union of the children's geometry, which is
+ * what we actually want visually. Flat <path> devices (photoeyes, etc.)
+ * get the same treatment directly. Stroke pulse stays on stroke-opacity
+ * — that property doesn't invalidate the filter cache. */
+.guided-svg svg g[data-current="true"] {
+  filter: drop-shadow(0 0 10px rgba(255, 122, 0, 0.75));
+}
 .guided-svg svg g[data-current="true"] rect,
 .guided-svg svg g[data-current="true"] path,
 .guided-svg svg path[data-current="true"] {
   stroke: var(--gm-orange) !important;
   stroke-width: 2 !important;
-  filter:
-    drop-shadow(0 0 14px rgba(255, 122, 0, 0.85))
-    drop-shadow(0 0 4px rgba(255, 122, 0, 1));
   animation: gm-pulse-stroke 1.4s ease-in-out infinite;
+}
+.guided-svg svg path[data-current="true"] {
+  filter: drop-shadow(0 0 10px rgba(255, 122, 0, 0.75));
 }
 @keyframes gm-pulse-stroke {
   0%, 100% { stroke-opacity: 1; }
-  50%      { stroke-opacity: 0.45; }
+  50%      { stroke-opacity: 0.55; }
 }
 
 /* ──────────────────────── MAP OVERLAYS ──────────────────────── */
@@ -667,8 +681,17 @@ html:not(.dark) .gm-root .gm-io:hover {
 .gm-return-link:hover { opacity: 0.7; }
 
 /* ──────────────────────── HERO IO CARD ──────────────────────── */
-.gm-hero {
+/* Hero stage — positioned wrapper that holds the live IO card plus, when
+   the user has just marked an IO, a "departing ghost" card stacked above
+   it. The ghost slides up and out while the live card rises into the slot
+   below, reading like a split-flap departure board mid-flip. */
+.gm-hero-stage {
+  position: relative;
   margin: 16px 22px 0;
+}
+.gm-hero-stage > .gm-hero { margin: 0; }
+
+.gm-hero {
   padding: 18px;
   background:
     linear-gradient(180deg, rgba(255, 122, 0, 0.07) 0%, transparent 60%),
@@ -677,27 +700,6 @@ html:not(.dark) .gm-root .gm-io:hover {
   border-radius: 8px;
   position: relative;
   overflow: hidden;
-  /* Slide-up + fade entrance animation. Triggered each time React
-     remounts this card via key={currentIo.id} — so every IO swap
-     replays the animation, reading like the next item rising into
-     place from below. cubic-bezier matches the rest of the panel
-     (0.25 ease-out feel). */
-  animation: gm-hero-rise 320ms cubic-bezier(0.16, 0.84, 0.32, 1);
-}
-@keyframes gm-hero-rise {
-  from {
-    transform: translateY(14px);
-    opacity: 0;
-    filter: blur(2px);
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-    filter: blur(0);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .gm-hero { animation: none; }
 }
 .gm-hero::before {
   content: '';
@@ -706,10 +708,220 @@ html:not(.dark) .gm-root .gm-io:hover {
   height: 2px;
   background: var(--gm-orange);
   box-shadow: 0 0 12px var(--gm-orange-glow);
+  z-index: 1;
+}
+
+/* ARRIVING — the live hero card mounts with this class. The animation
+   replays per swap because key={currentIo.id} triggers a fresh mount.
+   A short hold at the start lets the departing ghost clear the slot
+   before the new card rises in, so the two motions don't collide. */
+.gm-hero--arriving {
+  animation: gm-hero-arrive 520ms cubic-bezier(0.18, 0.78, 0.28, 1) both;
+  will-change: transform, opacity, filter;
+}
+@keyframes gm-hero-arrive {
+  0% {
+    transform: translateY(36px);
+    opacity: 0;
+    filter: blur(4px);
+  }
+  18% {
+    transform: translateY(36px);
+    opacity: 0;
+    filter: blur(4px);
+  }
+  55% {
+    transform: translateY(6px);
+    opacity: 1;
+    filter: blur(0.6px);
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* DEPARTING — the previous IO ghost. Absolutely positioned over the stage
+   so it doesn't shove the new card around. Tinted with its verdict (green
+   pass / red fail) and stamped with an OK/NG sigil so the operator sees
+   the result one last time as the card leaves. */
+.gm-hero--departing {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 3;
+  transform-origin: 50% 100%;
+  animation: gm-hero-depart 540ms cubic-bezier(0.55, 0, 0.32, 1) forwards;
+  will-change: transform, opacity, filter;
+}
+.gm-hero--departing[data-result="Passed"] {
+  border-color: rgba(34, 197, 94, 0.55);
+  background:
+    linear-gradient(180deg, rgba(34, 197, 94, 0.12) 0%, transparent 65%),
+    var(--gm-bg-elevated);
+  box-shadow:
+    0 0 0 1px rgba(34, 197, 94, 0.18),
+    0 18px 40px -10px rgba(34, 197, 94, 0.30);
+}
+.gm-hero--departing[data-result="Passed"]::before {
+  background: var(--gm-green);
+  box-shadow: 0 0 14px rgba(34, 197, 94, 0.55);
+}
+.gm-hero--departing[data-result="Failed"] {
+  border-color: rgba(239, 68, 68, 0.55);
+  background:
+    linear-gradient(180deg, rgba(239, 68, 68, 0.12) 0%, transparent 65%),
+    var(--gm-bg-elevated);
+  box-shadow:
+    0 0 0 1px rgba(239, 68, 68, 0.18),
+    0 18px 40px -10px rgba(239, 68, 68, 0.30);
+}
+.gm-hero--departing[data-result="Failed"]::before {
+  background: var(--gm-red);
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.55);
+}
+@keyframes gm-hero-depart {
+  0% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+    filter: blur(0);
+  }
+  22% {
+    /* Verdict beat — the card holds its position, lifts a hair, and the
+       glow peaks so the operator sees the result one more time. */
+    transform: translateY(-2px) scale(1.005);
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    transform: translateY(-112%) scale(0.985);
+    opacity: 0;
+    filter: blur(4px);
+  }
+}
+
+/* Eyebrow recolor for the departing card so the "Current IO" label
+   becomes a verdict stamp. */
+.gm-hero-eyebrow[data-result="Passed"] { color: var(--gm-green); }
+.gm-hero-eyebrow[data-result="Failed"] { color: var(--gm-red); }
+
+/* OK / NG sigil on the departing card. Sized to match the locate link
+   on the live card so the row composition stays balanced. */
+.gm-hero-stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-family: var(--gm-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.gm-hero-stamp[data-result="Passed"] {
+  background: rgba(34, 197, 94, 0.16);
+  color: var(--gm-green);
+  border: 1px solid rgba(34, 197, 94, 0.45);
+}
+.gm-hero-stamp[data-result="Failed"] {
+  background: rgba(239, 68, 68, 0.16);
+  color: var(--gm-red);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+/* SCAN RAIL — a narrow signal-orange wash sweeps left→right across the
+   arriving card once, marking the lock-in moment. Lives as an absolutely
+   positioned overlay inside .gm-hero so it inherits the rounded corners
+   via overflow:hidden on the parent. */
+.gm-hero-scanrail {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  overflow: hidden;
+  z-index: 2;
+}
+.gm-hero-scanrail::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -30%;
+  width: 30%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 122, 0, 0)    0%,
+    rgba(255, 122, 0, 0.10) 35%,
+    rgba(255, 122, 0, 0.55) 50%,
+    rgba(255, 122, 0, 0.10) 65%,
+    rgba(255, 122, 0, 0)    100%
+  );
+  mix-blend-mode: screen;
+  filter: blur(0.6px);
+  opacity: 0;
+  animation: gm-hero-scanrail 760ms cubic-bezier(0.22, 1, 0.36, 1) 80ms forwards;
+}
+.gm-hero-scanrail::after {
+  /* Thin verdict-tick on the right edge — a 2px orange line fades up as
+     the rail clears the card, like a needle settling on its new value. */
+  content: '';
+  position: absolute;
+  top: 12%;
+  right: 0;
+  width: 2px;
+  height: 76%;
+  background: var(--gm-orange);
+  box-shadow: 0 0 8px var(--gm-orange-glow);
+  opacity: 0;
+  animation: gm-hero-tick 620ms ease-out 380ms forwards;
+}
+@keyframes gm-hero-scanrail {
+  0%   { left: -30%; opacity: 0; }
+  18%  { opacity: 1; }
+  82%  { opacity: 0.85; }
+  100% { left: 100%; opacity: 0; }
+}
+@keyframes gm-hero-tick {
+  0%   { opacity: 0; transform: scaleY(0.4); }
+  35%  { opacity: 1; transform: scaleY(1); }
+  100% { opacity: 0; transform: scaleY(0.8); }
+}
+
+/* Quieted signal row used on the departing card so it reads as past-tense
+   while the live card keeps its amber radar pulse. */
+.gm-signal--quiet {
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--gm-text-faint);
+}
+.gm-signal-dot--quiet {
+  background: var(--gm-text-faint);
+  box-shadow: none;
+  animation: none;
+  opacity: 0.6;
+}
+
+/* Honour the operator's OS-level reduced-motion preference. We keep the
+   verdict ghost so the result still reads, but skip transforms/blur and
+   the scan rail entirely — the swap becomes an instant in-place trade. */
+@media (prefers-reduced-motion: reduce) {
+  .gm-hero--arriving,
+  .gm-hero--departing { animation: none; }
+  .gm-hero--departing { display: none; }
+  .gm-hero-scanrail::before,
+  .gm-hero-scanrail::after { animation: none; opacity: 0; }
 }
 .gm-hero-btn {
   display: block;
-  width: auto;
+  /* Lock to stage width — a <button> doesn't reliably honour display:block
+     for sizing the way a <div> does (Safari/Chrome can leave it at content
+     width). Without this the live card sits narrower than the departing
+     ghost (which is positioned absolute left:0 right:0), so the slot
+     "jerks" wider during the verdict beat. */
+  width: 100%;
   box-sizing: border-box;
   background:
     linear-gradient(180deg, rgba(255, 122, 0, 0.07) 0%, transparent 60%),
@@ -943,21 +1155,24 @@ html:not(.dark) .gm-root .gm-io:hover {
 }
 
 .gm-io {
-  display: grid;
-  /* 4 cols: icon | text | status-tag | clear-button. The clear-button
-     only appears for Passed/Failed rows; when absent its track collapses
-     because nothing fills it. The previous 3-col layout pushed the button
-     into an implicit 4th column with no allocated width, so "CLEAR" text
-     overflowed the row on narrow panels. */
-  grid-template-columns: 18px minmax(0, 1fr) auto auto auto;
-  align-items: center;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 8px 8px 8px 4px;
   border-radius: 4px;
   border: 1px solid transparent;
   margin-bottom: 1px;
   transition: background 100ms, border 100ms;
   cursor: default;
+}
+.gm-io-row {
+  display: grid;
+  /* 6 cols: icon | text | install-pill | status-tag | history-btn | clear-btn.
+     Right-side cells render conditionally; absent tracks collapse because
+     nothing fills them. */
+  grid-template-columns: 18px minmax(0, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 10px;
 }
 .gm-io:hover { background: rgba(0, 0, 0, 0.2); }
 .gm-io[data-current="true"] {
@@ -1044,6 +1259,93 @@ html:not(.dark) .gm-root .gm-io:hover {
   color: #ffb160;
 }
 .gm-io-clear:active { transform: scale(0.96); }
+
+/* Small square icon button used next to the clear-pill (e.g. history view).
+   Sized to match the clear-pill's height so the row stays aligned, but
+   square so it doesn't compete visually with the labelled CLEAR action. */
+.gm-io-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid var(--gm-border-strong);
+  color: var(--gm-text-dim);
+  cursor: pointer;
+  transition: all 120ms;
+  flex-shrink: 0;
+}
+.gm-io-iconbtn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--gm-text);
+  border-color: var(--gm-text-faint);
+}
+html:not(.dark) .gm-io-iconbtn:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.gm-io-iconbtn:active { transform: scale(0.96); }
+
+/* Comment sub-line under a tested IO. Indented to align with the IO name
+   column (icon = 18px + gap = 10px). Click-to-edit; Enter saves, Esc
+   cancels. Persists via PUT /api/ios/:id — same as the regular grid. */
+.gm-io-comment {
+  padding-left: 28px;
+  font-size: 11px;
+  min-width: 0;
+}
+.gm-io-comment-text,
+.gm-io-comment-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border-radius: 3px;
+  background: transparent;
+  border: 1px dashed transparent;
+  color: var(--gm-text-dim);
+  font-family: var(--gm-display);
+  font-size: 11px;
+  cursor: text;
+  text-align: left;
+  transition: background 100ms, border-color 100ms, color 100ms;
+}
+.gm-io-comment-text { color: var(--gm-text); }
+.gm-io-comment-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.gm-io-comment-add {
+  color: var(--gm-text-faint);
+  font-style: italic;
+  cursor: pointer;
+}
+.gm-io-comment-text:hover,
+.gm-io-comment-add:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--gm-border-strong);
+  color: var(--gm-text);
+}
+html:not(.dark) .gm-io-comment-text:hover,
+html:not(.dark) .gm-io-comment-add:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.gm-io-comment-input {
+  width: 100%;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: var(--gm-bg-deep);
+  border: 1px solid var(--gm-orange);
+  color: var(--gm-text);
+  font-family: var(--gm-display);
+  font-size: 11px;
+  outline: none;
+}
+.gm-io-comment-input::placeholder { color: var(--gm-text-faint); }
 
 /* Installation-tracker pill, mirrors the regular grid's badge at
  * enhanced-io-data-grid.tsx:1358-1362. Green when fully installed,
