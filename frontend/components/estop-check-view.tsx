@@ -463,6 +463,22 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                 ? 'bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 ring-emerald-500/40'
                 : 'bg-red-500/20 text-red-800 dark:text-red-300 ring-red-500/40'
 
+              // Per-quadrant text label (Kevin's wording, matches the
+              // matrix diagram exactly). Drops out entirely when Nominal_OK
+              // is null — we don't know which quadrant we're in until the
+              // PLC reads through.
+              const stateLabel = (() => {
+                if (zone.nominalOk == null) return null
+                if (allChecked && isNominal)    return { text: 'Checked, nominal',                 tone: 'good' as const }
+                if (allChecked && isNotNominal) return { text: 'Checked, not nominal',             tone: 'bad'  as const }
+                if (!allChecked && isNominal)   return { text: 'Unchecked, ready for checking',    tone: 'good' as const }
+                if (!allChecked && isNotNominal)return { text: 'Unchecked, not ready for checking',tone: 'bad'  as const }
+                return null
+              })()
+              const stateLabelCls = stateLabel?.tone === 'good'
+                ? 'bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border-emerald-500/40'
+                : 'bg-red-500/20 text-red-800 dark:text-red-300 border-red-500/40'
+
               // Split "MCM02_ZONE_01_04" → label "MCM02" + body "ZONE_01_04"
               const m = /^([A-Z]+\d+)_(.+)$/.exec(zone.name)
               const mcmLabel = m ? m[1] : ''
@@ -496,31 +512,45 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                 >
 
                   {/* Header */}
-                  <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2 border-b border-border/60">
-                    <div className="min-w-0 flex items-baseline gap-1.5">
-                      {mcmLabel && (
-                        <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-muted-foreground/70">
-                          {mcmLabel}
+                  <div className="px-3 pt-3 pb-2 border-b border-border/60">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex items-baseline gap-1.5">
+                        {mcmLabel && (
+                          <span className="text-[10px] font-mono font-semibold uppercase tracking-widest text-muted-foreground/70">
+                            {mcmLabel}
+                          </span>
+                        )}
+                        <span className="font-mono font-semibold text-sm tabular-nums tracking-tight truncate">
+                          {zoneLabel}
                         </span>
-                      )}
-                      <span className="font-mono font-semibold text-sm tabular-nums tracking-tight truncate">
-                        {zoneLabel}
+                      </div>
+                      <span className={cn(
+                        'text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded ring-1 shrink-0',
+                        badgeBg,
+                      )}>
+                        {checkedCount}/{zone.epcs.length}
                       </span>
-                      {isReady && (
-                        <span
-                          className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/40 shrink-0 whitespace-nowrap"
-                          title={`${zone.nominalOkTag ?? 'Nominal_OK'} = TRUE — zone is healthy, ${zone.epcs.length - checkedCount} EPC${zone.epcs.length - checkedCount === 1 ? '' : 's'} still to pull-and-check`}
-                        >
-                          Ready to Check
-                        </span>
-                      )}
                     </div>
-                    <span className={cn(
-                      'text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded ring-1 shrink-0',
-                      badgeBg,
-                    )}>
-                      {checkedCount}/{zone.epcs.length}
-                    </span>
+                    {/* Per-quadrant state label — second line so longer
+                        wording ("Unchecked, not ready for checking") fits
+                        without truncating the zone title. */}
+                    {stateLabel && (
+                      <div className="mt-1.5">
+                        <span
+                          className={cn(
+                            'inline-block text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded border whitespace-nowrap',
+                            stateLabelCls,
+                          )}
+                          title={
+                            zone.nominalOkTag
+                              ? `${zone.nominalOkTag} = ${isNominal ? 'TRUE (nominal)' : 'FALSE (not nominal)'}, ${checkedCount}/${zone.epcs.length} EPCs checked`
+                              : undefined
+                          }
+                        >
+                          {stateLabel.text}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   {/* EPC grid — fixed row count drives uniform height */}
