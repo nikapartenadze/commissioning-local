@@ -427,48 +427,41 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
               const checkedCount = zone.epcs.filter(e => e.checkTagValue === true).length
               const isSelected = selectedZone?.id === zone.id
 
-              // Three orthogonal zone states drive the annunciator visuals:
-              //   - isFault    : Nominal_OK reads false → real safety fault.
-              //                  Red stripe/border/badge, NO glow (operator
-              //                  can't run cord checks until this clears).
-              //   - isReady    : Nominal_OK reads true AND not every EPC has
-              //                  been pulled-and-checked yet. Amber stripe
-              //                  and soft breathing glow — this is THE call
-              //                  to the operator: "test the remaining cords
-              //                  on this zone".
-              //   - isComplete : Nominal_OK reads true AND every EPC checked.
-              //                  Green stripe, no glow — done.
-              // nominalOk === null (no PLC read yet) falls through to the EPC
-              // rollup colors below, no glow.
+              // 2-axis annunciator matrix (per field directive):
+              //
+              //                    NOMINAL                NOT NOMINAL
+              //   CHECKED      green border / green fill  green border / red fill
+              //                "CHECKED AND NOMINAL"      "CHECKED, BUT NOT NOMINAL"
+              //
+              //   NOT CHECKED  red border / green fill    red border / red fill
+              //                "READY FOR CHECKING"       "NOT READY FOR CHECKING"
+              //
+              // Border conveys CHECKED state (all EPC _CHECKED tags TRUE).
+              // Fill conveys NOMINAL state (zone _Nominal_OK tag).
+              // Glow only on "READY FOR CHECKING" (nominal but not yet checked).
               const allChecked = status === 'all-checked'
-              const isFault    = zone.nominalOk === false
-              const isReady    = zone.nominalOk === true && !allChecked
-              const isComplete = zone.nominalOk === true && allChecked
+              const isNominal  = zone.nominalOk === true
+              const isNotNominal = zone.nominalOk === false
+              const isReady    = isNominal && !allChecked  // glow target + green pill
 
-              const stripeColor =
-                isFault    ? 'bg-red-500'
-                : isReady    ? 'bg-amber-500'
-                : isComplete ? 'bg-emerald-500'
-                : status === 'all-checked' ? 'bg-emerald-500'
-                : status === 'none-checked' ? 'bg-red-500'
-                : status === 'partial' ? 'bg-amber-500'
-                : 'bg-muted-foreground/30'
-              const borderColor =
-                isFault    ? 'border-red-500/30 hover:border-red-500/60'
-                : isReady    ? 'border-amber-500/30 hover:border-amber-500/60'
-                : isComplete ? 'border-emerald-500/30 hover:border-emerald-500/60'
-                : status === 'all-checked' ? 'border-emerald-500/30 hover:border-emerald-500/60'
-                : status === 'none-checked' ? 'border-red-500/30 hover:border-red-500/60'
-                : status === 'partial' ? 'border-amber-500/30 hover:border-amber-500/60'
-                : 'border-border hover:border-muted-foreground/40'
-              const badgeBg =
-                isFault    ? 'bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500/30'
-                : isReady    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30'
-                : isComplete ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30'
-                : status === 'all-checked' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30'
-                : status === 'none-checked' ? 'bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500/30'
-                : status === 'partial' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30'
-                : 'bg-muted text-muted-foreground ring-border'
+              // Border = checked state. Solid color for unambiguity.
+              const borderColor = allChecked
+                ? 'border-emerald-500 hover:border-emerald-400'
+                : 'border-red-500 hover:border-red-400'
+
+              // Fill = nominal state. Tinted (not flat-saturated) so EPC text
+              // stays readable, but strong enough to read across the room.
+              const fillBg = isNominal
+                ? 'bg-emerald-500/20'
+                : isNotNominal
+                  ? 'bg-red-500/20'
+                  : 'bg-muted'   // nominalOk null → no PLC read yet
+
+              // Count chip — matches the border (checked-state) so the two
+              // signals reinforce each other.
+              const badgeBg = allChecked
+                ? 'bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 ring-emerald-500/40'
+                : 'bg-red-500/20 text-red-800 dark:text-red-300 ring-red-500/40'
 
               // Split "MCM02_ZONE_01_04" → label "MCM02" + body "ZONE_01_04"
               const m = /^([A-Z]+\d+)_(.+)$/.exec(zone.name)
@@ -490,8 +483,9 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                       : zone.name
                   }
                   className={cn(
-                    'group relative flex flex-col overflow-hidden text-left rounded-lg border bg-card transition-all',
+                    'group relative flex flex-col overflow-hidden text-left rounded-lg border-2 transition-all',
                     'hover:shadow-lg hover:-translate-y-0.5',
+                    fillBg,
                     borderColor,
                     isSelected && 'ring-2 ring-primary shadow-lg -translate-y-0.5',
                     // Glow when the zone is nominal AND there are EPCs still
@@ -500,8 +494,6 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                     isReady && 'estop-zone-blink',
                   )}
                 >
-                  {/* Status stripe — annunciator panel cue */}
-                  <span aria-hidden className={cn('absolute inset-x-0 top-0 h-0.5', stripeColor)} />
 
                   {/* Header */}
                   <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2 border-b border-border/60">
