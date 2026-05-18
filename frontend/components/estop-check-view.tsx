@@ -427,31 +427,44 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
               const checkedCount = zone.epcs.filter(e => e.checkTagValue === true).length
               const isSelected = selectedZone?.id === zone.id
 
-              // <ZONE>_Nominal_OK = false → soft amber breathing glow on the
-              // card border until the tag clears. null/unknown does NOT blink
-              // (we don't flag a zone just because we can't read it).
-              const isNominalFaulted = zone.nominalOk === false
+              // Three orthogonal zone states drive the annunciator visuals:
+              //   - isFault    : Nominal_OK reads false → real safety fault.
+              //                  Red stripe/border/badge, NO glow (operator
+              //                  can't run cord checks until this clears).
+              //   - isReady    : Nominal_OK reads true AND not every EPC has
+              //                  been pulled-and-checked yet. Amber stripe
+              //                  and soft breathing glow — this is THE call
+              //                  to the operator: "test the remaining cords
+              //                  on this zone".
+              //   - isComplete : Nominal_OK reads true AND every EPC checked.
+              //                  Green stripe, no glow — done.
+              // nominalOk === null (no PLC read yet) falls through to the EPC
+              // rollup colors below, no glow.
+              const allChecked = status === 'all-checked'
+              const isFault    = zone.nominalOk === false
+              const isReady    = zone.nominalOk === true && !allChecked
+              const isComplete = zone.nominalOk === true && allChecked
 
-              // Stripe / border / badge — when Nominal_OK is false, force
-              // amber regardless of EPC-check rollup. Otherwise a card with
-              // all EPCs checked but a real safety fault would still show
-              // a green stripe, which is misleading: "all EPCs checked" ≠
-              // "zone healthy". Green should only ever appear when the
-              // zone is actually OK at the safety layer.
               const stripeColor =
-                isNominalFaulted ? 'bg-amber-500'
+                isFault    ? 'bg-red-500'
+                : isReady    ? 'bg-amber-500'
+                : isComplete ? 'bg-emerald-500'
                 : status === 'all-checked' ? 'bg-emerald-500'
                 : status === 'none-checked' ? 'bg-red-500'
                 : status === 'partial' ? 'bg-amber-500'
                 : 'bg-muted-foreground/30'
               const borderColor =
-                isNominalFaulted ? 'border-amber-500/30 hover:border-amber-500/60'
+                isFault    ? 'border-red-500/30 hover:border-red-500/60'
+                : isReady    ? 'border-amber-500/30 hover:border-amber-500/60'
+                : isComplete ? 'border-emerald-500/30 hover:border-emerald-500/60'
                 : status === 'all-checked' ? 'border-emerald-500/30 hover:border-emerald-500/60'
                 : status === 'none-checked' ? 'border-red-500/30 hover:border-red-500/60'
                 : status === 'partial' ? 'border-amber-500/30 hover:border-amber-500/60'
                 : 'border-border hover:border-muted-foreground/40'
               const badgeBg =
-                isNominalFaulted ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30'
+                isFault    ? 'bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500/30'
+                : isReady    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30'
+                : isComplete ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30'
                 : status === 'all-checked' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30'
                 : status === 'none-checked' ? 'bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500/30'
                 : status === 'partial' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30'
@@ -481,7 +494,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                     'hover:shadow-lg hover:-translate-y-0.5',
                     borderColor,
                     isSelected && 'ring-2 ring-primary shadow-lg -translate-y-0.5',
-                    isNominalFaulted && 'estop-zone-blink',
+                    // Glow when the zone is nominal AND there are EPCs still
+                    // pending a pull-and-check. Draws the operator's eye to
+                    // "this is what to work on next".
+                    isReady && 'estop-zone-blink',
                   )}
                 >
                   {/* Status stripe — annunciator panel cue */}
@@ -498,10 +514,10 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                       <span className="font-mono font-semibold text-sm tabular-nums tracking-tight truncate">
                         {zoneLabel}
                       </span>
-                      {zone.nominalOk === true && (
+                      {isReady && (
                         <span
                           className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/40 shrink-0 whitespace-nowrap"
-                          title={`${zone.nominalOkTag ?? 'Nominal_OK'} = TRUE — zone is healthy and ready to check`}
+                          title={`${zone.nominalOkTag ?? 'Nominal_OK'} = TRUE — zone is healthy, ${zone.epcs.length - checkedCount} EPC${zone.epcs.length - checkedCount === 1 ? '' : 's'} still to pull-and-check`}
                         >
                           Ready to Check
                         </span>
@@ -526,6 +542,18 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                         <span className="font-mono text-[11px] text-foreground/90 truncate flex-1">
                           {shortEpcLabel(epc.name, zone.name)}
                         </span>
+                        {/* Explicit "Checked" label next to the dot so the
+                            green-dot/red-dot meaning is unambiguous: green +
+                            "Checked" = cord has been pulled and verified.
+                            No label = cord not yet pulled (the resting state). */}
+                        {epc.checkTagValue === true && (
+                          <span
+                            className="text-[9px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 shrink-0"
+                            title={`${epc.checkTag} = TRUE`}
+                          >
+                            Checked
+                          </span>
+                        )}
                         {epc.result === 'pass' && (
                           <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" aria-label="Passed" />
                         )}
