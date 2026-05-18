@@ -426,18 +426,33 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
               const status = rollupZoneStatus(zone.epcs)
               const checkedCount = zone.epcs.filter(e => e.checkTagValue === true).length
               const isSelected = selectedZone?.id === zone.id
+
+              // <ZONE>_Nominal_OK = false → soft amber breathing glow on the
+              // card border until the tag clears. null/unknown does NOT blink
+              // (we don't flag a zone just because we can't read it).
+              const isNominalFaulted = zone.nominalOk === false
+
+              // Stripe / border / badge — when Nominal_OK is false, force
+              // amber regardless of EPC-check rollup. Otherwise a card with
+              // all EPCs checked but a real safety fault would still show
+              // a green stripe, which is misleading: "all EPCs checked" ≠
+              // "zone healthy". Green should only ever appear when the
+              // zone is actually OK at the safety layer.
               const stripeColor =
-                status === 'all-checked' ? 'bg-emerald-500'
+                isNominalFaulted ? 'bg-amber-500'
+                : status === 'all-checked' ? 'bg-emerald-500'
                 : status === 'none-checked' ? 'bg-red-500'
                 : status === 'partial' ? 'bg-amber-500'
                 : 'bg-muted-foreground/30'
               const borderColor =
-                status === 'all-checked' ? 'border-emerald-500/30 hover:border-emerald-500/60'
+                isNominalFaulted ? 'border-amber-500/30 hover:border-amber-500/60'
+                : status === 'all-checked' ? 'border-emerald-500/30 hover:border-emerald-500/60'
                 : status === 'none-checked' ? 'border-red-500/30 hover:border-red-500/60'
                 : status === 'partial' ? 'border-amber-500/30 hover:border-amber-500/60'
                 : 'border-border hover:border-muted-foreground/40'
               const badgeBg =
-                status === 'all-checked' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30'
+                isNominalFaulted ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30'
+                : status === 'all-checked' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30'
                 : status === 'none-checked' ? 'bg-red-500/15 text-red-700 dark:text-red-400 ring-red-500/30'
                 : status === 'partial' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30'
                 : 'bg-muted text-muted-foreground ring-border'
@@ -448,11 +463,6 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
               const zoneLabel = m ? m[2] : zone.name
 
               const padCount = innerRows * 2 - zone.epcs.length
-
-              // <ZONE>_Nominal_OK = false → annunciator-style yellow flash
-              // overlay until the tag clears. null/unknown does NOT blink —
-              // we don't flag a zone yellow just because we can't read it.
-              const isNominalFaulted = zone.nominalOk === false
 
               return (
                 <button
@@ -488,6 +498,14 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                       <span className="font-mono font-semibold text-sm tabular-nums tracking-tight truncate">
                         {zoneLabel}
                       </span>
+                      {zone.nominalOk === true && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/40 shrink-0 whitespace-nowrap"
+                          title={`${zone.nominalOkTag ?? 'Nominal_OK'} = TRUE — zone is healthy and ready to check`}
+                        >
+                          Ready to Check
+                        </span>
+                      )}
                     </div>
                     <span className={cn(
                       'text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded ring-1 shrink-0',

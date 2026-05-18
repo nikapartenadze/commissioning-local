@@ -261,36 +261,43 @@
   50% { opacity: 0.6; }
 }
 
-/* Annunciator yellow flash for zone cards whose <ZONE>_Nominal_OK reads
-   false. Pulses a yellow ring + background tint over whatever color state
-   the card already has, so the underlying status (green/red/partial) stays
-   visible between flashes. Stops as soon as the tag clears. */
+/* Annunciator hard flip-flop for zone cards whose <ZONE>_Nominal_OK reads
+   false. Entire card alternates between FULL yellow and the card's natural
+   theme color every 0.7s. Both phases define EVERY animated property
+   explicitly — empty keyframes don't reliably "revert", so we hard-code
+   the natural state too. The keyframe values automatically win against
+   Tailwind utilities during animation playback. */
+/* Soft warm-amber breathing glow for zone cards whose <ZONE>_Nominal_OK
+   reads false. Card text and structure stay readable the whole time; the
+   amber glow gently swells and fades around the perimeter (box-shadow)
+   with a very subtle background tint. ease-in-out + ~2.4s cycle = a calm
+   "heartbeat" cue rather than a strobe. */
 @keyframes estop-zone-fault-blink {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(250, 204, 21, 0);
-    background-color: transparent;
+    background-color: hsl(var(--card));
+    border-color: rgba(180, 120, 35, 0.35);
+    box-shadow:
+      0 0 0 0 rgba(217, 145, 50, 0),
+      inset 0 0 0 0 rgba(217, 145, 50, 0);
   }
   50% {
-    box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.85), 0 0 14px 2px rgba(250, 204, 21, 0.55);
-    background-color: rgba(250, 204, 21, 0.18);
+    background-color: rgba(217, 145, 50, 0.08);
+    border-color: rgba(180, 120, 35, 0.85);
+    box-shadow:
+      0 0 22px 4px rgba(217, 145, 50, 0.40),
+      inset 0 0 18px 0 rgba(217, 145, 50, 0.18);
   }
 }
 .estop-zone-blink {
-  position: relative;
-}
-.estop-zone-blink::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  animation: estop-zone-fault-blink 0.9s ease-in-out infinite;
+  animation: estop-zone-fault-blink 2.4s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .estop-zone-blink::after {
+  .estop-zone-blink {
     animation: none;
-    box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.85);
-    background-color: rgba(250, 204, 21, 0.18);
+    border-color: rgba(180, 120, 35, 0.85);
+    box-shadow:
+      0 0 22px 4px rgba(217, 145, 50, 0.35),
+      inset 0 0 18px 0 rgba(217, 145, 50, 0.15);
   }
 }
 

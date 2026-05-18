@@ -50,9 +50,15 @@ export async function GET(req: Request, res: Response) {
     const allTags = new Set<string>()
     for (const zone of zones) {
       // <ZONE_NAME>_Nominal_OK — drives the yellow fault blink on zone cards.
-      // Field convention: every zone has a corresponding _Nominal_OK BOOL in
-      // the PLC that reads true when the zone is healthy.
-      zone.nominalOkTag = `${zone.Name}_Nominal_OK`
+      // The DB zone.Name includes the MCM prefix (e.g. MCM02_ZONE_01_01) for
+      // dashboard grouping, but the PLC tag lives at controller scope as
+      // ZONE_01_01_Nominal_OK (verified by field: tag MCM02_..._Nominal_OK
+      // returns "Not found" on the PLC). Strip the leading MCM##_ prefix to
+      // match what's actually in the PLC. Same regex the UI uses to derive
+      // zoneLabel in estop-check-view.tsx:445.
+      const m = /^([A-Z]+\d+)_(.+)$/.exec(zone.Name)
+      const zoneLabel = m ? m[2] : zone.Name
+      zone.nominalOkTag = `${zoneLabel}_Nominal_OK`
       allTags.add(zone.nominalOkTag)
       for (const epc of zone.epcs) {
         allTags.add(epc.CheckTag)
