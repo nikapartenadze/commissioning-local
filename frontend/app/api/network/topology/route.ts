@@ -18,7 +18,11 @@ export async function GET(req: Request, res: Response) {
         const ports = rawPorts.map(port => ({
           id: port.id, nodeId: port.NodeId, portNumber: port.PortNumber, cableLabel: port.CableLabel,
           deviceName: port.DeviceName, deviceType: port.DeviceType, deviceIp: port.DeviceIp,
-          statusTag: port.StatusTag, parentPortId: port.ParentPortId,
+          // Mirror the /status route's fallback: when StatusTag is missing
+          // but DeviceName is set, default to <DeviceName>:I.ConnectionFaulted
+          // so the client's getStatusColor() can match the polled value.
+          statusTag: port.StatusTag || (port.DeviceName ? `${port.DeviceName}:I.ConnectionFaulted` : null),
+          parentPortId: port.ParentPortId,
         }))
         return {
           id: node.id, ringId: node.RingId, name: node.Name, position: node.Position,

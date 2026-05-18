@@ -41,6 +41,22 @@ export async function GET(req: Request, res: Response) {
       }
     }
 
+    // Fallback: a port row may have a DeviceName but NULL StatusTag — this
+    // happens when topology was seeded from CSV/older import without the
+    // explicit fault-tag column. Default to <DeviceName>:I.ConnectionFaulted,
+    // the standard Allen-Bradley EtherNet/IP module fault tag (VSU_SEW,
+    // FIOM, POINT_IO, etc. all use this). Mutate the port object so the
+    // response in `result` later picks up the resolved tag too.
+    for (const ring of rings) {
+      for (const node of ring.nodes) {
+        for (const port of node.ports) {
+          if (!port.StatusTag && port.DeviceName) {
+            port.StatusTag = `${port.DeviceName}:I.ConnectionFaulted`
+          }
+        }
+      }
+    }
+
     const statusTags = new Set<string>()
     for (const ring of rings) {
       if (ring.McmTag) statusTags.add(ring.McmTag)
