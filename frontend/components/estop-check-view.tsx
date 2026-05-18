@@ -51,6 +51,9 @@ interface Epc {
 interface Zone {
   id: number
   name: string
+  /** PLC tag `<zone.name>_Nominal_OK`. True = healthy, false = faulted, null = no data. */
+  nominalOk?: boolean | null
+  nominalOkTag?: string
   epcs: Epc[]
 }
 
@@ -446,15 +449,29 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
 
               const padCount = innerRows * 2 - zone.epcs.length
 
+              // <ZONE>_Nominal_OK = false → annunciator-style yellow flash
+              // overlay until the tag clears. null/unknown does NOT blink —
+              // we don't flag a zone yellow just because we can't read it.
+              const isNominalFaulted = zone.nominalOk === false
+
               return (
                 <button
                   key={zone.id}
                   onClick={() => setSelectedZoneId(zone.id)}
+                  title={
+                    zone.nominalOkTag
+                      ? `${zone.name} — ${zone.nominalOkTag} = ${
+                          zone.nominalOk === true ? 'OK' :
+                          zone.nominalOk === false ? 'FAULTED' : 'no data'
+                        }`
+                      : zone.name
+                  }
                   className={cn(
                     'group relative flex flex-col overflow-hidden text-left rounded-lg border bg-card transition-all',
                     'hover:shadow-lg hover:-translate-y-0.5',
                     borderColor,
                     isSelected && 'ring-2 ring-primary shadow-lg -translate-y-0.5',
+                    isNominalFaulted && 'estop-zone-blink',
                   )}
                 >
                   {/* Status stripe — annunciator panel cue */}

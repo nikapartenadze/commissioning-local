@@ -15,6 +15,14 @@ try {
   gitTag = '' // No tags found — will fall back to build-{hash}
 }
 
+// APP_VERSION (set by BUILD-INSTALLER.bat / BUILD-PORTABLE.bat) is the source
+// of truth for installer version. Prefer it so the UI badge matches the
+// installer .exe name without requiring a git tag bump for every build.
+const envVersion = (process.env.APP_VERSION || '').trim()
+const buildVersion = envVersion
+  ? (envVersion.startsWith('v') ? envVersion : `v${envVersion}`)
+  : (gitTag || `build-${gitHash}`)
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -25,7 +33,7 @@ export default defineConfig({
   define: {
     'import.meta.env.VITE_BUILD_HASH': JSON.stringify(gitHash),
     'import.meta.env.VITE_BUILD_DATE': JSON.stringify(buildDate),
-    'import.meta.env.VITE_BUILD_VERSION': JSON.stringify(gitTag || `build-${gitHash}`),
+    'import.meta.env.VITE_BUILD_VERSION': JSON.stringify(buildVersion),
   },
   build: {
     outDir: 'dist',

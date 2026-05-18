@@ -49,6 +49,11 @@ export async function GET(req: Request, res: Response) {
 
     const allTags = new Set<string>()
     for (const zone of zones) {
+      // <ZONE_NAME>_Nominal_OK — drives the yellow fault blink on zone cards.
+      // Field convention: every zone has a corresponding _Nominal_OK BOOL in
+      // the PLC that reads true when the zone is healthy.
+      zone.nominalOkTag = `${zone.Name}_Nominal_OK`
+      allTags.add(zone.nominalOkTag)
       for (const epc of zone.epcs) {
         allTags.add(epc.CheckTag)
         for (const io of epc.ioPoints) allTags.add(io.Tag)
@@ -98,6 +103,8 @@ export async function GET(req: Request, res: Response) {
 
     const result = zones.map((zone: any) => ({
       id: zone.id, name: zone.Name,
+      nominalOkTag: zone.nominalOkTag as string,
+      nominalOk: connected ? (tagValues[zone.nominalOkTag] ?? null) : null,
       epcs: zone.epcs.map((epc: any) => {
         const mustStopVfds = epc.vfds.filter((v: any) => v.mustStop)
         const keepRunningVfds = epc.vfds.filter((v: any) => !v.mustStop)
