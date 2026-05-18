@@ -1305,13 +1305,22 @@ export default function CommissioningPage() {
           )
         }
       } else {
-        const errorText = await response.text()
-        logger.error(`Failed to ${action} output:`, response.status, errorText)
-        toast({
-          title: `Failed to ${action} output`,
-          description: `${io.name}: Server returned ${response.status}`,
-          variant: 'destructive'
-        })
+        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string; sourceIp?: string } | null
+        logger.error(`Failed to ${action} output:`, response.status, errorBody)
+        if (errorBody?.reason === 'server-laptop-no-testing') {
+          const ipNote = errorBody.sourceIp ? ` (server saw your IP as ${errorBody.sourceIp})` : ''
+          toast({
+            title: "Cannot fire from Server Laptop",
+            description: `This machine looks like the sync/PLC host${ipNote}. If you're on a Client Laptop and see this, share the IP above with support — the server is misidentifying your connection.`,
+            variant: 'destructive',
+          })
+        } else {
+          toast({
+            title: `Failed to ${action} output`,
+            description: `${io.name}: ${errorBody?.error || `HTTP ${response.status}`}`,
+            variant: 'destructive',
+          })
+        }
       }
     } catch (error) {
       logger.error(`Error ${action}ing output:`, error)

@@ -36,11 +36,31 @@ export const authMiddleware: RequestHandler = (req, res, next) => {
  * Apply to: pass/fail, reset, fire-output, mark-passed/failed, safety/fire.
  */
 export const noTestingOnServerLaptop: RequestHandler = (req, res, next) => {
+  // Escape hatch: operators in the field have reported 403s on a real Client
+  // Laptop, which means Express saw `req.ip` as loopback for a remote
+  // connection (multi-NIC, VPN, IPv6 quirks). Set TRUST_TESTING_FROM_ANY_IP=1
+  // to disable the gate without code changes if it misfires.
+  if (process.env.TRUST_TESTING_FROM_ANY_IP === '1') {
+    next()
+    return
+  }
   const ip = (req.ip && req.ip.length > 0 ? req.ip : req.socket?.remoteAddress) || ''
   if (isLoopbackIp(ip)) {
+    // Keep a breadcrumb so the next field 403 has context. Don't gate on a
+    // DEBUG flag — these are rare and we want the trail by default.
+    console.warn(
+      `[noTestingOnServerLaptop] BLOCKED ${req.method} ${req.path} `
+      + `req.ip=${req.ip} socket.remoteAddress=${req.socket?.remoteAddress} `
+      + `xff=${req.headers['x-forwarded-for'] || '-'} host=${req.headers.host || '-'}`
+    )
     res.status(403).json({
       error: 'Server Laptop cannot author test results. Mark IOs from a Client Laptop browser instead.',
       reason: 'server-laptop-no-testing',
+      // Surface the IP Express saw so techs can tell support exactly what the
+      // server thinks of their connection. If this shows their real LAN IP,
+      // there's a config bug; if it shows 127.0.0.1, they are actually
+      // looped back somehow.
+      sourceIp: ip,
     })
     return
   }
