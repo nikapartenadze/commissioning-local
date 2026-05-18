@@ -382,6 +382,12 @@ setInterval(() => {
 
 const app = express();
 
+// Trust X-Forwarded-For from loopback proxies only. Lets noTestingOnServerLaptop
+// see the real client IP when the request arrives through Vite dev proxy or a
+// future local reverse proxy (IIS, etc). Direct LAN connections to :3000 are
+// unaffected — Express still uses the socket remote address there.
+app.set('trust proxy', 'loopback');
+
 // JSON body parsing with 10mb limit
 app.use(express.json({ limit: '10mb' }));
 
