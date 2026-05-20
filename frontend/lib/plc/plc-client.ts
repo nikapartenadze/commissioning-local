@@ -165,6 +165,17 @@ export class PlcClient extends EventEmitter {
       return { success: false, plcReachable: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: 'Already connecting' };
     }
 
+    // Destroy any prior native tag handles before creating new ones.
+    // Without this, auto-reconnect after a network blip — and operators clicking
+    // Connect while still connected — orphan every libplctag handle on the C side,
+    // leaving its worker threads polling forever. Over a day that drives CPU up
+    // until the service is restarted.
+    if (this.tagReader.tagCount > 0 || (this.tagReader2?.tagCount ?? 0) > 0 || this.writeHandles.size > 0) {
+      await this.tagReader.resetForReconnection();
+      if (this.tagReader2) await this.tagReader2.resetForReconnection();
+      this.destroyAllWriteHandles();
+    }
+
     this.connectionConfig = config;
     this.setConnectionStatus('connecting');
 
