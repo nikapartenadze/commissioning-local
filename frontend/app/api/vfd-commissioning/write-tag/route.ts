@@ -31,11 +31,25 @@ function floatToInt32Bits(value: number): number {
  */
 export async function POST(req: Request, res: Response) {
   try {
-    const { deviceName, field, value, dataType } = req.body
-    console.log(`[VFD WriteTag] Request: deviceName=${deviceName}, field=${field}, value=${value}, dataType=${dataType}`)
+    const { deviceName, field, value, dataType, pathScope } = req.body as {
+      deviceName?: string
+      field?: string
+      value?: number
+      dataType?: 'BOOL' | 'REAL' | 'INT'
+      // Optional override for tag path resolution. Default behavior (no
+      // pathScope) preserves the existing CBT_<dev>.CTRL.CMD/STS routing used
+      // by every other wizard step. 'HMI' writes <dev>.HMI.<field> — a
+      // controller-root tag without the CBT_ wrapper (mirrors the
+      // KeypadButtonF1 reader convention in vfd-wizard-reader.ts).
+      pathScope?: 'HMI'
+    }
+    console.log(`[VFD WriteTag] Request: deviceName=${deviceName}, field=${field}, value=${value}, dataType=${dataType}, pathScope=${pathScope ?? 'default'}`)
 
     if (!deviceName || !field) {
       return res.status(400).json({ error: 'deviceName and field required' })
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return res.status(400).json({ error: 'value (finite number) required' })
     }
 
     const client = getPlcClient()
@@ -49,10 +63,15 @@ export async function POST(req: Request, res: Response) {
       return res.status(503).json({ error: 'No PLC connection config available' })
     }
 
-    // Build tag path: PLC tags are prefixed with CBT_ — e.g. CBT_NCP1_7_VFD.CTRL.CMD.Bump
+    // Build tag path. Default: CBT_<deviceName>.CTRL.CMD.<field> (or STS for
+    // the Speed_FPM read-back special case). pathScope='HMI' targets the
+    // drive's controller-level HMI struct, e.g. <deviceName>.HMI.Speed_At_30rev,
+    // which is where commissioning writes the calibrated RVS so the APF AOI
+    // picks it up without manual entry.
     const isStatus = field === 'Speed_FPM' && dataType !== 'BOOL'
-    const tagPath = isStatus
-      ? `CBT_${deviceName}.CTRL.STS.${field}`
+    const tagPath =
+      pathScope === 'HMI' ? `${deviceName}.HMI.${field}`
+      : isStatus ? `CBT_${deviceName}.CTRL.STS.${field}`
       : `CBT_${deviceName}.CTRL.CMD.${field}`
 
     console.log(`[VFD WriteTag] Tag path: ${tagPath}, gateway: ${connectionConfig.ip}, path: ${connectionConfig.path}`)

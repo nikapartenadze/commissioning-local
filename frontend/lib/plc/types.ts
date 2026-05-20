@@ -365,6 +365,22 @@ export interface L2CellUpdatedMessage {
   updatedAt: string
 }
 
+/**
+ * Broadcast emitted by the server-side VFD wizard reader (lib/vfd-wizard-reader.ts)
+ * roughly every 50 ms while a wizard is open for a device. Carries a snapshot of
+ * the eight STS+keypad tags. Subscribers should filter by `deviceName` because
+ * the message is broadcast to every connected WebSocket client.
+ */
+export interface VfdTagUpdateMessage {
+  type: 'VfdTagUpdate'
+  deviceName: string
+  /** Field values keyed by name. boolean for BOOLs, number for REAL/INT, null when the tag handle is missing. */
+  sts: Record<string, number | boolean | null>
+  /** Per-field PLC read errors. Omitted when all reads succeeded. */
+  errors?: Record<string, string>
+  ts: number
+}
+
 export type PlcWebSocketMessage =
   | UpdateStateMessage
   | UpdateIOMessage
@@ -376,3 +392,4 @@ export type PlcWebSocketMessage =
   | TagStatusUpdateMessage
   | CloudConnectionChangedMessage
   | L2CellUpdatedMessage
+  | VfdTagUpdateMessage

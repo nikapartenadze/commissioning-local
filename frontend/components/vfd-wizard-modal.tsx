@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { useUser } from '@/lib/user-context'
+import { useSignalR, type VfdTagUpdate as VfdTagUpdatePayload } from '@/lib/signalr-client'
 import {
   X, Wifi, WifiOff, Loader2, CheckCircle2, XCircle, AlertTriangle,
   Zap, CircleDot, Send, Play, Square, ChevronRight, RotateCcw,
@@ -47,11 +48,17 @@ interface VfdWizardModalProps {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-async function writeTag(deviceName: string, field: string, value: number, dataType: 'BOOL' | 'REAL' | 'INT') {
+async function writeTag(
+  deviceName: string,
+  field: string,
+  value: number,
+  dataType: 'BOOL' | 'REAL' | 'INT',
+  pathScope?: 'HMI',
+) {
   const res = await fetch('/api/vfd-commissioning/write-tag', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deviceName, field, value, dataType }),
+    body: JSON.stringify({ deviceName, field, value, dataType, pathScope }),
   })
   return res.json()
 }
@@ -1047,8 +1054,20 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
         return
       }
 
-      // Stamp "Speed Set Up" with the enriched format so the FPM↔RVS pair is
-      // persisted inside the L2 cell — no separate local table needed.
+      // 1. Write the calibrated RVS to the drive's HMI tag so the APF AOI
+      //    picks it up automatically — replaces the old workflow where
+      //    operators had to copy the cloud value by hand into the AOI.
+      //    Treat the PLC write as the authoritative action: if it fails
+      //    we abort BEFORE stamping L2, so the spreadsheet never promises
+      //    a PLC value that isn't actually live.
+      const plcResult = await writeTag(deviceName, 'Speed_At_30rev', capturedRvs, 'REAL', 'HMI')
+      if (plcResult?.success === false || plcResult?.error) {
+        const tagPath = `${deviceName}.HMI.Speed_At_30rev`
+        throw new Error(`PLC write to ${tagPath} failed: ${plcResult?.error || 'unknown error'}`)
+      }
+
+      // 2. Stamp "Speed Set Up" with the enriched format so the FPM↔RVS pair is
+      //    persisted inside the L2 cell — no separate local table needed.
       const stamp = buildSpeedStamp(userName, fpmVal, capturedRvs)
       const l2Result = await writeL2Cells(deviceName, sheetName, userName, [
         { columnName: 'Speed Set Up', value: stamp },
@@ -1070,7 +1089,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   return (
     <div className="space-y-4">
       <p className="text-sm text-foreground/80 leading-relaxed">
-        Calibrate the FPM ↔ RVS pair at 30 RVS. <strong>Start the belt from the VFD keypad (F1) first</strong> — this step only changes the speed setpoint of a belt that is already running. Then click <em>Send 30 RVS Setpoint</em>, tach the actual belt FPM, and click <em>Save Measurement</em>. The FPM/RVS pair is recorded to the commissioning spreadsheet for SCADA to bulk-apply to the PLC later.
+        Calibrate the FPM ↔ RVS pair at 30 RVS. <strong>Start the belt from the VFD keypad (F1) first</strong> — this step only changes the speed setpoint of a belt that is already running. Then click <em>Send 30 RVS Setpoint</em>, tach the actual belt FPM, and click <em>Save Measurement</em>. Save writes the captured RVS straight to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> on the drive (so the APF AOI picks it up automatically) and records the FPM/RVS pair on the commissioning spreadsheet.
       </p>
 
       {/* Live current speed from PLC — STS.RVS is continuously updated */}
@@ -1116,7 +1135,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
         <div>
           <p className="text-sm font-semibold">Record the FPM ↔ RVS pair</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Saves the measured FPM and current PLC RVS to the commissioning spreadsheet. This does <strong>not</strong> write the speed back to the PLC — SCADA bulk-applies these values to the drive parameters during the VFD parameter download.
+            Writes the captured RVS to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> so the APF AOI picks it up automatically, then records the measured FPM and PLC RVS to the commissioning spreadsheet. If the PLC write fails, the spreadsheet is <strong>not</strong> stamped — fix the controller and retry.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1191,6 +1210,13 @@ const STEPS = [
 export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, onClose }: VfdWizardModalProps) {
   const { currentUser } = useUser()
   const userName = currentUser?.fullName
+  // Dedicated signalR instance for this wizard. Each useSignalR() call opens
+  // its own WebSocket — cheap (one per open wizard), and the win is that we
+  // inherit the shared hook's exponential-backoff reconnect, heartbeat, and
+  // visibility-change recovery. The previous bespoke `new WebSocket(...)`
+  // had none of that, which is why a single network blip used to freeze the
+  // wizard until the operator reloaded the page.
+  const signalR = useSignalR()
   const [activeStep, setActiveStep] = useState(0)
   const [sts, setSts] = useState<StsState>({
     Check_Allowed: null, Valid_Map: null, Valid_HP: null,
@@ -1257,11 +1283,18 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
     })
   }, [device.deviceName])
-  // Server-side reader pushes VFD STS tag updates over WebSocket every ~100ms.
-  // Wizard does NOT HTTP-poll. We:
-  //   1. Open the reader on mount (server creates persistent handles + starts polling)
-  //   2. Subscribe to 'VfdTagUpdate' WebSocket messages for this device
-  //   3. Close the reader on unmount (frees handles)
+  // Server-side reader pushes VFD STS updates every ~50 ms while the wizard is
+  // open. We:
+  //   1. Open the reader via HTTP (server creates persistent handles + starts polling)
+  //   2. Subscribe to the shared WebSocket's onVfdTagUpdate dispatch (filter by deviceName)
+  //   3. Heartbeat the reader every 60 s so the server's 120 s idle sweeper doesn't reap it
+  //   4. Close the reader on unmount
+  // The WebSocket lifecycle (open/close/reconnect/heartbeat/health) is owned by
+  // the shared useSignalR hook above — we just attach a callback and trust it.
+  // If the socket drops and reconnects, our subscription survives (the
+  // callback set is independent of the socket lifecycle), the server resumes
+  // pushing VfdTagUpdate broadcasts, and the wizard recovers without any
+  // operator action. This is the fix for "wizard freezes until I reload".
   useEffect(() => {
     if (!plcConnected) {
       setStsLoading(false)
@@ -1269,77 +1302,89 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     }
 
     let cancelled = false
-    let ws: WebSocket | null = null
+    let lastSummaryLog = 0
 
-    // Step 1: Tell the server to open the reader for this device
-    fetch('/api/vfd-commissioning/wizard-open', {
+    const handleVfdTagUpdate = (msg: VfdTagUpdatePayload) => {
+      if (cancelled || msg.deviceName !== device.deviceName) return
+      const s = msg.sts || {}
+      const errs = (msg.errors || {}) as StsErrors
+
+      // Always-on throttled console summary (1 line / sec) so field issues are
+      // visible without rebuilding for dev mode.
+      const now = Date.now()
+      if (now - lastSummaryLog > 1000) {
+        lastSummaryLog = now
+        // eslint-disable-next-line no-console
+        console.log(
+          `[VfdWizard ${device.deviceName}]`,
+          `Check_Allowed=${s.Check_Allowed}`,
+          `Valid_Map=${s.Valid_Map}`,
+          `Valid_HP=${s.Valid_HP}`,
+          `Valid_Direction=${s.Valid_Direction}`,
+          `Jogging=${s.Jogging}`,
+          `Starting=${s.Starting}`,
+          `RVS=${s.RVS}`,
+          Object.keys(errs).length ? `errors=${JSON.stringify(errs)}` : '',
+        )
+      }
+
+      setSts({
+        Check_Allowed: typeof s.Check_Allowed === 'boolean' ? s.Check_Allowed : null,
+        Valid_Map: typeof s.Valid_Map === 'boolean' ? s.Valid_Map : null,
+        Valid_HP: typeof s.Valid_HP === 'boolean' ? s.Valid_HP : null,
+        Valid_Direction: typeof s.Valid_Direction === 'boolean' ? s.Valid_Direction : null,
+        Jogging: typeof s.Jogging === 'boolean' ? s.Jogging : null,
+        Starting: typeof s.Starting === 'boolean' ? s.Starting : null,
+        RVS: typeof s.RVS === 'number' ? s.RVS : null,
+        KeypadButtonF1: typeof s.KeypadButtonF1 === 'boolean' ? s.KeypadButtonF1 : null,
+      })
+      setStsErrors(errs)
+      setStsLoading(false)
+    }
+
+    // Subscribe to the shared dispatcher BEFORE opening the reader, so any
+    // broadcast that lands between the open response and us wiring the handler
+    // still gets picked up.
+    signalR.onVfdTagUpdate(handleVfdTagUpdate)
+    // Make sure our underlying WebSocket is actually open. The hook is idempotent
+    // if already connected; if not, it kicks off the connect + reconnect machine.
+    signalR.connect()
+
+    const openReader = () => fetch('/api/vfd-commissioning/wizard-open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceName: device.deviceName }),
     }).then(r => r.json()).then(result => {
       if (cancelled) return
-      if (!result.success) {
-        console.error('[VfdWizard] Failed to open reader:', result.error)
+      if (!result?.success) {
+        console.error('[VfdWizard] Failed to open reader:', result?.error)
         setStsLoading(false)
-        return
       }
-
-      // Step 2: Open WebSocket subscription
-      const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${wsProto}//${window.location.host}/ws`
-      ws = new WebSocket(wsUrl)
-
-      let lastSummaryLog = 0
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'VfdTagUpdate' && msg.deviceName === device.deviceName) {
-            const s = msg.sts || {}
-            const errs = (msg.errors || {}) as StsErrors
-
-            // Always-on throttled console summary (1 line / sec) so field issues
-            // are visible without rebuilding for dev mode.
-            const now = Date.now()
-            if (now - lastSummaryLog > 1000) {
-              lastSummaryLog = now
-              // eslint-disable-next-line no-console
-              console.log(
-                `[VfdWizard ${device.deviceName}]`,
-                `Check_Allowed=${s.Check_Allowed}`,
-                `Valid_Map=${s.Valid_Map}`,
-                `Valid_HP=${s.Valid_HP}`,
-                `Valid_Direction=${s.Valid_Direction}`,
-                `Jogging=${s.Jogging}`,
-                `Starting=${s.Starting}`,
-                `RVS=${s.RVS}`,
-                Object.keys(errs).length ? `errors=${JSON.stringify(errs)}` : '',
-              )
-            }
-
-            setSts({
-              Check_Allowed: s.Check_Allowed ?? null,
-              Valid_Map: s.Valid_Map ?? null,
-              Valid_HP: s.Valid_HP ?? null,
-              Valid_Direction: s.Valid_Direction ?? null,
-              Jogging: s.Jogging ?? null,
-              Starting: s.Starting ?? null,
-              RVS: s.RVS ?? null,
-              KeypadButtonF1: s.KeypadButtonF1 ?? null,
-            })
-            setStsErrors(errs)
-            setStsLoading(false)
-          }
-        } catch { /* ignore parse errors */ }
-      }
-
-      ws.onerror = (err) => console.error('[VfdWizard] WebSocket error:', err)
     }).catch(err => {
+      if (cancelled) return
       console.error('[VfdWizard] Open request failed:', err)
       setStsLoading(false)
     })
 
+    openReader()
+
+    // On WebSocket reconnect, re-call wizard-open immediately. Two scenarios:
+    //   - Server-side reader still alive (normal blip): the call is a cheap
+    //     no-op that just touches lastUsedMs.
+    //   - Server was restarted: the reader is gone, and without this we'd
+    //     wait up to 60s for the next heartbeat to re-create it (wizard data
+    //     stale all that time). Re-calling here closes the gap.
+    const handleReconnected = () => {
+      if (cancelled) return
+      console.log(`[VfdWizard ${device.deviceName}] WS reconnected — refreshing reader`)
+      openReader()
+    }
+    signalR.onReconnected(handleReconnected)
+
     // Heartbeat: re-call wizard-open every 60s to prevent the 120s idle timeout
-    // from killing the reader while mechanics work on belt tracking, etc.
+    // from reaping the reader while mechanics work on belt tracking, etc. Also
+    // serves as the recovery path if the server was restarted — the next
+    // heartbeat re-creates the reader transparently.
     const heartbeat = setInterval(() => {
       fetch('/api/vfd-commissioning/wizard-open', {
         method: 'POST',
@@ -1348,18 +1393,22 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       }).catch(() => { /* ignore */ })
     }, 60_000)
 
-    // Cleanup: close WebSocket + tell server to dispose reader
     return () => {
       cancelled = true
       clearInterval(heartbeat)
-      if (ws) { try { ws.close() } catch { /* ignore */ } }
+      signalR.offVfdTagUpdate(handleVfdTagUpdate)
+      signalR.offReconnected(handleReconnected)
       fetch('/api/vfd-commissioning/wizard-close', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceName: device.deviceName }),
       }).catch(() => { /* ignore */ })
     }
-  }, [plcConnected, device.deviceName])
+  }, [
+    plcConnected, device.deviceName,
+    signalR.connect, signalR.onVfdTagUpdate, signalR.offVfdTagUpdate,
+    signalR.onReconnected, signalR.offReconnected,
+  ])
 
   // ── Cascade gating ───────────────────────────────────────────────
   // Each step's "own" criterion. `true` = passed, `false` = explicitly
@@ -1455,6 +1504,10 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setHpFieldsFilled(false)
       // Re-arm the auto-backfill so it can run again if STS is still high.
       backfilledRef.current = false
+      // Same for the HMI.Speed_At_30rev backfill — the L2 stamp it reads
+      // from is about to be NULL'd, so it will naturally no-op on re-run,
+      // but resetting the guard keeps the logic symmetric.
+      speedBackfilledRef.current = false
       // Refresh from L2 — cells should all be NULL now; mirror the mount
       // useEffect's restore logic so any racing cell still in flight is
       // honoured rather than ignored.
@@ -1498,6 +1551,48 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   useEffect(() => {
     if (activeStep === 0 && sts.Check_Allowed === true) setActiveStep(1)
   }, [sts.Check_Allowed, activeStep])
+
+  // Inverse-backfill: push the cached RVS from a prior wizard session into
+  // the drive's HMI.Speed_At_30rev tag. The L2 "Speed Set Up" cell already
+  // carries the RVS inside its enriched stamp ("ASH 9/5 · 200 FPM @ 25.30
+  // RVS"), so VFDs that were calibrated before this PLC write was wired up
+  // can be brought into sync without a re-run.
+  //
+  // One-shot per wizard open (re-armed by Clear Test). Best-effort: a
+  // missing/older AOI without the HMI struct returns tag-not-found, which
+  // we log but do NOT surface — the operator can still re-run Step 5 to
+  // get a clean error path.
+  const speedBackfilledRef = useRef(false)
+  useEffect(() => {
+    if (speedBackfilledRef.current) return
+    if (!plcConnected) return
+    speedBackfilledRef.current = true
+    readL2CellsForDevice(device.deviceName).then(cells => {
+      const parsed = parseSpeedStamp(cells?.speedSetUp)
+      if (!parsed) return
+      console.log(`[VfdWizard] Backfilling ${device.deviceName}.HMI.Speed_At_30rev = ${parsed.rvs} from cached stamp`)
+      fetch('/api/vfd-commissioning/write-tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceName: device.deviceName,
+          field: 'Speed_At_30rev',
+          value: parsed.rvs,
+          dataType: 'REAL',
+          pathScope: 'HMI',
+        }),
+      })
+        .then(r => r.json().catch(() => ({})))
+        .then(result => {
+          if (result?.success) {
+            console.log(`[VfdWizard] Backfill OK: ${device.deviceName}.HMI.Speed_At_30rev = ${parsed.rvs}`)
+          } else {
+            console.warn(`[VfdWizard] Backfill failed for ${device.deviceName}.HMI.Speed_At_30rev:`, result?.error)
+          }
+        })
+        .catch(err => console.warn(`[VfdWizard] Backfill request error for ${device.deviceName}:`, err))
+    }).catch(() => { /* best-effort */ })
+  }, [plcConnected, device.deviceName])
 
   // Auto-backfill L2 cells for steps the PLC has already validated. The
   // wizard's Confirm buttons normally write the audit stamps, but if a VFD
@@ -1564,6 +1659,70 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             </div>
             <p className="font-mono text-xs font-semibold text-primary truncate">{device.deviceName}</p>
             <p className="text-[10px] text-muted-foreground truncate">{device.mcm}</p>
+          </div>
+
+          {/* At-a-glance status — visible on every step so the operator doesn't
+              have to navigate back to Bump Test or Verify Controls to find out
+              whether polarity was reversed or whether the belt is ready for
+              the mechanical team to track. Polarity comes from the L2 cell
+              committed in Step 3; tracking state combines the operator's
+              "Controls Verified" click (Step 4) with the mechanical team's
+              Belt Tracked stamp. */}
+          <div className="px-4 py-3 border-b space-y-2.5 bg-muted/20">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">Polarity</p>
+              <div className="flex items-center gap-1.5">
+                <div className={cn(
+                  "h-2 w-2 rounded-full shrink-0",
+                  polaritySetDone === 'Normal' && "bg-green-500",
+                  polaritySetDone === 'Inverter' && "bg-amber-500",
+                  polaritySetDone === null && "bg-muted-foreground/40",
+                )} />
+                <span className={cn(
+                  "text-xs font-medium",
+                  polaritySetDone === 'Normal' && "text-green-700 dark:text-green-400",
+                  polaritySetDone === 'Inverter' && "text-amber-700 dark:text-amber-400",
+                  polaritySetDone === null && "text-muted-foreground",
+                )}
+                  title={
+                    polaritySetDone === 'Inverter'
+                      ? 'Drive direction was reversed — DirectionCmd_1 routed by the AOI'
+                      : polaritySetDone === 'Normal'
+                        ? 'Drive runs forward — DirectionCmd_0 routed by the AOI'
+                        : 'Polarity not yet committed in Step 3 (Bump Test)'
+                  }
+                >
+                  {polaritySetDone === null ? 'Not set' : polaritySetDone === 'Normal' ? 'Normal' : 'Reversed'}
+                </span>
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">Tracking</p>
+              <div className="flex items-center gap-1.5">
+                <div className={cn(
+                  "h-2 w-2 rounded-full shrink-0",
+                  beltTrackedDone && "bg-green-500",
+                  !beltTrackedDone && check4Complete && "bg-blue-500",
+                  !beltTrackedDone && !check4Complete && "bg-muted-foreground/40",
+                )} />
+                <span className={cn(
+                  "text-xs font-medium",
+                  beltTrackedDone && "text-green-700 dark:text-green-400",
+                  !beltTrackedDone && check4Complete && "text-blue-700 dark:text-blue-400",
+                  !beltTrackedDone && !check4Complete && "text-muted-foreground",
+                )}
+                  title={
+                    beltTrackedDone
+                      ? 'Mechanical team marked Belt Tracked — Step 5 unlocked'
+                      : check4Complete
+                        ? 'Controls verified — waiting for the mechanical team to track the belt'
+                        : 'Finish Step 4 (Verify Controls) before handing over for tracking'
+                  }
+                >
+                  {beltTrackedDone ? 'Tracked' : check4Complete ? 'Ready' : 'Not ready'}
+                </span>
+              </div>
+            </div>
           </div>
 
           <nav className="flex-1 p-2 space-y-1 overflow-y-auto">

@@ -171,6 +171,33 @@ class AutoSyncService {
     this.isPushing = true
 
     try {
+      // Drop IO pending-sync rows that have failed too many times. Mirrors the
+      // L2 PENDING_RETRY_CAP below — the previous behaviour was to retry
+      // forever, which on a non-recoverable cloud rejection (e.g. cloud's
+      // updatedCount=0 because the IO doesn't exist on the cloud side, or
+      // cloud has already moved past us) would leave a row in PendingSyncs
+      // permanently. The pull at line ~495 skips when ANY pending rows exist,
+      // so one stuck IO would block all IO catch-up pulls forever. Cap at 10
+      // strikes × 30 s = ~5 min of trying before we give up on the row; the
+      // user's next pass/fail/clear creates a fresh row at the current
+      // version. Cloud-side note in the log so operators know what to do.
+      const IO_PENDING_RETRY_CAP = 10
+      try {
+        const dropped = db.prepare(
+          `DELETE FROM PendingSyncs WHERE RetryCount >= ?`
+        ).run(IO_PENDING_RETRY_CAP)
+        if (dropped.changes > 0) {
+          console.warn(
+            `[AutoSync] Dropped ${dropped.changes} IO pending sync row(s) that exceeded ` +
+            `retry cap (${IO_PENDING_RETRY_CAP}). Cloud likely already has the values or ` +
+            `the IO does not exist on cloud — Pull IOs to verify; re-pass/fail/clear in ` +
+            `the grid if any result is missing.`
+          )
+        }
+      } catch (e) {
+        console.warn('[AutoSync] Failed to apply IO retry cap:', e)
+      }
+
       const pendingSyncs = db.prepare(
         'SELECT * FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
       ).all() as PendingSync[]

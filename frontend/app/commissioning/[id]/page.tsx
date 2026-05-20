@@ -746,7 +746,21 @@ export default function CommissioningPage() {
     const isSpare = io.description?.toUpperCase().includes('SPARE')
     const isTrigger = currentPlcStatus.isTesting && stateActuallyChanged && nextState === 'TRUE'
 
+    // Always-on field diagnostics for the "I didn't get a prompt" complaint.
+    // Logs WHY a TRUE-edge transition either fired or was suppressed. Volume is
+    // bounded by transition rate (a few per minute under realistic field use),
+    // so this is safe to leave on in production — and operators can grep the
+    // browser console to self-diagnose without us pushing a debug build.
+    const logSkip = (reason: string) => {
+      console.warn(`[Prompt] suppressed for ${io.name} (id=${io.id}): ${reason}`)
+    }
+
+    if (nextState === 'TRUE' && stateActuallyChanged && !currentPlcStatus.isTesting) {
+      console.log(`[Prompt] state change TRUE for ${io.name} (id=${io.id}) ignored — testing mode is off`)
+    }
+
     if (isTrigger && mutedIosRef.current.has(io.id)) {
+      logSkip('IO is muted (click the muted-count pill in the toolbar to unmute)')
       setPreviousStates(prev => ({
         ...prev,
         [io.id]: nextState
@@ -774,6 +788,7 @@ export default function CommissioningPage() {
       const currentFaultedDevices = faultedDevicesRef.current
       const ioDeviceName = io.networkDeviceName || getDeviceName(io.name)
       if (ioDeviceName && currentFaultedDevices.has(ioDeviceName)) {
+        logSkip(`parent network device "${ioDeviceName}" is FAULTED — fix the device first`)
         setPreviousStates(prev => ({
           ...prev,
           [io.id]: nextState
@@ -783,11 +798,16 @@ export default function CommissioningPage() {
 
       const user = currentUserRef.current
       if (!updatedIo.assignedTo || !user?.fullName || updatedIo.assignedTo === user.fullName) {
-        if (DEBUG_OTHER) {
-          console.log('💡 Triggering ValueChangeDialog for:', io.name)
-        }
+        console.log(`[Prompt] FIRED for ${io.name} (id=${io.id})`)
         addToDialogQueue(updatedIo)
+      } else {
+        logSkip(`assigned to "${updatedIo.assignedTo}", current user is "${user.fullName}"`)
       }
+    } else if (isTrigger && !isSpare && io.result) {
+      // Common operator confusion: "I triggered the IO, why no prompt?" — because
+      // they already passed/failed it earlier and the helper short-circuits on
+      // !io.result. Surface the explanation so they know to click Clear.
+      logSkip(`IO already has result="${io.result}" — click Clear in the grid to re-test`)
     }
 
     setPreviousStates(prev => ({
@@ -1077,79 +1097,6 @@ export default function CommissioningPage() {
             }
 
             return applyIoStateTransition(io, updatedIo, normalizedUpdateState)
-
-            // Use refs for current values to avoid dependency issues
-            const currentPlcStatus = plcStatusRef.current
-            const currentOutputFiring = outputFiringInProgressRef.current
-            const currentPreviousStates = previousStatesRef.current
-
-            // Check if we should show the value change dialog
-            const stateActuallyChanged = currentPreviousStates[io.id] !== update.State
-            const isSpare = io.description?.toUpperCase().includes('SPARE')
-            const isTrigger = currentPlcStatus.isTesting && stateActuallyChanged && update.State === 'TRUE'
-            // Device prefix: everything before the first ":"
-            const devicePrefix = getDeviceName(io.name) || ''
-
-            // Don't trigger dialog for muted IOs
-            if (isTrigger && mutedIosRef.current.has(io.id)) {
-              setPreviousStates(prev => ({
-                ...prev,
-                [io.id]: update.State
-              }))
-              return updatedIo
-            }
-
-            if (isTrigger && isSpare) {
-              // SPARE triggered — delay 500ms, add to dialog queue UNLESS paired non-SPARE fires first
-              const portKey = getPortPairKey(io.name)
-              const timer = setTimeout(() => {
-                pendingSpareTimers.current.delete(portKey)
-                addToDialogQueue(updatedIo)
-              }, 500)
-              // Cancel any existing SPARE timer for this port pair
-              if (pendingSpareTimers.current.has(portKey)) {
-                clearTimeout(pendingSpareTimers.current.get(portKey)!)
-              }
-              pendingSpareTimers.current.set(portKey, timer)
-            } else if (isTrigger && !isSpare && !io.result) {
-              // Non-SPARE triggered — cancel any pending SPARE from the same port pair (cross-talk)
-              const portKey = getPortPairKey(io.name)
-              if (pendingSpareTimers.current.has(portKey)) {
-                clearTimeout(pendingSpareTimers.current.get(portKey)!)
-                pendingSpareTimers.current.delete(portKey)
-              }
-
-              // Don't trigger dialog for IOs on faulted network devices
-              const currentFaultedDevices = faultedDevicesRef.current
-              const ioDeviceName = io.networkDeviceName || getDeviceName(io.name)
-              if (ioDeviceName && currentFaultedDevices.has(ioDeviceName)) {
-                // Silently skip — device is faulted, testing blocked
-                setPreviousStates(prev => ({
-                  ...prev,
-                  [io.id]: update.State
-                }))
-                return updatedIo
-              }
-
-              // Show pass/fail dialog
-              const user = currentUserRef.current
-              if (updatedIo.assignedTo && user?.fullName && updatedIo.assignedTo !== user.fullName) {
-                // IO assigned to someone else — skip
-              } else {
-                if (DEBUG_OTHER) {
-                  console.log('💡 Triggering ValueChangeDialog for:', io.name)
-                }
-                addToDialogQueue(updatedIo)
-              }
-            }
-
-            // Update previous state
-            setPreviousStates(prev => ({
-              ...prev,
-              [io.id]: update.State
-            }))
-
-            return updatedIo
           }
           return io
         })
@@ -1751,11 +1698,15 @@ export default function CommissioningPage() {
       signalR.connect()
     }
 
-    // Reload IOs with PLC states — retry until tag reader has cached states
+    // Reload IOs with PLC states — retry until tag reader has cached states.
+    // Was passing a bare `subsystemId` reference that didn't exist in scope —
+    // TypeScript flagged it (TS2304) and at runtime it threw ReferenceError
+    // into the empty catch below, silently breaking the post-connect refresh.
+    const sid = newConfig.subsystemId
     const loadWithStates = async (attempt: number) => {
       if (attempt > 5) return
       try {
-        const response = await authFetch(`${API_ENDPOINTS.ios}?subsystemId=${subsystemId}`)
+        const response = await authFetch(`${API_ENDPOINTS.ios}?subsystemId=${sid}`)
         if (response.ok) {
           const json = await response.json()
           const data = (Array.isArray(json) ? json : json.ios) as IoItem[]

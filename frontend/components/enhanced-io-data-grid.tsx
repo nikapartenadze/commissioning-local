@@ -1346,7 +1346,17 @@ export function EnhancedIoDataGrid({
                       if (deviceStatus === 'red') return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
                       if (deviceStatus === 'green') return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
                       return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
-                    })() : null}
+                    })() : (
+                      // Faint em-dash placeholder for IOs with no parent network device.
+                      // Without it the cell looks like missing data; with it operators see
+                      // "intentionally not applicable" instead.
+                      <span
+                        className="text-muted-foreground/40 text-xs select-none"
+                        title="No parent network device"
+                      >
+                        —
+                      </span>
+                    )}
                   </div>
                   )}
                   {/* Installation Status */}
