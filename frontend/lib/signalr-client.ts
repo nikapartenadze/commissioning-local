@@ -16,12 +16,15 @@ export type {
   TagStatusUpdate,
   ErrorEvent,
   FVCellUpdate,
+  VfdTagUpdate,
   WebSocketConnectionOptions,
   WebSocketConnection
 } from './plc/websocket-client'
 
-// Re-export the WebSocket client class
-export { PlcWebSocketClient as SignalRService } from './plc/websocket-client'
+// The standalone PlcWebSocketClient class was removed — nobody imported it
+// outside the test that defined it. If you need a non-React WebSocket client,
+// write a fresh one or hoist the hook into a module-level singleton. Type-only
+// re-exports above are still available.
 
 // Import the hook for the alias
 import { usePlcWebSocket, WebSocketConnection, WebSocketConnectionOptions } from './plc/websocket-client'

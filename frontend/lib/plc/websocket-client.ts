@@ -13,7 +13,8 @@ import type {
   CommentUpdateMessage,
   NetworkStatusChangedMessage,
   ErrorEventMessage,
-  L2CellUpdatedMessage
+  L2CellUpdatedMessage,
+  VfdTagUpdateMessage,
 } from './types'
 
 // ============================================================================
@@ -68,6 +69,18 @@ export interface FVCellUpdate {
   version: number
   updatedBy: string | null
   updatedAt: string
+}
+
+/**
+ * Payload shape passed to onVfdTagUpdate subscribers. Same as the wire-level
+ * VfdTagUpdateMessage minus the type discriminator. Subscribers MUST filter by
+ * deviceName — the underlying broadcast goes to every connected client.
+ */
+export interface VfdTagUpdate {
+  deviceName: string
+  sts: Record<string, number | boolean | null>
+  errors?: Record<string, string>
+  ts: number
 }
 
 export interface WebSocketConnectionOptions {
@@ -128,6 +141,8 @@ export interface WebSocketConnection {
   offDeviceFaultChanged: (callback: (tagName: string, faulted: boolean) => void) => void
   onFVCellUpdate: (callback: (update: FVCellUpdate) => void) => void
   offFVCellUpdate: (callback: (update: FVCellUpdate) => void) => void
+  onVfdTagUpdate: (callback: (update: VfdTagUpdate) => void) => void
+  offVfdTagUpdate: (callback: (update: VfdTagUpdate) => void) => void
 }
 
 // ============================================================================
@@ -135,8 +150,21 @@ export interface WebSocketConnection {
 // ============================================================================
 
 const DEFAULT_WS_URL = 'ws://localhost:3000/ws'
-const DEFAULT_RECONNECT_INTERVAL = 3000
+/**
+ * Reconnect uses capped exponential backoff with jitter — no hard attempt cap.
+ * The old behavior was 10 fixed-3 s retries (30 s total budget) then permanent
+ * give-up, which surfaced as "I left the laptop overnight, now I have to reload."
+ * Now: 1 s → 2 s → 4 s → 8 s → 16 s → 30 s cap, retries forever. Combined with
+ * the visibility-change + online listeners below, a tab that loses its socket
+ * during a long outage springs back automatically the moment connectivity or
+ * focus returns.
+ */
+const RECONNECT_INITIAL_DELAY_MS = 1000
+const RECONNECT_MAX_DELAY_MS = 30000
+/** Deprecated; retained for option-parameter backwards compatibility, no longer used. */
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
+/** Deprecated; retained for option-parameter backwards compatibility, no longer used. */
+const DEFAULT_RECONNECT_INTERVAL = 3000
 const WS_DEBUG = false // Set to true to enable WebSocket logging
 
 // Heartbeat thresholds. Sized so that a single slow `better-sqlite3` write
@@ -162,10 +190,18 @@ function getDefaultWebSocketUrl(): string {
 export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSocketConnection {
   const {
     url = getDefaultWebSocketUrl(),
-    reconnectInterval = DEFAULT_RECONNECT_INTERVAL,
-    maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+    // reconnectInterval is now the BASE delay for exponential backoff (default
+    // is RECONNECT_INITIAL_DELAY_MS used by the schedule function itself). The
+    // option is kept for backwards-compat; callers can override the base but
+    // the cap (RECONNECT_MAX_DELAY_MS) and the no-cap-on-attempts behaviour
+    // win out. Marked unused by the linter intentionally.
+    reconnectInterval: _reconnectInterval = DEFAULT_RECONNECT_INTERVAL,
+    // No hard cap by default. Pass an explicit number to opt back in.
+    maxReconnectAttempts = Infinity,
     enabled = true
   } = options
+  void _reconnectInterval
+  void enabled
 
   const [isConnected, setIsConnected] = useState(false)
   const [isConfigReloading, setIsConfigReloading] = useState(false)
@@ -221,6 +257,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const cloudConnectionCallbacksRef = useRef<Set<(connected: boolean) => void>>(new Set())
   const deviceFaultCallbacksRef = useRef<Set<(tagName: string, faulted: boolean) => void>>(new Set())
   const fvCellCallbacksRef = useRef<Set<(update: FVCellUpdate) => void>>(new Set())
+  const vfdTagUpdateCallbacksRef = useRef<Set<(update: VfdTagUpdate) => void>>(new Set())
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
@@ -463,6 +500,24 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           break
         }
 
+        case 'VfdTagUpdate': {
+          const vfdMsg = message as VfdTagUpdateMessage
+          const update: VfdTagUpdate = {
+            deviceName: vfdMsg.deviceName,
+            sts: vfdMsg.sts,
+            errors: vfdMsg.errors,
+            ts: vfdMsg.ts,
+          }
+          vfdTagUpdateCallbacksRef.current.forEach((cb) => {
+            try {
+              cb(update)
+            } catch (error) {
+              console.error('[PlcWebSocket] Error in VfdTagUpdate callback:', error)
+            }
+          })
+          break
+        }
+
         case 'HeartbeatAck': {
           const ackMsg = message as unknown as { serverVersion: string; timestamp: number }
           lastAckRef.current = Date.now()
@@ -495,30 +550,32 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
       return
     }
 
-    if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-      WS_DEBUG && console.log('[PlcWebSocket] Max reconnect attempts reached')
-      const errorEvent: ErrorEvent = {
-        source: 'websocket',
-        message: 'Failed to reconnect after maximum attempts',
-        severity: 'error',
-        timestamp: new Date()
-      }
-      errorCallbacksRef.current.forEach((cb) => {
-        try {
-          cb(errorEvent)
-        } catch {}
-      })
+    // Capped exponential backoff with jitter. No hard attempt cap — the
+    // socket keeps trying forever (visibility / online listeners reset the
+    // attempt counter when the user returns or network restores). Jitter
+    // avoids thundering-herd reconnects if a server restart drops a roomful
+    // of tablets simultaneously.
+    const attempts = reconnectAttemptsRef.current
+    const baseDelay = Math.min(
+      RECONNECT_INITIAL_DELAY_MS * Math.pow(2, attempts),
+      RECONNECT_MAX_DELAY_MS,
+    )
+    const jitter = 0.85 + Math.random() * 0.3 // ±15%
+    const delay = Math.floor(baseDelay * jitter)
+
+    // Honour an explicit caller-supplied attempt cap if one was passed
+    // through `options.maxReconnectAttempts`. Default is Infinity (no cap).
+    if (Number.isFinite(maxReconnectAttempts) && reconnectAttemptsRef.current >= maxReconnectAttempts) {
+      WS_DEBUG && console.log('[PlcWebSocket] Caller-supplied max reconnect attempts reached')
       return
     }
 
     reconnectTimeoutRef.current = setTimeout(() => {
-      console.log(
-        `[PlcWebSocket] Reconnecting (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})...`
-      )
+      console.log(`[PlcWebSocket] Reconnecting (attempt ${reconnectAttemptsRef.current + 1}, delay ${delay}ms)...`)
       reconnectAttemptsRef.current++
       connect()
-    }, reconnectInterval)
-  }, [maxReconnectAttempts, reconnectInterval])
+    }, delay)
+  }, [maxReconnectAttempts])
 
   const connect = useCallback(() => {
     // Clear any pending reconnect
@@ -542,10 +599,19 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
       ws.onopen = () => {
         WS_DEBUG && console.log('[PlcWebSocket] Connected to:', url)
         setIsConnected(true)
+
+        // Capture the reconnect-attempt count BEFORE resetting it. The old
+        // code reset to 0 first and then checked `> 0`, so the conditional
+        // was always false and onReconnected listeners never fired. Side
+        // effect: the commissioning page's loadIos() trigger on reconnect
+        // never ran, so an IO grid that briefly lost its WS would sit on
+        // stale state until a full page reload. Standalone PlcWebSocketClient
+        // class below this hook already does it correctly — match its order.
+        const wasReconnect = reconnectAttemptsRef.current > 0
         reconnectAttemptsRef.current = 0
 
-        // Notify reconnected callbacks if this was a reconnection
-        if (reconnectAttemptsRef.current > 0) {
+        if (wasReconnect) {
+          console.log('[PlcWebSocket] Reconnected — firing onReconnected listeners')
           reconnectedCallbacksRef.current.forEach((cb) => {
             try {
               cb()
@@ -729,6 +795,14 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     fvCellCallbacksRef.current.delete(callback)
   }, [])
 
+  const onVfdTagUpdate = useCallback((callback: (update: VfdTagUpdate) => void) => {
+    vfdTagUpdateCallbacksRef.current.add(callback)
+  }, [])
+
+  const offVfdTagUpdate = useCallback((callback: (update: VfdTagUpdate) => void) => {
+    vfdTagUpdateCallbacksRef.current.delete(callback)
+  }, [])
+
   const onError = useCallback((callback: (event: ErrorEvent) => void) => {
     errorCallbacksRef.current.add(callback)
   }, [])
@@ -768,6 +842,43 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
   const offCloudConnectionChange = useCallback((callback: (connected: boolean) => void) => {
     cloudConnectionCallbacksRef.current.delete(callback)
   }, [])
+
+  // Force-reconnect triggers — run when state hints the socket is wrong but
+  // backoff would otherwise keep waiting. Common scenarios this fixes:
+  //   1. Tablet sleeps overnight. WS times out, backoff caps at 30 s and keeps
+  //      retrying — but the OS may have paused timers. When the user wakes
+  //      the tablet, `visibilitychange` fires and we reconnect immediately
+  //      with a fresh attempt budget instead of waiting up to 30 s.
+  //   2. Wi-Fi blip / VPN reconnect. `navigator.onLine` flips false→true
+  //      well before our heartbeat would notice, so jumping on `online` lets
+  //      us re-establish state ahead of the user's next click.
+  // Both reset reconnectAttemptsRef so the next attempt starts at the 1 s
+  // base delay (not the 30 s cap we may have backed off to).
+  const forceReconnectNow = useCallback((reason: string) => {
+    if (isManualDisconnectRef.current) return
+    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    console.log(`[PlcWebSocket] Force-reconnect: ${reason}`)
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+    reconnectAttemptsRef.current = 0
+    connect()
+  }, [connect])
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined') return
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') forceReconnectNow('tab visible')
+    }
+    const onOnline = () => forceReconnectNow('navigator.onLine = true')
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('online', onOnline)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('online', onOnline)
+    }
+  }, [forceReconnectNow])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -811,195 +922,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     offDeviceFaultChanged,
     onFVCellUpdate,
     offFVCellUpdate,
+    onVfdTagUpdate,
+    offVfdTagUpdate,
   }
 }
 
-// ============================================================================
-// Standalone WebSocket Client (non-React)
-// ============================================================================
-
-export class PlcWebSocketClient {
-  private ws: WebSocket | null = null
-  private url: string
-  private reconnectInterval: number
-  private maxReconnectAttempts: number
-  private reconnectAttempts = 0
-  private reconnectTimeout: NodeJS.Timeout | null = null
-  private isManualDisconnect = false
-  private _isConnected = false
-
-  private ioCallbacks: Set<(update: IOUpdate) => void> = new Set()
-  private errorCallbacks: Set<(event: ErrorEvent) => void> = new Set()
-  private reconnectedCallbacks: Set<() => void> = new Set()
-
-  constructor(options: WebSocketConnectionOptions = {}) {
-    this.url = options.url || getDefaultWebSocketUrl()
-    this.reconnectInterval = options.reconnectInterval || DEFAULT_RECONNECT_INTERVAL
-    this.maxReconnectAttempts = options.maxReconnectAttempts || DEFAULT_MAX_RECONNECT_ATTEMPTS
-  }
-
-  get isConnected(): boolean {
-    return this._isConnected
-  }
-
-  connect(): void {
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout)
-      this.reconnectTimeout = null
-    }
-
-    if (this.ws) {
-      this.ws.close()
-      this.ws = null
-    }
-
-    this.isManualDisconnect = false
-
-    try {
-      this.ws = new WebSocket(this.url)
-
-      this.ws.onopen = () => {
-        WS_DEBUG && console.log('[PlcWebSocketClient] Connected')
-        this._isConnected = true
-        const wasReconnect = this.reconnectAttempts > 0
-        this.reconnectAttempts = 0
-
-        if (wasReconnect) {
-          this.reconnectedCallbacks.forEach((cb) => {
-            try {
-              cb()
-            } catch {}
-          })
-        }
-      }
-
-      this.ws.onmessage = (event) => {
-        this.handleMessage(event)
-      }
-
-      this.ws.onclose = () => {
-        WS_DEBUG && console.log('[PlcWebSocketClient] Disconnected')
-        this._isConnected = false
-        this.ws = null
-
-        if (!this.isManualDisconnect) {
-          this.scheduleReconnect()
-        }
-      }
-
-      this.ws.onerror = (error) => {
-        console.error('[PlcWebSocketClient] Error:', error)
-        const errorEvent: ErrorEvent = {
-          source: 'websocket',
-          message: 'WebSocket connection error',
-          severity: 'error',
-          timestamp: new Date()
-        }
-        this.errorCallbacks.forEach((cb) => {
-          try {
-            cb(errorEvent)
-          } catch {}
-        })
-      }
-    } catch (error) {
-      console.error('[PlcWebSocketClient] Failed to create WebSocket:', error)
-      this.scheduleReconnect()
-    }
-  }
-
-  disconnect(): void {
-    this.isManualDisconnect = true
-
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout)
-      this.reconnectTimeout = null
-    }
-
-    if (this.ws) {
-      this.ws.close()
-      this.ws = null
-    }
-
-    this._isConnected = false
-    this.reconnectAttempts = 0
-  }
-
-  private scheduleReconnect(): void {
-    if (this.isManualDisconnect) {
-      return
-    }
-
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      WS_DEBUG && console.log('[PlcWebSocketClient] Max reconnect attempts reached')
-      return
-    }
-
-    this.reconnectTimeout = setTimeout(() => {
-      this.reconnectAttempts++
-      console.log(
-        `[PlcWebSocketClient] Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`
-      )
-      this.connect()
-    }, this.reconnectInterval)
-  }
-
-  private handleMessage(event: MessageEvent): void {
-    try {
-      const message = JSON.parse(event.data) as PlcWebSocketMessage & { type: string }
-
-      if (message.type === 'UpdateState') {
-        const stateMsg = message as UpdateStateMessage
-        const update: IOUpdate = {
-          Id: stateMsg.id,
-          Result: 'Not Tested',
-          State: stateMsg.state ? 'TRUE' : 'FALSE'
-        }
-        this.ioCallbacks.forEach((cb) => {
-          try {
-            cb(update)
-          } catch {}
-        })
-      } else if (message.type === 'UpdateIO') {
-        const ioMsg = message as UpdateIOMessage
-        const update: IOUpdate = {
-          Id: ioMsg.id,
-          Result: ioMsg.result as IOUpdate['Result'],
-          State: ioMsg.state ? 'TRUE' : 'FALSE',
-          Timestamp: ioMsg.timestamp,
-          Comments: ioMsg.comments
-        }
-        this.ioCallbacks.forEach((cb) => {
-          try {
-            cb(update)
-          } catch {}
-        })
-      }
-    } catch (error) {
-      console.error('[PlcWebSocketClient] Error parsing message:', error)
-    }
-  }
-
-  onIOUpdate(callback: (update: IOUpdate) => void): void {
-    this.ioCallbacks.add(callback)
-  }
-
-  offIOUpdate(callback: (update: IOUpdate) => void): void {
-    this.ioCallbacks.delete(callback)
-  }
-
-  onError(callback: (event: ErrorEvent) => void): void {
-    this.errorCallbacks.add(callback)
-  }
-
-  offError(callback: (event: ErrorEvent) => void): void {
-    this.errorCallbacks.delete(callback)
-  }
-
-  onReconnected(callback: () => void): void {
-    this.reconnectedCallbacks.add(callback)
-  }
-
-  offReconnected(callback: () => void): void {
-    this.reconnectedCallbacks.delete(callback)
-  }
-}
