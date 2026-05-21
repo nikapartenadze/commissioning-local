@@ -1,0 +1,207 @@
+/**
+ * Heartbeat Service
+ *
+ * Reports the laptop's identity + live system state to the cloud every
+ * 30 s so operations has a fleet view. Best-effort: any failure (no
+ * network, cloud down, 401/403) is logged and swallowed — the field
+ * tool runs offline-first and must never crash because the cloud is
+ * unreachable.
+ *
+ * Contract: see commissioning-cloud's POST /api/sync/heartbeat.
+ *   - Auth: X-API-Key header (per-project apiKey from config.json)
+ *   - Body: { machineId, hostname?, version?, currentUserEmail?,
+ *            currentSubsystemId?, currentMcm?, systemInfo?,
+ *            commandResults? }
+ *   - Response: { ok: true, commands: Array<{ id, type, payload }> }
+ *
+ * Commands flow: cloud may include pending commands in the response;
+ * we execute them locally (see command-handler.ts), queue results
+ * (command-queue.ts), and ship those results on the next heartbeat.
+ */
+
+import os from 'os'
+import { configService } from '@/lib/config'
+import { getCurrentAppVersion } from '@/lib/update/update-utils'
+import { getMachineId } from './machine-id'
+import { collectSystemInfo, type HeartbeatSystemInfo } from './system-info'
+import { executeCommand, type IncomingCommand, type CommandResult } from './command-handler'
+import { drainResults, enqueueResult, requeue } from './command-queue'
+
+const HEARTBEAT_TIMEOUT_MS = 10_000
+const HEARTBEAT_PATH = '/api/sync/heartbeat'
+
+export interface HeartbeatPayload {
+  machineId: string
+  hostname: string | null
+  version: string | null
+  currentUserEmail: string | null
+  currentSubsystemId: number | null
+  currentMcm: string | null
+  systemInfo: HeartbeatSystemInfo
+  commandResults?: CommandResult[]
+}
+
+interface HeartbeatResponseBody {
+  ok?: boolean
+  commands?: IncomingCommand[]
+}
+
+/**
+ * Build the JSON body that gets POSTed to the cloud. Exposed for
+ * tests / diagnostics — production code should just call
+ * sendHeartbeat().
+ */
+export async function buildHeartbeatPayload(): Promise<HeartbeatPayload> {
+  const config = await configService.getConfig()
+
+  const subsystemIdRaw = config.subsystemId
+  let currentSubsystemId: number | null = null
+  if (subsystemIdRaw) {
+    const parsed = parseInt(String(subsystemIdRaw), 10)
+    currentSubsystemId = Number.isFinite(parsed) ? parsed : null
+  }
+
+  return {
+    machineId: getMachineId(),
+    hostname: os.hostname() || null,
+    version: getCurrentAppVersion() || null,
+    // TODO: server-side has no clean read on the active operator. The
+    // JWT (lib/auth/jwt.ts) carries fullName but not email, and the
+    // canonical identity lives in browser localStorage via
+    // lib/user-context.tsx. Sending null until the auth model exposes
+    // an email on the server side (e.g. by storing it in the JWT
+    // payload and threading it through a server-held "active session"
+    // map keyed off machineId).
+    currentUserEmail: null,
+    currentSubsystemId,
+    // TODO: there is no first-class "currentMcm" in config.json — MCM
+    // identity is encoded in PlcProfile.name but the active profile
+    // isn't recorded anywhere. Leaving null until we add an active-
+    // profile pointer to config or derive it from subsystemId.
+    currentMcm: null,
+    systemInfo: collectSystemInfo(),
+  }
+}
+
+/**
+ * Fire a single heartbeat. Never throws, never blocks longer than
+ * HEARTBEAT_TIMEOUT_MS.
+ */
+export async function sendHeartbeat(): Promise<void> {
+  let payload: HeartbeatPayload
+  try {
+    payload = await buildHeartbeatPayload()
+  } catch (err) {
+    console.warn('[Heartbeat] Failed to build payload:', err instanceof Error ? err.message : err)
+    return
+  }
+
+  let remoteUrl: string
+  let apiKey: string
+  try {
+    const config = await configService.getConfig()
+    remoteUrl = (config.remoteUrl || '').replace(/\/$/, '')
+    apiKey = config.apiPassword || ''
+  } catch (err) {
+    console.warn('[Heartbeat] Failed to load config:', err instanceof Error ? err.message : err)
+    return
+  }
+
+  if (!remoteUrl) {
+    // Nothing to talk to — silent skip.
+    return
+  }
+  if (!apiKey) {
+    // Without an apiKey the cloud will 401. Don't burn cycles on it.
+    return
+  }
+
+  // Attach any results queued since the last successful heartbeat.
+  // Drained eagerly so they're cleared from the queue; if the POST
+  // fails below we requeue() them so they retry next tick.
+  const drained = drainResults()
+  if (drained.length > 0) {
+    payload.commandResults = drained
+  }
+
+  let resp: Response
+  try {
+    resp = await fetch(`${remoteUrl}${HEARTBEAT_PATH}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(HEARTBEAT_TIMEOUT_MS),
+    })
+  } catch (err) {
+    // Network error, timeout, DNS failure — fine, we'll try again on
+    // the next tick. Put any drained results back so they ship then.
+    requeue(drained)
+    const msg = err instanceof Error ? err.message : String(err)
+    if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED') && !msg.includes('aborted')) {
+      console.warn(`[Heartbeat] Send error: ${msg}`)
+    }
+    return
+  }
+
+  if (!resp.ok) {
+    // 401/403 likely means apiKey changed or project was deleted;
+    // 5xx means cloud is having a moment. The drained results never
+    // made it to durable storage — requeue so they retry next tick.
+    requeue(drained)
+    console.warn(`[Heartbeat] Cloud responded ${resp.status}`)
+    return
+  }
+
+  // Response handling is best-effort: a malformed body or a misbehaving
+  // command executor must never crash the heartbeat loop.
+  try {
+    const body = (await resp.json()) as HeartbeatResponseBody
+    const commands = Array.isArray(body?.commands) ? body.commands : []
+    if (commands.length === 0) return
+
+    // ping is fast; parallelizing keeps the loop snappy even if a
+    // future command type sneaks in a small await. allSettled because
+    // executeCommand() already swallows errors, but defense in depth.
+    const results = await Promise.allSettled(commands.map((cmd) => executeCommand(cmd)))
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        enqueueResult(r.value)
+      } else {
+        // executeCommand is designed not to reject, but if it ever
+        // does we still want to give the cloud some feedback.
+        const msg = r.reason instanceof Error ? r.reason.message : String(r.reason)
+        console.warn(`[Heartbeat] executeCommand rejected: ${msg}`)
+      }
+    }
+  } catch (err) {
+    console.warn(
+      '[Heartbeat] Failed to handle response:',
+      err instanceof Error ? err.message : err,
+    )
+  }
+}
+
+let loopTimer: NodeJS.Timeout | null = null
+
+/**
+ * Start a standalone heartbeat loop. Most callers should instead let
+ * auto-sync.ts piggyback on its existing 30 s pushTimer (one timer,
+ * one log line per cycle). This is here for callers that want an
+ * independent loop (e.g. unit tests, scripts).
+ */
+export function startHeartbeatLoop(intervalMs = 30_000): void {
+  if (loopTimer) return
+  // Fire immediately so a freshly-started tool reports in right away.
+  void sendHeartbeat()
+  loopTimer = setInterval(() => { void sendHeartbeat() }, intervalMs)
+}
+
+export function stopHeartbeatLoop(): void {
+  if (loopTimer) {
+    clearInterval(loopTimer)
+    loopTimer = null
+  }
+}

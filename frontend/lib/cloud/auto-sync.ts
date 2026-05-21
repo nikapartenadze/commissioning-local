@@ -18,6 +18,7 @@ import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/clou
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
+import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 30000 (30s)
@@ -75,11 +76,21 @@ class AutoSyncService {
 
     this._running = true
 
-    // Start push loop (drain pending syncs)
-    this.pushTimer = setInterval(() => this.pushToCloud(), this.config.pushIntervalMs)
+    // Start push loop (drain pending syncs).
+    // Heartbeat piggybacks on this same tick — fire-and-forget so it
+    // can never block or fail the IO push.
+    this.pushTimer = setInterval(() => {
+      this.pushToCloud()
+      void sendHeartbeat()
+    }, this.config.pushIntervalMs)
 
-    // Do an initial push attempt after 5 seconds (let server fully start)
-    setTimeout(() => this.pushToCloud(), 5000)
+    // Do an initial push attempt after 5 seconds (let server fully start).
+    // Same logic for heartbeat — let a freshly-started tool report in
+    // right away rather than waiting a full 30 s cycle.
+    setTimeout(() => {
+      this.pushToCloud()
+      void sendHeartbeat()
+    }, 5000)
 
     // Push network status to cloud every 5 seconds (lightweight, tag booleans only)
     this.networkStatusTimer = setInterval(() => this.pushNetworkStatus(), 5000)
