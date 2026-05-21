@@ -49,19 +49,8 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'SPARE IOs cannot be passed' })
     }
 
-    // Installation gate (matches /api/ios/[id]/test): block Pass only.
-    // Fail stays allowed so a tech can flag uninstalled IOs as failed.
-    if (
-      normalizedResult === TEST_CONSTANTS.RESULT_PASSED &&
-      io.InstallationStatus &&
-      io.InstallationStatus !== 'complete'
-    ) {
-      return res.status(422).json({
-        error: 'Cannot pass: device is not fully installed',
-        installationStatus: io.InstallationStatus,
-        installationPercent: io.InstallationPercent,
-      })
-    }
+    // Install-tracker status is informational only — techs often test devices
+    // before the tracker is updated, so Pass is no longer gated on it.
 
     // Best-effort PLC state for the history row — null if PLC isn't connected.
     let plcState: string | null = null

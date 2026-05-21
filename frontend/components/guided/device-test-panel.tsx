@@ -208,21 +208,8 @@ export function DeviceTestPanel({
       window.setTimeout(() => setPersistError(null), 4000)
       return
     }
-    // Installation gate — mirror /api/guided/test (server enforces too).
-    // Block Pass when an install-tracker record says the IO isn't fully
-    // installed yet. Fail stays allowed.
-    if (result === 'Passed') {
-      const targetIo = ios?.find(i => i.id === ioId)
-      if (
-        targetIo?.installationStatus &&
-        targetIo.installationStatus !== 'complete'
-      ) {
-        const pct = Math.floor((targetIo.installationPercent ?? 0) * 100)
-        setPersistError(`Cannot pass — install at ${pct}%. Device must be fully installed first.`)
-        window.setTimeout(() => setPersistError(null), 4000)
-        return
-      }
-    }
+    // Install-tracker status no longer gates Pass — techs often test devices
+    // before the tracker is updated.
     // Optimistic flash + colour
     setLocalResults(s => ({ ...s, [ioId]: result }))
     setFlashIoId(ioId)
@@ -426,19 +413,12 @@ export function DeviceTestPanel({
     return { passed: p, failed: f, total: ios.length }
   }, [ios, localResults])
 
-  /** Pass is blocked when the install-tracker says the device isn't fully
-   * installed. Mirrors the server gate in /api/guided/test. Fail stays
-   * allowed so techs can flag uninstalled IOs. */
-  const passBlockedByInstall =
-    !!currentIo?.installationStatus && currentIo.installationStatus !== 'complete'
   /** Parent device has an active PLC connection fault. Same handling as
    *  the regular grid: block both Pass and Fail; explain why. */
   const deviceFaulted = !!(device && faultedDevices?.has(device.deviceName))
   const passBlockedReason = deviceFaulted
     ? `Cannot test — ${device?.deviceName} has a PLC connection fault. Fix the fault first.`
-    : passBlockedByInstall && currentIo
-      ? `Cannot pass — install at ${Math.floor((currentIo.installationPercent ?? 0) * 100)}%. Device must be fully installed first.`
-      : null
+    : null
 
   /* Live PLC tag state, sourced from the WS broadcast that the tag reader
    * publishes (every state change + a TagSnapshot on connect). Mirrors the
@@ -778,7 +758,7 @@ export function DeviceTestPanel({
                 <button
                   className="gm-action gm-action-pass"
                   onClick={() => markResult(currentIo.id, 'Passed')}
-                  disabled={pendingIoId === currentIo.id || passBlockedByInstall || deviceFaulted}
+                  disabled={pendingIoId === currentIo.id || deviceFaulted}
                   title={passBlockedReason ?? undefined}
                 >
                   <Check size={18} /> {pendingIoId === currentIo.id ? 'Saving…' : 'Pass'}

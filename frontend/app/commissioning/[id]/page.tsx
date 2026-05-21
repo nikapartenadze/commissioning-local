@@ -1280,18 +1280,8 @@ export default function CommissioningPage() {
   }
 
   const handleMarkPassed = async (io: IoItem) => {
-    // Installation gate — client-side mirror of /api/ios/[id]/test.
-    // Pass is blocked when an installation-tracker record exists and
-    // isn't `complete`; null InstallationStatus means no tracker data
-    // yet and we fall through (don't lock out legacy IOs).
-    if (io.installationStatus && io.installationStatus !== 'complete') {
-      toast({
-        title: "Cannot pass — device not installed",
-        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before passing.`,
-        variant: "destructive"
-      })
-      return
-    }
+    // Install-tracker status is informational only — techs often test devices
+    // before the tracker is updated, so we don't block Pass on it.
 
     // Block if parent device is faulted (only for IOs with real network devices)
     const deviceName = io.networkDeviceName || getDeviceName(io.name)
@@ -1361,16 +1351,6 @@ export default function CommissioningPage() {
   }
 
   const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
-    // Temporary bypass: allow testing even when installation is not complete
-    if (false && io.installationStatus && io.installationStatus !== 'complete') {
-      toast({
-        title: "Cannot test — device not installed",
-        description: `Installation at ${Math.floor((io.installationPercent ?? 0) * 100)}%. Device must be fully installed before testing.`,
-        variant: "destructive"
-      })
-      return
-    }
-
     // Block if parent device is faulted (only for IOs with real network devices)
     const failDeviceName = io.networkDeviceName || getDeviceName(io.name)
     if (io.hasNetworkDevice && failDeviceName && faultedDevices.has(failDeviceName)) {

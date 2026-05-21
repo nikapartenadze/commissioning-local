@@ -75,14 +75,6 @@ export async function PUT(req: Request, res: Response) {
       return res.status(404).json({ error: 'IO not found' })
     }
 
-    if (false && io.InstallationStatus && io.InstallationStatus !== 'complete') {
-      return res.status(422).json({
-        error: 'Cannot test: device is not fully installed',
-        installationStatus: io.InstallationStatus,
-        installationPercent: io.InstallationPercent
-      })
-    }
-
     const { tags } = getPlcTags()
     const tag = tags.find(t => t.id === ioId)
     const plcState = tag?.state
