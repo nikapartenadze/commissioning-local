@@ -514,15 +514,41 @@ export class CloudSyncService {
       }
 
       if (response.ok) {
-        let responseData: { updatedCount?: number } | null = null
+        type SyncResp = {
+          updatedCount?: number
+          rejected?: { id: number; reason: string; permanent?: boolean }[]
+        }
+        let responseData: SyncResp | null = null
         try {
-          responseData = await response.json()
+          responseData = await response.json() as SyncResp
         } catch {
           responseData = null
         }
 
+        // Cloud now surfaces rejections explicitly (added 2026-05-21 after the
+        // silent-drop incident). If our IO was rejected with permanent=true,
+        // the next retry will fail the same way — treat it as a hard failure
+        // and let the AutoSync drop logic delete the PendingSync immediately.
+        const rejection = responseData?.rejected?.find(r => r.id === update.id)
+        if (rejection?.permanent) {
+          log.error(
+            `[CloudSync] Cloud PERMANENTLY rejected IO ${update.id}: ${rejection.reason}. ` +
+            `Payload was: result=${JSON.stringify(update.result)}, version=${update.version}, ` +
+            `state=${JSON.stringify(update.state)}, testedBy=${JSON.stringify(update.testedBy)}. ` +
+            `Local SQLite still has this IO's state — re-pass/fail/clear in the grid if the value is wrong on cloud.`
+          )
+          return false
+        }
+
         if (responseData?.updatedCount !== undefined && responseData.updatedCount < 1) {
-          log.warn(`Cloud accepted HTTP request for IO ${update.id} but updatedCount=0 — IO may not exist on cloud`)
+          // Log the full payload so logs.zip captures enough to recover from.
+          log.warn(
+            `[CloudSync] Cloud accepted HTTP request for IO ${update.id} but updatedCount=0. ` +
+            `Payload: result=${JSON.stringify(update.result)}, version=${update.version}, ` +
+            `tester=${JSON.stringify(update.testedBy)}, state=${JSON.stringify(update.state)}, ` +
+            `ts=${update.timestamp}. ` +
+            `Most likely cause: version mismatch (cloud already moved past local).`
+          )
           return false
         }
 

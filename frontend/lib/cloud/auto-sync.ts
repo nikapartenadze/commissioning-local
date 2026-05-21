@@ -196,15 +196,41 @@ class AutoSyncService {
       // version. Cloud-side note in the log so operators know what to do.
       const IO_PENDING_RETRY_CAP = 10
       try {
+        // Before deleting, log each row in detail. The 2026-05-21 incident
+        // showed that the previous "Dropped N rows" summary was useless for
+        // recovery — once the rows were gone, we couldn't see which IOs lost
+        // a test or who tested them. Now every drop emits a structured line
+        // that grep can find later.
+        const toDrop = db.prepare(
+          `SELECT id, IoId, InspectorName, TestResult, Comments, State, Version, Timestamp, RetryCount, CreatedAt
+             FROM PendingSyncs WHERE RetryCount >= ?`
+        ).all(IO_PENDING_RETRY_CAP) as PendingSync[]
+
+        if (toDrop.length > 0) {
+          console.warn(
+            `[AutoSync] DROPPING ${toDrop.length} IO pending sync row(s) that exceeded ` +
+            `retry cap (${IO_PENDING_RETRY_CAP}). ` +
+            `Cloud likely already has the values or the IO does not exist on cloud — ` +
+            `Pull IOs to verify; re-pass/fail/clear in the grid if any result is missing.`
+          )
+          for (const p of toDrop) {
+            console.warn(
+              `[AutoSync] DROP-DETAIL pendingId=${p.id} ioId=${p.IoId} ` +
+              `result=${JSON.stringify(p.TestResult)} ` +
+              `version=${p.Version} tester=${JSON.stringify(p.InspectorName)} ` +
+              `state=${JSON.stringify(p.State)} ` +
+              `comments=${JSON.stringify(p.Comments)} ` +
+              `ts=${p.Timestamp} retries=${p.RetryCount} createdAt=${p.CreatedAt}`
+            )
+          }
+        }
+
         const dropped = db.prepare(
           `DELETE FROM PendingSyncs WHERE RetryCount >= ?`
         ).run(IO_PENDING_RETRY_CAP)
-        if (dropped.changes > 0) {
+        if (dropped.changes > 0 && dropped.changes !== toDrop.length) {
           console.warn(
-            `[AutoSync] Dropped ${dropped.changes} IO pending sync row(s) that exceeded ` +
-            `retry cap (${IO_PENDING_RETRY_CAP}). Cloud likely already has the values or ` +
-            `the IO does not exist on cloud — Pull IOs to verify; re-pass/fail/clear in ` +
-            `the grid if any result is missing.`
+            `[AutoSync] DROP count mismatch: expected ${toDrop.length}, deleted ${dropped.changes}`
           )
         }
       } catch (e) {
