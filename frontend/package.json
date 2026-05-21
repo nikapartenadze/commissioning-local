@@ -1,6 +1,6 @@
 {
   "name": "commissioning-tool",
-  "version": "2.35.1",
+  "version": "2.35.2",
   "private": true,
   "scripts": {
     "dev": "cross-env PORT=3010 PLC_WS_PORT=3012 WS_BROADCAST_URL=http://localhost:3112/broadcast concurrently \"vite --port 5173 --host 0.0.0.0\" \"tsx watch server-express.ts\"",
@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:plc": "tsx test-plc.ts",
     "test:plc:simple": "tsx test-plc-simple.ts",
+    "test:plc:network": "tsx test-network-poll.ts",
     "seed:diagnostics": "tsx prisma/seed-diagnostics.ts",
     "seed:network": "tsx prisma/seed-network.ts",
     "seed:estop": "tsx prisma/seed-estop.ts",

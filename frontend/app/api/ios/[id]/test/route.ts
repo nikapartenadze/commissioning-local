@@ -47,22 +47,8 @@ export async function POST(req: Request, res: Response) {
       return res.status(404).json({ error: 'IO not found' })
     }
 
-    // Installation gate: only blocks Pass. Fail is allowed on
-    // not-yet-installed IOs so the audit trail captures "this couldn't
-    // even be tested." Null InstallationStatus means no data from the
-    // tracker yet — fall through and don't block (legacy IOs without
-    // install-tracker integration shouldn't get locked out).
-    if (
-      normalizedResult === TEST_CONSTANTS.RESULT_PASSED &&
-      io.InstallationStatus &&
-      io.InstallationStatus !== 'complete'
-    ) {
-      return res.status(422).json({
-        error: 'Cannot pass: device is not fully installed',
-        installationStatus: io.InstallationStatus,
-        installationPercent: io.InstallationPercent,
-      })
-    }
+    // Install-tracker status is informational only — techs often test devices
+    // before the tracker is updated, so Pass is no longer gated on it.
 
     if (io.Description?.toUpperCase().includes('SPARE') && normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
       return res.status(400).json({ error: 'SPARE IOs cannot be passed' })
