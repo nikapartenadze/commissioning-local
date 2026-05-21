@@ -3,9 +3,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy, Check } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy, Check, Activity } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
+import { NetworkDiagnosticsDrawer } from '@/components/network-diagnostics-drawer'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -129,11 +130,13 @@ function RingLayout({
   expandedNodeId,
   onToggleNode,
   tagStates,
+  onOpenDiagnostics,
 }: {
   ring: NetworkRing
   expandedNodeId: number | null
   onToggleNode: (id: number) => void
   tagStates: Record<string, boolean | null>
+  onOpenDiagnostics?: (deviceName: string) => void
 }) {
   const nodes = ring.nodes
   const NODES_PER_ROW = 4
@@ -262,31 +265,48 @@ function RingLayout({
     const connectedDevices = directPorts.filter(p => getStatusColor(p.statusTag, tagStates) === 'green').length
     const allConnected = connectedDevices === totalDevices && totalDevices > 0
     return (
-      <button
-        onClick={() => onToggleNode(node.id)}
-        className={cn(
-          'w-full relative rounded-lg border-2 px-4 py-3 text-center transition-all',
-          status === 'green'
-              ? 'border-green-600 bg-green-600/90 text-white hover:bg-green-600'
-              : status === 'red'
-                ? 'border-red-600 bg-red-600/90 text-white hover:bg-red-600'
-                : 'border-gray-500 bg-gray-500/90 text-white hover:bg-gray-500',
-          isExpanded && 'ring-2 ring-white/70 shadow-lg scale-[1.03]'
-        )}
-      >
-        <p className="text-sm font-bold text-white">{node.name}</p>
-        <p className="text-xs font-mono text-white/70 mt-0.5">{node.ipAddress || ''}</p>
-        <p className="mt-1.5 text-xs font-bold text-white/90">
-          {connectedDevices}/{totalDevices} connected
-        </p>
-        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
-          {isExpanded ? (
-            <ChevronDown className="w-4 h-4 text-white" />
-          ) : (
-            <ChevronRight className="w-4 h-4 text-white/60 rotate-90" />
+      <div className="relative">
+        <button
+          onClick={() => onToggleNode(node.id)}
+          className={cn(
+            'w-full relative rounded-lg border-2 px-4 py-3 text-center transition-all',
+            status === 'green'
+                ? 'border-green-600 bg-green-600/90 text-white hover:bg-green-600'
+                : status === 'red'
+                  ? 'border-red-600 bg-red-600/90 text-white hover:bg-red-600'
+                  : 'border-gray-500 bg-gray-500/90 text-white hover:bg-gray-500',
+            isExpanded && 'ring-2 ring-white/70 shadow-lg scale-[1.03]'
           )}
-        </div>
-      </button>
+        >
+          <p className="text-sm font-bold text-white">{node.name}</p>
+          <p className="text-xs font-mono text-white/70 mt-0.5">{node.ipAddress || ''}</p>
+          <p className="mt-1.5 text-xs font-bold text-white/90">
+            {connectedDevices}/{totalDevices} connected
+          </p>
+          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
+            {isExpanded ? (
+              <ChevronDown className="w-4 h-4 text-white" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-white/60 rotate-90" />
+            )}
+          </div>
+        </button>
+        {/* Diagnostics action — separate button so we don't nest <button> inside <button>. */}
+        {onOpenDiagnostics && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenDiagnostics(node.name)
+            }}
+            className="absolute top-1 right-1 p-1 rounded text-white/80 hover:text-white hover:bg-white/20 transition-colors"
+            title={`Port-level diagnostics for ${node.name}`}
+            aria-label={`Open diagnostics for ${node.name}`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
     )
   }
 
@@ -780,6 +800,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [tagStates, setTagStates] = useState<Record<string, boolean | null>>({})
   // Device table always visible in right panel
   const [tableSearch, setTableSearch] = useState('')
+  // Which network node's port-level diagnostics drawer is open (deviceName), or null.
+  const [diagnosticsDevice, setDiagnosticsDevice] = useState<string | null>(null)
 
   // Poll PLC for network device status tags every 3 seconds
   useEffect(() => {
@@ -1009,6 +1031,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                 expandedNodeId={expandedNodeId}
                 onToggleNode={handleToggleNode}
                 tagStates={tagStates}
+                onOpenDiagnostics={setDiagnosticsDevice}
               />
             </div>
 
@@ -1170,6 +1193,11 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         </div>
       )}
 
+      <NetworkDiagnosticsDrawer
+        open={diagnosticsDevice !== null}
+        onOpenChange={(o) => { if (!o) setDiagnosticsDevice(null) }}
+        deviceName={diagnosticsDevice ?? ''}
+      />
     </div>
   )
 }

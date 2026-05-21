@@ -366,6 +366,57 @@ export interface L2CellUpdatedMessage {
 }
 
 /**
+ * Broadcast emitted by the server-side NetworkPoller (lib/plc/network/poller.ts)
+ * every ~5 s per discovered network device. Carries one full UDT_NETWORK_NODE_DATA
+ * snapshot. Subscribers should filter by `snapshot.deviceName` because the message
+ * is broadcast to every connected client. Shape stays in lockstep with
+ * NetworkDeviceSnapshot in lib/plc/network/types.ts.
+ */
+export interface NetworkDeviceSnapshotMessage {
+  type: 'NetworkDeviceSnapshot'
+  snapshot: {
+    tagName: string
+    deviceName: string
+    productCode: number
+    firmwareMajor: number
+    firmwareMinor: number
+    ports: Array<{
+      portNumber: number
+      linkUp: boolean
+      fullDuplex: boolean
+      resetRequired: boolean
+      hardwareFault: boolean
+      linkStatusRaw: number
+      speedMbps: number
+      octetsIn: number
+      ucastIn: number
+      nucastIn: number
+      discardsIn: number
+      errorsIn: number
+      unknownProtosIn: number
+      octetsOut: number
+      ucastOut: number
+      nucastOut: number
+      discardsOut: number
+      errorsOut: number
+      alignErr: number
+      fcsErr: number
+      singleColl: number
+      multiColl: number
+      sqeErr: number
+      deferredTx: number
+      lateColl: number
+      excessColl: number
+      macTxErr: number
+      carrierSense: number
+      frameTooLong: number
+      macRxErr: number
+    }>
+    capturedAt: number
+  }
+}
+
+/**
  * Broadcast emitted by the server-side VFD wizard reader (lib/vfd-wizard-reader.ts)
  * roughly every 50 ms while a wizard is open for a device. Carries a snapshot of
  * the eight STS+keypad tags. Subscribers should filter by `deviceName` because
@@ -393,3 +444,4 @@ export type PlcWebSocketMessage =
   | CloudConnectionChangedMessage
   | L2CellUpdatedMessage
   | VfdTagUpdateMessage
+  | NetworkDeviceSnapshotMessage
