@@ -11,7 +11,8 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 import { db } from '@/lib/db-sqlite'
 import { resolveDatabasePath } from '@/lib/storage-paths'
-import { hasPlcClient, getPlcStatus } from '@/lib/plc-client-manager'
+import { hasPlcClient, getPlcStatus, getLatestNetworkDeviceSnapshots } from '@/lib/plc-client-manager'
+import type { NetworkDeviceSnapshot } from '@/lib/plc/network'
 
 // Captured once at module load — the moment the server process started.
 const PROCESS_STARTED_AT = new Date().toISOString()
@@ -47,6 +48,13 @@ export interface HeartbeatSystemInfo {
   }
   pendingSyncCount?: number
   lastCloudSyncAt?: string | null
+  /**
+   * Most recent UDT_NETWORK_NODE_DATA snapshot per discovered device.
+   * Populated only when `config.networkPollingEnabled` is true and the
+   * poller has completed at least one cycle. Cloud receiver stores this
+   * inside the systemInfo JSONB blob; no separate column.
+   */
+  networkDevices?: NetworkDeviceSnapshot[]
 }
 
 function bytesToMb(bytes: number): number {
@@ -173,6 +181,7 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
 
   const disk = collectDisk()
   const dbSizeMb = collectDbSizeMb()
+  const networkDevices = collectNetworkDevices()
 
   return {
     os: {
@@ -200,5 +209,19 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
     plc: collectPlcStatus(),
     pendingSyncCount: collectPendingSyncCount(),
     lastCloudSyncAt: collectLastCloudSyncAt(),
+    ...(networkDevices.length > 0 ? { networkDevices } : {}),
+  }
+}
+
+function collectNetworkDevices(): NetworkDeviceSnapshot[] {
+  // Best-effort: never let a poller crash break the heartbeat.
+  try {
+    return getLatestNetworkDeviceSnapshots()
+  } catch (err) {
+    console.warn(
+      '[Heartbeat] Failed to read network device snapshots:',
+      err instanceof Error ? err.message : err,
+    )
+    return []
   }
 }

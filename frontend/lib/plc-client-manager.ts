@@ -15,6 +15,8 @@ import {
   type ConnectionStatus,
   type IoTag,
 } from './plc';
+import { NetworkPoller, type NetworkDeviceSnapshot } from './plc/network';
+import { configService } from './config';
 
 // WebSocket broadcast HTTP endpoint (WS port + 100 = HTTP broadcast port)
 const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast';
@@ -50,6 +52,7 @@ interface PlcGlobalState {
   plcClientInstance: PlcClient | null;
   libraryInitialized: boolean;
   currentConnectionConfig: PlcConnectionConfig | null;
+  networkPoller: NetworkPoller | null;
 }
 
 const globalForPlc = globalThis as unknown as {
@@ -62,6 +65,7 @@ if (!globalForPlc.plcState) {
     plcClientInstance: null,
     libraryInitialized: false,
     currentConnectionConfig: null,
+    networkPoller: null,
   };
 }
 
@@ -197,6 +201,13 @@ function setupClientEventListeners(client: PlcClient): void {
     }
   });
 
+  // On successful PLC connection, start the network device poller if the
+  // feature flag is on. Independent of the IO tag reader — its own handles,
+  // its own loop. Failures never affect IO testing.
+  client.on('initialized', () => {
+    void startNetworkPollerIfEnabled();
+  });
+
   // On successful PLC connection, sync VFD validation flags (Valid_Map,
   // Valid_HP, Valid_Direction) for all devices whose checks are completed.
   // Runs after a short delay so the tag reader is fully up before we create
@@ -253,6 +264,71 @@ function setupClientEventListeners(client: PlcClient): void {
       timestamp: new Date().toISOString(),
     });
   });
+}
+
+/**
+ * Start the network device poller if enabled in config. Idempotent — calling
+ * it twice while one is already running is a no-op.
+ */
+async function startNetworkPollerIfEnabled(): Promise<void> {
+  const state = getState();
+  if (state.networkPoller) return;
+
+  let cfg;
+  try {
+    cfg = await configService.getConfig();
+  } catch (err) {
+    console.warn('[PlcClientManager] Could not load config for network poller:', err);
+    return;
+  }
+  if (!cfg.networkPollingEnabled) return;
+
+  const connConfig = state.currentConnectionConfig;
+  if (!connConfig) return;
+
+  const poller = new NetworkPoller({
+    fallbackDevices: cfg.networkPollingDevices ?? [],
+  });
+  poller.setConnection(connConfig.ip, connConfig.path);
+
+  poller.on('snapshot', (snapshot) => {
+    broadcastToWebSocket({
+      type: 'NetworkDeviceSnapshot',
+      snapshot,
+    });
+  });
+  poller.on('discovered', (names) => {
+    console.log(`[PlcClientManager] Network poller discovered ${names.length} device(s)`);
+  });
+  poller.on('deviceError', (deviceName, errorMessage) => {
+    console.warn(`[PlcClientManager] Network poller device ${deviceName}: ${errorMessage}`);
+  });
+
+  state.networkPoller = poller;
+  syncState();
+  await poller.start();
+}
+
+/**
+ * Stop and dispose the network poller. Safe to call when no poller exists.
+ */
+async function stopNetworkPoller(): Promise<void> {
+  const state = getState();
+  const poller = state.networkPoller;
+  if (!poller) return;
+  state.networkPoller = null;
+  syncState();
+  await poller.stop();
+}
+
+/**
+ * Get the most recent network device snapshots, one per device. Empty array
+ * when the poller is off or hasn't completed a cycle yet. Used by the
+ * heartbeat service to ship the data to the cloud.
+ */
+export function getLatestNetworkDeviceSnapshots(): NetworkDeviceSnapshot[] {
+  const state = getState();
+  return state.networkPoller?.getLatestSnapshots() ?? [];
 }
 
 /**
@@ -332,6 +408,7 @@ export async function disconnectPlc(): Promise<{
       };
     }
 
+    await stopNetworkPoller();
     await state.plcClientInstance.disconnect();
     state.currentConnectionConfig = null;
     syncState();
@@ -425,6 +502,10 @@ export function loadPlcTags(tags: IoTag[]): void {
 export function disposePlcClient(): void {
   syncState();
   const state = getState();
+
+  // Fire-and-forget — dispose is synchronous from callers' perspective and the
+  // poller stop only awaits handle destruction, which is fast and best-effort.
+  void stopNetworkPoller();
 
   if (state.plcClientInstance) {
     state.plcClientInstance.dispose();
