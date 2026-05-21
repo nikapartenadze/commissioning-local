@@ -101,34 +101,76 @@ export async function PUT(req: Request, res: Response) {
 
     const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
-    try {
-      db.prepare(
-        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(
-        ioId,
-        currentUser || null,
-        updatedIo.Result || null,
-        (sanitizedComments !== undefined ? sanitizedComments : io.Comments) || null,
-        plcState ?? null,
-        new Date().toISOString(),
-        newVersion - 1
+    // Determine sync intent.
+    //
+    // Historical bug (2026-05-21 incident): we used to write
+    //   TestResult = updatedIo.Result || null
+    // which sent `result: null` to /api/sync/update whenever someone added a
+    // comment to an IO that hadn't been pass/failed yet. The cloud handler
+    // didn't recognize null as a comment op, so it interpreted the push as a
+    // "set result to null" instruction, bumped ios.version, and wrote a
+    // testhistories row with result=null. Once cloud.version had moved on, the
+    // electrician's later real Pass push always lost the version race
+    // (updatedCount=0) and was eventually dropped from PendingSyncs after the
+    // retry cap, silently losing the test.
+    //
+    // Fix: a PendingSync row must always carry an explicit operation string
+    // the cloud handler understands ('Passed' / 'Failed' / 'Cleared' / one of
+    // the 'Comment …' ops). If we can't classify the change, we skip the
+    // sync — local state is the source of truth and the next real test will
+    // sync correctly.
+    const commentsChanged = (sanitizedComments ?? '') !== (io.Comments ?? '')
+    const resultChanged = result !== undefined && result !== io.Result
+
+    let syncIntent: string | null = null
+    if (resultChanged) {
+      // Real test result push (Pass / Fail / Cleared).
+      syncIntent = updatedIo.Result || null
+    } else if (commentsChanged) {
+      // Comment-only update — map to one of the cloud's comment ops.
+      const oldHadComment = !!(io.Comments && io.Comments.length > 0)
+      const newHasComment = !!(sanitizedComments && sanitizedComments.length > 0)
+      if (!oldHadComment && newHasComment) syncIntent = 'Comment Added'
+      else if (oldHadComment && !newHasComment) syncIntent = 'Comment Removed'
+      else if (oldHadComment && newHasComment) syncIntent = 'Comment Modified'
+    }
+
+    if (!syncIntent) {
+      console.log(
+        `[IO Update] No syncable change for IO ${ioId} ` +
+        `(resultChanged=${resultChanged}, commentsChanged=${commentsChanged}) — ` +
+        `skipping PendingSync to avoid sending result=null to cloud.`
       )
-
+    } else {
       try {
-        const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
-        getCloudSseClient()?.trackPushedId(ioId)
-      } catch (e) { console.warn('[IO Update SSE] trackPushedId failed:', e) }
+        db.prepare(
+          'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(
+          ioId,
+          currentUser || null,
+          syncIntent,
+          (sanitizedComments !== undefined ? sanitizedComments : io.Comments) || null,
+          plcState ?? null,
+          new Date().toISOString(),
+          newVersion - 1
+        )
 
-      const key = `io:${ioId}`
-      enqueueSyncPush(key, async () => {
         try {
-          await drainPendingSyncsForIo(ioId, 'IO Update', currentUser)
-        } catch (syncErr) {
-          console.warn(`[IO Update] Instant sync error for IO ${ioId}:`, syncErr instanceof Error ? syncErr.message : syncErr)
-        }
-      })
-    } catch (syncError) {
-      console.error('[IO Update] Failed to create PendingSync:', syncError)
+          const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
+          getCloudSseClient()?.trackPushedId(ioId)
+        } catch (e) { console.warn('[IO Update SSE] trackPushedId failed:', e) }
+
+        const key = `io:${ioId}`
+        enqueueSyncPush(key, async () => {
+          try {
+            await drainPendingSyncsForIo(ioId, 'IO Update', currentUser)
+          } catch (syncErr) {
+            console.warn(`[IO Update] Instant sync error for IO ${ioId}:`, syncErr instanceof Error ? syncErr.message : syncErr)
+          }
+        })
+      } catch (syncError) {
+        console.error('[IO Update] Failed to create PendingSync:', syncError)
+      }
     }
 
     try {
