@@ -21,13 +21,15 @@ import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 
 export interface AutoSyncConfig {
-  pushIntervalMs: number    // default 30000 (30s)
+  pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
+                            // cloud→laptop commands (ping/update) round-trip
+                            // in seconds rather than minutes.
   enabled: boolean          // default true
   maxRetries: number        // default 3
 }
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
-  pushIntervalMs: 30000,
+  pushIntervalMs: 10000,
   enabled: true,
   maxRetries: 3,
 }
