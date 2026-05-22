@@ -179,11 +179,12 @@ export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] 
     focusedDoneRef.current = false
   }, [active, focusDevice])
 
-  // Scroll the focused device section into view as soon as its snapshot
-  // arrives. We watch `devices` so this fires after the section is rendered.
+  // Scroll the focused device section into view. Tries when the modal opens
+  // (skeleton section is already rendered from knownDevices) AND again when
+  // the first live snapshot lands (in case the device wasn't in knownDevices
+  // but appears via WS). Fires at most once per modal-open via the ref guard.
   useEffect(() => {
     if (!active || !focusDevice || focusedDoneRef.current) return
-    if (!devices.has(focusDevice)) return
     // Defer to the next paint so the section has its DOM node.
     const id = window.setTimeout(() => {
       const el = document.getElementById(`${focusDevice}_NN`)
@@ -191,9 +192,9 @@ export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] 
         el.scrollIntoView({ behavior: 'smooth', block: 'start' })
         focusedDoneRef.current = true
       }
-    }, 50)
+    }, 80)
     return () => window.clearTimeout(id)
-  }, [active, focusDevice, devices])
+  }, [active, focusDevice, devices, knownDevices])
 
   // WS subscription scoped to view active state.
   useEffect(() => {

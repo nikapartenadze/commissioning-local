@@ -292,9 +292,11 @@ function RingLayout({
             )}
           </div>
         </button>
-        {/* Diagnostics action — separate button so we don't nest <button> inside <button>.
-            White pill with dark text holds contrast against the saturated
-            green/red/gray card background in both light and dark modes. */}
+        {/* Diagnostics action — separate button so we don't nest <button>
+            inside <button>. Sits as a badge floating ABOVE the card's top
+            edge so it can't collide with longer node titles like
+            "UL19_2_FIOM1". White pill with dark text holds contrast against
+            the saturated green/red/gray card background. */}
         {onOpenDiagnostics && (
           <button
             type="button"
@@ -302,7 +304,7 @@ function RingLayout({
               e.stopPropagation()
               onOpenDiagnostics(node.name)
             }}
-            className="absolute top-1 right-1 bg-white text-gray-900 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded leading-none hover:bg-gray-100 border border-black/15 shadow-sm"
+            className="absolute -top-2.5 right-2 bg-white text-gray-900 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded hover:bg-gray-100 border border-gray-300 shadow z-10"
             title={`Open diagnostics for ${node.name}`}
             aria-label={`Open diagnostics for ${node.name}`}
           >
