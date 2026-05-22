@@ -23,7 +23,7 @@
  * looks the same regardless of the surrounding Tailwind theme.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { NetworkDeviceSnapshotMessage } from '@/lib/plc/types'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
@@ -33,11 +33,14 @@ interface Props {
   /** Drop the snapshot cache and tear down WS when false. */
   active: boolean
   /**
-   * If set, the view scrolls the matching device's section into view as soon
-   * as its first snapshot arrives. Used when the user opens the modal from a
-   * single node card on the topology page.
+   * When set, the view shows ONLY this device's section (live or skeleton),
+   * with no TOC and no group headers. This is what the per-device Diagnostic
+   * buttons on the topology cards open — the operator gets the full UDT
+   * layout for one device, not a wall of devices to scroll past.
+   *
+   * When undefined, all devices (live + known) render with TOC + groups.
    */
-  focusDevice?: string
+  singleDevice?: string
   /**
    * Optional list of device names the topology already knows about (the ring
    * nodes). These render as skeleton sections when no live snapshot exists,
@@ -158,12 +161,10 @@ interface DeviceState {
   lastSeen: number
 }
 
-export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] }: Props) {
+export function NetworkDiagnosticsView({ active, singleDevice, knownDevices = [] }: Props) {
   const [devices, setDevices] = useState<Map<string, DeviceState>>(new Map())
   const [wsConnected, setWsConnected] = useState(false)
   const [now, setNow] = useState(() => Date.now())
-  /** Tracks whether we've already scrolled to focusDevice this session — only scroll once per modal-open. */
-  const focusedDoneRef = useRef(false)
 
   // 1-second tick so the "Xs ago" / staleness check stays current without
   // re-rendering on every WS message.
@@ -172,29 +173,6 @@ export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] 
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [active])
-
-  // Reset the "have I scrolled to focusDevice yet" flag whenever the modal
-  // opens/closes or the target device changes.
-  useEffect(() => {
-    focusedDoneRef.current = false
-  }, [active, focusDevice])
-
-  // Scroll the focused device section into view. Tries when the modal opens
-  // (skeleton section is already rendered from knownDevices) AND again when
-  // the first live snapshot lands (in case the device wasn't in knownDevices
-  // but appears via WS). Fires at most once per modal-open via the ref guard.
-  useEffect(() => {
-    if (!active || !focusDevice || focusedDoneRef.current) return
-    // Defer to the next paint so the section has its DOM node.
-    const id = window.setTimeout(() => {
-      const el = document.getElementById(`${focusDevice}_NN`)
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        focusedDoneRef.current = true
-      }
-    }, 80)
-    return () => window.clearTimeout(id)
-  }, [active, focusDevice, devices, knownDevices])
 
   // WS subscription scoped to view active state.
   useEffect(() => {
@@ -263,6 +241,18 @@ export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] 
       union.set(ds.snapshot.deviceName, { deviceName: ds.snapshot.deviceName, live: ds })
     }
 
+    // Single-device mode: filter the union to just the target. If the target
+    // wasn't in knownDevices and no snapshot has arrived, we still create a
+    // skeleton entry so the operator sees the full layout placeholder rather
+    // than an empty modal.
+    if (singleDevice) {
+      const target = union.get(singleDevice) ?? { deviceName: singleDevice }
+      return [[deviceTypeOf(target.deviceName), [target]]] as [
+        string,
+        { deviceName: string; live?: DeviceState }[],
+      ][]
+    }
+
     const map = new Map<string, { deviceName: string; live?: DeviceState }[]>()
     for (const entry of Array.from(union.values())) {
       const g = deviceTypeOf(entry.deviceName)
@@ -274,7 +264,7 @@ export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] 
       list.sort((a, b) => a.deviceName.localeCompare(b.deviceName))
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b))
-  }, [devices, knownDevices])
+  }, [devices, knownDevices, singleDevice])
 
   const totalDevices = devices.size
   const totalKnown = useMemo(() => {
@@ -290,14 +280,22 @@ export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] 
       <style>{DIAG_CSS}</style>
 
       <h1>
-        Network Diagnostics
+        {singleDevice ? `Diagnostics — ${singleDevice}` : 'Network Diagnostics'}
         <span className="sub">
-          {totalKnown} device{totalKnown === 1 ? '' : 's'} · {totalDevices} live · {totalGroups} group{totalGroups === 1 ? '' : 's'} ·{' '}
-          {wsConnected ? 'live' : 'reconnecting…'}
+          {singleDevice ? (
+            <>
+              {groups[0]?.[0] ?? 'Other'} · {wsConnected ? 'live' : 'reconnecting…'}
+            </>
+          ) : (
+            <>
+              {totalKnown} device{totalKnown === 1 ? '' : 's'} · {totalDevices} live · {totalGroups} group{totalGroups === 1 ? '' : 's'} ·{' '}
+              {wsConnected ? 'live' : 'reconnecting…'}
+            </>
+          )}
         </span>
       </h1>
 
-      {totalKnown === 0 && (
+      {!singleDevice && totalKnown === 0 && (
         <p className="empty">
           {active
             ? 'No network devices in topology yet. Pull the latest from cloud or connect to a PLC with *_NetworkNode tags.'
@@ -305,15 +303,17 @@ export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] 
         </p>
       )}
 
-      {totalKnown > 0 && (
+      {(singleDevice ? true : totalKnown > 0) && (
         <>
-          <NavToc groups={groups} now={now} />
+          {!singleDevice && <NavToc groups={groups} now={now} />}
 
           {groups.map(([groupName, deviceList]) => (
             <div className="group" key={groupName} id={`grp-${groupName}`}>
-              <h2 className="group-head">
-                {groupName} <span className="group-cnt">{deviceList.length} tag{deviceList.length === 1 ? '' : 's'}</span>
-              </h2>
+              {!singleDevice && (
+                <h2 className="group-head">
+                  {groupName} <span className="group-cnt">{deviceList.length} tag{deviceList.length === 1 ? '' : 's'}</span>
+                </h2>
+              )}
               {deviceList.map((entry) =>
                 entry.live ? (
                   <DeviceSection key={entry.deviceName} state={entry.live} now={now} />
@@ -396,9 +396,10 @@ function NavToc({
 
 /**
  * Placeholder section for a device that the topology knows about but for
- * which no snapshot has arrived yet. Mirrors the DeviceSection structure
- * (header + facts + port grid placeholder) so the operator can see what the
- * page WILL look like before the PLC connects.
+ * which no snapshot has arrived yet. Renders the SAME full layout as a live
+ * DeviceSection (header + facts + 32 port cards each with three panels) but
+ * with em-dash placeholders in every cell. Lets the operator see exactly
+ * which fields will fill in once polling starts.
  */
 function SkeletonSection({ deviceName, active }: { deviceName: string; active: boolean }) {
   return (
@@ -408,6 +409,11 @@ function SkeletonSection({ deviceName, active }: { deviceName: string; active: b
           <h2>
             {deviceName} <span className="tag-status pending">{active ? 'WAITING' : 'INACTIVE'}</span>
           </h2>
+          <p className="skeleton-note">
+            {active
+              ? `Awaiting first UDT snapshot — values fill in within 5 s of the PLC connecting and ${deviceName}_NetworkNode being read.`
+              : 'Diagnostics view inactive — open the modal to subscribe.'}
+          </p>
         </div>
         <div className="facts">
           <div><span className="lbl">Product Code</span><span className="val">—</span></div>
@@ -416,12 +422,68 @@ function SkeletonSection({ deviceName, active }: { deviceName: string; active: b
           <div><span className="lbl">Last Snapshot</span><span className="val">never</span></div>
         </div>
       </div>
-      <div className="skeleton-body">
-        {active
-          ? `Awaiting first UDT snapshot for ${deviceName}. The poller broadcasts every 5 s once the PLC is connected and ${deviceName}_NetworkNode exists in its program.`
-          : `Diagnostics view inactive — open the modal to subscribe.`}
+      <div className="ports">
+        {Array.from({ length: 32 }, (_, i) => (
+          <PlaceholderPortCard portNumber={i + 1} key={i + 1} />
+        ))}
       </div>
     </section>
+  )
+}
+
+/**
+ * Port card rendered with em-dash placeholders. Matches PortCard's structure
+ * exactly so the column widths line up when the modal flips from skeleton to
+ * live data without remounting.
+ */
+function PlaceholderPortCard({ portNumber }: { portNumber: number }) {
+  return (
+    <div className="port skeleton-port">
+      <div className="port-head">
+        <h3>Port [{portNumber}]</h3>
+        <div className="badges">
+          <span className="badge pending">—</span>
+        </div>
+      </div>
+      <div className="port-grid">
+        <PlaceholderPanel
+          title="Link"
+          keys={['Link_Status_Raw', 'Link_Up', 'Full_Duplex', 'Reset_Required', 'Hardware_Fault']}
+        />
+        <PlaceholderPanel
+          title="Interface Counters"
+          keys={[
+            'OctetsIn', 'UcastIn', 'NUcastIn', 'DiscardsIn', 'ErrorsIn', 'UnknownProtosIn',
+            'OctetsOut', 'UcastOut', 'NUcastOut', 'DiscardsOut', 'ErrorsOut',
+          ]}
+        />
+        <PlaceholderPanel
+          title="Media Counters"
+          keys={[
+            'AlignErr', 'FCSErr', 'SingleColl', 'MultiColl', 'SQEErr', 'DeferredTx',
+            'LateColl', 'ExcessColl', 'MACTxErr', 'CarrierSense', 'FrameTooLong', 'MACRxErr',
+          ]}
+        />
+      </div>
+    </div>
+  )
+}
+
+function PlaceholderPanel({ title, keys }: { title: string; keys: string[] }) {
+  return (
+    <div className="panel">
+      <h4>{title}</h4>
+      <table className="kv">
+        <tbody>
+          {keys.map((k) => (
+            <tr className="zero" key={k}>
+              <td className="k">{k}</td>
+              <td className="v">—</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -688,14 +750,15 @@ const DIAG_CSS = `
   border: 1px solid rgba(122,134,148,0.4);
   text-transform: uppercase;
 }
-.net-diag section.nn.skeleton { opacity: 0.85; }
 .net-diag section.nn.skeleton .nn-head h2 { color: var(--d-muted); }
-.net-diag .skeleton-body {
-  padding: 1.4em;
+.net-diag .skeleton-note {
+  margin: 0.4em 0 0; color: var(--d-muted); font-size: 0.75em; max-width: 60ch;
+}
+.net-diag .port.skeleton-port { opacity: 0.7; }
+.net-diag .badge.pending {
+  background: rgba(122,134,148,0.15);
   color: var(--d-muted);
-  font-size: 0.85em;
-  text-align: center;
-  border-top: 1px dashed var(--d-border);
+  border: 1px solid rgba(122,134,148,0.4);
 }
 .net-diag .chips { display: flex; gap: 0.3em; flex-wrap: wrap; }
 .net-diag .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7em; font-weight: 600; letter-spacing: 0.3px; }
