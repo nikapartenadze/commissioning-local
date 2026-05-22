@@ -444,7 +444,15 @@ interface FiomPort {
   pins: { pin: number; type: string; ioName: string; description: string }[]
 }
 
-function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates: Record<string, boolean | null> }) {
+function FiomDiagram({
+  fiomPort,
+  tagStates,
+  onOpenDiagnostics,
+}: {
+  fiomPort: NetworkPort
+  tagStates: Record<string, boolean | null>
+  onOpenDiagnostics?: (deviceName: string) => void
+}) {
   const fiomName = fiomPort.deviceName || ''
   const subPorts = fiomPort.subPorts || []
 
@@ -476,7 +484,23 @@ function FiomDiagram({ fiomPort, tagStates }: { fiomPort: NetworkPort; tagStates
               {/* Header */}
               <div className={cn("px-3 py-1.5 flex items-center justify-between", s === 'green' ? 'bg-green-600' : s === 'red' ? 'bg-red-600' : 'bg-gray-500')}>
                 <span className="text-[10px] font-bold text-white">{port.portNumber}</span>
-                <div className={cn("w-2 h-2 rounded-full", s === 'green' ? 'bg-green-400' : s === 'red' ? 'bg-red-400' : 'bg-gray-400')} />
+                <div className="flex items-center gap-1.5">
+                  {onOpenDiagnostics && port.deviceName && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onOpenDiagnostics(port.deviceName!)
+                      }}
+                      className="text-white/85 hover:text-white text-xs leading-none -my-0.5 px-1 rounded hover:bg-white/20"
+                      title={`Diagnostics: ${port.deviceName}`}
+                      aria-label={`Open diagnostics for ${port.deviceName}`}
+                    >
+                      ⚡
+                    </button>
+                  )}
+                  <div className={cn("w-2 h-2 rounded-full", s === 'green' ? 'bg-green-400' : s === 'red' ? 'bg-red-400' : 'bg-gray-400')} />
+                </div>
               </div>
               {/* Body */}
               <div className="px-3 py-2">
@@ -501,7 +525,17 @@ function deviceHeaderColor(s: StatusColor): string {
   return '#6b7280'                     // gray-500
 }
 
-function StarDiagram({ node, tagStates, onSelectDevice }: { node: NetworkNode; tagStates: Record<string, boolean | null>; onSelectDevice?: (deviceName: string) => void }) {
+function StarDiagram({
+  node,
+  tagStates,
+  onSelectDevice,
+  onOpenDiagnostics,
+}: {
+  node: NetworkNode
+  tagStates: Record<string, boolean | null>
+  onSelectDevice?: (deviceName: string) => void
+  onOpenDiagnostics?: (deviceName: string) => void
+}) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const vp = useViewport(viewportRef)
   const [expandedFiom, setExpandedFiom] = useState<NetworkPort | null>(null)
@@ -647,9 +681,37 @@ function StarDiagram({ node, tagStates, onSelectDevice }: { node: NetworkNode; t
                 <text x={cx - DEVICE_W / 2 + 6} y={DEVICE_Y + 12} textAnchor="start" fontSize={8} fontWeight="bold" fill="#fff">
                   {deviceType}
                 </text>
-                <text x={cx + DEVICE_W / 2 - 6} y={DEVICE_Y + 12} textAnchor="end" fontSize={7} fill="rgba(255,255,255,0.7)" fontFamily="monospace">
-                  P{port.portNumber}
-                </text>
+                {/* Diagnostics icon — small clickable target in top-right.
+                    The port number (P{N}) is already shown in the port box below
+                    the card, so reusing this slot for the diag affordance is
+                    information-preserving. */}
+                {onOpenDiagnostics && port.deviceName ? (
+                  <g
+                    className="cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onOpenDiagnostics(port.deviceName!)
+                    }}
+                  >
+                    <title>{`Diagnostics: ${port.deviceName}`}</title>
+                    <circle cx={cx + DEVICE_W / 2 - 9} cy={DEVICE_Y + 9} r={6}
+                      fill="rgba(255,255,255,0.2)"
+                      stroke="rgba(255,255,255,0.55)"
+                      strokeWidth={0.8}
+                    />
+                    <text
+                      x={cx + DEVICE_W / 2 - 9} y={DEVICE_Y + 12}
+                      textAnchor="middle" fontSize={8} fontWeight="bold"
+                      fill="#fff" pointerEvents="none"
+                    >
+                      ⚡
+                    </text>
+                  </g>
+                ) : (
+                  <text x={cx + DEVICE_W / 2 - 6} y={DEVICE_Y + 12} textAnchor="end" fontSize={7} fill="rgba(255,255,255,0.7)" fontFamily="monospace">
+                    P{port.portNumber}
+                  </text>
+                )}
                 {/* Device name — horizontal, clipped to card bounds */}
                 <g clipPath={`url(#clip-dpm-${port.id})`}>
                   <text
@@ -778,7 +840,7 @@ function StarDiagram({ node, tagStates, onSelectDevice }: { node: NetworkNode; t
               </button>
             </div>
             <div className="p-4">
-              <FiomDiagram fiomPort={expandedFiom} tagStates={tagStates} />
+              <FiomDiagram fiomPort={expandedFiom} tagStates={tagStates} onOpenDiagnostics={onOpenDiagnostics} />
             </div>
           </div>
         </div>
@@ -1109,7 +1171,12 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         <div className="flex border rounded-lg overflow-hidden flex-1 min-h-0 mt-2.5">
           {/* Left: Star diagram */}
           <div className="flex-1 min-w-0 flex flex-col">
-            <StarDiagram node={expandedNode} tagStates={tagStates} onSelectDevice={(name) => setTableSearch(name)} />
+            <StarDiagram
+              node={expandedNode}
+              tagStates={tagStates}
+              onSelectDevice={(name) => setTableSearch(name)}
+              onOpenDiagnostics={openDiagnostics}
+            />
           </div>
 
           {/* Right: Device table */}
