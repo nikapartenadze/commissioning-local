@@ -55,8 +55,10 @@ asking "is the port flapping, is it dropping packets, is the link half-duplex?"
   errors/discards highlighted, and a "hide unused ports" toggle.
 - `components/network-topology-view.tsx` — adds a small `Activity` icon button
   to every DPM/node card in a ring that opens the drawer for that device.
-- `__tests__/network-poller-parser.test.ts` — 4 fixture tests asserting header,
-  flag-byte, counter, and per-port-offset decoding.
+- `__tests__/network-poller-parser.test.ts` — 6 fixture tests asserting
+  header, Ports[0] skip, bit-derivation from `Link_Status_Raw`, per-port
+  counter offsets, absolute-offset honoring, and the layout-constants
+  invariants.
 - `test-network-poll.ts` (+ `npm run test:plc:network`) — hardware smoke test
   that connects, discovers, polls a few cycles, prints what it sees.
 
@@ -68,30 +70,76 @@ asking "is the port flapping, is it dropping packets, is the link half-duplex?"
   `ToolInstance.systemInfo` JSONB column. A separate column can be added later
   when the admin UI needs to filter on it.
 
+## Audit pass (2026-05-22) — what was wrong with the first revision
+
+A subagent audit against `CDW5_MCM01_REV1.L5X` (a more representative L5X
+than the original `checkthis.L5X`) and the `IOCT_COMMUNICATION_MONITOR` RLL
+routine surfaced several issues that have all been fixed in the follow-up
+commit:
+
+- **Layout was off-by-everything.** New L5X structures `UDT_PORT_DATA` as
+  composed sub-UDTs. `Link_Status_Raw` (DINT) is at offset 0 inside
+  `UDT_LINK_DATA`, NOT the SINT alias byte — the previous code had them
+  swapped. The header is 6 bytes + 2 bytes pad, not 4. And the Ports array
+  is `Dimension="33"` (1-based, index [0] reserved/unused), not 32. The
+  parser now reads `linkStatusRaw` first and decodes flag bits from it
+  directly (the CIP-canonical positions 0, 1, 5, 6) rather than from the
+  SINT alias byte. The handle is now refused at create time if
+  `plc_tag_get_size` disagrees with `TOTAL_SIZE`, so wrong-but-plausible
+  data can never silently ship.
+- **Flag bits were unreliable anyway.** The PLC `IOCT_COMMUNICATION_MONITOR`
+  routine only MSG-writes `Link_Status_Raw` (and the IF + Media counter
+  blocks). The hidden SINT alias byte gets populated only if Logix
+  bit-aliasing happens to run — which it may not. Deriving the bits from
+  the DWORD eliminates that uncertainty.
+- **`Speed_Mbps` will be 0 on this PLC.** The routine doesn't MSG-read
+  Class 0xF6 Attr 1. Documented; consumers should treat 0 as "not
+  populated", not "link down".
+- **Log spam fixed.** Per-device errors used to fire every 5 s — same wall
+  of noise the original `[TagReader]` produced. The poller now logs an
+  error only when the message changes, and re-logs every ~60 s as a
+  heartbeat so a stuck device stays visible without spamming. Recovery
+  ("device X: recovered") is logged explicitly.
+- **Double-start race fixed.** Two `'initialized'` events landing during a
+  rapid reconnect could previously run `browseNetworkTags()` twice in
+  parallel, each allocating a 256 KB tag-list buffer. Sentinel-assignment
+  now happens before any await.
+- **Stops on PLC error.** The poller used to keep hammering dead handles
+  forever during auto-reconnect. It now tears down on
+  `connectionStatusChanged: 'error' | 'disconnected'` and restarts on the
+  next `'initialized'`.
+- **Stale snapshots expire.** `getLatestSnapshots()` drops entries older
+  than 60 s so a dead device doesn't keep haunting the heartbeat.
+- **Heartbeat payload downsampled.** Network snapshots ride the heartbeat
+  only every 60 s now (was every 10 s). The WS broadcast for the
+  diagnostics drawer is unchanged at 5 s.
+- **ARIA description added** to the diagnostics drawer; the React
+  setState-in-setState pattern in the WS handler is gone (uses a ref).
+
 ## What is NOT yet done
 
-1. **Field-validated against a real PLC.** Parsing offsets are derived from
-   the L5X member order and double-checked via `plc_tag_get_size` at runtime,
-   but no real hardware read has confirmed the layout end-to-end. Most likely
-   miss: UDT padding/alignment for firmware revisions we haven't seen.
-2. **Discovery via `@tags` browse not exercised on a live controller.** The
-   code path exists and falls back to the explicit device list if the browse
-   read fails or returns zero matches — but neither branch has been verified
-   on hardware. The smoke script (`npm run test:plc:network`) is the next step.
-3. **No SQLite history.** Counters ship raw, deltas are computed on the
-   client. A history table for long-term trend charts is an easy follow-up if
-   needed.
-4. **No status badge on the node card itself.** The Activity-icon button
+1. **Field-validated against a real PLC.** Layout now matches
+   `CDW5_MCM01_REV1.L5X` and the size check at handle creation will refuse
+   any device whose UDT is a different size, but no real hardware read has
+   confirmed the counters land in the right slots yet. The smoke script
+   (`npm run test:plc:network`) is the next step.
+2. **Discovery via `@tags` browse not exercised on a live controller.**
+   Falls back to the explicit `networkPollingDevices` list if browse
+   returns empty.
+3. **`Speed_Mbps` always 0** on PLCs whose routine doesn't MSG-read
+   Class 0xF6 Attr 1. The UI currently shows `"0M"` for linked ports,
+   which is misleading. Either the PLC routine needs to add the Speed MSG,
+   or the UI should show "—" when speed is 0 but link is up.
+4. **No SQLite history.** Counters ship raw, deltas are computed on the
+   client.
+5. **No status badge on the node card itself.** The Activity-icon button
    opens the drawer, but the card itself still shows only the existing
-   ConnectionFaulted-derived green/red/gray dot. A "↑5/32 ports linked"
-   badge or similar could pre-fill from the cached snapshot.
-5. **Cloud-side admin surface.** `systemInfo.networkDevices` is now stored
-   per heartbeat but no admin view reads it yet. Easiest first step: a
-   per-instance details modal section that renders the latest cached
-   snapshot list.
-6. **Drawer keyboard accessibility / mobile breakpoint** untested. Drawer
-   uses the existing Radix Dialog primitive so escape-to-close works, but
-   width / scroll behavior on a small viewport hasn't been checked.
+   ConnectionFaulted-derived green/red/gray dot.
+6. **Cloud-side admin surface.** `systemInfo.networkDevices` is stored per
+   heartbeat (now max once per minute) but no admin view reads it yet.
+7. **WS broadcast fan-out** is still global: every connected tab receives
+   every snapshot. Bounded in practice by the small per-cycle payload, but
+   a subscribe/unsubscribe protocol would be cleaner long-term.
 
 ## Enabling
 

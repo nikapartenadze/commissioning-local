@@ -170,6 +170,13 @@ function setupClientEventListeners(client: PlcClient): void {
       reconnecting: willReconnect,
       errorCount: status === 'error' ? 1 : 0,
     });
+    // Tear down the network poller on hard PLC errors. Without this the
+    // poller keeps reading dead handles every 5 s and emits a wall of
+    // deviceError messages until the next disconnect. The 'initialized'
+    // listener restarts the poller automatically when the PLC reconnects.
+    if (status === 'error' || status === 'disconnected') {
+      void stopNetworkPoller();
+    }
   });
 
   // Broadcast tag status metadata every ~2 seconds (every 30 cycles at 75ms)
@@ -268,23 +275,42 @@ function setupClientEventListeners(client: PlcClient): void {
 
 /**
  * Start the network device poller if enabled in config. Idempotent — calling
- * it twice while one is already running is a no-op.
+ * it twice while one is already running is a no-op. Also race-safe against
+ * two concurrent 'initialized' events firing during a rapid reconnect: the
+ * sentinel below is set BEFORE any await so the second caller exits early.
  */
 async function startNetworkPollerIfEnabled(): Promise<void> {
   const state = getState();
   if (state.networkPoller) return;
+
+  // Reserve the slot BEFORE awaiting config — a second concurrent
+  // 'initialized' must not get past the guard above and re-enter this
+  // function while we're still loading config / wiring listeners.
+  const placeholder = new NetworkPoller();
+  state.networkPoller = placeholder;
+  syncState();
 
   let cfg;
   try {
     cfg = await configService.getConfig();
   } catch (err) {
     console.warn('[PlcClientManager] Could not load config for network poller:', err);
+    state.networkPoller = null;
+    syncState();
     return;
   }
-  if (!cfg.networkPollingEnabled) return;
+  if (!cfg.networkPollingEnabled) {
+    state.networkPoller = null;
+    syncState();
+    return;
+  }
 
   const connConfig = state.currentConnectionConfig;
-  if (!connConfig) return;
+  if (!connConfig) {
+    state.networkPoller = null;
+    syncState();
+    return;
+  }
 
   const poller = new NetworkPoller({
     fallbackDevices: cfg.networkPollingDevices ?? [],
@@ -297,12 +323,8 @@ async function startNetworkPollerIfEnabled(): Promise<void> {
       snapshot,
     });
   });
-  poller.on('discovered', (names) => {
-    console.log(`[PlcClientManager] Network poller discovered ${names.length} device(s)`);
-  });
-  poller.on('deviceError', (deviceName, errorMessage) => {
-    console.warn(`[PlcClientManager] Network poller device ${deviceName}: ${errorMessage}`);
-  });
+  // 'discovered' and per-device errors are already logged inside the poller
+  // (with de-spam). Manager-level listeners would duplicate the lines.
 
   state.networkPoller = poller;
   syncState();

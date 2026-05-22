@@ -6,8 +6,9 @@
  *   - a live libplctag handle (production path)
  *   - a Node Buffer (unit tests with fixture bytes)
  *
- * Layout constants live in `types.ts` and were derived from the L5X member
- * order, then sanity-checked at runtime by the caller via `plc_tag_get_size`.
+ * Layout constants live in `types.ts` and were derived from the
+ * CDW5_MCM01_REV1.L5X UDT member order. The poller sanity-checks the runtime
+ * tag size against NETWORK_NODE_LAYOUT.TOTAL_SIZE before publishing snapshots.
  */
 
 import {
@@ -19,47 +20,48 @@ import {
 /**
  * Abstract byte reader. Both methods take an absolute byte offset into the
  * tag's data buffer (the same convention libplctag uses).
- *
- * `bit` accepts an absolute bit offset (byte * 8 + bitWithinByte).
  */
 export interface ByteReader {
   int8(offset: number): number;
   int16(offset: number): number;
   int32(offset: number): number;
-  bit(bitOffset: number): boolean;
 }
 
 /**
  * Build a ByteReader backed by a Node Buffer. Used by tests and any future
- * "read once, parse later" path that wants to capture the wire bytes before
- * decoding. Little-endian to match Logix on-the-wire and libplctag's accessors.
+ * "read once, parse later" path. Little-endian to match Logix on-the-wire
+ * and libplctag's accessors.
  */
 export function bufferReader(buf: Buffer): ByteReader {
   return {
     int8: (off) => buf.readInt8(off),
     int16: (off) => buf.readInt16LE(off),
     int32: (off) => buf.readInt32LE(off),
-    bit: (bitOff) => {
-      const byte = buf.readUInt8(Math.floor(bitOff / 8));
-      return ((byte >> (bitOff % 8)) & 1) === 1;
-    },
   };
+}
+
+/** Extract a single bit from an integer (treating it as unsigned for bit ops). */
+function bit(value: number, bitIndex: number): boolean {
+  return ((value >>> bitIndex) & 1) === 1;
 }
 
 /** Parse one UDT_PORT_DATA element starting at `portBase` byte offset. */
 export function parsePort(read: ByteReader, portBase: number, portNumber: number): PortStat {
   const P = NETWORK_NODE_LAYOUT.PORT;
-  const F = NETWORK_NODE_LAYOUT.PORT_FLAG_BITS;
+  const B = NETWORK_NODE_LAYOUT.LINK_STATUS_BITS;
 
-  const flagsByteBitOffset = (portBase + P.FLAGS) * 8;
+  // Read Link_Status_Raw first and decode flags from it directly. The SINT
+  // bit-alias byte at portBase + P.FLAGS is intentionally NOT read because
+  // the PLC ladder doesn't reliably populate it (see types.ts header notes).
+  const linkStatusRaw = read.int32(portBase + P.LINK_STATUS_RAW);
 
   return {
     portNumber,
-    linkUp: read.bit(flagsByteBitOffset + F.LINK_UP),
-    fullDuplex: read.bit(flagsByteBitOffset + F.FULL_DUPLEX),
-    resetRequired: read.bit(flagsByteBitOffset + F.RESET_REQUIRED),
-    hardwareFault: read.bit(flagsByteBitOffset + F.HARDWARE_FAULT),
-    linkStatusRaw: read.int32(portBase + P.LINK_STATUS_RAW),
+    linkUp: bit(linkStatusRaw, B.LINK_UP),
+    fullDuplex: bit(linkStatusRaw, B.FULL_DUPLEX),
+    resetRequired: bit(linkStatusRaw, B.RESET_REQUIRED),
+    hardwareFault: bit(linkStatusRaw, B.HARDWARE_FAULT),
+    linkStatusRaw,
     speedMbps: read.int32(portBase + P.SPEED_MBPS),
     octetsIn: read.int32(portBase + P.OCTETS_IN),
     ucastIn: read.int32(portBase + P.UCAST_IN),
@@ -95,9 +97,12 @@ export function parseNetworkDevice(
   const H = NETWORK_NODE_LAYOUT.HEADER;
 
   const ports: PortStat[] = new Array(NETWORK_NODE_LAYOUT.PORT_COUNT);
+  // L5X declares Ports as Dimension="33" with index [0] reserved/unused.
+  // Iterate Logix indices 1..32 and emit physical port numbers 1..32.
   for (let i = 0; i < NETWORK_NODE_LAYOUT.PORT_COUNT; i++) {
-    const portBase = NETWORK_NODE_LAYOUT.PORTS_OFFSET + i * NETWORK_NODE_LAYOUT.PORT_SIZE;
-    ports[i] = parsePort(read, portBase, i + 1);
+    const logixIndex = i + 1;
+    const portBase = NETWORK_NODE_LAYOUT.PORTS_OFFSET + logixIndex * NETWORK_NODE_LAYOUT.PORT_SIZE;
+    ports[i] = parsePort(read, portBase, logixIndex);
   }
 
   return {

@@ -11,6 +11,18 @@
  *      suffix (_NetworkNode, _NN.Data, _NN).
  *   2. Fallback name probing against an explicit list (passed in from config)
  *      if the browse fails or returns zero matches.
+ *
+ * Error / log policy (deliberate, see audit findings):
+ *   - Per-device errors only log when the error CHANGES (or every N cycles as
+ *     a heartbeat). The original [TagReader] logged every failure every cycle;
+ *     that was unreadable spam for a 5 s × N device loop and obscured real
+ *     issues. The deviceError event still fires every cycle for consumers
+ *     (e.g. WS broadcast) that want fine-grained data.
+ *   - A device with a hard size mismatch is refused at create-time, not
+ *     dropped silently later. Silent garbage data was the worst failure
+ *     mode from the previous revision.
+ *   - getLatestSnapshots() drops entries older than the stale threshold so a
+ *     dead device doesn't keep haunting the heartbeat after the PLC restarts.
  */
 
 import { EventEmitter } from 'events';
@@ -21,7 +33,6 @@ import {
   plc_tag_get_int8,
   plc_tag_get_int16,
   plc_tag_get_int32,
-  plc_tag_get_bit,
   plc_tag_get_uint8,
   readTagAsync,
 } from '../libplctag';
@@ -40,6 +51,10 @@ const DEFAULT_READ_TIMEOUT_MS = 4_000;
 const TAG_LIST_BUFFER_BYTES = 256 * 1024;
 /** Bit 13 of TagInfoEntry.symbol_type — set when the symbol is a structured (UDT) type. */
 const SYMBOL_TYPE_STRUCTURE_BIT = 0x2000;
+/** Force-re-log a per-device error every N cycles even if the message didn't change. Keeps a stuck device visible without spamming. */
+const ERROR_HEARTBEAT_CYCLES = 12; // at 5 s/cycle = once every ~60 s
+/** Drop cached snapshots older than this from getLatestSnapshots() so heartbeat doesn't ship stale data. */
+const STALE_SNAPSHOT_MS = 60_000;
 
 export interface NetworkPollerConfig {
   pollIntervalMs?: number;
@@ -84,6 +99,12 @@ interface DeviceHandle {
   sizeBytes: number;
 }
 
+/** Last logged error message per device, plus the cycle index when we last logged it. */
+interface DeviceErrorState {
+  lastMessage: string | null;
+  lastLoggedAtCycle: number;
+}
+
 export class NetworkPoller extends EventEmitter {
   private readonly pollIntervalMs: number;
   private readonly readTimeoutMs: number;
@@ -93,9 +114,17 @@ export class NetworkPoller extends EventEmitter {
   private path = '';
   private devices: DeviceHandle[] = [];
   private isRunning = false;
+  /** Guards against parallel start() invocations (rapid reconnect race). */
+  private isStarting = false;
   private abort: AbortController | null = null;
-  /** Last successful snapshot per device, keyed by deviceName. Cached for the heartbeat payload. */
+  /** Last successful snapshot per device, keyed by deviceName. */
   private latest: Map<string, NetworkDeviceSnapshot> = new Map();
+  /** Per-device error log state — used to de-spam repeated identical errors. */
+  private errorState: Map<string, DeviceErrorState> = new Map();
+  /** Monotonic cycle counter — drives the per-N-cycles error heartbeat. */
+  private cycleIndex = 0;
+  /** Whether we've already warned about a slow cycle this streak. Resets on a fast cycle. */
+  private warnedSlowThisStreak = false;
 
   constructor(config: NetworkPollerConfig = {}) {
     super();
@@ -115,52 +144,71 @@ export class NetworkPoller extends EventEmitter {
   }
 
   /**
-   * Discover devices, create handles, start the polling loop. Safe to call
-   * twice — the second call is a no-op while running.
+   * Discover devices, create handles, start the polling loop. Idempotent
+   * across both running and in-flight starts.
    */
   async start(): Promise<void> {
-    if (this.isRunning) return;
+    if (this.isRunning || this.isStarting) return;
     if (!this.gateway || !this.path) {
       this.emit('error', new Error('NetworkPoller.setConnection() must be called first'));
       return;
     }
+    // Set BEFORE any await so a second concurrent caller exits the guard above.
+    this.isStarting = true;
 
-    let discoveredNames: string[] = [];
     try {
-      discoveredNames = await this.browseNetworkTags();
-    } catch (err) {
-      this.emit('error', err instanceof Error ? err : new Error(String(err)));
+      let discoveredNames: string[] = [];
+      try {
+        discoveredNames = await this.browseNetworkTags();
+      } catch (err) {
+        this.emit('error', err instanceof Error ? err : new Error(String(err)));
+      }
+
+      if (discoveredNames.length === 0 && this.fallbackDevices.length > 0) {
+        discoveredNames = await this.probeFallbackDevices();
+      }
+
+      if (discoveredNames.length === 0) {
+        console.warn(
+          `[NetworkPoller] No network device tags discovered (gateway=${this.gateway} path=${this.path}). ` +
+            `Set config.networkPollingDevices or check @tags browse permissions.`,
+        );
+        return;
+      }
+
+      this.emit('discovered', discoveredNames);
+
+      let failed = 0;
+      for (const tagName of discoveredNames) {
+        const device = await this.createDeviceHandle(tagName);
+        if (device) {
+          this.devices.push(device);
+        } else {
+          failed++;
+        }
+      }
+
+      if (this.devices.length === 0) {
+        console.warn(
+          `[NetworkPoller] All ${discoveredNames.length} discovered device handle(s) failed to initialize — poller idle.`,
+        );
+        return;
+      }
+
+      const total = this.devices.length + failed;
+      console.log(
+        `[NetworkPoller] Polling ${this.devices.length}/${total} device(s) every ${this.pollIntervalMs / 1000}s: ${this.devices
+          .map((d) => d.deviceName)
+          .join(', ')}` + (failed > 0 ? ` (${failed} failed to initialize)` : ''),
+      );
+
+      this.isRunning = true;
+      this.abort = new AbortController();
+      this.emit('started');
+      void this.loop();
+    } finally {
+      this.isStarting = false;
     }
-
-    if (discoveredNames.length === 0 && this.fallbackDevices.length > 0) {
-      discoveredNames = await this.probeFallbackDevices();
-    }
-
-    if (discoveredNames.length === 0) {
-      console.log('[NetworkPoller] No network device tags discovered — poller idle');
-      return;
-    }
-
-    this.emit('discovered', discoveredNames);
-
-    for (const tagName of discoveredNames) {
-      const device = await this.createDeviceHandle(tagName);
-      if (device) this.devices.push(device);
-    }
-
-    if (this.devices.length === 0) {
-      console.log('[NetworkPoller] All device handles failed to initialize — poller idle');
-      return;
-    }
-
-    console.log(
-      `[NetworkPoller] Polling ${this.devices.length} device(s) every ${this.pollIntervalMs / 1000}s: ${this.devices.map((d) => d.deviceName).join(', ')}`,
-    );
-
-    this.isRunning = true;
-    this.abort = new AbortController();
-    this.emit('started');
-    void this.loop();
   }
 
   /** Stop the loop and destroy all handles. */
@@ -178,6 +226,9 @@ export class NetworkPoller extends EventEmitter {
     }
     this.devices = [];
     this.latest.clear();
+    this.errorState.clear();
+    this.cycleIndex = 0;
+    this.warnedSlowThisStreak = false;
     this.emit('stopped');
   }
 
@@ -186,9 +237,18 @@ export class NetworkPoller extends EventEmitter {
     return this.isRunning;
   }
 
-  /** Snapshot of the most recent values per device. Safe to call any time; returns a shallow copy. */
+  /**
+   * Snapshot of the most recent values per device. Entries older than
+   * STALE_SNAPSHOT_MS are filtered out so the heartbeat doesn't ship a
+   * snapshot from a device that has gone dark.
+   */
   getLatestSnapshots(): NetworkDeviceSnapshot[] {
-    return Array.from(this.latest.values());
+    const now = Date.now();
+    const out: NetworkDeviceSnapshot[] = [];
+    for (const snap of Array.from(this.latest.values())) {
+      if (now - snap.capturedAt <= STALE_SNAPSHOT_MS) out.push(snap);
+    }
+    return out;
   }
 
   // ===== internal =====
@@ -197,18 +257,24 @@ export class NetworkPoller extends EventEmitter {
     const signal = this.abort?.signal;
     while (this.isRunning && !signal?.aborted) {
       const cycleStart = Date.now();
+      this.cycleIndex++;
 
-      // Read devices in parallel — each device is a single CIP request, and
-      // libplctag handles its own connection pooling/concurrency under the
-      // hood. 4-8 devices in parallel is well within its comfort zone.
+      // Read devices in parallel — each device is a single CIP request and
+      // libplctag pools connections internally. 4-8 devices in parallel is
+      // well within its comfort zone.
       await Promise.all(this.devices.map((d) => this.pollDevice(d)));
 
       const elapsed = Date.now() - cycleStart;
       const delay = Math.max(0, this.pollIntervalMs - elapsed);
-      if (delay === 0 && elapsed > this.pollIntervalMs * 2) {
-        console.warn(
-          `[NetworkPoller] Cycle took ${elapsed}ms (interval ${this.pollIntervalMs}ms) — devices may be slow`,
-        );
+      if (elapsed > this.pollIntervalMs * 2) {
+        if (!this.warnedSlowThisStreak) {
+          console.warn(
+            `[NetworkPoller] Cycle ${this.cycleIndex} took ${elapsed}ms (interval ${this.pollIntervalMs}ms) — devices slow or PLC busy.`,
+          );
+          this.warnedSlowThisStreak = true;
+        }
+      } else {
+        this.warnedSlowThisStreak = false;
       }
       if (delay > 0) await this.sleep(delay);
     }
@@ -218,7 +284,7 @@ export class NetworkPoller extends EventEmitter {
     try {
       const status = await readTagAsync(device.handle, this.readTimeoutMs);
       if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        this.emit('deviceError', device.deviceName, `Read failed: ${getStatusMessage(status)}`);
+        this.reportDeviceError(device.deviceName, `Read failed: ${getStatusMessage(status)}`);
         return;
       }
 
@@ -226,7 +292,6 @@ export class NetworkPoller extends EventEmitter {
         int8: (off) => plc_tag_get_int8(device.handle, off),
         int16: (off) => plc_tag_get_int16(device.handle, off),
         int32: (off) => plc_tag_get_int32(device.handle, off),
-        bit: (bitOff) => plc_tag_get_bit(device.handle, bitOff) === 1,
       };
 
       const snapshot = parseNetworkDevice(reader, {
@@ -236,18 +301,42 @@ export class NetworkPoller extends EventEmitter {
       });
 
       this.latest.set(device.deviceName, snapshot);
+      // First successful read after an error streak — explicitly log recovery.
+      const prev = this.errorState.get(device.deviceName);
+      if (prev?.lastMessage) {
+        console.log(`[NetworkPoller] ${device.deviceName}: recovered`);
+        this.errorState.delete(device.deviceName);
+      }
       this.emit('snapshot', snapshot);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.emit('deviceError', device.deviceName, msg);
+      this.reportDeviceError(device.deviceName, msg);
     }
   }
 
   /**
-   * Create a libplctag handle for one device's UDT. Validates the resulting
-   * byte size against NETWORK_NODE_LAYOUT.TOTAL_SIZE; if it disagrees, we still
-   * accept it (firmware padding can vary) but log a warning so a parse glitch
-   * shows up as a clue rather than a mystery.
+   * Emit deviceError + console.warn with de-spam policy:
+   *   - On message change: log once.
+   *   - On unchanged message: log every ERROR_HEARTBEAT_CYCLES cycles.
+   *   - The 'deviceError' event always fires (consumers may want every tick).
+   */
+  private reportDeviceError(deviceName: string, message: string): void {
+    this.emit('deviceError', deviceName, message);
+    const prev = this.errorState.get(deviceName);
+    const isNew = !prev || prev.lastMessage !== message;
+    const isHeartbeat =
+      prev && prev.lastMessage === message && this.cycleIndex - prev.lastLoggedAtCycle >= ERROR_HEARTBEAT_CYCLES;
+    if (isNew || isHeartbeat) {
+      console.warn(`[NetworkPoller] ${deviceName}: ${message}`);
+      this.errorState.set(deviceName, { lastMessage: message, lastLoggedAtCycle: this.cycleIndex });
+    }
+  }
+
+  /**
+   * Create a libplctag handle for one device's UDT. REFUSES the handle if
+   * `plc_tag_get_size` disagrees with NETWORK_NODE_LAYOUT.TOTAL_SIZE — a
+   * size mismatch means our parser would misalign every counter, and
+   * publishing wrong-but-plausible data is worse than no data.
    */
   private async createDeviceHandle(tagName: string): Promise<DeviceHandle | null> {
     const deviceName = stripNetworkTagSuffix(tagName) ?? tagName;
@@ -256,23 +345,22 @@ export class NetworkPoller extends EventEmitter {
       gateway: this.gateway,
       path: this.path,
       name: tagName,
-      // libplctag uses elem_size * elem_count to size the buffer. We don't
-      // know the exact size for sure (firmware padding varies), so we pass
-      // the expected total bytes as a single element. libplctag accepts this
-      // for UDT reads — the byte-level accessors operate by raw offset.
+      // libplctag uses elem_size * elem_count to size the buffer. We pass the
+      // full expected UDT byte count as a single element; the byte-level
+      // accessors operate by raw offset.
       elemSize: NETWORK_NODE_LAYOUT.TOTAL_SIZE,
       elemCount: 1,
       timeout: 0,
     });
 
     if (handle < 0) {
-      this.emit('deviceError', deviceName, `Create failed: ${getStatusMessage(handle)}`);
+      this.reportDeviceError(deviceName, `Create failed: ${getStatusMessage(handle)}`);
       return null;
     }
 
     const status = await readTagAsync(handle, this.readTimeoutMs);
     if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
-      this.emit('deviceError', deviceName, `Initial read failed: ${getStatusMessage(status)}`);
+      this.reportDeviceError(deviceName, `Initial read failed: ${getStatusMessage(status)}`);
       try {
         plc_tag_destroy(handle);
       } catch {
@@ -283,9 +371,17 @@ export class NetworkPoller extends EventEmitter {
 
     const sizeBytes = plc_tag_get_size(handle);
     if (sizeBytes !== NETWORK_NODE_LAYOUT.TOTAL_SIZE) {
-      console.warn(
-        `[NetworkPoller] ${deviceName}: tag size ${sizeBytes} != expected ${NETWORK_NODE_LAYOUT.TOTAL_SIZE} — parsing anyway, watch for misaligned counters`,
+      console.error(
+        `[NetworkPoller] ${deviceName}: refusing to poll — tag size ${sizeBytes}B != expected ${NETWORK_NODE_LAYOUT.TOTAL_SIZE}B. ` +
+          `UDT layout mismatch likely (firmware variant or controller has a different UDT definition). ` +
+          `Update NETWORK_NODE_LAYOUT in lib/plc/network/types.ts or skip this device.`,
       );
+      try {
+        plc_tag_destroy(handle);
+      } catch {
+        /* best-effort */
+      }
+      return null;
     }
 
     return { tagName, deviceName, handle, sizeBytes };
@@ -305,7 +401,7 @@ export class NetworkPoller extends EventEmitter {
    *   +16 uint32 array_dim[2]
    *   +20 uint16 string_len
    *   +22 char   string[string_len]
-   * Entry length = 22 + string_len, rounded to next 2 bytes is NOT applied.
+   * Entry length = 22 + string_len.
    */
   private async browseNetworkTags(): Promise<string[]> {
     let handle: TagHandle = -1;
@@ -335,7 +431,6 @@ export class NetworkPoller extends EventEmitter {
       const names: string[] = [];
       let off = 0;
       while (off + 22 <= size) {
-        // 22-byte fixed header
         const symbolType = readU16LE(handle, off + 4);
         const stringLen = readU16LE(handle, off + 20);
 
@@ -351,7 +446,7 @@ export class NetworkPoller extends EventEmitter {
       }
 
       console.log(
-        `[NetworkPoller] @tags browse found ${names.length} candidate network device tag(s) in ${size} bytes`,
+        `[NetworkPoller] @tags browse found ${names.length} candidate network device tag(s) in ${size} bytes.`,
       );
       return names;
     } finally {
@@ -367,7 +462,9 @@ export class NetworkPoller extends EventEmitter {
 
   /**
    * Probe explicit device names against each known suffix. The first suffix
-   * that opens and reads successfully wins per device.
+   * that opens and reads successfully wins per device. All probe handles are
+   * destroyed before this method returns; createDeviceHandle re-opens the
+   * winning name fresh.
    */
   private async probeFallbackDevices(): Promise<string[]> {
     const found: string[] = [];

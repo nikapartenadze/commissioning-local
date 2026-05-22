@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -31,6 +31,10 @@ interface Props {
 export function NetworkDiagnosticsDrawer({ open, onOpenChange, deviceName }: Props) {
   const [current, setCurrent] = useState<Snapshot | null>(null)
   const [previous, setPrevious] = useState<Snapshot | null>(null)
+  // Mirror of `current` for the WS handler so we can capture the previous
+  // snapshot without calling setState from within another setState updater
+  // (React 18 warns about that pattern).
+  const currentRef = useRef<Snapshot | null>(null)
   const [wsConnected, setWsConnected] = useState(false)
   const [now, setNow] = useState<number>(() => Date.now())
   // When true, hide ports that have never linked up so the table stays focused
@@ -42,6 +46,7 @@ export function NetworkDiagnosticsDrawer({ open, onOpenChange, deviceName }: Pro
     if (!open) {
       setCurrent(null)
       setPrevious(null)
+      currentRef.current = null
     }
   }, [open, deviceName])
 
@@ -86,10 +91,12 @@ export function NetworkDiagnosticsDrawer({ open, onOpenChange, deviceName }: Pro
           const msg = JSON.parse(event.data) as { type?: string; snapshot?: Snapshot }
           if (msg.type !== 'NetworkDeviceSnapshot' || !msg.snapshot) return
           if (msg.snapshot.deviceName !== deviceName) return
-          setCurrent((prev) => {
-            setPrevious(prev)
-            return msg.snapshot!
-          })
+          // Snapshot the prior frame via ref (single source of truth), then
+          // schedule both setState calls independently — no setState-in-setState.
+          const prior = currentRef.current
+          currentRef.current = msg.snapshot
+          setPrevious(prior)
+          setCurrent(msg.snapshot)
         } catch {
           // Non-JSON frame or unrelated message — ignore.
         }
@@ -133,6 +140,9 @@ export function NetworkDiagnosticsDrawer({ open, onOpenChange, deviceName }: Pro
         )}
       >
         <DialogTitle className="sr-only">Network device diagnostics — {deviceName}</DialogTitle>
+        <DialogDescription className="sr-only">
+          Live per-port stats for {deviceName} refreshing every 5 seconds: link state, speed, counter deltas, errors and discards.
+        </DialogDescription>
 
         {/* Header */}
         <div className="px-5 py-4 border-b bg-card">
