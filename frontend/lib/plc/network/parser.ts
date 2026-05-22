@@ -86,6 +86,9 @@ export function parsePort(read: ByteReader, portBase: number, portNumber: number
     carrierSense: read.int32(portBase + P.CARRIER_SENSE),
     frameTooLong: read.int32(portBase + P.FRAME_TOO_LONG),
     macRxErr: read.int32(portBase + P.MAC_RX_ERR),
+    // USINT — read as signed int8 then mask to 0..255. CIP Vol2: 1=Enable,
+    // 2=Disable, 0=unwritten (uncommanded by the AOI yet).
+    adminState: read.int8(portBase + P.ADMIN_STATE) & 0xff,
   };
 }
 
