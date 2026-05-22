@@ -3,27 +3,25 @@
 /**
  * Full-page live network diagnostics dashboard.
  *
- * Subscribes to the server's WS feed, accumulates one snapshot per
- * `<DeviceName>_NetworkNode` tag, and renders a layout that mirrors the
- * `IOCT_COMMUNICATION_MONITOR_Routine_RLL_nn_values.html` report:
+ * Subscribes to the parent's liveSnapshots cache (see useNetworkSnapshots())
+ * and renders the IOCT_COMMUNICATION_MONITOR layout natively in the
+ * Autstand industrial aesthetic — IBM Plex Sans + JetBrains Mono, gold/amber
+ * primary, theme-aware via the app's HSL tokens. No inlined CSS; all styling
+ * uses Tailwind utilities that respect light/dark mode.
  *
- *   - Top-of-page table of contents grouped by device type (DPM / FIOM /
- *     VFD / EX / SIO / VR / VSU / POINT_IO / LPE / Unknown). Each device
- *     card shows status (ok / down / media) and chips for any per-port
- *     issues.
- *   - One <section> per device with header (name + warn count + chips),
- *     facts row (Product Code / Firmware / Active Ports), and a grid of
- *     per-port cards.
- *   - Each port card has three panels: Link, Interface Counters,
- *     Media Counters. Zero-valued rows are muted, ports with media-counter
- *     errors get an amber accent, ports with linkUp=false and historical
- *     traffic get a red accent.
- *
- * The CSS is inlined verbatim from the reference HTML so this view always
- * looks the same regardless of the surrounding Tailwind theme.
+ *   - TOC grouped by device type with status-color left-bezels.
+ *   - One section per device: instrument-style header (mono device name +
+ *     OK/WARN/STALE chip), facts row (Product Code / Firmware / Active Ports
+ *     / Last Snapshot), and a 3-column grid of port cards.
+ *   - Each port card has three panels (Link / Interface Counters / Media
+ *     Counters) laid out in a row when there's screen width. Zero rows are
+ *     muted; non-zero errors are red, non-zero discards amber; the Media
+ *     panel switches to an amber-bezel when any of its counters > 0.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, Network, Zap, ServerCrash } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage } from '@/lib/plc/types'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
@@ -34,51 +32,36 @@ interface Props {
   active: boolean
   /**
    * When set, the view shows ONLY this device's section (live or skeleton),
-   * with no TOC and no group headers. This is what the per-device Diagnostic
-   * buttons on the topology cards open — the operator gets the full UDT
-   * layout for one device, not a wall of devices to scroll past.
-   *
-   * When undefined, all devices (live + known) render with TOC + groups.
+   * with no TOC and no group headers.
    */
   singleDevice?: string
   /**
    * Optional list of device names the topology already knows about (the ring
-   * nodes). These render as skeleton sections when no live snapshot exists,
-   * so the operator can see what the page WILL look like even before the PLC
-   * connects or before the poller has produced its first cycle. Skeleton
-   * sections are replaced with live data the moment a matching snapshot
-   * arrives.
+   * nodes). These render as skeleton sections when no live snapshot exists.
    */
   knownDevices?: string[]
-  /**
-   * Live snapshots cache maintained by useNetworkSnapshots() at the parent.
-   * Lifting the WS out of this view means opening the modal renders the
-   * last-known snapshot immediately, instead of waiting up to 5 s for the
-   * next broadcast. Map identity changes when any device gets a new snapshot.
-   */
+  /** Live snapshots cache maintained by useNetworkSnapshots() at the parent. */
   liveSnapshots?: Map<string, Snapshot>
-  /** WS connection status from the parent — drives the "live / reconnecting…" badge. */
+  /** WS connection status from the parent. */
   wsConnected?: boolean
 }
 
-const STALE_MS = 60_000 // device considered "down" if no snapshot in this window
+const STALE_MS = 60_000
 
-/**
- * Group label derived from the PLC device name. Mirrors the existing
- * `getDeviceType` in network-topology-view.tsx but kept local so this view
- * doesn't import from a 1000+-line file.
- */
+// ─── Helpers ────────────────────────────────────────────────────────────
+
 function deviceTypeOf(name: string): string {
   if (name.includes('VFD')) return 'VFD'
   if (name.includes('FIOM')) return 'FIOM'
+  if (name.includes('FIOH')) return 'FIOH'
   if (name.includes('PMM')) return 'PMM'
   if (name.includes('SIO')) return 'SIO'
   if (name.includes('VSU')) return 'VSU'
   if (/(^|_)VR(_|$)/.test(name)) return 'VR'
   if (/(^|_)EX(_|$)/.test(name)) return 'EX'
   if (name.includes('LPE')) return 'LPE'
-  if (name.includes('POINT')) return 'POINT_IO'
-  if (name.includes('DPM') || name.includes('EN4TR') || name.includes('EN2TR')) return 'DPM'
+  if (name.includes('POINT') || name.includes('IB16') || name.includes('OB16')) return 'I/O'
+  if (name.includes('DPM') || name.includes('EN4TR') || name.includes('EN2TR') || name.includes('SLOT')) return 'DPM'
   return 'Other'
 }
 
@@ -86,40 +69,20 @@ function formatNumber(n: number): string {
   return n.toLocaleString()
 }
 
-// === Per-port status helpers ===
-
 function hasMediaErrors(p: Port): boolean {
   return (
-    p.alignErr > 0 ||
-    p.fcsErr > 0 ||
-    p.singleColl > 0 ||
-    p.multiColl > 0 ||
-    p.sqeErr > 0 ||
-    p.deferredTx > 0 ||
-    p.lateColl > 0 ||
-    p.excessColl > 0 ||
-    p.macTxErr > 0 ||
-    p.carrierSense > 0 ||
-    p.frameTooLong > 0 ||
-    p.macRxErr > 0
+    p.alignErr > 0 || p.fcsErr > 0 || p.singleColl > 0 || p.multiColl > 0 ||
+    p.sqeErr > 0 || p.deferredTx > 0 || p.lateColl > 0 || p.excessColl > 0 ||
+    p.macTxErr > 0 || p.carrierSense > 0 || p.frameTooLong > 0 || p.macRxErr > 0
   )
 }
-
 function hasInterfaceErrors(p: Port): boolean {
   return p.errorsIn > 0 || p.errorsOut > 0 || p.discardsIn > 0 || p.discardsOut > 0
 }
-
-/**
- * A port is "actively down" when it isn't linked but has had historical
- * traffic (octets > 0). Ports that have never seen traffic AND aren't linked
- * are just unused — we don't flag those.
- */
 function isActivelyDown(p: Port): boolean {
   if (p.linkUp) return false
   return p.octetsIn > 0 || p.octetsOut > 0
 }
-
-// === Aggregations per device ===
 
 interface DeviceSummary {
   activePorts: number
@@ -131,44 +94,33 @@ interface DeviceSummary {
 }
 
 function summarize(snap: Snapshot): DeviceSummary {
-  let activePorts = 0
-  let downCount = 0
-  let mediaCount = 0
-  let warnCount = 0
+  let activePorts = 0, downCount = 0, mediaCount = 0, warnCount = 0
   const mediaPorts: Port[] = []
   const downPorts: Port[] = []
   for (const p of snap.ports) {
     if (p.linkUp) activePorts++
-    if (hasMediaErrors(p)) {
-      mediaCount++
-      mediaPorts.push(p)
-      warnCount++
-    }
-    if (isActivelyDown(p)) {
-      downCount++
-      downPorts.push(p)
-      warnCount++
-    } else if (!hasMediaErrors(p) && hasInterfaceErrors(p)) {
-      warnCount++
-    }
+    if (hasMediaErrors(p)) { mediaCount++; mediaPorts.push(p); warnCount++ }
+    if (isActivelyDown(p)) { downCount++; downPorts.push(p); warnCount++ }
+    else if (!hasMediaErrors(p) && hasInterfaceErrors(p)) warnCount++
   }
   return { activePorts, warnCount, downCount, mediaCount, mediaPorts, downPorts }
 }
 
-type DeviceCardStatus = 'ok' | 'down' | 'media'
-
-function tocStatusOf(snap: Snapshot | null, lastSeen: number, now: number, summary: DeviceSummary | null): DeviceCardStatus {
-  if (!snap || now - lastSeen > STALE_MS) return 'down'
+type TocStatus = 'ok' | 'down' | 'media' | 'pending'
+function tocStatusOf(snap: Snapshot | null, lastSeen: number, now: number, summary: DeviceSummary | null): TocStatus {
+  if (!snap) return 'pending'
+  if (now - lastSeen > STALE_MS) return 'down'
   if (summary && summary.mediaCount > 0) return 'media'
+  if (summary && summary.downCount > 0) return 'down'
   return 'ok'
 }
-
-// === Component ===
 
 interface DeviceState {
   snapshot: Snapshot
   lastSeen: number
 }
+
+// ─── Main view ───────────────────────────────────────────────────────────
 
 export function NetworkDiagnosticsView({
   active,
@@ -179,27 +131,19 @@ export function NetworkDiagnosticsView({
 }: Props) {
   const [now, setNow] = useState(() => Date.now())
 
-  // 1-second tick so the "Xs ago" / staleness check stays current.
   useEffect(() => {
     if (!active) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [active])
 
-  /**
-   * Adapt the parent's `Map<deviceName, Snapshot>` to the per-device
-   * DeviceState shape (snapshot + lastSeen). lastSeen tracks WHEN we first
-   * observed each unique snapshot so the staleness check still works even
-   * though the source map only carries the latest value per device.
-   */
-  const lastSeenRef = useRef<Map<string, { snapshot: Snapshot; lastSeen: number }>>(new Map())
+  const lastSeenRef = useRef<Map<string, DeviceState>>(new Map())
   const devices = useMemo<Map<string, DeviceState>>(() => {
     const out = new Map<string, DeviceState>()
     if (!liveSnapshots) return out
     const now2 = Date.now()
     for (const [deviceName, snap] of Array.from(liveSnapshots.entries())) {
       const prev = lastSeenRef.current.get(deviceName)
-      // If the snapshot reference changed OR capturedAt advanced, treat as a new arrival.
       const lastSeen = prev && prev.snapshot === snap ? prev.lastSeen : now2
       out.set(deviceName, { snapshot: snap, lastSeen })
     }
@@ -207,12 +151,6 @@ export function NetworkDiagnosticsView({
     return out
   }, [liveSnapshots])
 
-  /**
-   * Union of known device names (from topology) AND live snapshots. Each
-   * entry either carries a `live` DeviceState or is a skeleton placeholder.
-   * Skeletons let the operator see the layout before the PLC has connected
-   * or before the poller's first cycle has landed.
-   */
   const groups = useMemo(() => {
     const union = new Map<string, { deviceName: string; live?: DeviceState }>()
     for (const name of knownDevices) {
@@ -223,10 +161,6 @@ export function NetworkDiagnosticsView({
       union.set(ds.snapshot.deviceName, { deviceName: ds.snapshot.deviceName, live: ds })
     }
 
-    // Single-device mode: filter the union to just the target. If the target
-    // wasn't in knownDevices and no snapshot has arrived, we still create a
-    // skeleton entry so the operator sees the full layout placeholder rather
-    // than an empty modal.
     if (singleDevice) {
       const target = union.get(singleDevice) ?? { deviceName: singleDevice }
       return [[deviceTypeOf(target.deviceName), [target]]] as [
@@ -258,60 +192,98 @@ export function NetworkDiagnosticsView({
   const totalGroups = groups.length
 
   return (
-    <div className="net-diag">
-      <style>{DIAG_CSS}</style>
+    <div className="h-full flex flex-col bg-background text-foreground">
+      {/* Header ── instrument-panel style */}
+      <header className="flex-shrink-0 border-b bg-card px-5 py-3.5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="relative shrink-0">
+              <Network className="w-5 h-5 text-primary" />
+              <span
+                className={cn(
+                  'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-card',
+                  wsConnected ? 'bg-emerald-500 status-pulse' : 'bg-amber-500',
+                )}
+                aria-label={wsConnected ? 'live' : 'reconnecting'}
+              />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold tracking-tight truncate">
+                {singleDevice ? (
+                  <>
+                    <span className="text-muted-foreground/70 font-normal">Diagnostics — </span>
+                    <span className="font-mono">{singleDevice}</span>
+                  </>
+                ) : (
+                  'Network Diagnostics'
+                )}
+              </h1>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mt-0.5 font-medium">
+                {singleDevice ? (
+                  <>{groups[0]?.[0] ?? 'Other'} · {wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}</>
+                ) : (
+                  <>
+                    {totalKnown} device{totalKnown === 1 ? '' : 's'} ·{' '}
+                    <span className="text-primary">{totalDevices} live</span> ·{' '}
+                    {totalGroups} group{totalGroups === 1 ? '' : 's'} ·{' '}
+                    {wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-mono text-muted-foreground shrink-0">
+            <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/30">UDT_NETWORK_NODE_DATA</span>
+          </div>
+        </div>
+      </header>
 
-      <h1>
-        {singleDevice ? `Diagnostics — ${singleDevice}` : 'Network Diagnostics'}
-        <span className="sub">
-          {singleDevice ? (
+      {/* Body */}
+      <div className="flex-1 overflow-auto">
+        <div className="px-5 py-4">
+          {!singleDevice && totalKnown === 0 && (
+            <div className="border border-dashed border-border bg-card/50 px-5 py-10 text-center text-sm text-muted-foreground rounded">
+              {active
+                ? 'No network devices in topology yet. Pull the latest from cloud or connect to a PLC with *_NN tags.'
+                : 'Diagnostics view inactive.'}
+            </div>
+          )}
+
+          {totalKnown > 0 && (
             <>
-              {groups[0]?.[0] ?? 'Other'} · {wsConnected ? 'live' : 'reconnecting…'}
-            </>
-          ) : (
-            <>
-              {totalKnown} device{totalKnown === 1 ? '' : 's'} · {totalDevices} live · {totalGroups} group{totalGroups === 1 ? '' : 's'} ·{' '}
-              {wsConnected ? 'live' : 'reconnecting…'}
+              {!singleDevice && <NavToc groups={groups} now={now} />}
+
+              {groups.map(([groupName, deviceList]) => (
+                <div className="mb-6 last:mb-0" key={groupName} id={`grp-${groupName}`}>
+                  {!singleDevice && (
+                    <h2 className="flex items-center gap-3 text-xs uppercase tracking-[0.22em] font-semibold text-muted-foreground mb-2.5 border-b pb-1.5">
+                      <span className="text-foreground">{groupName}</span>
+                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/30 normal-case tracking-normal">
+                        {deviceList.length}
+                      </span>
+                      <span className="flex-1 h-px bg-gradient-to-r from-border to-transparent" />
+                    </h2>
+                  )}
+                  <div className="space-y-3">
+                    {deviceList.map((entry) =>
+                      entry.live ? (
+                        <DeviceSection key={entry.deviceName} state={entry.live} now={now} />
+                      ) : (
+                        <SkeletonSection key={entry.deviceName} deviceName={entry.deviceName} active={active} />
+                      ),
+                    )}
+                  </div>
+                </div>
+              ))}
             </>
           )}
-        </span>
-      </h1>
-
-      {!singleDevice && totalKnown === 0 && (
-        <p className="empty">
-          {active
-            ? 'No network devices in topology yet. Pull the latest from cloud or connect to a PLC with *_NetworkNode tags.'
-            : 'Diagnostics view inactive.'}
-        </p>
-      )}
-
-      {(singleDevice ? true : totalKnown > 0) && (
-        <>
-          {!singleDevice && <NavToc groups={groups} now={now} />}
-
-          {groups.map(([groupName, deviceList]) => (
-            <div className="group" key={groupName} id={`grp-${groupName}`}>
-              {!singleDevice && (
-                <h2 className="group-head">
-                  {groupName} <span className="group-cnt">{deviceList.length} tag{deviceList.length === 1 ? '' : 's'}</span>
-                </h2>
-              )}
-              {deviceList.map((entry) =>
-                entry.live ? (
-                  <DeviceSection key={entry.deviceName} state={entry.live} now={now} />
-                ) : (
-                  <SkeletonSection key={entry.deviceName} deviceName={entry.deviceName} active={active} />
-                ),
-              )}
-            </div>
-          ))}
-        </>
-      )}
+        </div>
+      </div>
     </div>
   )
 }
 
-// === TOC ===
+// ─── TOC ─────────────────────────────────────────────────────────────────
 
 function NavToc({
   groups,
@@ -321,50 +293,57 @@ function NavToc({
   now: number
 }) {
   return (
-    <nav className="toc">
-      <strong>Quick jump</strong>
-      <div className="toc-grid">
-        {groups.map(([groupName, deviceList]) => (
-          <div className="toc-group" key={groupName}>
-            <a className="toc-grp-head" href={`#grp-${groupName}`}>
-              <span>{groupName}</span>
-              <span className="cnt">{deviceList.length} tags</span>
+    <nav className="mb-6 border bg-card rounded-md overflow-hidden">
+      <div className="px-4 py-2 border-b bg-muted/40 flex items-center gap-2">
+        <Activity className="w-3.5 h-3.5 text-primary" />
+        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-foreground">Quick Jump</span>
+      </div>
+      <div className="p-3 grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
+        {groups.map(([groupName, list]) => (
+          <div key={groupName} className="border bg-background/60 rounded">
+            <a
+              href={`#grp-${groupName}`}
+              className="flex items-center justify-between px-3 py-1.5 border-b bg-muted/30 hover:bg-muted/60 transition-colors group"
+            >
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-foreground group-hover:text-primary transition-colors">
+                {groupName}
+              </span>
+              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/30">
+                {list.length}
+              </span>
             </a>
-            <div className="toc-cards">
-              {deviceList.map((entry) => {
-                if (!entry.live) {
-                  // Skeleton card — device is known to topology but no live snapshot yet.
-                  return (
-                    <a className="toc-card pending" href={`#${entry.deviceName}_NN`} key={entry.deviceName}>
-                      <div className="toc-card-head">
-                        <span className="dot">○</span>
-                        <span>{entry.deviceName}</span>
-                      </div>
-                      <div className="toc-card-sub">awaiting snapshot</div>
-                    </a>
-                  )
-                }
-                const summary = summarize(entry.live.snapshot)
-                const status = tocStatusOf(entry.live.snapshot, entry.live.lastSeen, now, summary)
-                const chips: string[] = []
-                if (summary.mediaCount > 0) chips.push(`${summary.mediaCount} MEDIA`)
-                if (summary.downCount > 0) chips.push(`${summary.downCount} DOWN`)
+            <div className="grid grid-cols-1 divide-y divide-border">
+              {list.map((entry) => {
+                const summary = entry.live ? summarize(entry.live.snapshot) : null
+                const status = tocStatusOf(entry.live?.snapshot ?? null, entry.live?.lastSeen ?? 0, now, summary)
+                const dotClass =
+                  status === 'ok' ? 'bg-emerald-500 status-pulse' :
+                  status === 'down' ? 'bg-red-500' :
+                  status === 'media' ? 'bg-amber-500' :
+                  'bg-muted-foreground/40'
+                const borderClass =
+                  status === 'ok' ? 'border-l-emerald-500/60' :
+                  status === 'down' ? 'border-l-red-500/60 bg-red-500/[0.03]' :
+                  status === 'media' ? 'border-l-amber-500/60 bg-amber-500/[0.03]' :
+                  'border-l-muted-foreground/20'
                 return (
-                  <a className={`toc-card ${status}`} href={`#${entry.deviceName}_NN`} key={entry.deviceName}>
-                    <div className="toc-card-head">
-                      <span className="dot">●</span>
-                      <span>{entry.deviceName}</span>
-                    </div>
-                    <div className="toc-card-sub">
-                      {summary.activePorts}/32 active · {summary.warnCount === 0 ? 'no issues' : `${summary.warnCount} warn`}
-                    </div>
-                    {chips.length > 0 && (
-                      <div className="toc-chips">
-                        {chips.map((c) => (
-                          <span className={`chip ${c.includes('MEDIA') ? 'media' : 'down'}`} key={c}>{c}</span>
-                        ))}
-                      </div>
+                  <a
+                    href={`#${entry.deviceName}_NN`}
+                    key={entry.deviceName}
+                    className={cn(
+                      'flex items-center gap-2.5 px-3 py-1.5 border-l-2 hover:bg-accent/40 transition-colors',
+                      borderClass,
                     )}
+                  >
+                    <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', dotClass)} aria-hidden />
+                    <span className="font-mono text-[11px] font-semibold truncate min-w-0 flex-1">
+                      {entry.deviceName}
+                    </span>
+                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground font-medium shrink-0">
+                      {entry.live && summary
+                        ? `${summary.activePorts}/32 · ${summary.warnCount === 0 ? 'ok' : `${summary.warnCount} warn`}`
+                        : 'awaiting'}
+                    </span>
                   </a>
                 )
               })}
@@ -376,115 +355,22 @@ function NavToc({
   )
 }
 
-/**
- * Placeholder section for a device that the topology knows about but for
- * which no snapshot has arrived yet. Renders the SAME full layout as a live
- * DeviceSection (header + facts + 32 port cards each with three panels) but
- * with em-dash placeholders in every cell. Lets the operator see exactly
- * which fields will fill in once polling starts.
- */
-function SkeletonSection({ deviceName, active }: { deviceName: string; active: boolean }) {
-  return (
-    <section className="nn wide skeleton" id={`${deviceName}_NN`}>
-      <div className="nn-head">
-        <div className="nn-title">
-          <h2>
-            {deviceName} <span className="tag-status pending">{active ? 'WAITING' : 'INACTIVE'}</span>
-          </h2>
-          <p className="skeleton-note">
-            {active
-              ? `Awaiting first UDT snapshot — values fill in within 5 s of the PLC connecting and ${deviceName}_NetworkNode being read.`
-              : 'Diagnostics view inactive — open the modal to subscribe.'}
-          </p>
-        </div>
-        <div className="facts">
-          <div><span className="lbl">Product Code</span><span className="val">—</span></div>
-          <div><span className="lbl">Firmware</span><span className="val">—</span></div>
-          <div><span className="lbl">Active Ports</span><span className="val">—</span></div>
-          <div><span className="lbl">Last Snapshot</span><span className="val">never</span></div>
-        </div>
-      </div>
-      <div className="ports">
-        {Array.from({ length: 32 }, (_, i) => (
-          <PlaceholderPortCard portNumber={i + 1} key={i + 1} />
-        ))}
-      </div>
-    </section>
-  )
-}
-
-/**
- * Port card rendered with em-dash placeholders. Matches PortCard's structure
- * exactly so the column widths line up when the modal flips from skeleton to
- * live data without remounting.
- */
-function PlaceholderPortCard({ portNumber }: { portNumber: number }) {
-  return (
-    <div className="port skeleton-port">
-      <div className="port-head">
-        <h3>Port [{portNumber}]</h3>
-        <div className="badges">
-          <span className="badge pending">—</span>
-        </div>
-      </div>
-      <div className="port-grid">
-        <PlaceholderPanel
-          title="Link"
-          keys={['Link_Status_Raw', 'Link_Up', 'Full_Duplex', 'Reset_Required', 'Hardware_Fault', 'AdminState']}
-        />
-        <PlaceholderPanel
-          title="Interface Counters"
-          keys={[
-            'OctetsIn', 'UcastIn', 'NUcastIn', 'DiscardsIn', 'ErrorsIn', 'UnknownProtosIn',
-            'OctetsOut', 'UcastOut', 'NUcastOut', 'DiscardsOut', 'ErrorsOut',
-          ]}
-        />
-        <PlaceholderPanel
-          title="Media Counters"
-          keys={[
-            'AlignErr', 'FCSErr', 'SingleColl', 'MultiColl', 'SQEErr', 'DeferredTx',
-            'LateColl', 'ExcessColl', 'MACTxErr', 'CarrierSense', 'FrameTooLong', 'MACRxErr',
-          ]}
-        />
-      </div>
-    </div>
-  )
-}
-
-function PlaceholderPanel({ title, keys }: { title: string; keys: string[] }) {
-  return (
-    <div className="panel">
-      <h4>{title}</h4>
-      <table className="kv">
-        <tbody>
-          {keys.map((k) => (
-            <tr className="zero" key={k}>
-              <td className="k">{k}</td>
-              <td className="v">—</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-// === Device section ===
+// ─── Device section ──────────────────────────────────────────────────────
 
 function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
   const { snapshot, lastSeen } = state
   const summary = useMemo(() => summarize(snapshot), [snapshot])
   const isStale = now - lastSeen > STALE_MS
+  const tagStatus: 'ok' | 'warn' | 'stale' = isStale ? 'stale' : summary.warnCount > 0 ? 'warn' : 'ok'
 
-  const tagStatus: 'ok' | 'warn' = summary.warnCount > 0 || isStale ? 'warn' : 'ok'
   const chips: { text: string; kind: 'media' | 'down'; title: string }[] = [
     ...summary.mediaPorts.map((p) => ({
-      text: `P${p.portNumber} MEDIA ERR`,
+      text: `P${p.portNumber} media err`,
       kind: 'media' as const,
       title: `AlignErr=${p.alignErr}, FCSErr=${p.fcsErr}, MACRxErr=${p.macRxErr}`,
     })),
     ...summary.downPorts.map((p) => ({
-      text: `P${p.portNumber} DOWN`,
+      text: `P${p.portNumber} down`,
       kind: 'down' as const,
       title: `OctetsIn=${p.octetsIn}, OctetsOut=${p.octetsOut}`,
     })),
@@ -493,86 +379,181 @@ function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
   const ageSec = Math.max(0, Math.floor((now - snapshot.capturedAt) / 1000))
 
   return (
-    <section className="nn wide" id={`${snapshot.deviceName}_NN`}>
-      <div className="nn-head">
-        <div className="nn-title">
-          <h2>
-            {snapshot.deviceName}{' '}
-            <span className={`tag-status ${tagStatus}`}>
-              {isStale ? 'STALE' : tagStatus === 'ok' ? 'OK' : summary.warnCount}
-            </span>
-          </h2>
-          {chips.length > 0 && (
-            <div className="chips">
-              {chips.map((c) => (
-                <span className={`chip ${c.kind}`} title={c.title} key={c.text}>{c.text}</span>
-              ))}
+    <section
+      id={`${snapshot.deviceName}_NN`}
+      className="border bg-card rounded-md overflow-hidden scroll-mt-4 target:ring-2 target:ring-primary"
+    >
+      <header className="px-5 py-3 border-b bg-muted/30">
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h2 className="font-mono text-base font-bold tracking-tight">{snapshot.deviceName}</h2>
+              <TagBadge status={tagStatus} count={summary.warnCount} />
+              {summary.activePorts > 0 && (
+                <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider">
+                  {summary.activePorts}/32 linked
+                </span>
+              )}
             </div>
-          )}
+            {chips.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {chips.map((c) => (
+                  <Chip key={c.text} kind={c.kind} title={c.title}>
+                    {c.text}
+                  </Chip>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-1.5 shrink-0">
+            <FactCell label="Product Code" value={snapshot.productCode || '—'} />
+            <FactCell
+              label="Firmware"
+              value={
+                snapshot.firmwareMajor || snapshot.firmwareMinor
+                  ? `${snapshot.firmwareMajor}.${snapshot.firmwareMinor}`
+                  : '—'
+              }
+            />
+            <FactCell label="Active Ports" value={summary.activePorts} />
+            <FactCell label="Last Snapshot" value={`${ageSec}s ago`} stale={isStale} />
+          </div>
         </div>
-        <div className="facts">
-          <div>
-            <span className="lbl">Product Code</span>
-            <span className="val">{snapshot.productCode || '—'}</span>
-          </div>
-          <div>
-            <span className="lbl">Firmware</span>
-            <span className="val">
-              {snapshot.firmwareMajor || snapshot.firmwareMinor
-                ? `${snapshot.firmwareMajor}.${snapshot.firmwareMinor}`
-                : '—'}
-            </span>
-          </div>
-          <div>
-            <span className="lbl">Active Ports</span>
-            <span className="val">{summary.activePorts}</span>
-          </div>
-          <div>
-            <span className="lbl">Last Snapshot</span>
-            <span className="val">{ageSec}s ago</span>
-          </div>
-        </div>
-      </div>
-      <div className="ports">
+      </header>
+
+      <div className="p-3 space-y-2">
         {snapshot.ports.map((p) => (
-          <PortCard port={p} key={p.portNumber} />
+          <PortRow port={p} key={p.portNumber} />
         ))}
       </div>
     </section>
   )
 }
 
-// === Port card ===
+function FactCell({
+  label,
+  value,
+  stale,
+}: {
+  label: string
+  value: string | number
+  stale?: boolean
+}) {
+  return (
+    <div className="min-w-[80px]">
+      <div className="text-[9px] uppercase tracking-[0.2em] text-muted-foreground font-medium">
+        {label}
+      </div>
+      <div
+        className={cn(
+          'font-mono text-sm font-semibold tabular-nums leading-tight mt-0.5',
+          stale && 'text-amber-500',
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
 
-function PortCard({ port: p }: { port: Port }) {
+function TagBadge({
+  status,
+  count,
+}: {
+  status: 'ok' | 'warn' | 'stale' | 'pending'
+  count?: number
+}) {
+  const map = {
+    ok: { text: 'OK', cls: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' },
+    warn: { text: count ? `${count} WARN` : 'WARN', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-500' },
+    stale: { text: 'STALE', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-500' },
+    pending: { text: 'WAITING', cls: 'border-muted-foreground/30 bg-muted/40 text-muted-foreground' },
+  } as const
+  const { text, cls } = map[status]
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center px-1.5 py-0.5 rounded-sm border text-[10px] font-bold uppercase tracking-[0.14em]',
+        cls,
+      )}
+    >
+      {text}
+    </span>
+  )
+}
+
+function Chip({
+  kind,
+  title,
+  children,
+}: {
+  kind: 'media' | 'down'
+  title?: string
+  children: React.ReactNode
+}) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-[10px] font-semibold uppercase tracking-wider font-mono',
+        kind === 'media'
+          ? 'border-amber-500/40 bg-amber-500/10 text-amber-500'
+          : 'border-red-500/40 bg-red-500/10 text-red-500',
+      )}
+    >
+      {kind === 'media' ? <ServerCrash className="w-2.5 h-2.5" /> : <Zap className="w-2.5 h-2.5" />}
+      {children}
+    </span>
+  )
+}
+
+// ─── Port row (one row per port, three panels) ──────────────────────────
+
+function PortRow({ port: p }: { port: Port }) {
   const media = hasMediaErrors(p)
   const down = isActivelyDown(p)
   return (
-    <div className={`port${media ? ' has-media' : ''}${down ? ' has-down' : ''}`}>
-      <div className="port-head">
-        <h3>Port [{p.portNumber}]</h3>
-        <div className="badges">
-          <span className={`badge ${p.linkUp ? 'up' : 'down'}`}>{p.linkUp ? 'LINK UP' : 'LINK DOWN'}</span>
-          {p.linkUp && p.speedMbps > 0 && <span className="badge speed">{p.speedMbps} Mbps</span>}
-          {p.linkUp && <span className="badge dup">{p.fullDuplex ? 'Full Duplex' : 'Half Duplex'}</span>}
-          {p.hardwareFault && <span className="badge warn">HW Fault</span>}
+    <div
+      className={cn(
+        'border rounded bg-background/40 overflow-hidden',
+        media && 'border-amber-500/50 shadow-[inset_2px_0_0_0_theme(colors.amber.500)]',
+        down && 'border-red-500/50 shadow-[inset_2px_0_0_0_theme(colors.red.500)]',
+        !media && !down && 'shadow-[inset_2px_0_0_0_theme(colors.border)]',
+      )}
+    >
+      <div className="px-3 py-1.5 border-b bg-muted/20 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <h3
+            className={cn(
+              'font-mono text-xs font-bold tracking-tight uppercase tabular-nums',
+              media && 'text-amber-500',
+              down && 'text-red-500',
+            )}
+          >
+            Port {String(p.portNumber).padStart(2, '0')}
+          </h3>
+          <LinkBadges port={p} />
         </div>
+        {(media || down) && (
+          <span
+            className={cn(
+              'text-[9px] uppercase tracking-widest font-bold font-mono',
+              media && 'text-amber-500',
+              down && 'text-red-500',
+            )}
+          >
+            {media && down ? 'media err + down' : media ? 'media err' : 'down'}
+          </span>
+        )}
       </div>
-      <div className="port-grid">
+      <div className="p-2 grid grid-cols-1 md:grid-cols-3 gap-2">
         <Panel title="Link">
           <KV k="Link_Status_Raw" v={p.linkStatusRaw} />
           <KV k="Link_Up" v={p.linkUp ? 1 : 0} />
           <KV k="Full_Duplex" v={p.fullDuplex ? 1 : 0} />
           <KV k="Reset_Required" v={p.resetRequired ? 1 : 0} />
-          <KV k="Hardware_Fault" v={p.hardwareFault ? 1 : 0} />
-          {/* AdminState: 1=Enable, 2=Disable, 0=unwritten. Highlight Disable
-              in amber so a deliberately-disabled port doesn't look like a
-              fault. */}
-          <KV
-            k="AdminState"
-            v={p.adminState}
-            highlight={p.adminState === 2 ? 'amber' : undefined}
-          />
+          <KV k="Hardware_Fault" v={p.hardwareFault ? 1 : 0} highlight={p.hardwareFault ? 'red' : undefined} />
+          <KV k="AdminState" v={p.adminState} highlight={p.adminState === 2 ? 'amber' : undefined} />
         </Panel>
         <Panel title="Interface Counters">
           <KV k="OctetsIn" v={p.octetsIn} />
@@ -606,6 +587,37 @@ function PortCard({ port: p }: { port: Port }) {
   )
 }
 
+function LinkBadges({ port: p }: { port: Port }) {
+  if (!p.linkUp) {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-[9px] font-bold uppercase tracking-[0.14em]">
+        link down
+      </span>
+    )
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-emerald-500/40 bg-emerald-500/10 text-emerald-500 text-[9px] font-bold uppercase tracking-[0.14em]">
+        <span className="w-1 h-1 rounded-full bg-emerald-500 status-pulse" />
+        up
+      </span>
+      {p.speedMbps > 0 && (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm border border-primary/40 bg-primary/10 text-primary text-[9px] font-bold font-mono tracking-wider">
+          {p.speedMbps >= 1000 ? `${p.speedMbps / 1000}G` : `${p.speedMbps}M`}
+        </span>
+      )}
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm border border-foreground/15 bg-foreground/5 text-foreground/75 text-[9px] font-bold uppercase tracking-[0.14em]">
+        {p.fullDuplex ? 'FDX' : 'HDX'}
+      </span>
+      {p.hardwareFault && (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm border border-red-500/40 bg-red-500/10 text-red-500 text-[9px] font-bold uppercase tracking-[0.14em]">
+          HW
+        </span>
+      )}
+    </div>
+  )
+}
+
 function Panel({
   title,
   mediaPanel,
@@ -616,189 +628,149 @@ function Panel({
   children: React.ReactNode
 }) {
   return (
-    <div className={`panel${mediaPanel ? ' media-panel' : ''}`}>
-      <h4>{title}</h4>
-      <table className="kv">
+    <div
+      className={cn(
+        'rounded border bg-card/60 px-2.5 py-1.5',
+        mediaPanel && 'border-amber-500/30 bg-amber-500/[0.04]',
+      )}
+    >
+      <h4
+        className={cn(
+          'text-[9px] font-bold uppercase tracking-[0.22em] mb-1 pb-1 border-b border-border/60',
+          mediaPanel ? 'text-amber-500' : 'text-muted-foreground',
+        )}
+      >
+        {title}
+      </h4>
+      <table className="w-full">
         <tbody>{children}</tbody>
       </table>
     </div>
   )
 }
 
-function KV({ k, v, highlight }: { k: string; v: number; highlight?: 'amber' | 'red' }) {
+function KV({
+  k,
+  v,
+  highlight,
+}: {
+  k: string
+  v: number
+  highlight?: 'amber' | 'red'
+}) {
   const isZero = v === 0
   return (
-    <tr className={isZero ? 'zero' : ''}>
-      <td className="k">{k}</td>
-      <td className={`v${highlight ? ` hi-${highlight}` : ''}`}>{formatNumber(v)}</td>
+    <tr
+      className={cn(
+        'border-b border-border/30 last:border-0',
+        isZero && 'text-muted-foreground/40',
+      )}
+    >
+      <td className="font-mono text-[10px] py-[3px] pr-2 leading-tight">{k}</td>
+      <td
+        className={cn(
+          'font-mono text-[11px] py-[3px] text-right tabular-nums leading-tight',
+          highlight === 'red' && 'text-red-500 font-bold',
+          highlight === 'amber' && 'text-amber-500 font-bold',
+        )}
+      >
+        {typeof v === 'string' ? v : formatNumber(v)}
+      </td>
     </tr>
   )
 }
 
-// === CSS ===
-// Ported from IOCT_COMMUNICATION_MONITOR_Routine_RLL_nn_values.html. Scoped
-// under .net-diag so it doesn't bleed into the rest of the app.
-const DIAG_CSS = `
-.net-diag {
-  --d-bg: #0f1419;
-  --d-card: #1a2027;
-  --d-card2: #232a33;
-  --d-border: #2d3742;
-  --d-text: #d9e0e8;
-  --d-muted: #7a8694;
-  --d-accent: #4ea1ff;
-  --d-accent2: #79d1ff;
-  --d-green: #3ecf8e;
-  --d-red: #ff5d6c;
-  --d-amber: #ffb454;
-  --d-zero: #4b545f;
-  background: var(--d-bg);
-  color: var(--d-text);
-  font-family: 'Segoe UI', -apple-system, Arial, sans-serif;
-  line-height: 1.4;
-  padding: 1.5em;
-  min-height: 100%;
-  border-radius: 8px;
-}
-.net-diag * { box-sizing: border-box; }
-.net-diag h1 { font-weight: 300; letter-spacing: 0.5px; border-bottom: 1px solid var(--d-border); padding-bottom: 0.4em; margin: 0 0 1em; }
-.net-diag h1 .sub { color: var(--d-muted); font-size: 0.55em; margin-left: 1em; font-weight: 400; }
-.net-diag .empty { color: var(--d-muted); padding: 2em; text-align: center; }
+// ─── Skeleton (no live snapshot yet) ────────────────────────────────────
 
-.net-diag nav.toc {
-  background: var(--d-card); border: 1px solid var(--d-border); border-radius: 8px;
-  padding: 0.8em 1.2em; margin: 0 0 2em;
-}
-.net-diag nav.toc strong { color: var(--d-accent2); }
-.net-diag nav.toc .toc-grid { display: flex; flex-direction: column; gap: 1.2em; margin-top: 0.8em; }
-.net-diag nav.toc .toc-group { background: rgba(0,0,0,0.18); border-radius: 8px; padding: 0.9em 1.2em; }
-.net-diag nav.toc .toc-grp-head {
-  display: flex; justify-content: space-between; align-items: center;
-  color: var(--d-accent2); font-weight: 600; text-decoration: none; font-size: 0.95em;
-  padding-bottom: 0.3em; margin-bottom: 0.3em; border-bottom: 1px solid var(--d-border);
-}
-.net-diag nav.toc .toc-grp-head .cnt {
-  background: rgba(78,161,255,0.18); color: var(--d-accent); border: 1px solid rgba(78,161,255,0.4);
-  padding: 1px 7px; border-radius: 10px; font-size: 0.75em; font-weight: 600;
-}
-.net-diag nav.toc .toc-cards {
-  display: grid; gap: 0.5em; margin-top: 0.6em;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-}
-.net-diag nav.toc .toc-card {
-  display: flex; flex-direction: column; gap: 0.3em;
-  text-decoration: none; color: inherit;
-  background: rgba(0,0,0,0.22); border: 1px solid var(--d-border); border-left: 3px solid;
-  border-radius: 5px; padding: 0.5em 0.7em;
-  transition: transform 0.08s, background 0.08s, border-color 0.08s;
-}
-.net-diag nav.toc .toc-card.ok    { border-left-color: rgba(62,207,142,0.5); }
-.net-diag nav.toc .toc-card.down  { border-left-color: var(--d-red); background: rgba(255,93,108,0.06); }
-.net-diag nav.toc .toc-card.pending {
-  border-left-color: var(--d-muted);
-  opacity: 0.75;
-}
-.net-diag nav.toc .toc-card.pending .dot { color: var(--d-muted); }
-.net-diag nav.toc .toc-card.media {
-  border-left-color: var(--d-amber);
-  background: linear-gradient(90deg, rgba(255,180,84,0.15), rgba(255,180,84,0.04));
-  border-color: rgba(255,180,84,0.4);
-  box-shadow: 0 0 0 1px rgba(255,180,84,0.2);
-}
-.net-diag nav.toc .toc-card:hover { background: rgba(78,161,255,0.12); border-color: var(--d-accent); transform: translateX(2px); }
-.net-diag nav.toc .toc-card.media:hover { background: rgba(255,180,84,0.22); border-color: var(--d-amber); }
-.net-diag nav.toc .toc-card-head { display: flex; align-items: center; gap: 0.4em; font-weight: 600; }
-.net-diag nav.toc .toc-card-sub { color: var(--d-muted); font-size: 0.75em; }
-.net-diag nav.toc .dot { font-size: 0.65em; }
-.net-diag nav.toc .toc-card.ok    .dot { color: var(--d-green); }
-.net-diag nav.toc .toc-card.down  .dot { color: var(--d-red); }
-.net-diag nav.toc .toc-card.media .dot { color: var(--d-amber); }
-.net-diag nav.toc .toc-chips { display: flex; gap: 0.25em; flex-wrap: wrap; }
-.net-diag nav.toc .toc-chips .chip { padding: 1px 6px; font-size: 0.62em; border-radius: 8px; line-height: 1.4; }
-
-.net-diag .group { margin-bottom: 1.5em; }
-.net-diag .group-head {
-  color: var(--d-accent2); font-weight: 500; font-size: 1.15em;
-  border-bottom: 1px solid var(--d-border); padding-bottom: 0.3em; margin: 1.5em 0 0.8em;
-}
-.net-diag .group-cnt {
-  background: rgba(121,209,255,0.15); color: var(--d-accent2);
-  padding: 2px 10px; border-radius: 12px; font-size: 0.65em; font-weight: 600; margin-left: 0.6em;
+function SkeletonSection({ deviceName, active }: { deviceName: string; active: boolean }) {
+  return (
+    <section
+      id={`${deviceName}_NN`}
+      className="border border-dashed bg-card/50 rounded-md overflow-hidden opacity-90 scroll-mt-4"
+    >
+      <header className="px-5 py-3 border-b bg-muted/20">
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h2 className="font-mono text-base font-bold tracking-tight text-muted-foreground">
+                {deviceName}
+              </h2>
+              <TagBadge status="pending" />
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1.5 max-w-prose uppercase tracking-wider">
+              {active
+                ? `Awaiting first UDT snapshot — values fill within 5 s of polling ${deviceName}_NN`
+                : 'Diagnostics view inactive'}
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-1.5 shrink-0">
+            <FactCell label="Product Code" value="—" />
+            <FactCell label="Firmware" value="—" />
+            <FactCell label="Active Ports" value="—" />
+            <FactCell label="Last Snapshot" value="never" />
+          </div>
+        </div>
+      </header>
+      <div className="p-3 space-y-2">
+        {Array.from({ length: 32 }, (_, i) => (
+          <PlaceholderPortRow portNumber={i + 1} key={i + 1} />
+        ))}
+      </div>
+    </section>
+  )
 }
 
-.net-diag section.nn { scroll-margin-top: 1em; background: var(--d-card); border: 1px solid var(--d-border); border-radius: 8px; margin-bottom: 1.2em; overflow: hidden; }
-.net-diag section.nn:target .nn-head { box-shadow: 0 0 0 2px var(--d-accent) inset; }
-.net-diag .nn-head { padding: 1em 1.4em; border-bottom: 1px solid var(--d-border); background: rgba(0,0,0,0.18); display: flex; justify-content: space-between; align-items: center; gap: 1em; flex-wrap: wrap; }
-.net-diag .nn-title { display: flex; flex-direction: column; gap: 0.4em; }
-.net-diag .nn-head h2 { margin: 0; color: var(--d-accent2); font-family: Consolas, monospace; font-size: 1.15em; font-weight: 600; }
-.net-diag .tag-status { display: inline-block; padding: 1px 9px; border-radius: 10px; font-size: 0.65em; font-weight: 700; margin-left: 0.5em; letter-spacing: 0.4px; }
-.net-diag .tag-status.ok   { background: rgba(62,207,142,0.15); color: var(--d-green); border: 1px solid rgba(62,207,142,0.4); }
-.net-diag .tag-status.warn { background: rgba(255,180,84,0.18); color: var(--d-amber); border: 1px solid rgba(255,180,84,0.5); }
-.net-diag .tag-status.pending {
-  background: rgba(122,134,148,0.18);
-  color: var(--d-muted);
-  border: 1px solid rgba(122,134,148,0.4);
-  text-transform: uppercase;
+function PlaceholderPortRow({ portNumber }: { portNumber: number }) {
+  return (
+    <div className="border border-border/60 rounded bg-background/30 overflow-hidden shadow-[inset_2px_0_0_0_theme(colors.border)] opacity-60">
+      <div className="px-3 py-1.5 border-b bg-muted/10 flex items-center gap-2.5">
+        <h3 className="font-mono text-xs font-bold tracking-tight uppercase tabular-nums text-muted-foreground">
+          Port {String(portNumber).padStart(2, '0')}
+        </h3>
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm border border-muted-foreground/30 bg-muted/30 text-muted-foreground text-[9px] font-bold uppercase tracking-[0.14em]">
+          —
+        </span>
+      </div>
+      <div className="p-2 grid grid-cols-1 md:grid-cols-3 gap-2">
+        <PlaceholderPanel
+          title="Link"
+          keys={['Link_Status_Raw', 'Link_Up', 'Full_Duplex', 'Reset_Required', 'Hardware_Fault', 'AdminState']}
+        />
+        <PlaceholderPanel
+          title="Interface Counters"
+          keys={[
+            'OctetsIn', 'UcastIn', 'NUcastIn', 'DiscardsIn', 'ErrorsIn', 'UnknownProtosIn',
+            'OctetsOut', 'UcastOut', 'NUcastOut', 'DiscardsOut', 'ErrorsOut',
+          ]}
+        />
+        <PlaceholderPanel
+          title="Media Counters"
+          keys={[
+            'AlignErr', 'FCSErr', 'SingleColl', 'MultiColl', 'SQEErr', 'DeferredTx',
+            'LateColl', 'ExcessColl', 'MACTxErr', 'CarrierSense', 'FrameTooLong', 'MACRxErr',
+          ]}
+        />
+      </div>
+    </div>
+  )
 }
-.net-diag section.nn.skeleton .nn-head h2 { color: var(--d-muted); }
-.net-diag .skeleton-note {
-  margin: 0.4em 0 0; color: var(--d-muted); font-size: 0.75em; max-width: 60ch;
-}
-.net-diag .port.skeleton-port { opacity: 0.7; }
-.net-diag .badge.pending {
-  background: rgba(122,134,148,0.15);
-  color: var(--d-muted);
-  border: 1px solid rgba(122,134,148,0.4);
-}
-.net-diag .chips { display: flex; gap: 0.3em; flex-wrap: wrap; }
-.net-diag .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7em; font-weight: 600; letter-spacing: 0.3px; }
-.net-diag .chip.down  { background: rgba(255,93,108,0.15); color: var(--d-red); border: 1px solid rgba(255,93,108,0.45); }
-.net-diag .chip.media { background: rgba(255,180,84,0.2); color: var(--d-amber); border: 1px solid rgba(255,180,84,0.5); }
 
-.net-diag .facts { display: flex; gap: 1.5em; flex-wrap: wrap; }
-.net-diag .facts > div { display: flex; flex-direction: column; gap: 0.1em; min-width: 90px; }
-.net-diag .facts .lbl { color: var(--d-muted); font-size: 0.7em; letter-spacing: 0.5px; text-transform: uppercase; }
-.net-diag .facts .val { color: var(--d-text); font-family: Consolas, monospace; font-size: 1em; }
-
-.net-diag .ports { padding: 1em 1.4em 1.4em; display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 1em; }
-.net-diag .port { background: var(--d-card2); border: 1px solid var(--d-border); border-radius: 8px; padding: 0.8em 1em; border-left: 4px solid var(--d-border); }
-.net-diag .port.has-media {
-  border-left-color: var(--d-amber);
-  background: linear-gradient(180deg, rgba(255,180,84,0.10), rgba(255,180,84,0.03));
-  box-shadow: 0 0 0 1px rgba(255,180,84,0.25);
+function PlaceholderPanel({ title, keys }: { title: string; keys: string[] }) {
+  return (
+    <div className="rounded border bg-card/40 px-2.5 py-1.5">
+      <h4 className="text-[9px] font-bold uppercase tracking-[0.22em] mb-1 pb-1 border-b border-border/60 text-muted-foreground/60">
+        {title}
+      </h4>
+      <table className="w-full">
+        <tbody>
+          {keys.map((k) => (
+            <tr key={k} className="border-b border-border/30 last:border-0 text-muted-foreground/40">
+              <td className="font-mono text-[10px] py-[3px] pr-2 leading-tight">{k}</td>
+              <td className="font-mono text-[11px] py-[3px] text-right tabular-nums leading-tight">—</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
-.net-diag .port.has-media .port-head h3 { color: var(--d-amber); }
-.net-diag .port.has-down {
-  border-left-color: var(--d-red);
-  background: linear-gradient(180deg, rgba(255,93,108,0.08), rgba(255,93,108,0.02));
-}
-.net-diag .port.has-down .port-head h3 { color: var(--d-red); }
-.net-diag .port-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5em; margin-bottom: 0.6em; }
-.net-diag .port-head h3 { margin: 0; font-size: 0.95em; color: var(--d-accent); font-family: Consolas, monospace; }
-.net-diag .badges { display: flex; gap: 0.35em; flex-wrap: wrap; }
-.net-diag .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7em; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; }
-.net-diag .badge.up    { background: rgba(62,207,142,0.15); color: var(--d-green); border: 1px solid rgba(62,207,142,0.4); }
-.net-diag .badge.down  { background: rgba(255,93,108,0.15); color: var(--d-red); border: 1px solid rgba(255,93,108,0.4); }
-.net-diag .badge.dup   { background: rgba(78,161,255,0.15); color: var(--d-accent); border: 1px solid rgba(78,161,255,0.4); }
-.net-diag .badge.speed { background: rgba(121,209,255,0.12); color: var(--d-accent2); border: 1px solid rgba(121,209,255,0.35); }
-.net-diag .badge.warn  { background: rgba(255,180,84,0.2); color: var(--d-amber); border: 1px solid rgba(255,180,84,0.5); }
-
-.net-diag .port-grid { display: grid; gap: 0.7em; grid-template-columns: 1fr; }
-@media (min-width: 1200px) {
-  .net-diag .port-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-.net-diag .panel { background: rgba(0,0,0,0.18); border: 1px solid var(--d-border); border-radius: 6px; padding: 0.5em 0.8em; }
-.net-diag .panel h4 { margin: 0 0 0.4em; color: var(--d-accent2); font-size: 0.75em; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; }
-.net-diag .panel.media-panel { background: rgba(255,180,84,0.08); border: 1px solid rgba(255,180,84,0.3); }
-.net-diag .panel.media-panel h4 { color: var(--d-amber); }
-.net-diag .panel.media-panel td.v:not(.hi-red):not(.hi-amber) { color: var(--d-amber); }
-
-.net-diag table.kv { width: 100%; border-collapse: collapse; font-family: Consolas, monospace; font-size: 0.78em; }
-.net-diag table.kv td { padding: 1px 0; }
-.net-diag table.kv td.k { color: var(--d-muted); }
-.net-diag table.kv td.v { text-align: right; color: var(--d-text); }
-.net-diag table.kv td.v.hi-red   { color: var(--d-red);   font-weight: 700; }
-.net-diag table.kv td.v.hi-amber { color: var(--d-amber); font-weight: 700; }
-.net-diag table.kv tr.zero td.v { color: var(--d-zero); }
-.net-diag table.kv tr.zero td.k { color: var(--d-zero); }
-`

@@ -1299,9 +1299,12 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
       <Dialog open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen}>
         <DialogContent
           className={cn(
-            // Near-fullscreen overlay so the topology stays available with one Esc/click away.
+            // Near-fullscreen overlay so the topology stays available with one
+            // Esc/click away. Theme-aware bg/border so the modal feels like a
+            // native panel rather than a foreign overlay.
             'fixed left-[50%] top-[50%] translate-x-[-50%] translate-y-[-50%]',
-            'w-[96vw] max-w-none h-[92vh] p-0 gap-0 overflow-hidden bg-transparent border-0 shadow-2xl',
+            'w-[96vw] max-w-none h-[92vh] p-0 gap-0 overflow-hidden rounded-lg',
+            'bg-card border border-border shadow-2xl shadow-black/30',
           )}
         >
           <DialogTitle className="sr-only">
