@@ -213,10 +213,31 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
   }
 }
 
+/**
+ * Last time we attached networkDevices to a heartbeat. We downsample the
+ * cloud-side delivery to once per NETWORK_DEVICES_HEARTBEAT_INTERVAL_MS so
+ * the heartbeat payload doesn't balloon. The WS broadcast (separate path) is
+ * unaffected and keeps emitting every 5 s for the live diagnostics drawer.
+ *
+ * Rough math at 4 devices × ~9 KB each: shipping every 10 s heartbeat would
+ * be ~3.6 KB/s baseline (~310 MB/day uploaded per laptop and stored as JSONB
+ * on the cloud). Downsampling to once per minute brings that to ~50 MB/day.
+ */
+let lastNetworkDevicesAttachedAt = 0
+const NETWORK_DEVICES_HEARTBEAT_INTERVAL_MS = 60_000
+
 function collectNetworkDevices(): NetworkDeviceSnapshot[] {
+  const now = Date.now()
+  if (now - lastNetworkDevicesAttachedAt < NETWORK_DEVICES_HEARTBEAT_INTERVAL_MS) {
+    return []
+  }
   // Best-effort: never let a poller crash break the heartbeat.
   try {
-    return getLatestNetworkDeviceSnapshots()
+    const snapshots = getLatestNetworkDeviceSnapshots()
+    if (snapshots.length > 0) {
+      lastNetworkDevicesAttachedAt = now
+    }
+    return snapshots
   } catch (err) {
     console.warn(
       '[Heartbeat] Failed to read network device snapshots:',
