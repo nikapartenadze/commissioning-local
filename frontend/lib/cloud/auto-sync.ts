@@ -48,12 +48,14 @@ class AutoSyncService {
   private pushTimer: NodeJS.Timeout | null = null
   private networkStatusTimer: NodeJS.Timeout | null = null
   private estopStatusTimer: NodeJS.Timeout | null = null
+  private networkDiagnosticsTimer: NodeJS.Timeout | null = null
   private sseUnsubscribe: (() => void) | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
   private isPushingNetworkStatus = false
   private isPushingEstopStatus = false
+  private isPushingNetworkDiagnostics = false
   private lastPullVersion: string | null = null
   private _lastPushAt: Date | null = null
   private _lastPullAt: Date | null = null
@@ -99,6 +101,15 @@ class AutoSyncService {
 
     // Push estop status to cloud every 5 seconds
     this.estopStatusTimer = setInterval(() => this.pushEstopStatus(), 5000)
+
+    // Push UDT_NETWORK_NODE diagnostics batch to cloud every 60 seconds.
+    // Heavier payload than network-status (108 bytes per device, dozens of
+    // counters each), so spaced out far more — diagnostics counters change
+    // slowly and the cloud modal only polls at 30 s anyway.
+    this.networkDiagnosticsTimer = setInterval(() => this.pushNetworkDiagnostics(), 60_000)
+    // First push 15 s after startup so the cloud has data soon after a tool
+    // launch, rather than waiting a full minute.
+    setTimeout(() => this.pushNetworkDiagnostics(), 15_000)
 
     // Start SSE client for real-time cloud updates (after 10s to let config load)
     setTimeout(async () => {
@@ -155,9 +166,11 @@ class AutoSyncService {
     if (this.pushTimer) clearInterval(this.pushTimer)
     if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
     if (this.estopStatusTimer) clearInterval(this.estopStatusTimer)
+    if (this.networkDiagnosticsTimer) clearInterval(this.networkDiagnosticsTimer)
     this.pushTimer = null
     this.networkStatusTimer = null
     this.estopStatusTimer = null
+    this.networkDiagnosticsTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
@@ -929,6 +942,65 @@ class AutoSyncService {
       // Estop status push is best-effort — don't log noise
     } finally {
       this.isPushingEstopStatus = false
+    }
+  }
+
+  /**
+   * Push the latest UDT_NETWORK_NODE_DATA snapshot batch to the cloud
+   * (commissioning-cloud /api/sync/network-diagnostics). Used by the cloud
+   * network page's Diagnostics modal to show the same per-port view the
+   * local tool has. Runs once a minute; skips silently when:
+   *   - cloud isn't configured (no remoteUrl / subsystemId)
+   *   - the PLC isn't connected (no snapshots in the cache)
+   *   - the network poller is disabled (snapshots map stays empty)
+   *
+   * Stale cleanup: getLatestNetworkDeviceSnapshots() already filters out
+   * snapshots older than STALE_SNAPSHOT_MS (60s) at the poller layer, so
+   * a dead device won't keep being shipped to cloud after the PLC restarts.
+   */
+  private async pushNetworkDiagnostics(): Promise<void> {
+    if (this.isPushingNetworkDiagnostics) return
+    this.isPushingNetworkDiagnostics = true
+
+    try {
+      const config = await configService.getConfig()
+      const remoteUrl = config.remoteUrl
+      const apiPassword = config.apiPassword
+      const subsystemId = config.subsystemId
+
+      if (!remoteUrl || !subsystemId) return
+
+      // Only push when PLC is up — same gate as pushEstopStatus, for the
+      // same reason: a snapshot batch from a tool that isn't actually
+      // connected would race a live tool on the same subsystem and clobber
+      // its data.
+      const { hasPlcClient, getPlcClient, getLatestNetworkDeviceSnapshots } = await import('@/lib/plc-client-manager')
+      if (!hasPlcClient() || !getPlcClient().isConnected) return
+
+      const snapshots = getLatestNetworkDeviceSnapshots()
+      if (!Array.isArray(snapshots) || snapshots.length === 0) return
+
+      await fetch(`${remoteUrl}/api/sync/network-diagnostics`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiPassword || '',
+        },
+        body: JSON.stringify({
+          subsystemId: parseInt(String(subsystemId), 10),
+          snapshots,
+          timestamp: new Date().toISOString(),
+        }),
+        signal: AbortSignal.timeout(15_000),
+      })
+    } catch (err) {
+      // Best-effort; don't spam logs on every transient HTTP failure.
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED') && !msg.includes('TimeoutError')) {
+        console.warn('[AutoSync] Network diagnostics push error:', msg)
+      }
+    } finally {
+      this.isPushingNetworkDiagnostics = false
     }
   }
 }
