@@ -872,13 +872,15 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [tagStates, setTagStates] = useState<Record<string, boolean | null>>({})
   // Device table always visible in right panel
   const [tableSearch, setTableSearch] = useState('')
-  // Full-page Diagnostics modal — opened from the page header (no focus) or
-  // from a specific node card (focused on that device). Esc / backdrop closes.
+  // Full-page Diagnostics modal — opened from the page header (no device
+  // specified → renders all known devices) or from a specific node card
+  // (single-device mode → renders ONLY that device with the full UDT layout).
+  // Esc / backdrop closes.
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
-  const [diagnosticsFocusDevice, setDiagnosticsFocusDevice] = useState<string | undefined>(undefined)
+  const [diagnosticsSingleDevice, setDiagnosticsSingleDevice] = useState<string | undefined>(undefined)
 
   const openDiagnostics = (deviceName?: string) => {
-    setDiagnosticsFocusDevice(deviceName)
+    setDiagnosticsSingleDevice(deviceName)
     setDiagnosticsOpen(true)
   }
 
@@ -1296,15 +1298,17 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
           )}
         >
           <DialogTitle className="sr-only">
-            {diagnosticsFocusDevice ? `Diagnostics — ${diagnosticsFocusDevice}` : 'Network device diagnostics'}
+            {diagnosticsSingleDevice ? `Diagnostics — ${diagnosticsSingleDevice}` : 'Network device diagnostics'}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Live per-port UDT_NETWORK_NODE_DATA snapshots for every discovered network device, refreshed every 5 seconds.
+            {diagnosticsSingleDevice
+              ? `Live per-port UDT_NETWORK_NODE_DATA snapshot for ${diagnosticsSingleDevice}, refreshed every 5 seconds.`
+              : 'Live per-port UDT_NETWORK_NODE_DATA snapshots for every discovered network device, refreshed every 5 seconds.'}
           </DialogDescription>
           <div className="h-full overflow-auto">
             <NetworkDiagnosticsView
               active={diagnosticsOpen}
-              focusDevice={diagnosticsFocusDevice}
+              singleDevice={diagnosticsSingleDevice}
               knownDevices={rings.flatMap((r) => r.nodes.map((n) => n.name))}
             />
           </div>
