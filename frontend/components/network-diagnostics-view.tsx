@@ -38,6 +38,15 @@ interface Props {
    * single node card on the topology page.
    */
   focusDevice?: string
+  /**
+   * Optional list of device names the topology already knows about (the ring
+   * nodes). These render as skeleton sections when no live snapshot exists,
+   * so the operator can see what the page WILL look like even before the PLC
+   * connects or before the poller has produced its first cycle. Skeleton
+   * sections are replaced with live data the moment a matching snapshot
+   * arrives.
+   */
+  knownDevices?: string[]
 }
 
 const STALE_MS = 60_000 // device considered "down" if no snapshot in this window
@@ -149,7 +158,7 @@ interface DeviceState {
   lastSeen: number
 }
 
-export function NetworkDiagnosticsView({ active, focusDevice }: Props) {
+export function NetworkDiagnosticsView({ active, focusDevice, knownDevices = [] }: Props) {
   const [devices, setDevices] = useState<Map<string, DeviceState>>(new Map())
   const [wsConnected, setWsConnected] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -237,22 +246,42 @@ export function NetworkDiagnosticsView({ active, focusDevice }: Props) {
     }
   }, [active])
 
-  /** Devices grouped by deviceType, sorted alphabetically inside each group. */
+  /**
+   * Union of known device names (from topology) AND live snapshots. Each
+   * entry either carries a `live` DeviceState or is a skeleton placeholder.
+   * Skeletons let the operator see the layout before the PLC has connected
+   * or before the poller's first cycle has landed.
+   */
   const groups = useMemo(() => {
-    const map = new Map<string, DeviceState[]>()
+    const union = new Map<string, { deviceName: string; live?: DeviceState }>()
+    for (const name of knownDevices) {
+      if (!name) continue
+      union.set(name, { deviceName: name })
+    }
     for (const ds of Array.from(devices.values())) {
-      const g = deviceTypeOf(ds.snapshot.deviceName)
+      union.set(ds.snapshot.deviceName, { deviceName: ds.snapshot.deviceName, live: ds })
+    }
+
+    const map = new Map<string, { deviceName: string; live?: DeviceState }[]>()
+    for (const entry of Array.from(union.values())) {
+      const g = deviceTypeOf(entry.deviceName)
       const list = map.get(g) ?? []
-      list.push(ds)
+      list.push(entry)
       map.set(g, list)
     }
     for (const list of Array.from(map.values())) {
-      list.sort((a, b) => a.snapshot.deviceName.localeCompare(b.snapshot.deviceName))
+      list.sort((a, b) => a.deviceName.localeCompare(b.deviceName))
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b))
-  }, [devices])
+  }, [devices, knownDevices])
 
   const totalDevices = devices.size
+  const totalKnown = useMemo(() => {
+    const set = new Set<string>()
+    for (const n of knownDevices) if (n) set.add(n)
+    for (const ds of Array.from(devices.values())) set.add(ds.snapshot.deviceName)
+    return set.size
+  }, [devices, knownDevices])
   const totalGroups = groups.length
 
   return (
@@ -262,20 +291,20 @@ export function NetworkDiagnosticsView({ active, focusDevice }: Props) {
       <h1>
         Network Diagnostics
         <span className="sub">
-          {totalDevices} tag{totalDevices === 1 ? '' : 's'} · {totalGroups} group{totalGroups === 1 ? '' : 's'} ·{' '}
+          {totalKnown} device{totalKnown === 1 ? '' : 's'} · {totalDevices} live · {totalGroups} group{totalGroups === 1 ? '' : 's'} ·{' '}
           {wsConnected ? 'live' : 'reconnecting…'}
         </span>
       </h1>
 
-      {totalDevices === 0 && (
+      {totalKnown === 0 && (
         <p className="empty">
           {active
-            ? 'No network device snapshots received yet. Either the PLC is not connected, or its program has no *_NetworkNode tags.'
+            ? 'No network devices in topology yet. Pull the latest from cloud or connect to a PLC with *_NetworkNode tags.'
             : 'Diagnostics view inactive.'}
         </p>
       )}
 
-      {totalDevices > 0 && (
+      {totalKnown > 0 && (
         <>
           <NavToc groups={groups} now={now} />
 
@@ -284,9 +313,13 @@ export function NetworkDiagnosticsView({ active, focusDevice }: Props) {
               <h2 className="group-head">
                 {groupName} <span className="group-cnt">{deviceList.length} tag{deviceList.length === 1 ? '' : 's'}</span>
               </h2>
-              {deviceList.map((ds) => (
-                <DeviceSection key={ds.snapshot.deviceName} state={ds} now={now} />
-              ))}
+              {deviceList.map((entry) =>
+                entry.live ? (
+                  <DeviceSection key={entry.deviceName} state={entry.live} now={now} />
+                ) : (
+                  <SkeletonSection key={entry.deviceName} deviceName={entry.deviceName} active={active} />
+                ),
+              )}
             </div>
           ))}
         </>
@@ -297,7 +330,13 @@ export function NetworkDiagnosticsView({ active, focusDevice }: Props) {
 
 // === TOC ===
 
-function NavToc({ groups, now }: { groups: [string, DeviceState[]][]; now: number }) {
+function NavToc({
+  groups,
+  now,
+}: {
+  groups: [string, { deviceName: string; live?: DeviceState }[]][]
+  now: number
+}) {
   return (
     <nav className="toc">
       <strong>Quick jump</strong>
@@ -309,17 +348,29 @@ function NavToc({ groups, now }: { groups: [string, DeviceState[]][]; now: numbe
               <span className="cnt">{deviceList.length} tags</span>
             </a>
             <div className="toc-cards">
-              {deviceList.map((ds) => {
-                const summary = summarize(ds.snapshot)
-                const status = tocStatusOf(ds.snapshot, ds.lastSeen, now, summary)
+              {deviceList.map((entry) => {
+                if (!entry.live) {
+                  // Skeleton card — device is known to topology but no live snapshot yet.
+                  return (
+                    <a className="toc-card pending" href={`#${entry.deviceName}_NN`} key={entry.deviceName}>
+                      <div className="toc-card-head">
+                        <span className="dot">○</span>
+                        <span>{entry.deviceName}</span>
+                      </div>
+                      <div className="toc-card-sub">awaiting snapshot</div>
+                    </a>
+                  )
+                }
+                const summary = summarize(entry.live.snapshot)
+                const status = tocStatusOf(entry.live.snapshot, entry.live.lastSeen, now, summary)
                 const chips: string[] = []
                 if (summary.mediaCount > 0) chips.push(`${summary.mediaCount} MEDIA`)
                 if (summary.downCount > 0) chips.push(`${summary.downCount} DOWN`)
                 return (
-                  <a className={`toc-card ${status}`} href={`#${ds.snapshot.deviceName}_NN`} key={ds.snapshot.deviceName}>
+                  <a className={`toc-card ${status}`} href={`#${entry.deviceName}_NN`} key={entry.deviceName}>
                     <div className="toc-card-head">
                       <span className="dot">●</span>
-                      <span>{ds.snapshot.deviceName}</span>
+                      <span>{entry.deviceName}</span>
                     </div>
                     <div className="toc-card-sub">
                       {summary.activePorts}/32 active · {summary.warnCount === 0 ? 'no issues' : `${summary.warnCount} warn`}
@@ -339,6 +390,37 @@ function NavToc({ groups, now }: { groups: [string, DeviceState[]][]; now: numbe
         ))}
       </div>
     </nav>
+  )
+}
+
+/**
+ * Placeholder section for a device that the topology knows about but for
+ * which no snapshot has arrived yet. Mirrors the DeviceSection structure
+ * (header + facts + port grid placeholder) so the operator can see what the
+ * page WILL look like before the PLC connects.
+ */
+function SkeletonSection({ deviceName, active }: { deviceName: string; active: boolean }) {
+  return (
+    <section className="nn wide skeleton" id={`${deviceName}_NN`}>
+      <div className="nn-head">
+        <div className="nn-title">
+          <h2>
+            {deviceName} <span className="tag-status pending">{active ? 'WAITING' : 'INACTIVE'}</span>
+          </h2>
+        </div>
+        <div className="facts">
+          <div><span className="lbl">Product Code</span><span className="val">—</span></div>
+          <div><span className="lbl">Firmware</span><span className="val">—</span></div>
+          <div><span className="lbl">Active Ports</span><span className="val">—</span></div>
+          <div><span className="lbl">Last Snapshot</span><span className="val">never</span></div>
+        </div>
+      </div>
+      <div className="skeleton-body">
+        {active
+          ? `Awaiting first UDT snapshot for ${deviceName}. The poller broadcasts every 5 s once the PLC is connected and ${deviceName}_NetworkNode exists in its program.`
+          : `Diagnostics view inactive — open the modal to subscribe.`}
+      </div>
+    </section>
   )
 }
 
@@ -559,6 +641,11 @@ const DIAG_CSS = `
 }
 .net-diag nav.toc .toc-card.ok    { border-left-color: rgba(62,207,142,0.5); }
 .net-diag nav.toc .toc-card.down  { border-left-color: var(--d-red); background: rgba(255,93,108,0.06); }
+.net-diag nav.toc .toc-card.pending {
+  border-left-color: var(--d-muted);
+  opacity: 0.75;
+}
+.net-diag nav.toc .toc-card.pending .dot { color: var(--d-muted); }
 .net-diag nav.toc .toc-card.media {
   border-left-color: var(--d-amber);
   background: linear-gradient(90deg, rgba(255,180,84,0.15), rgba(255,180,84,0.04));
@@ -594,6 +681,21 @@ const DIAG_CSS = `
 .net-diag .tag-status { display: inline-block; padding: 1px 9px; border-radius: 10px; font-size: 0.65em; font-weight: 700; margin-left: 0.5em; letter-spacing: 0.4px; }
 .net-diag .tag-status.ok   { background: rgba(62,207,142,0.15); color: var(--d-green); border: 1px solid rgba(62,207,142,0.4); }
 .net-diag .tag-status.warn { background: rgba(255,180,84,0.18); color: var(--d-amber); border: 1px solid rgba(255,180,84,0.5); }
+.net-diag .tag-status.pending {
+  background: rgba(122,134,148,0.18);
+  color: var(--d-muted);
+  border: 1px solid rgba(122,134,148,0.4);
+  text-transform: uppercase;
+}
+.net-diag section.nn.skeleton { opacity: 0.85; }
+.net-diag section.nn.skeleton .nn-head h2 { color: var(--d-muted); }
+.net-diag .skeleton-body {
+  padding: 1.4em;
+  color: var(--d-muted);
+  font-size: 0.85em;
+  text-align: center;
+  border-top: 1px dashed var(--d-border);
+}
 .net-diag .chips { display: flex; gap: 0.3em; flex-wrap: wrap; }
 .net-diag .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7em; font-weight: 600; letter-spacing: 0.3px; }
 .net-diag .chip.down  { background: rgba(255,93,108,0.15); color: var(--d-red); border: 1px solid rgba(255,93,108,0.45); }
