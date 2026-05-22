@@ -157,6 +157,11 @@ export class NetworkPoller extends EventEmitter {
     this.isStarting = true;
 
     try {
+      // Let the IO tag reader's startup burst finish before we add CIP load.
+      // Without this delay the PLC's request queue is saturated and every
+      // initial read comes back PLCTAG_ERR_BUSY.
+      await this.sleep(2_000);
+
       let discoveredNames: string[] = [];
       try {
         discoveredNames = await this.browseNetworkTags();
@@ -178,6 +183,10 @@ export class NetworkPoller extends EventEmitter {
 
       this.emit('discovered', discoveredNames);
 
+      // Throttle handle creation so we don't burst-flood the PLC's CIP queue.
+      // createDeviceHandle has its own retry-on-BUSY, but spacing requests
+      // here keeps the initial read on each handle from competing with the
+      // previous one's tail.
       let failed = 0;
       for (const tagName of discoveredNames) {
         const device = await this.createDeviceHandle(tagName);
@@ -186,6 +195,7 @@ export class NetworkPoller extends EventEmitter {
         } else {
           failed++;
         }
+        await this.sleep(120);
       }
 
       if (this.devices.length === 0) {
@@ -337,6 +347,12 @@ export class NetworkPoller extends EventEmitter {
    * `plc_tag_get_size` disagrees with NETWORK_NODE_LAYOUT.TOTAL_SIZE — a
    * size mismatch means our parser would misalign every counter, and
    * publishing wrong-but-plausible data is worse than no data.
+   *
+   * Retries on PLCTAG_ERR_BUSY with exponential backoff because the IO tag
+   * reader is hammering the PLC at ~75ms cadence with 600+ tags during
+   * startup; the PLC's CIP queue often replies BUSY for the first second
+   * or two on a fresh handle. Without retry every device would fail to
+   * initialize on a busy controller.
    */
   private async createDeviceHandle(tagName: string): Promise<DeviceHandle | null> {
     const deviceName = stripNetworkTagSuffix(tagName) ?? tagName;
@@ -358,7 +374,22 @@ export class NetworkPoller extends EventEmitter {
       return null;
     }
 
-    const status = await readTagAsync(handle, this.readTimeoutMs);
+    // Retry initial read on BUSY (and a couple of related transient codes)
+    // with exponential backoff. ~3.6 s total budget.
+    const TRANSIENT_CODES = new Set<number>([
+      PlcTagStatus.PLCTAG_ERR_BUSY,
+      PlcTagStatus.PLCTAG_ERR_TIMEOUT,
+      PlcTagStatus.PLCTAG_ERR_NO_RESOURCES,
+    ]);
+    let status: number = PlcTagStatus.PLCTAG_ERR_BUSY;
+    let delay = 200;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      status = await readTagAsync(handle, this.readTimeoutMs);
+      if (status === PlcTagStatus.PLCTAG_STATUS_OK) break;
+      if (!TRANSIENT_CODES.has(status)) break; // hard error — don't retry
+      await this.sleep(delay);
+      delay = Math.min(delay * 1.8, 1500);
+    }
     if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
       this.reportDeviceError(deviceName, `Initial read failed: ${getStatusMessage(status)}`);
       try {
