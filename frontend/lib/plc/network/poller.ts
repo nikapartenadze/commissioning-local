@@ -30,10 +30,7 @@ import {
   createTag,
   plc_tag_destroy,
   plc_tag_get_size,
-  plc_tag_get_int8,
-  plc_tag_get_int16,
-  plc_tag_get_int32,
-  plc_tag_get_uint8,
+  plc_tag_get_raw_bytes,
   readTagAsync,
 } from '../libplctag';
 import { PlcTagStatus, getStatusMessage, type TagHandle } from '../types';
@@ -43,7 +40,7 @@ import {
   stripNetworkTagSuffix,
   type NetworkDeviceSnapshot,
 } from './types';
-import { parseNetworkDevice, type ByteReader } from './parser';
+import { bufferReader, parseNetworkDevice } from './parser';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_READ_TIMEOUT_MS = 4_000;
@@ -298,13 +295,19 @@ export class NetworkPoller extends EventEmitter {
         return;
       }
 
-      const reader: ByteReader = {
-        int8: (off) => plc_tag_get_int8(device.handle, off),
-        int16: (off) => plc_tag_get_int16(device.handle, off),
-        int32: (off) => plc_tag_get_int32(device.handle, off),
-      };
+      // Bulk-copy the UDT into a Node Buffer in a single FFI call, then parse
+      // from JS memory. Previous code did ~830 plc_tag_get_int32/int8 calls
+      // per device per cycle — each call a sync FFI round-trip that blocks
+      // the Node event loop for ~100–500 µs. With 20 devices the cycle would
+      // pin the loop for seconds. One copy + JS parse is microseconds.
+      const buf = Buffer.alloc(device.sizeBytes);
+      const copyStatus = plc_tag_get_raw_bytes(device.handle, 0, buf);
+      if (copyStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        this.reportDeviceError(device.deviceName, `Bulk copy failed: ${getStatusMessage(copyStatus)}`);
+        return;
+      }
 
-      const snapshot = parseNetworkDevice(reader, {
+      const snapshot = parseNetworkDevice(bufferReader(buf), {
         tagName: device.tagName,
         deviceName: device.deviceName,
         capturedAt: Date.now(),
@@ -459,18 +462,32 @@ export class NetworkPoller extends EventEmitter {
       const size = plc_tag_get_size(handle);
       if (size <= 0) return [];
 
+      // Bulk-copy the whole @tags response into a Node Buffer with ONE FFI
+      // call, then parse the layout from JS memory. Previous code did one
+      // plc_tag_get_uint8() per byte of the response — for a typical Logix
+      // PLC with ~2000 tags × 34-byte avg entry that's ~68,000 sync FFI
+      // calls, each blocking the event loop for 100–500 µs = up to half a
+      // minute of frozen HTTP/WS handling on every PLC connect. A single
+      // bulk copy is one FFI call regardless of payload size.
+      const buf = Buffer.alloc(size);
+      const copyStatus = plc_tag_get_raw_bytes(handle, 0, buf);
+      if (copyStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        console.warn(`[NetworkPoller] @tags bulk copy failed: ${getStatusMessage(copyStatus)}`);
+        return [];
+      }
+
       const names: string[] = [];
       /** Sample of the first ~10 names seen (regardless of suffix filter) — surfaces in the log so misconfigured naming on a new site is obvious. */
       const sampleAllNames: string[] = [];
       let entriesParsed = 0;
       let off = 0;
       while (off + 22 <= size) {
-        const symbolType = readU16LE(handle, off + 4);
-        const stringLen = readU16LE(handle, off + 20);
+        const symbolType = buf.readUInt16LE(off + 4);
+        const stringLen = buf.readUInt16LE(off + 20);
 
         if (stringLen === 0 || off + 22 + stringLen > size) break;
 
-        const name = readAscii(handle, off + 22, stringLen);
+        const name = buf.toString('ascii', off + 22, off + 22 + stringLen);
         off += 22 + stringLen;
         entriesParsed++;
 
@@ -552,22 +569,6 @@ export class NetworkPoller extends EventEmitter {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-}
-
-// ===== local helpers — read multi-byte primitives directly from a tag handle =====
-
-function readU16LE(handle: TagHandle, offset: number): number {
-  const lo = plc_tag_get_uint8(handle, offset);
-  const hi = plc_tag_get_uint8(handle, offset + 1);
-  return (hi << 8) | lo;
-}
-
-function readAscii(handle: TagHandle, offset: number, length: number): string {
-  const chars = new Array<string>(length);
-  for (let i = 0; i < length; i++) {
-    chars[i] = String.fromCharCode(plc_tag_get_uint8(handle, offset + i));
-  }
-  return chars.join('');
 }
 
 export function createNetworkPoller(config?: NetworkPollerConfig): NetworkPoller {

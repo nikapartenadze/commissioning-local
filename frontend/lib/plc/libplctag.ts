@@ -348,6 +348,46 @@ export function plc_tag_set_size(tag: TagHandle, newSize: number): number {
 }
 
 // ============================================================================
+// Bulk Data Copy
+// ============================================================================
+
+/**
+ * Copy a range of bytes from the tag's data buffer into a caller-supplied
+ * Buffer with a single FFI call. The C signature is
+ *   int plc_tag_get_raw_bytes(int32_t tag_id, int offset, uint8_t *buffer, int length)
+ * and ffi-rs fills `out` in place via the DataType.U8Array parameter binding.
+ *
+ * This is the bulk-read fast path used by the network poller and the @tags
+ * browse parser. Reading N bytes by issuing N × plc_tag_get_uint8() costs N
+ * full FFI round-trips (~100–500 µs each) — each of which blocks the Node.js
+ * event loop. For a 108-byte UDT × 32 ports × ~25 fields per port, that was
+ * ~830 sync FFI calls per device per poll cycle = seconds of event-loop
+ * block per cycle. One bulk copy is a single FFI call.
+ *
+ * @param tag - tag handle
+ * @param offset - byte offset into the tag's data buffer
+ * @param out - destination Buffer (Buffer.alloc(N)); will be filled in place
+ * @returns status code (PLCTAG_STATUS_OK on success, negative on error)
+ */
+export function plc_tag_get_raw_bytes(
+  tag: TagHandle,
+  offset: number,
+  out: Buffer,
+): number {
+  if (!libraryLoaded) {
+    throw new Error("Library not loaded. Call initLibrary() first.");
+  }
+
+  return load({
+    library: LIBRARY_NAME,
+    funcName: "plc_tag_get_raw_bytes",
+    retType: DataType.I32,
+    paramsType: [DataType.I32, DataType.I32, DataType.U8Array, DataType.I32],
+    paramsValue: [tag, offset, out, out.length],
+  });
+}
+
+// ============================================================================
 // Data Access Functions - Bit
 // ============================================================================
 
