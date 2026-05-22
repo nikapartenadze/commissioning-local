@@ -208,11 +208,12 @@ function setupClientEventListeners(client: PlcClient): void {
     }
   });
 
-  // On successful PLC connection, start the network device poller if the
-  // feature flag is on. Independent of the IO tag reader — its own handles,
-  // its own loop. Failures never affect IO testing.
+  // On successful PLC connection, start the network device poller.
+  // Independent of the IO tag reader — its own handles, its own loop.
+  // Failures never affect IO testing. Runs unconditionally; a PLC without
+  // *_NetworkNode tags will simply log "no devices discovered" and idle.
   client.on('initialized', () => {
-    void startNetworkPollerIfEnabled();
+    void startNetworkPoller();
   });
 
   // On successful PLC connection, sync VFD validation flags (Valid_Map,
@@ -274,12 +275,16 @@ function setupClientEventListeners(client: PlcClient): void {
 }
 
 /**
- * Start the network device poller if enabled in config. Idempotent — calling
- * it twice while one is already running is a no-op. Also race-safe against
- * two concurrent 'initialized' events firing during a rapid reconnect: the
+ * Start the network device poller on PLC connect. Idempotent — calling it
+ * twice while one is already running is a no-op. Race-safe against two
+ * concurrent 'initialized' events firing during a rapid reconnect: the
  * sentinel below is set BEFORE any await so the second caller exits early.
+ *
+ * Runs unconditionally for every PLC connection. The `networkPollingDevices`
+ * config field is an OPTIONAL fallback — used only when the PLC's @tags
+ * browse is locked down and returns zero matches.
  */
-async function startNetworkPollerIfEnabled(): Promise<void> {
+async function startNetworkPoller(): Promise<void> {
   const state = getState();
   if (state.networkPoller) return;
 
@@ -290,21 +295,6 @@ async function startNetworkPollerIfEnabled(): Promise<void> {
   state.networkPoller = placeholder;
   syncState();
 
-  let cfg;
-  try {
-    cfg = await configService.getConfig();
-  } catch (err) {
-    console.warn('[PlcClientManager] Could not load config for network poller:', err);
-    state.networkPoller = null;
-    syncState();
-    return;
-  }
-  if (!cfg.networkPollingEnabled) {
-    state.networkPoller = null;
-    syncState();
-    return;
-  }
-
   const connConfig = state.currentConnectionConfig;
   if (!connConfig) {
     state.networkPoller = null;
@@ -312,9 +302,18 @@ async function startNetworkPollerIfEnabled(): Promise<void> {
     return;
   }
 
-  const poller = new NetworkPoller({
-    fallbackDevices: cfg.networkPollingDevices ?? [],
-  });
+  // Best-effort config read for the optional fallback device list. A
+  // missing/unreadable config is fine — the poller will still try @tags
+  // browse, which is the primary discovery path.
+  let fallbackDevices: string[] = [];
+  try {
+    const cfg = await configService.getConfig();
+    fallbackDevices = cfg.networkPollingDevices ?? [];
+  } catch (err) {
+    console.warn('[PlcClientManager] Could not load network poller fallback list:', err);
+  }
+
+  const poller = new NetworkPoller({ fallbackDevices });
   poller.setConnection(connConfig.ip, connConfig.path);
 
   poller.on('snapshot', (snapshot) => {

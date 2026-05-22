@@ -109,7 +109,6 @@ class ConfigurationService {
         showResultColumn: parsed.showResultColumn ?? true,
         showTimestampColumn: parsed.showTimestampColumn ?? true,
         showHistoryColumn: parsed.showHistoryColumn ?? true,
-        networkPollingEnabled: parsed.networkPollingEnabled === true,
         networkPollingDevices: Array.isArray(parsed.networkPollingDevices)
           ? parsed.networkPollingDevices.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
           : [],
