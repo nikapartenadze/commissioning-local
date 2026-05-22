@@ -6,7 +6,6 @@ import { Badge } from '@/components/ui/badge'
 import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy, Check, Activity } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { NetworkDiagnosticsDrawer } from '@/components/network-diagnostics-drawer'
 import { NetworkDiagnosticsView } from '@/components/network-diagnostics-view'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 
@@ -802,10 +801,15 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [tagStates, setTagStates] = useState<Record<string, boolean | null>>({})
   // Device table always visible in right panel
   const [tableSearch, setTableSearch] = useState('')
-  // Which network node's port-level diagnostics drawer is open (deviceName), or null.
-  const [diagnosticsDevice, setDiagnosticsDevice] = useState<string | null>(null)
-  // Full-page Diagnostics modal — opened from the page header, closeable via X / Esc.
+  // Full-page Diagnostics modal — opened from the page header (no focus) or
+  // from a specific node card (focused on that device). Esc / backdrop closes.
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [diagnosticsFocusDevice, setDiagnosticsFocusDevice] = useState<string | undefined>(undefined)
+
+  const openDiagnostics = (deviceName?: string) => {
+    setDiagnosticsFocusDevice(deviceName)
+    setDiagnosticsOpen(true)
+  }
 
   // Poll PLC for network device status tags every 3 seconds
   useEffect(() => {
@@ -1006,7 +1010,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setDiagnosticsOpen(true)}
+            onClick={() => openDiagnostics()}
             className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors"
           >
             <Activity className="w-4 h-4" />
@@ -1045,7 +1049,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
                 expandedNodeId={expandedNodeId}
                 onToggleNode={handleToggleNode}
                 tagStates={tagStates}
-                onOpenDiagnostics={setDiagnosticsDevice}
+                onOpenDiagnostics={openDiagnostics}
               />
             </div>
 
@@ -1207,12 +1211,6 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         </div>
       )}
 
-      <NetworkDiagnosticsDrawer
-        open={diagnosticsDevice !== null}
-        onOpenChange={(o) => { if (!o) setDiagnosticsDevice(null) }}
-        deviceName={diagnosticsDevice ?? ''}
-      />
-
       <Dialog open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen}>
         <DialogContent
           className={cn(
@@ -1221,12 +1219,14 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
             'w-[96vw] max-w-none h-[92vh] p-0 gap-0 overflow-hidden bg-transparent border-0 shadow-2xl',
           )}
         >
-          <DialogTitle className="sr-only">Network device diagnostics</DialogTitle>
+          <DialogTitle className="sr-only">
+            {diagnosticsFocusDevice ? `Diagnostics — ${diagnosticsFocusDevice}` : 'Network device diagnostics'}
+          </DialogTitle>
           <DialogDescription className="sr-only">
             Live per-port UDT_NETWORK_NODE_DATA snapshots for every discovered network device, refreshed every 5 seconds.
           </DialogDescription>
           <div className="h-full overflow-auto">
-            <NetworkDiagnosticsView active={diagnosticsOpen} />
+            <NetworkDiagnosticsView active={diagnosticsOpen} focusDevice={diagnosticsFocusDevice} />
           </div>
         </DialogContent>
       </Dialog>
