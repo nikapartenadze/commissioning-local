@@ -1226,7 +1226,11 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
             Live per-port UDT_NETWORK_NODE_DATA snapshots for every discovered network device, refreshed every 5 seconds.
           </DialogDescription>
           <div className="h-full overflow-auto">
-            <NetworkDiagnosticsView active={diagnosticsOpen} focusDevice={diagnosticsFocusDevice} />
+            <NetworkDiagnosticsView
+              active={diagnosticsOpen}
+              focusDevice={diagnosticsFocusDevice}
+              knownDevices={rings.flatMap((r) => r.nodes.map((n) => n.name))}
+            />
           </div>
         </DialogContent>
       </Dialog>
