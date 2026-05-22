@@ -411,6 +411,7 @@ export interface NetworkDeviceSnapshotMessage {
       carrierSense: number
       frameTooLong: number
       macRxErr: number
+      adminState: number
     }>
     capturedAt: number
   }

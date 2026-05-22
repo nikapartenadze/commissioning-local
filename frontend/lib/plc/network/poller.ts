@@ -429,6 +429,9 @@ export class NetworkPoller extends EventEmitter {
       if (size <= 0) return [];
 
       const names: string[] = [];
+      /** Sample of the first ~10 names seen (regardless of suffix filter) — surfaces in the log so misconfigured naming on a new site is obvious. */
+      const sampleAllNames: string[] = [];
+      let entriesParsed = 0;
       let off = 0;
       while (off + 22 <= size) {
         const symbolType = readU16LE(handle, off + 4);
@@ -438,16 +441,33 @@ export class NetworkPoller extends EventEmitter {
 
         const name = readAscii(handle, off + 22, stringLen);
         off += 22 + stringLen;
+        entriesParsed++;
 
-        if ((symbolType & SYMBOL_TYPE_STRUCTURE_BIT) === 0) continue; // skip non-UDT
+        if (sampleAllNames.length < 10) sampleAllNames.push(name);
+
+        // Don't gate on the structure-bit: bit positions vary by libplctag
+        // version and by firmware. The suffix filter is specific enough that
+        // a non-UDT tag accidentally ending with _NN is harmless — it'll be
+        // rejected at handle creation by the TOTAL_SIZE check. (`symbolType`
+        // kept in the loop in case we want to log/inspect it later.)
+        void symbolType;
         if (!NETWORK_TAG_SUFFIXES.some((s) => name.endsWith(s))) continue;
 
         names.push(name);
       }
 
-      console.log(
-        `[NetworkPoller] @tags browse found ${names.length} candidate network device tag(s) in ${size} bytes.`,
-      );
+      if (names.length > 0) {
+        console.log(
+          `[NetworkPoller] @tags browse: ${names.length} candidate(s) of ${entriesParsed} tag(s) in ${size}B — ${names.slice(0, 8).join(', ')}${names.length > 8 ? ', …' : ''}`,
+        );
+      } else {
+        console.warn(
+          `[NetworkPoller] @tags browse parsed ${entriesParsed} entries in ${size}B but matched 0 candidate(s). ` +
+          `Suffix filter: ${NETWORK_TAG_SUFFIXES.join(' | ')}. ` +
+          `Sample of first names seen: ${sampleAllNames.length === 0 ? '(none — parser broke early)' : sampleAllNames.join(', ')}. ` +
+          `If the device tags use a different suffix on this controller, update NETWORK_TAG_SUFFIXES in lib/plc/network/types.ts.`,
+        );
+      }
       return names;
     } finally {
       if (handle >= 0) {

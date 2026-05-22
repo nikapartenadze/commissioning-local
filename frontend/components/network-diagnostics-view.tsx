@@ -448,7 +448,7 @@ function PlaceholderPortCard({ portNumber }: { portNumber: number }) {
       <div className="port-grid">
         <PlaceholderPanel
           title="Link"
-          keys={['Link_Status_Raw', 'Link_Up', 'Full_Duplex', 'Reset_Required', 'Hardware_Fault']}
+          keys={['Link_Status_Raw', 'Link_Up', 'Full_Duplex', 'Reset_Required', 'Hardware_Fault', 'AdminState']}
         />
         <PlaceholderPanel
           title="Interface Counters"
@@ -583,6 +583,14 @@ function PortCard({ port: p }: { port: Port }) {
           <KV k="Full_Duplex" v={p.fullDuplex ? 1 : 0} />
           <KV k="Reset_Required" v={p.resetRequired ? 1 : 0} />
           <KV k="Hardware_Fault" v={p.hardwareFault ? 1 : 0} />
+          {/* AdminState: 1=Enable, 2=Disable, 0=unwritten. Highlight Disable
+              in amber so a deliberately-disabled port doesn't look like a
+              fault. */}
+          <KV
+            k="AdminState"
+            v={p.adminState}
+            highlight={p.adminState === 2 ? 'amber' : undefined}
+          />
         </Panel>
         <Panel title="Interface Counters">
           <KV k="OctetsIn" v={p.octetsIn} />

@@ -8,8 +8,9 @@ import { NETWORK_NODE_LAYOUT } from '@/lib/plc/network/types'
 
 /**
  * Build a fixture buffer for one UDT_NETWORK_NODE_DATA tag, matching the
- * CDW5_MCM01_REV1.L5X layout: 8 B header (+ pad), then Ports[0..32] @ 104 B
- * each. Index [0] is reserved/unused; indices [1..32] are the real ports.
+ * new.L5X layout: 8 B header (+ pad), then Ports[0..32] @ 108 B each
+ * (UDT_PORT_DATA grew by the AdminState USINT + 3 B pad). Index [0] is
+ * reserved/unused; indices [1..32] are the real ports.
  *
  * Counters fan out as monotonically increasing values so the parser can prove
  * it's reading the right offsets — if any field is one slot off, the
@@ -64,6 +65,9 @@ function fixtureBuffer(): Buffer {
     for (const [off, value] of fields) {
       buf.writeInt32LE(value, base + off)
     }
+    // AdminState (USINT). Even-port → Enable (1), odd-port → Disable (2),
+    // gives both nonzero values to assert against.
+    buf.writeUInt8(logixIndex % 2 === 0 ? 1 : 2, base + P.ADMIN_STATE)
   }
   // Poison Ports[0] with non-zero bytes — parser MUST skip it. If anything
   // leaks through, the test below catches it.
@@ -151,10 +155,23 @@ describe('NetworkDeviceSnapshot parser', () => {
     expect(port.octetsIn).toBe(999_999)
   })
 
-  it('TOTAL_SIZE matches the L5X UDT size (8 B header + 33 × 104 B ports)', () => {
-    expect(NETWORK_NODE_LAYOUT.TOTAL_SIZE).toBe(8 + 33 * 104)
+  it('TOTAL_SIZE matches the L5X UDT size (8 B header + 33 × 108 B ports incl. AdminState)', () => {
+    expect(NETWORK_NODE_LAYOUT.TOTAL_SIZE).toBe(8 + 33 * 108)
     expect(NETWORK_NODE_LAYOUT.PORTS_OFFSET).toBe(8)
     expect(NETWORK_NODE_LAYOUT.PORT_COUNT).toBe(32)
-    expect(NETWORK_NODE_LAYOUT.PORT_SIZE).toBe(104)
+    expect(NETWORK_NODE_LAYOUT.PORT_SIZE).toBe(108)
+    expect(NETWORK_NODE_LAYOUT.PORT.ADMIN_STATE).toBe(104)
+  })
+
+  it('reads AdminState (USINT) per port', () => {
+    const snap = parseNetworkDevice(bufferReader(fixtureBuffer()), {
+      tagName: 't', deviceName: 'd', capturedAt: 0,
+    })
+    // Port 1 (odd) → 2 (Disable in fixture)
+    expect(snap.ports[0].adminState).toBe(2)
+    // Port 2 (even) → 1 (Enable)
+    expect(snap.ports[1].adminState).toBe(1)
+    // Port 32 (even) → 1 (Enable)
+    expect(snap.ports[31].adminState).toBe(1)
   })
 })

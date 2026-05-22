@@ -67,6 +67,14 @@ export interface PortStat {
    * this stays 0 on those sites.
    */
   speedMbps: number;
+  /**
+   * Per-port admin state — 1 = Enable, 2 = Disable, 0 = unwritten/default.
+   * Maps to CIP Ethernet Link Object Class 0xF6 Attr 9 (Interface Control).
+   * Added to UDT_PORT_DATA in the post-AdminState L5X variant; older L5X
+   * builds will fail the size check at handle creation rather than have
+   * this byte misread.
+   */
+  adminState: number;
 
   // Interface Counters (Class 0xF6 Attr 4) — 11 DINTs
   octetsIn: number;
@@ -116,7 +124,9 @@ export interface NetworkDeviceSnapshot {
 
 /**
  * Byte layout constants for UDT_NETWORK_NODE_DATA and UDT_PORT_DATA,
- * verified against CDW5_MCM01_REV1.L5X.
+ * verified against the post-AdminState L5X variant (new.L5X). The previous
+ * L5X had a 104 B per-port struct; this variant adds AdminState (USINT) at
+ * offset 104, growing per-port to 108 B (4 B aligned to DINT).
  *
  *  Header (8 B incl. padding):
  *    +0  INT     Product_Code
@@ -125,31 +135,34 @@ export interface NetworkDeviceSnapshot {
  *    +4  SINT[2] Firmware           (destination of Firmware MSG; 2 B)
  *    +6  -- pad to DINT alignment --
  *
- *  Ports[33], 104 B each, starting at offset 8. Index [0] unused, [1..32] are real.
+ *  Ports[33], 108 B each, starting at offset 8. Index [0] unused, [1..32] are real.
  *
- *  UDT_PORT_DATA (104 B) layout:
+ *  UDT_PORT_DATA (108 B incl. trailing pad) layout:
  *    UDT_LINK_DATA               +0..7   (DINT Link_Status_Raw at 0; SINT alias at 4; 3 B pad)
  *    UDT_SPEED_DATA              +8..11  (DINT Speed_Mbps)
  *    UDT_INTERFACE_COUNTERS      +12..55 (11 × DINT)
  *    UDT_MEDIA_COUNTERS          +56..103 (12 × DINT)
+ *    AdminState                  +104    (USINT; 1=Enable, 2=Disable, 0=default)
+ *    -- pad +105..107 to next DINT boundary --
  *
  *  Runtime sanity check via `plc_tag_get_size` — the poller refuses to start
- *  if the reported size disagrees with TOTAL_SIZE.
+ *  if the reported size disagrees with TOTAL_SIZE (controllers on the older
+ *  L5X variant will report 3440 B and be refused; flash the new L5X to fix).
  */
 export const NETWORK_NODE_LAYOUT = {
-  /** 8 B header (+ pad) + 33 × 104 B per-port = 3440 B. */
-  TOTAL_SIZE: 8 + 33 * 104,
+  /** 8 B header (+ pad) + 33 × 108 B per-port = 3572 B. */
+  TOTAL_SIZE: 8 + 33 * 108,
   /** Number of physical ports we surface to consumers (Logix indices 1..32). */
   PORT_COUNT: 32,
-  /** Bytes per UDT_PORT_DATA element. */
-  PORT_SIZE: 104,
+  /** Bytes per UDT_PORT_DATA element (incl. trailing pad). */
+  PORT_SIZE: 108,
   /**
    * Byte offset where Ports[0] begins. Ports[N] starts at PORTS_OFFSET + N*PORT_SIZE.
    * The parser skips array index [0] (unused per L5X comment).
    */
   PORTS_OFFSET: 8,
   /** Number of bytes from PORTS_OFFSET we expect to ignore (Ports[0] is reserved). */
-  PORTS_RESERVED_HEAD: 104,
+  PORTS_RESERVED_HEAD: 108,
 
   HEADER: {
     PRODUCT_CODE: 0,    // INT,  2 B
@@ -186,6 +199,7 @@ export const NETWORK_NODE_LAYOUT = {
     CARRIER_SENSE: 92,
     FRAME_TOO_LONG: 96,
     MAC_RX_ERR: 100,
+    ADMIN_STATE: 104,    // USINT — 1=Enable, 2=Disable (CIP Class 0xF6 Attr 9)
   },
 
   /**
