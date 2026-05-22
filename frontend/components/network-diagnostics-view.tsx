@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Network, Zap, ServerCrash } from 'lucide-react'
+import { Activity, Network, ServerCrash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage } from '@/lib/plc/types'
 
@@ -86,32 +86,63 @@ function isActivelyDown(p: Port): boolean {
 
 interface DeviceSummary {
   activePorts: number
+  /** Total problem ports (errorPorts + warnPorts). */
   warnCount: number
-  downCount: number
-  mediaCount: number
+  /** Ports with physical-layer problems: actively down, media errors, interface errors, or hardware fault. RED severity. */
+  errorCount: number
+  /** Ports with only soft signals (discards): RED is too loud, ORANGE is right. */
+  softWarnCount: number
+  errorPorts: Port[]
   mediaPorts: Port[]
   downPorts: Port[]
 }
 
+function hasHardError(p: Port): boolean {
+  // Physical-layer / frame-level problems. These are real network breakage,
+  // not "things are a bit slow" — should always render RED.
+  return p.hardwareFault || hasMediaErrors(p) || p.errorsIn > 0 || p.errorsOut > 0
+}
+function hasOnlyDiscards(p: Port): boolean {
+  // Discards without any hard errors → soft warning. The PLC chose to drop
+  // these packets (e.g. congestion); nothing is broken at the wire level.
+  return (p.discardsIn > 0 || p.discardsOut > 0) && !hasHardError(p)
+}
+
 function summarize(snap: Snapshot): DeviceSummary {
-  let activePorts = 0, downCount = 0, mediaCount = 0, warnCount = 0
+  let activePorts = 0, errorCount = 0, softWarnCount = 0
+  const errorPorts: Port[] = []
   const mediaPorts: Port[] = []
   const downPorts: Port[] = []
   for (const p of snap.ports) {
     if (p.linkUp) activePorts++
-    if (hasMediaErrors(p)) { mediaCount++; mediaPorts.push(p); warnCount++ }
-    if (isActivelyDown(p)) { downCount++; downPorts.push(p); warnCount++ }
-    else if (!hasMediaErrors(p) && hasInterfaceErrors(p)) warnCount++
+    const down = isActivelyDown(p)
+    if (down) downPorts.push(p)
+    if (hasMediaErrors(p)) mediaPorts.push(p)
+    if (down || hasHardError(p)) {
+      errorCount++
+      errorPorts.push(p)
+    } else if (hasOnlyDiscards(p)) {
+      softWarnCount++
+    }
   }
-  return { activePorts, warnCount, downCount, mediaCount, mediaPorts, downPorts }
+  return {
+    activePorts,
+    warnCount: errorCount + softWarnCount,
+    errorCount,
+    softWarnCount,
+    errorPorts,
+    mediaPorts,
+    downPorts,
+  }
 }
 
-type TocStatus = 'ok' | 'down' | 'media' | 'pending'
+type TocStatus = 'ok' | 'error' | 'warn' | 'pending'
 function tocStatusOf(snap: Snapshot | null, lastSeen: number, now: number, summary: DeviceSummary | null): TocStatus {
   if (!snap) return 'pending'
-  if (now - lastSeen > STALE_MS) return 'down'
-  if (summary && summary.mediaCount > 0) return 'media'
-  if (summary && summary.downCount > 0) return 'down'
+  if (now - lastSeen > STALE_MS) return 'warn' // stale data — orange, not red, because it might be transient
+  if (!summary) return 'ok'
+  if (summary.errorCount > 0) return 'error'
+  if (summary.softWarnCount > 0) return 'warn'
   return 'ok'
 }
 
@@ -321,14 +352,21 @@ function NavToc({
                 const status = tocStatusOf(entry.live?.snapshot ?? null, entry.live?.lastSeen ?? 0, now, summary)
                 const dotClass =
                   status === 'ok' ? 'bg-emerald-500 status-pulse' :
-                  status === 'down' ? 'bg-red-500' :
-                  status === 'media' ? 'bg-orange-500' :
+                  status === 'error' ? 'bg-red-500' :
+                  status === 'warn' ? 'bg-orange-500' :
                   'bg-muted-foreground/40'
                 const borderClass =
                   status === 'ok' ? 'border-l-emerald-500/60' :
-                  status === 'down' ? 'border-l-red-500/60 bg-red-500/[0.03]' :
-                  status === 'media' ? 'border-l-orange-500/60 bg-orange-500/[0.03]' :
+                  status === 'error' ? 'border-l-red-500/60 bg-red-500/[0.03]' :
+                  status === 'warn' ? 'border-l-orange-500/60 bg-orange-500/[0.03]' :
                   'border-l-muted-foreground/20'
+                const trailing = entry.live && summary
+                  ? summary.errorCount > 0
+                    ? `${summary.activePorts}/32 · ${summary.errorCount} err`
+                    : summary.softWarnCount > 0
+                      ? `${summary.activePorts}/32 · ${summary.softWarnCount} warn`
+                      : `${summary.activePorts}/32 · ok`
+                  : 'awaiting'
                 return (
                   <a
                     href={`#${entry.deviceName}_NN`}
@@ -342,10 +380,15 @@ function NavToc({
                     <span className="font-mono text-[11px] font-semibold truncate min-w-0 flex-1">
                       {entry.deviceName}
                     </span>
-                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground font-medium shrink-0">
-                      {entry.live && summary
-                        ? `${summary.activePorts}/32 · ${summary.warnCount === 0 ? 'ok' : `${summary.warnCount} warn`}`
-                        : 'awaiting'}
+                    <span
+                      className={cn(
+                        'text-[9px] uppercase tracking-wider font-medium shrink-0',
+                        status === 'error' ? 'text-red-500'
+                          : status === 'warn' ? 'text-orange-500'
+                          : 'text-muted-foreground',
+                      )}
+                    >
+                      {trailing}
                     </span>
                   </a>
                 )
@@ -364,17 +407,26 @@ function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
   const { snapshot, lastSeen } = state
   const summary = useMemo(() => summarize(snapshot), [snapshot])
   const isStale = now - lastSeen > STALE_MS
-  const tagStatus: 'ok' | 'warn' | 'stale' = isStale ? 'stale' : summary.warnCount > 0 ? 'warn' : 'ok'
+  const tagStatus: 'ok' | 'error' | 'warn' | 'stale' = isStale
+    ? 'stale'
+    : summary.errorCount > 0
+      ? 'error'
+      : summary.softWarnCount > 0
+        ? 'warn'
+        : 'ok'
 
-  const chips: { text: string; kind: 'media' | 'down'; title: string }[] = [
+  // Chips surface the actual problem ports. Media errors and actively-down
+  // ports are physical-layer faults — RED. Discards-only would be orange but
+  // we don't list those individually (the device-level WARN tag is enough).
+  const chips: { text: string; kind: 'error'; title: string }[] = [
     ...summary.mediaPorts.map((p) => ({
       text: `P${p.portNumber} media err`,
-      kind: 'media' as const,
+      kind: 'error' as const,
       title: `AlignErr=${p.alignErr}, FCSErr=${p.fcsErr}, MACRxErr=${p.macRxErr}`,
     })),
     ...summary.downPorts.map((p) => ({
       text: `P${p.portNumber} down`,
-      kind: 'down' as const,
+      kind: 'error' as const,
       title: `OctetsIn=${p.octetsIn}, OctetsOut=${p.octetsOut}`,
     })),
   ]
@@ -463,12 +515,19 @@ function TagBadge({
   status,
   count,
 }: {
-  status: 'ok' | 'warn' | 'stale' | 'pending'
+  status: 'ok' | 'error' | 'warn' | 'stale' | 'pending'
   count?: number
 }) {
   const map = {
     ok: { text: 'OK', cls: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' },
-    warn: { text: count ? `${count} WARN` : 'WARN', cls: 'border-orange-500/40 bg-orange-500/10 text-orange-500' },
+    error: {
+      text: count ? `${count} ERR` : 'ERROR',
+      cls: 'border-red-500/40 bg-red-500/10 text-red-500',
+    },
+    warn: {
+      text: count ? `${count} WARN` : 'WARN',
+      cls: 'border-orange-500/40 bg-orange-500/10 text-orange-500',
+    },
     stale: { text: 'STALE', cls: 'border-orange-500/40 bg-orange-500/10 text-orange-500' },
     pending: { text: 'WAITING', cls: 'border-muted-foreground/30 bg-muted/40 text-muted-foreground' },
   } as const
@@ -490,21 +549,18 @@ function Chip({
   title,
   children,
 }: {
-  kind: 'media' | 'down'
+  /** All chips currently denote errors. Kept as a discriminator for future soft-warning chips. */
+  kind: 'error'
   title?: string
   children: React.ReactNode
 }) {
+  void kind
   return (
     <span
       title={title}
-      className={cn(
-        'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-[10px] font-semibold uppercase tracking-wider font-mono',
-        kind === 'media'
-          ? 'border-orange-500/40 bg-orange-500/10 text-orange-500'
-          : 'border-red-500/40 bg-red-500/10 text-red-500',
-      )}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-[10px] font-semibold uppercase tracking-wider font-mono border-red-500/40 bg-red-500/10 text-red-500"
     >
-      {kind === 'media' ? <ServerCrash className="w-2.5 h-2.5" /> : <Zap className="w-2.5 h-2.5" />}
+      <ServerCrash className="w-2.5 h-2.5" />
       {children}
     </span>
   )
@@ -515,13 +571,18 @@ function Chip({
 function PortRow({ port: p }: { port: Port }) {
   const media = hasMediaErrors(p)
   const down = isActivelyDown(p)
+  const ifErr = p.errorsIn > 0 || p.errorsOut > 0
+  const hwFault = p.hardwareFault
+  const hasError = media || down || ifErr || hwFault
+  const discardsOnly =
+    !hasError && (p.discardsIn > 0 || p.discardsOut > 0)
   return (
     <div
       className={cn(
         'border rounded bg-background/40 overflow-hidden',
-        media && 'border-orange-500/50 shadow-[inset_2px_0_0_0_theme(colors.orange.500)]',
-        down && 'border-red-500/50 shadow-[inset_2px_0_0_0_theme(colors.red.500)]',
-        !media && !down && 'shadow-[inset_2px_0_0_0_theme(colors.border)]',
+        hasError && 'border-red-500/50 shadow-[inset_2px_0_0_0_theme(colors.red.500)]',
+        !hasError && discardsOnly && 'border-orange-500/40 shadow-[inset_2px_0_0_0_theme(colors.orange.500)]',
+        !hasError && !discardsOnly && 'shadow-[inset_2px_0_0_0_theme(colors.border)]',
       )}
     >
       <div className="px-3 py-1.5 border-b bg-muted/20 flex items-center justify-between gap-3 flex-wrap">
@@ -529,23 +590,29 @@ function PortRow({ port: p }: { port: Port }) {
           <h3
             className={cn(
               'font-mono text-xs font-bold tracking-tight uppercase tabular-nums',
-              media && 'text-orange-500',
-              down && 'text-red-500',
+              hasError && 'text-red-500',
+              !hasError && discardsOnly && 'text-orange-500',
             )}
           >
             Port {String(p.portNumber).padStart(2, '0')}
           </h3>
           <LinkBadges port={p} />
         </div>
-        {(media || down) && (
-          <span
-            className={cn(
-              'text-[9px] uppercase tracking-widest font-bold font-mono',
-              media && 'text-orange-500',
-              down && 'text-red-500',
-            )}
-          >
-            {media && down ? 'media err + down' : media ? 'media err' : 'down'}
+        {hasError && (
+          <span className="text-[9px] uppercase tracking-widest font-bold font-mono text-red-500">
+            {[
+              down && 'down',
+              media && 'media err',
+              ifErr && 'if err',
+              hwFault && 'hw fault',
+            ]
+              .filter(Boolean)
+              .join(' + ')}
+          </span>
+        )}
+        {!hasError && discardsOnly && (
+          <span className="text-[9px] uppercase tracking-widest font-bold font-mono text-orange-500">
+            discards
           </span>
         )}
       </div>
@@ -571,19 +638,22 @@ function PortRow({ port: p }: { port: Port }) {
           <KV k="DiscardsOut" v={p.discardsOut} highlight={p.discardsOut > 0 ? 'amber' : undefined} />
           <KV k="ErrorsOut" v={p.errorsOut} highlight={p.errorsOut > 0 ? 'red' : undefined} />
         </Panel>
-        <Panel title="Media Counters" mediaPanel={media}>
-          <KV k="AlignErr" v={p.alignErr} />
-          <KV k="FCSErr" v={p.fcsErr} />
-          <KV k="SingleColl" v={p.singleColl} />
-          <KV k="MultiColl" v={p.multiColl} />
-          <KV k="SQEErr" v={p.sqeErr} />
-          <KV k="DeferredTx" v={p.deferredTx} />
-          <KV k="LateColl" v={p.lateColl} />
-          <KV k="ExcessColl" v={p.excessColl} />
-          <KV k="MACTxErr" v={p.macTxErr} />
-          <KV k="CarrierSense" v={p.carrierSense} />
-          <KV k="FrameTooLong" v={p.frameTooLong} />
-          <KV k="MACRxErr" v={p.macRxErr} />
+        <Panel title="Media Counters" errorPanel={media}>
+          {/* Every media counter is a physical-layer fault when non-zero —
+              highlight in red so the specific failure mode (alignment, FCS,
+              late collisions, etc.) is obvious without scanning. */}
+          <KV k="AlignErr" v={p.alignErr} highlight={p.alignErr > 0 ? 'red' : undefined} />
+          <KV k="FCSErr" v={p.fcsErr} highlight={p.fcsErr > 0 ? 'red' : undefined} />
+          <KV k="SingleColl" v={p.singleColl} highlight={p.singleColl > 0 ? 'red' : undefined} />
+          <KV k="MultiColl" v={p.multiColl} highlight={p.multiColl > 0 ? 'red' : undefined} />
+          <KV k="SQEErr" v={p.sqeErr} highlight={p.sqeErr > 0 ? 'red' : undefined} />
+          <KV k="DeferredTx" v={p.deferredTx} highlight={p.deferredTx > 0 ? 'red' : undefined} />
+          <KV k="LateColl" v={p.lateColl} highlight={p.lateColl > 0 ? 'red' : undefined} />
+          <KV k="ExcessColl" v={p.excessColl} highlight={p.excessColl > 0 ? 'red' : undefined} />
+          <KV k="MACTxErr" v={p.macTxErr} highlight={p.macTxErr > 0 ? 'red' : undefined} />
+          <KV k="CarrierSense" v={p.carrierSense} highlight={p.carrierSense > 0 ? 'red' : undefined} />
+          <KV k="FrameTooLong" v={p.frameTooLong} highlight={p.frameTooLong > 0 ? 'red' : undefined} />
+          <KV k="MACRxErr" v={p.macRxErr} highlight={p.macRxErr > 0 ? 'red' : undefined} />
         </Panel>
       </div>
     </div>
@@ -623,24 +693,25 @@ function LinkBadges({ port: p }: { port: Port }) {
 
 function Panel({
   title,
-  mediaPanel,
+  errorPanel,
   children,
 }: {
   title: string
-  mediaPanel?: boolean
+  /** Renders the panel in RED (physical-layer errors present). Used by Media Counters when any counter > 0. */
+  errorPanel?: boolean
   children: React.ReactNode
 }) {
   return (
     <div
       className={cn(
         'rounded border bg-card/60 px-2.5 py-1.5',
-        mediaPanel && 'border-orange-500/30 bg-orange-500/[0.04]',
+        errorPanel && 'border-red-500/30 bg-red-500/[0.04]',
       )}
     >
       <h4
         className={cn(
           'text-[9px] font-bold uppercase tracking-[0.22em] mb-1 pb-1 border-b border-border/60',
-          mediaPanel ? 'text-orange-500' : 'text-muted-foreground',
+          errorPanel ? 'text-red-500' : 'text-muted-foreground',
         )}
       >
         {title}
