@@ -7,6 +7,7 @@ import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 import { NetworkDiagnosticsView } from '@/components/network-diagnostics-view'
+import { useNetworkSnapshots } from '@/lib/hooks/use-network-snapshots'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -879,6 +880,12 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [diagnosticsSingleDevice, setDiagnosticsSingleDevice] = useState<string | undefined>(undefined)
 
+  // Page-level WS subscription to the network poller. Runs while the Network
+  // page is mounted, so when the operator opens the Diagnostics modal the
+  // latest snapshot per device is already cached — modal renders instantly
+  // instead of waiting up to 5 s for the next broadcast.
+  const networkSnapshots = useNetworkSnapshots(true)
+
   const openDiagnostics = (deviceName?: string) => {
     setDiagnosticsSingleDevice(deviceName)
     setDiagnosticsOpen(true)
@@ -1310,6 +1317,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
               active={diagnosticsOpen}
               singleDevice={diagnosticsSingleDevice}
               knownDevices={rings.flatMap((r) => r.nodes.map((n) => n.name))}
+              liveSnapshots={networkSnapshots.snapshots}
+              wsConnected={networkSnapshots.wsConnected}
             />
           </div>
         </DialogContent>
