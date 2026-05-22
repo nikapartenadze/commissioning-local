@@ -43,6 +43,17 @@ export async function PATCH(req: Request, res: Response) {
     values.push(ioId)
     db.prepare(`UPDATE Ios SET ${setClauses.join(', ')} WHERE id = ?`).run(...values)
 
+    // NOTE: punchlist fields (punchlistStatus / trade / clarificationNote) are
+    // not synced to the cloud yet. The cloud receiver accepts them on
+    // /api/sync/update but PendingSyncs has no columns for them, so they only
+    // live in local SQLite. If the laptop is replaced, the punchlist state is
+    // lost. Tracked as a follow-up; flagging here so it shows in app.log if
+    // an operator notices missing punchlist annotations.
+    console.warn(
+      `[Punchlist] LOCAL-ONLY ioId=${ioId} fields=${setClauses.map((c) => c.split(' ')[0]).join(',')} ` +
+      `— change saved to local SQLite only; cloud sync for punchlist is not implemented.`,
+    )
+
     const updated = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
     return res.json({

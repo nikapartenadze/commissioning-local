@@ -88,9 +88,13 @@ export async function POST(req: Request, res: Response) {
 
     // Cloud sync — best-effort, never block the response
     try {
-      db.prepare(
+      const info = db.prepare(
         'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(ioId, currentUser || null, normalizedResult, combinedComment || null, plcState, new Date().toISOString(), newVersion - 1)
+      console.log(
+        `[Guided test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
+        `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
+      )
 
       try {
         const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
@@ -103,7 +107,11 @@ export async function POST(req: Request, res: Response) {
         catch (syncErr) { console.warn('[Guided test] sync error for', ioId, ':', syncErr instanceof Error ? syncErr.message : syncErr) }
       })
     } catch (syncError) {
-      console.error('[Guided test] Failed to enqueue sync:', syncError)
+      console.error(
+        `[Guided test] PENDING-QUEUE-FAIL ioId=${ioId} ` +
+        `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1} ` +
+        `err=${syncError instanceof Error ? syncError.message : String(syncError)}`,
+      )
     }
 
     // WS broadcast — best-effort

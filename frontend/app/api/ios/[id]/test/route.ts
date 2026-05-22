@@ -106,7 +106,7 @@ export async function POST(req: Request, res: Response) {
     const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 
     try {
-      db.prepare(
+      const info = db.prepare(
         'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(
         ioId,
@@ -116,6 +116,10 @@ export async function POST(req: Request, res: Response) {
         plcState ?? null,
         new Date().toISOString(),
         newVersion - 1
+      )
+      console.log(
+        `[Test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
+        `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
       )
 
       try {
@@ -132,7 +136,13 @@ export async function POST(req: Request, res: Response) {
         }
       })
     } catch (syncError) {
-      console.error('[Test] Failed to create PendingSync:', syncError)
+      // SQLite IO write already succeeded above — this is the silent-loss
+      // vector if we don't log it loudly with full context.
+      console.error(
+        `[Test] PENDING-QUEUE-FAIL ioId=${ioId} ` +
+        `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1} ` +
+        `err=${syncError instanceof Error ? syncError.message : String(syncError)}`,
+      )
     }
 
     try {

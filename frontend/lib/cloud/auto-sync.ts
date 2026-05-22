@@ -263,13 +263,24 @@ class AutoSyncService {
             continue
           }
 
-          const synced = await syncService.syncIoUpdate(mapPendingSyncToIoUpdate(pending))
-          if (synced) {
+          const r = await syncService.syncIoUpdate(mapPendingSyncToIoUpdate(pending))
+          if (r.ok) {
             pendingSyncRepository.delete(pending.id)
             syncedIoCount++
+          } else if (r.permanent) {
+            // Permanent reject — delete now so the row doesn't burn the retry
+            // cap. The full payload was already logged inside tryRealtimeSync.
+            pendingSyncRepository.delete(pending.id)
+            console.warn(
+              `[AutoSync] DROPPED-PERMANENT pendingId=${pending.id} ioId=${pending.IoId} ` +
+              `reason=${JSON.stringify(r.reason ?? 'unknown')} ` +
+              `result=${JSON.stringify(pending.TestResult)} version=${pending.Version}`,
+            )
+            failedIoCount++
+            blockedIoIds.add(pending.IoId)
           } else {
             blockedIoIds.add(pending.IoId)
-            pendingSyncRepository.recordFailure(pending.id, 'Background sync failed')
+            pendingSyncRepository.recordFailure(pending.id, r.reason ?? 'Background sync failed')
             failedIoCount++
           }
         }
