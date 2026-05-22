@@ -8,6 +8,7 @@ import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 import { NetworkDiagnosticsDrawer } from '@/components/network-diagnostics-drawer'
 import { NetworkDiagnosticsView } from '@/components/network-diagnostics-view'
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -803,8 +804,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [tableSearch, setTableSearch] = useState('')
   // Which network node's port-level diagnostics drawer is open (deviceName), or null.
   const [diagnosticsDevice, setDiagnosticsDevice] = useState<string | null>(null)
-  // 'topology' = existing ring diagrams + device table; 'diagnostics' = full live port view.
-  const [viewMode, setViewMode] = useState<'topology' | 'diagnostics'>('topology')
+  // Full-page Diagnostics modal — opened from the page header, closeable via X / Esc.
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
 
   // Poll PLC for network device status tags every 3 seconds
   useEffect(() => {
@@ -986,41 +987,6 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
   return (
     <div className="flex flex-col h-full gap-4 pt-4">
-      {/* View-mode tabs */}
-      <div className="flex items-center gap-1 border-b">
-        <button
-          type="button"
-          onClick={() => setViewMode('topology')}
-          className={cn(
-            'px-3 py-1.5 text-sm border-b-2 transition-colors -mb-px',
-            viewMode === 'topology'
-              ? 'border-primary text-foreground font-medium'
-              : 'border-transparent text-muted-foreground hover:text-foreground',
-          )}
-        >
-          Topology
-        </button>
-        <button
-          type="button"
-          onClick={() => setViewMode('diagnostics')}
-          className={cn(
-            'px-3 py-1.5 text-sm border-b-2 transition-colors -mb-px flex items-center gap-1.5',
-            viewMode === 'diagnostics'
-              ? 'border-primary text-foreground font-medium'
-              : 'border-transparent text-muted-foreground hover:text-foreground',
-          )}
-        >
-          <Activity className="w-3.5 h-3.5" />
-          Diagnostics
-        </button>
-      </div>
-
-      {viewMode === 'diagnostics' ? (
-        <div className="flex-1 min-h-0 overflow-auto">
-          <NetworkDiagnosticsView active={true} />
-        </div>
-      ) : (
-        <>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
@@ -1037,6 +1003,15 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
             {statusCounts.unknown} unknown
           </span>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setDiagnosticsOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors"
+          >
+            <Activity className="w-4 h-4" />
+            Diagnostics
+          </button>
         <button
           onClick={() => fetchTopology(true)}
           disabled={refreshing}
@@ -1045,6 +1020,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
           <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
           {refreshing ? "Refreshing..." : "Refresh from Cloud"}
         </button>
+        </div>
       </div>
 
       {/* Ring diagrams — full width */}
@@ -1230,14 +1206,30 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
           </div>
         </div>
       )}
-        </>
-      )}
 
       <NetworkDiagnosticsDrawer
         open={diagnosticsDevice !== null}
         onOpenChange={(o) => { if (!o) setDiagnosticsDevice(null) }}
         deviceName={diagnosticsDevice ?? ''}
       />
+
+      <Dialog open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen}>
+        <DialogContent
+          className={cn(
+            // Near-fullscreen overlay so the topology stays available with one Esc/click away.
+            'fixed left-[50%] top-[50%] translate-x-[-50%] translate-y-[-50%]',
+            'w-[96vw] max-w-none h-[92vh] p-0 gap-0 overflow-hidden bg-transparent border-0 shadow-2xl',
+          )}
+        >
+          <DialogTitle className="sr-only">Network device diagnostics</DialogTitle>
+          <DialogDescription className="sr-only">
+            Live per-port UDT_NETWORK_NODE_DATA snapshots for every discovered network device, refreshed every 5 seconds.
+          </DialogDescription>
+          <div className="h-full overflow-auto">
+            <NetworkDiagnosticsView active={diagnosticsOpen} />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
