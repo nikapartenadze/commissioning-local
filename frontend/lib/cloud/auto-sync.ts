@@ -266,6 +266,14 @@ class AutoSyncService {
           const r = await syncService.syncIoUpdate(mapPendingSyncToIoUpdate(pending))
           if (r.ok) {
             pendingSyncRepository.delete(pending.id)
+            // Per-row trail so forensics can answer "did this specific IO
+            // actually reach cloud?" without joining the summary line below
+            // back to the queue snapshot.
+            console.log(
+              `[AutoSync] Pushed pendingId=${pending.id} ioId=${pending.IoId} ` +
+              `result=${JSON.stringify(pending.TestResult)} version=${pending.Version} ` +
+              `tester=${JSON.stringify(pending.InspectorName)}`,
+            )
             syncedIoCount++
           } else if (r.permanent) {
             // Permanent reject — delete now so the row doesn't burn the retry
