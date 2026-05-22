@@ -7,6 +7,7 @@ import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 import { NetworkDiagnosticsDrawer } from '@/components/network-diagnostics-drawer'
+import { NetworkDiagnosticsView } from '@/components/network-diagnostics-view'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -802,6 +803,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   const [tableSearch, setTableSearch] = useState('')
   // Which network node's port-level diagnostics drawer is open (deviceName), or null.
   const [diagnosticsDevice, setDiagnosticsDevice] = useState<string | null>(null)
+  // 'topology' = existing ring diagrams + device table; 'diagnostics' = full live port view.
+  const [viewMode, setViewMode] = useState<'topology' | 'diagnostics'>('topology')
 
   // Poll PLC for network device status tags every 3 seconds
   useEffect(() => {
@@ -983,6 +986,41 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
 
   return (
     <div className="flex flex-col h-full gap-4 pt-4">
+      {/* View-mode tabs */}
+      <div className="flex items-center gap-1 border-b">
+        <button
+          type="button"
+          onClick={() => setViewMode('topology')}
+          className={cn(
+            'px-3 py-1.5 text-sm border-b-2 transition-colors -mb-px',
+            viewMode === 'topology'
+              ? 'border-primary text-foreground font-medium'
+              : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          Topology
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode('diagnostics')}
+          className={cn(
+            'px-3 py-1.5 text-sm border-b-2 transition-colors -mb-px flex items-center gap-1.5',
+            viewMode === 'diagnostics'
+              ? 'border-primary text-foreground font-medium'
+              : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <Activity className="w-3.5 h-3.5" />
+          Diagnostics
+        </button>
+      </div>
+
+      {viewMode === 'diagnostics' ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <NetworkDiagnosticsView active={true} />
+        </div>
+      ) : (
+        <>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
@@ -1191,6 +1229,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
 
       <NetworkDiagnosticsDrawer
