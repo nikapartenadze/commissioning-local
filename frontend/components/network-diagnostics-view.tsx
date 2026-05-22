@@ -23,14 +23,14 @@
  * looks the same regardless of the surrounding Tailwind theme.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { NetworkDeviceSnapshotMessage } from '@/lib/plc/types'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
 type Port = Snapshot['ports'][number]
 
 interface Props {
-  /** Drop the snapshot cache and tear down WS when false. */
+  /** Reserved — kept for prop stability; data comes from `liveSnapshots`. */
   active: boolean
   /**
    * When set, the view shows ONLY this device's section (live or skeleton),
@@ -50,6 +50,15 @@ interface Props {
    * arrives.
    */
   knownDevices?: string[]
+  /**
+   * Live snapshots cache maintained by useNetworkSnapshots() at the parent.
+   * Lifting the WS out of this view means opening the modal renders the
+   * last-known snapshot immediately, instead of waiting up to 5 s for the
+   * next broadcast. Map identity changes when any device gets a new snapshot.
+   */
+  liveSnapshots?: Map<string, Snapshot>
+  /** WS connection status from the parent — drives the "live / reconnecting…" badge. */
+  wsConnected?: boolean
 }
 
 const STALE_MS = 60_000 // device considered "down" if no snapshot in this window
@@ -161,69 +170,42 @@ interface DeviceState {
   lastSeen: number
 }
 
-export function NetworkDiagnosticsView({ active, singleDevice, knownDevices = [] }: Props) {
-  const [devices, setDevices] = useState<Map<string, DeviceState>>(new Map())
-  const [wsConnected, setWsConnected] = useState(false)
+export function NetworkDiagnosticsView({
+  active,
+  singleDevice,
+  knownDevices = [],
+  liveSnapshots,
+  wsConnected = false,
+}: Props) {
   const [now, setNow] = useState(() => Date.now())
 
-  // 1-second tick so the "Xs ago" / staleness check stays current without
-  // re-rendering on every WS message.
+  // 1-second tick so the "Xs ago" / staleness check stays current.
   useEffect(() => {
     if (!active) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [active])
 
-  // WS subscription scoped to view active state.
-  useEffect(() => {
-    if (!active) {
-      setDevices(new Map())
-      return
+  /**
+   * Adapt the parent's `Map<deviceName, Snapshot>` to the per-device
+   * DeviceState shape (snapshot + lastSeen). lastSeen tracks WHEN we first
+   * observed each unique snapshot so the staleness check still works even
+   * though the source map only carries the latest value per device.
+   */
+  const lastSeenRef = useRef<Map<string, { snapshot: Snapshot; lastSeen: number }>>(new Map())
+  const devices = useMemo<Map<string, DeviceState>>(() => {
+    const out = new Map<string, DeviceState>()
+    if (!liveSnapshots) return out
+    const now2 = Date.now()
+    for (const [deviceName, snap] of Array.from(liveSnapshots.entries())) {
+      const prev = lastSeenRef.current.get(deviceName)
+      // If the snapshot reference changed OR capturedAt advanced, treat as a new arrival.
+      const lastSeen = prev && prev.snapshot === snap ? prev.lastSeen : now2
+      out.set(deviceName, { snapshot: snap, lastSeen })
     }
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const url = `${proto}//${window.location.host}/ws`
-
-    let ws: WebSocket | null = null
-    let retryTimer: ReturnType<typeof setTimeout> | null = null
-    let closed = false
-
-    const openSocket = () => {
-      if (closed) return
-      try {
-        ws = new WebSocket(url)
-      } catch {
-        retryTimer = setTimeout(openSocket, 2000)
-        return
-      }
-      ws.onopen = () => setWsConnected(true)
-      ws.onclose = () => {
-        setWsConnected(false)
-        if (!closed) retryTimer = setTimeout(openSocket, 2000)
-      }
-      ws.onerror = () => { /* onclose handles retry */ }
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data) as { type?: string; snapshot?: Snapshot }
-          if (msg.type !== 'NetworkDeviceSnapshot' || !msg.snapshot) return
-          const snapshot = msg.snapshot
-          setDevices((prev) => {
-            const next = new Map(prev)
-            next.set(snapshot.deviceName, { snapshot, lastSeen: Date.now() })
-            return next
-          })
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    openSocket()
-    return () => {
-      closed = true
-      if (retryTimer) clearTimeout(retryTimer)
-      try { ws?.close() } catch { /* ignore */ }
-    }
-  }, [active])
+    lastSeenRef.current = out
+    return out
+  }, [liveSnapshots])
 
   /**
    * Union of known device names (from topology) AND live snapshots. Each
