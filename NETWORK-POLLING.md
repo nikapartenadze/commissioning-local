@@ -43,9 +43,11 @@ asking "is the port flapping, is it dropping packets, is the link half-duplex?"
   the heartbeat to pull a cached snapshot per device.
 - `lib/heartbeat/system-info.ts` — attaches `networkDevices` to the heartbeat
   payload when the poller has produced at least one cycle.
-- `lib/config/{types,config-service}.ts` — adds two new config fields:
-  - `networkPollingEnabled: boolean` (default **false** — kill-switch per site)
-  - `networkPollingDevices: string[]` (fallback-probe device list)
+- `lib/config/{types,config-service}.ts` — adds one optional config field:
+  - `networkPollingDevices: string[]` — fallback-probe device list, used
+    only when `@tags` browse fails or returns zero matches. The poller
+    itself runs unconditionally on every PLC connection; this field is just
+    a safety net for sites with locked-down tag browsing.
 - `lib/plc/types.ts` — new `NetworkDeviceSnapshotMessage` in the WS-message
   union for type-safe consumers.
 - `components/network-diagnostics-drawer.tsx` — right-anchored slide-in drawer.
@@ -143,19 +145,23 @@ commit:
 
 ## Enabling
 
-In `config.json` next to `database.db`:
+Nothing to enable. The poller starts automatically on every PLC connect.
+A PLC without `*_NetworkNode` tags just logs one "no devices discovered"
+line and idles — no impact on IO testing.
+
+The only optional knob is for sites where the PLC blocks `@tags` browse:
 
 ```json
 {
-  "networkPollingEnabled": true,
   "networkPollingDevices": ["SLOT2_EN4TR", "UL17_8_DPM1"]
 }
 ```
 
-`networkPollingDevices` is **only used if `@tags` browse returns zero
-candidates** — it's a safety net for sites where the PLC blocks tag browsing.
+When set, the poller falls back to probing each name against the known
+suffixes (`_NetworkNode`, `_NN.Data`, `_NN`). When `@tags` browse works,
+this field is ignored.
 
-Restart the field tool. Watch the server log for:
+Watch the server log on first PLC connect for:
 
 ```
 [PlcClientManager] Network poller discovered N device(s)

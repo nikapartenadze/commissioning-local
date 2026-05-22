@@ -41,15 +41,11 @@ export interface AppConfig {
   plcProfiles?: PlcProfile[];
 
   /**
-   * Enable the 5-second per-device network port poller (UDT_NETWORK_NODE_DATA).
-   * Off by default — flip per site after verifying on hardware.
-   */
-  networkPollingEnabled?: boolean;
-
-  /**
-   * Optional explicit device-name list used when @tags browse is blocked or
-   * empty. Each name is probed against the known suffixes (_NetworkNode,
-   * _NN.Data, _NN). Leave empty to rely solely on browse.
+   * Optional explicit device-name list used as a fallback when the PLC's
+   * @tags browse is locked down or returns no matches. Each name is probed
+   * against the known suffixes (_NetworkNode, _NN.Data, _NN). The network
+   * poller always runs at PLC connect — this field is just a safety net for
+   * locked-down PLCs.
    */
   networkPollingDevices?: string[];
 }

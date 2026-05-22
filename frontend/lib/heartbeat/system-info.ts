@@ -50,9 +50,9 @@ export interface HeartbeatSystemInfo {
   lastCloudSyncAt?: string | null
   /**
    * Most recent UDT_NETWORK_NODE_DATA snapshot per discovered device.
-   * Populated only when `config.networkPollingEnabled` is true and the
-   * poller has completed at least one cycle. Cloud receiver stores this
-   * inside the systemInfo JSONB blob; no separate column.
+   * Populated when the poller has completed at least one cycle on a PLC
+   * that has *_NetworkNode tags. Cloud receiver stores this inside the
+   * systemInfo JSONB blob; no separate column.
    */
   networkDevices?: NetworkDeviceSnapshot[]
 }

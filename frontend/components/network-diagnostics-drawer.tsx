@@ -202,7 +202,8 @@ export function NetworkDiagnosticsDrawer({ open, onOpenChange, deviceName }: Pro
               <p className="text-sm">No snapshot received yet.</p>
               <p className="text-xs text-center max-w-xs">
                 The network poller broadcasts a new snapshot every 5 s. If nothing appears within ~10 s,
-                check that <code className="px-1 py-0.5 rounded bg-muted text-foreground">networkPollingEnabled</code> is true and the PLC is connected.
+                the PLC may not have a <code className="px-1 py-0.5 rounded bg-muted text-foreground">{deviceName}_NetworkNode</code>
+                {' '}tag — check the controller program.
               </p>
             </div>
           )}

@@ -240,7 +240,7 @@ export function NetworkDiagnosticsView({ active }: Props) {
       {totalDevices === 0 && (
         <p className="empty">
           {active
-            ? 'No network device snapshots received yet. Make sure networkPollingEnabled is true and the PLC is connected.'
+            ? 'No network device snapshots received yet. Either the PLC is not connected, or its program has no *_NetworkNode tags.'
             : 'Diagnostics view inactive.'}
         </p>
       )}
