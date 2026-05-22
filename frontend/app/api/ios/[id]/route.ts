@@ -65,6 +65,21 @@ export async function PUT(req: Request, res: Response) {
     const body = req.body
     const { result, comments, currentUser } = body
 
+    // Reject any explicit `result` value that isn't a recognized op — closes
+    // the second-line vector where a misbehaving older client could POST
+    // {result: null, comments: "..."} and silently wipe ios.Result before
+    // the sync classifier below ever runs. Undefined means "no result change"
+    // and is allowed (comment-only update).
+    if (result !== undefined && !['Passed', 'Failed', 'Cleared'].includes(result)) {
+      console.warn(
+        `[IO Update] REJECTED-PAYLOAD ioId=${ioId} tester=${currentUser ?? 'unknown'} ` +
+        `result=${JSON.stringify(result)} — must be Passed | Failed | Cleared | undefined.`,
+      )
+      return res.status(400).json({
+        error: 'Invalid result value. Must be "Passed", "Failed", "Cleared", or omitted for comment-only updates.',
+      })
+    }
+
     if (comments && comments.length > 500) {
       return res.status(400).json({ error: 'Comment must be 500 characters or fewer' })
     }
@@ -142,8 +157,9 @@ export async function PUT(req: Request, res: Response) {
         `skipping PendingSync to avoid sending result=null to cloud.`
       )
     } else {
+      let pendingId: number | bigint | undefined
       try {
-        db.prepare(
+        const info = db.prepare(
           'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).run(
           ioId,
@@ -153,6 +169,12 @@ export async function PUT(req: Request, res: Response) {
           plcState ?? null,
           new Date().toISOString(),
           newVersion - 1
+        )
+        pendingId = info.lastInsertRowid
+
+        console.log(
+          `[IO Update] PENDING-QUEUED pendingId=${pendingId} ioId=${ioId} ` +
+          `result=${syncIntent} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
         )
 
         try {
@@ -169,7 +191,16 @@ export async function PUT(req: Request, res: Response) {
           }
         })
       } catch (syncError) {
-        console.error('[IO Update] Failed to create PendingSync:', syncError)
+        // CRITICAL: the SQLite write to Ios already succeeded by this point
+        // (txn at line 91-100), but the PendingSync row didn't make it onto
+        // the queue. Without a loud log this would be the new silent-loss
+        // vector. Include enough context that an oncall person can recover
+        // the row by hand if needed.
+        console.error(
+          `[IO Update] PENDING-QUEUE-FAIL ioId=${ioId} ` +
+          `result=${syncIntent} tester=${currentUser ?? 'unknown'} version=${newVersion - 1} ` +
+          `err=${syncError instanceof Error ? syncError.message : String(syncError)}`,
+        )
       }
     }
 

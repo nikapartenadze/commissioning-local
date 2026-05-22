@@ -84,7 +84,7 @@ export async function POST(req: Request, res: Response) {
     txn()
 
     try {
-      db.prepare(
+      const info = db.prepare(
         'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(
         ioId,
@@ -94,6 +94,10 @@ export async function POST(req: Request, res: Response) {
         plcState ?? null,
         new Date().toISOString(),
         newVersion - 1
+      )
+      console.log(
+        `[Reset] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
+        `result=${TEST_CONSTANTS.RESULT_CLEARED} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
       )
 
       try {
@@ -110,7 +114,11 @@ export async function POST(req: Request, res: Response) {
         }
       })
     } catch (syncError) {
-      console.error('[Reset] Failed to create PendingSync:', syncError)
+      console.error(
+        `[Reset] PENDING-QUEUE-FAIL ioId=${ioId} ` +
+        `result=${TEST_CONSTANTS.RESULT_CLEARED} tester=${currentUser ?? 'unknown'} version=${newVersion - 1} ` +
+        `err=${syncError instanceof Error ? syncError.message : String(syncError)}`,
+      )
     }
 
     try {

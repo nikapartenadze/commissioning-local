@@ -16,15 +16,27 @@ export interface CreatePendingSyncParams {
  */
 export const pendingSyncRepository = {
   /**
-   * Create a new pending sync entry
+   * Create a new pending sync entry.
+   *
+   * Refuses null/empty testResult: the cloud handler interprets such a
+   * payload as "set result to NULL", which caused the 2026-05-21 silent
+   * test-loss incident (see commit 4f6b888 + frontend/app/api/ios/[id]/route.ts).
+   * Callers must classify a comment-only change to one of the recognized
+   * 'Comment …' ops before queueing.
    */
   create(params: CreatePendingSyncParams): PendingSync {
+    if (params.testResult == null || params.testResult === '') {
+      throw new Error(
+        `pendingSyncRepository.create: refused null/empty testResult for ioId=${params.ioId}. ` +
+          `Caller must classify the change to one of Passed | Failed | Cleared | "Comment Added/Removed/Modified".`,
+      )
+    }
     const result = db.prepare(
       'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, CreatedAt, RetryCount, Version) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)'
     ).run(
       params.ioId,
       params.inspectorName ?? null,
-      params.testResult ?? null,
+      params.testResult,
       params.comments ?? null,
       params.state ?? null,
       params.timestamp ?? null,

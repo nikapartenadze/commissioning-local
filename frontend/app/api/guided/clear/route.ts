@@ -63,9 +63,13 @@ export async function POST(req: Request, res: Response) {
     txn()
 
     try {
-      db.prepare(
+      const info = db.prepare(
         'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(ioId, currentUser || null, TEST_CONSTANTS.RESULT_CLEARED, historyComment, plcState, new Date().toISOString(), newVersion - 1)
+      console.log(
+        `[Guided clear] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
+        `result=${TEST_CONSTANTS.RESULT_CLEARED} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
+      )
 
       try {
         const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
@@ -78,7 +82,11 @@ export async function POST(req: Request, res: Response) {
         catch (syncErr) { console.warn('[Guided clear] sync error for', ioId, ':', syncErr instanceof Error ? syncErr.message : syncErr) }
       })
     } catch (syncError) {
-      console.error('[Guided clear] Failed to enqueue sync:', syncError)
+      console.error(
+        `[Guided clear] PENDING-QUEUE-FAIL ioId=${ioId} ` +
+        `result=${TEST_CONSTANTS.RESULT_CLEARED} tester=${currentUser ?? 'unknown'} version=${newVersion - 1} ` +
+        `err=${syncError instanceof Error ? syncError.message : String(syncError)}`,
+      )
     }
 
     try {

@@ -28,6 +28,20 @@ import {
 } from './types'
 import { configService } from '@/lib/config'
 
+/**
+ * Outcome of attempting to push a single IO update to cloud.
+ * Distinguishes transient failures (retry) from permanent rejections
+ * (delete the PendingSync row; retrying would be a no-op and waste the
+ * retry cap).
+ */
+export interface SyncIoResult {
+  ok: boolean
+  /** True when retrying with the same payload will fail the same way. Caller MUST delete the PendingSync row. */
+  permanent?: boolean
+  /** Human-readable reason for the failure / rejection. */
+  reason?: string
+}
+
 // =============================================================================
 // Logger
 // =============================================================================
@@ -355,7 +369,7 @@ export class CloudSyncService {
   // Sync Single IO Update
   // ===========================================================================
 
-  async syncIoUpdate(update: IoUpdateDto): Promise<boolean> {
+  async syncIoUpdate(update: IoUpdateDto): Promise<SyncIoResult> {
     // If we know we're offline, queue immediately
     if (
       this.connectionStatus.state !== 'connected' &&
@@ -364,18 +378,18 @@ export class CloudSyncService {
     ) {
       await this.addToOfflineQueue(update)
       log.debug(`Queued IO ${update.id} for offline sync (connection unavailable)`)
-      return false
+      return { ok: false, reason: 'offline' }
     }
 
     // Try real-time sync
-    const syncedInRealTime = await this.tryRealtimeSync(update)
+    const result = await this.tryRealtimeSync(update)
 
-    if (!syncedInRealTime) {
+    if (!result.ok && !result.permanent) {
       await this.addToOfflineQueue(update)
       log.info(`Added IO ${update.id} to offline queue for later sync`)
     }
 
-    return syncedInRealTime
+    return result
   }
 
   // ===========================================================================
@@ -399,9 +413,13 @@ export class CloudSyncService {
     const failedUpdates: IoUpdateDto[] = []
 
     for (const update of updates) {
-      if (await this.tryRealtimeSync(update)) {
+      const r = await this.tryRealtimeSync(update)
+      if (r.ok) {
         successCount++
-      } else {
+      } else if (!r.permanent) {
+        // Only requeue transient failures. Permanent rejections (e.g. null
+        // result, validation error) would re-fail forever and burn the retry
+        // cap; the caller already saw the warn log inside tryRealtimeSync.
         failedUpdates.push(update)
       }
     }
@@ -472,7 +490,7 @@ export class CloudSyncService {
   // Real-time Sync Methods
   // ===========================================================================
 
-  private async tryRealtimeSync(update: IoUpdateDto): Promise<boolean> {
+  private async tryRealtimeSync(update: IoUpdateDto): Promise<SyncIoResult> {
     log.debug(`Attempting real-time sync for IO ${update.id}`)
 
     // Quick check if we're offline
@@ -482,7 +500,7 @@ export class CloudSyncService {
       Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
     ) {
       log.debug(`Skipping sync for IO ${update.id} - offline`)
-      return false
+      return { ok: false, reason: 'offline' }
     }
 
     // Try HTTP sync
@@ -490,7 +508,7 @@ export class CloudSyncService {
       const { remoteUrl } = await this.getCloudConfig()
       if (!remoteUrl) {
         log.warn('Cloud URL not configured')
-        return false
+        return { ok: false, reason: 'no remote URL' }
       }
 
       const headers = new Headers({ 'Content-Type': 'application/json' })
@@ -510,7 +528,7 @@ export class CloudSyncService {
 
       if (response.status === 401) {
         log.error('Authentication failed for IO sync')
-        return false
+        return { ok: false, reason: 'HTTP 401 auth failed' }
       }
 
       if (response.ok) {
@@ -527,8 +545,9 @@ export class CloudSyncService {
 
         // Cloud now surfaces rejections explicitly (added 2026-05-21 after the
         // silent-drop incident). If our IO was rejected with permanent=true,
-        // the next retry will fail the same way — treat it as a hard failure
-        // and let the AutoSync drop logic delete the PendingSync immediately.
+        // the next retry would fail the same way — surface permanent=true to
+        // the caller so the PendingSync row is deleted immediately and we
+        // don't burn the retry cap for nothing.
         const rejection = responseData?.rejected?.find(r => r.id === update.id)
         if (rejection?.permanent) {
           log.error(
@@ -537,7 +556,7 @@ export class CloudSyncService {
             `state=${JSON.stringify(update.state)}, testedBy=${JSON.stringify(update.testedBy)}. ` +
             `Local SQLite still has this IO's state — re-pass/fail/clear in the grid if the value is wrong on cloud.`
           )
-          return false
+          return { ok: false, permanent: true, reason: `cloud-rejected: ${rejection.reason}` }
         }
 
         if (responseData?.updatedCount !== undefined && responseData.updatedCount < 1) {
@@ -549,22 +568,30 @@ export class CloudSyncService {
             `ts=${update.timestamp}. ` +
             `Most likely cause: version mismatch (cloud already moved past local).`
           )
-          return false
+          return { ok: false, reason: 'updatedCount=0 (version mismatch likely)' }
         }
 
         log.info(`Successfully synced IO ${update.id} via HTTP`)
         this.setConnectionState('connected')
-        return true
+        return { ok: true }
       }
 
-      log.error(`HTTP sync failed for IO ${update.id}: ${response.status}`)
+      log.error(
+        `[CloudSync] HTTP sync failed for IO ${update.id}: status=${response.status}. ` +
+        `Payload: result=${JSON.stringify(update.result)}, version=${update.version}, ` +
+        `tester=${JSON.stringify(update.testedBy)}, state=${JSON.stringify(update.state)}, ts=${update.timestamp}`,
+      )
+      this.setConnectionState('error', 'Sync failed')
+      // 4xx (other than 401) means the request was malformed — retrying won't
+      // help. 5xx is transient. Treat 4xx as permanent so the row is dropped.
+      const permanent = response.status >= 400 && response.status < 500
+      return { ok: false, permanent, reason: `HTTP ${response.status}` }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       log.debug(`HTTP sync failed for IO ${update.id}: ${errorMessage}`)
+      this.setConnectionState('error', 'Sync failed')
+      return { ok: false, reason: errorMessage }
     }
-
-    this.setConnectionState('error', 'Sync failed')
-    return false
   }
 
   private async tryRealtimeBatchSync(updates: IoUpdateDto[]): Promise<boolean> {
@@ -780,13 +807,14 @@ export class CloudSyncService {
       if (!update) continue
 
       try {
-        if (await this.tryRealtimeSync(update)) {
+        const r = await this.tryRealtimeSync(update)
+        if (r.ok) {
           successfulIds.push(pending.ioId)
           log.debug(`Successfully synced pending IO ${pending.ioId} individually`)
         } else {
           pending.retryCount++
-          pending.lastError = 'Individual sync failed after batch failure'
-          log.warn(`Failed to sync pending IO ${pending.ioId} individually`)
+          pending.lastError = r.reason ?? 'Individual sync failed after batch failure'
+          log.warn(`Failed to sync pending IO ${pending.ioId} individually (${r.reason ?? 'unknown'})`)
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
@@ -836,12 +864,13 @@ export class CloudSyncService {
           timestamp: pending.timestamp?.toISOString(),
         }
 
-        if (await this.tryRealtimeSync(update)) {
+        const r = await this.tryRealtimeSync(update)
+        if (r.ok) {
           result.successfulIds.push(pending.ioId)
           log.debug(`Successfully synced pending IO ${pending.ioId}`)
         } else {
           result.failedIds.push(pending.ioId)
-          result.errors.set(pending.ioId, 'Sync failed - will retry later')
+          result.errors.set(pending.ioId, r.reason ?? 'Sync failed - will retry later')
         }
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
