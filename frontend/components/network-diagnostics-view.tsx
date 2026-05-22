@@ -193,47 +193,50 @@ export function NetworkDiagnosticsView({
 
   return (
     <div className="h-full flex flex-col bg-background text-foreground">
-      {/* Header ── instrument-panel style */}
-      <header className="flex-shrink-0 border-b bg-card px-5 py-3.5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="relative shrink-0">
-              <Network className="w-5 h-5 text-primary" />
-              <span
-                className={cn(
-                  'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-card',
-                  wsConnected ? 'bg-emerald-500 status-pulse' : 'bg-amber-500',
-                )}
-                aria-label={wsConnected ? 'live' : 'reconnecting'}
-              />
-            </div>
-            <div className="min-w-0">
-              <h1 className="text-base font-semibold tracking-tight truncate">
-                {singleDevice ? (
-                  <>
-                    <span className="text-muted-foreground/70 font-normal">Diagnostics — </span>
-                    <span className="font-mono">{singleDevice}</span>
-                  </>
-                ) : (
-                  'Network Diagnostics'
-                )}
-              </h1>
-              <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mt-0.5 font-medium">
-                {singleDevice ? (
-                  <>{groups[0]?.[0] ?? 'Other'} · {wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}</>
-                ) : (
-                  <>
-                    {totalKnown} device{totalKnown === 1 ? '' : 's'} ·{' '}
-                    <span className="text-primary">{totalDevices} live</span> ·{' '}
-                    {totalGroups} group{totalGroups === 1 ? '' : 's'} ·{' '}
-                    {wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}
-                  </>
-                )}
-              </p>
-            </div>
+      {/* Header ── instrument-panel style. pr-12 keeps content clear of the
+          Dialog's auto-rendered close (×) button at top-right. */}
+      <header className="flex-shrink-0 border-b bg-card px-5 py-3.5 pr-12">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="relative shrink-0">
+            <Network className="w-5 h-5 text-primary" />
+            <span
+              className={cn(
+                'absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-card',
+                wsConnected ? 'bg-emerald-500 status-pulse' : 'bg-orange-500',
+              )}
+              aria-label={wsConnected ? 'live' : 'reconnecting'}
+            />
           </div>
-          <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-mono text-muted-foreground shrink-0">
-            <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/30">UDT_NETWORK_NODE_DATA</span>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-base font-semibold tracking-tight truncate">
+              {singleDevice ? (
+                <>
+                  <span className="text-muted-foreground/70 font-normal">Diagnostics — </span>
+                  <span className="font-mono">{singleDevice}</span>
+                </>
+              ) : (
+                'Network Diagnostics'
+              )}
+            </h1>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground mt-0.5 font-medium flex items-center gap-1.5 flex-wrap">
+              {singleDevice ? (
+                <>
+                  <span>{groups[0]?.[0] ?? 'Other'}</span>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span>{wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}</span>
+                </>
+              ) : (
+                <>
+                  <span>{totalKnown} device{totalKnown === 1 ? '' : 's'}</span>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span className="text-primary">{totalDevices} live</span>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span>{totalGroups} group{totalGroups === 1 ? '' : 's'}</span>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span>{wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}</span>
+                </>
+              )}
+            </p>
           </div>
         </div>
       </header>
@@ -319,12 +322,12 @@ function NavToc({
                 const dotClass =
                   status === 'ok' ? 'bg-emerald-500 status-pulse' :
                   status === 'down' ? 'bg-red-500' :
-                  status === 'media' ? 'bg-amber-500' :
+                  status === 'media' ? 'bg-orange-500' :
                   'bg-muted-foreground/40'
                 const borderClass =
                   status === 'ok' ? 'border-l-emerald-500/60' :
                   status === 'down' ? 'border-l-red-500/60 bg-red-500/[0.03]' :
-                  status === 'media' ? 'border-l-amber-500/60 bg-amber-500/[0.03]' :
+                  status === 'media' ? 'border-l-orange-500/60 bg-orange-500/[0.03]' :
                   'border-l-muted-foreground/20'
                 return (
                   <a
@@ -447,7 +450,7 @@ function FactCell({
       <div
         className={cn(
           'font-mono text-sm font-semibold tabular-nums leading-tight mt-0.5',
-          stale && 'text-amber-500',
+          stale && 'text-orange-500',
         )}
       >
         {value}
@@ -465,8 +468,8 @@ function TagBadge({
 }) {
   const map = {
     ok: { text: 'OK', cls: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' },
-    warn: { text: count ? `${count} WARN` : 'WARN', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-500' },
-    stale: { text: 'STALE', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-500' },
+    warn: { text: count ? `${count} WARN` : 'WARN', cls: 'border-orange-500/40 bg-orange-500/10 text-orange-500' },
+    stale: { text: 'STALE', cls: 'border-orange-500/40 bg-orange-500/10 text-orange-500' },
     pending: { text: 'WAITING', cls: 'border-muted-foreground/30 bg-muted/40 text-muted-foreground' },
   } as const
   const { text, cls } = map[status]
@@ -497,7 +500,7 @@ function Chip({
       className={cn(
         'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-[10px] font-semibold uppercase tracking-wider font-mono',
         kind === 'media'
-          ? 'border-amber-500/40 bg-amber-500/10 text-amber-500'
+          ? 'border-orange-500/40 bg-orange-500/10 text-orange-500'
           : 'border-red-500/40 bg-red-500/10 text-red-500',
       )}
     >
@@ -516,7 +519,7 @@ function PortRow({ port: p }: { port: Port }) {
     <div
       className={cn(
         'border rounded bg-background/40 overflow-hidden',
-        media && 'border-amber-500/50 shadow-[inset_2px_0_0_0_theme(colors.amber.500)]',
+        media && 'border-orange-500/50 shadow-[inset_2px_0_0_0_theme(colors.orange.500)]',
         down && 'border-red-500/50 shadow-[inset_2px_0_0_0_theme(colors.red.500)]',
         !media && !down && 'shadow-[inset_2px_0_0_0_theme(colors.border)]',
       )}
@@ -526,7 +529,7 @@ function PortRow({ port: p }: { port: Port }) {
           <h3
             className={cn(
               'font-mono text-xs font-bold tracking-tight uppercase tabular-nums',
-              media && 'text-amber-500',
+              media && 'text-orange-500',
               down && 'text-red-500',
             )}
           >
@@ -538,7 +541,7 @@ function PortRow({ port: p }: { port: Port }) {
           <span
             className={cn(
               'text-[9px] uppercase tracking-widest font-bold font-mono',
-              media && 'text-amber-500',
+              media && 'text-orange-500',
               down && 'text-red-500',
             )}
           >
@@ -631,13 +634,13 @@ function Panel({
     <div
       className={cn(
         'rounded border bg-card/60 px-2.5 py-1.5',
-        mediaPanel && 'border-amber-500/30 bg-amber-500/[0.04]',
+        mediaPanel && 'border-orange-500/30 bg-orange-500/[0.04]',
       )}
     >
       <h4
         className={cn(
           'text-[9px] font-bold uppercase tracking-[0.22em] mb-1 pb-1 border-b border-border/60',
-          mediaPanel ? 'text-amber-500' : 'text-muted-foreground',
+          mediaPanel ? 'text-orange-500' : 'text-muted-foreground',
         )}
       >
         {title}
@@ -671,7 +674,7 @@ function KV({
         className={cn(
           'font-mono text-[11px] py-[3px] text-right tabular-nums leading-tight',
           highlight === 'red' && 'text-red-500 font-bold',
-          highlight === 'amber' && 'text-amber-500 font-bold',
+          highlight === 'amber' && 'text-orange-500 font-bold',
         )}
       >
         {typeof v === 'string' ? v : formatNumber(v)}
