@@ -292,7 +292,9 @@ function RingLayout({
             )}
           </div>
         </button>
-        {/* Diagnostics action — separate button so we don't nest <button> inside <button>. */}
+        {/* Diagnostics action — separate button so we don't nest <button> inside <button>.
+            White pill with dark text holds contrast against the saturated
+            green/red/gray card background in both light and dark modes. */}
         {onOpenDiagnostics && (
           <button
             type="button"
@@ -300,11 +302,11 @@ function RingLayout({
               e.stopPropagation()
               onOpenDiagnostics(node.name)
             }}
-            className="absolute top-1 right-1 p-1 rounded text-white/80 hover:text-white hover:bg-white/20 transition-colors"
-            title={`Port-level diagnostics for ${node.name}`}
+            className="absolute top-1 right-1 bg-white text-gray-900 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded leading-none hover:bg-gray-100 border border-black/15 shadow-sm"
+            title={`Open diagnostics for ${node.name}`}
             aria-label={`Open diagnostics for ${node.name}`}
           >
-            <Activity className="w-3.5 h-3.5" />
+            Diagnostic
           </button>
         )}
       </div>
@@ -492,11 +494,11 @@ function FiomDiagram({
                         e.stopPropagation()
                         onOpenDiagnostics(port.deviceName!)
                       }}
-                      className="text-white/85 hover:text-white text-xs leading-none -my-0.5 px-1 rounded hover:bg-white/20"
-                      title={`Diagnostics: ${port.deviceName}`}
+                      className="bg-white text-gray-900 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded leading-none hover:bg-gray-100 border border-black/15 shadow-sm"
+                      title={`Open diagnostics for ${port.deviceName}`}
                       aria-label={`Open diagnostics for ${port.deviceName}`}
                     >
-                      ⚡
+                      Diagnostic
                     </button>
                   )}
                   <div className={cn("w-2 h-2 rounded-full", s === 'green' ? 'bg-green-400' : s === 'red' ? 'bg-red-400' : 'bg-gray-400')} />
@@ -681,10 +683,11 @@ function StarDiagram({
                 <text x={cx - DEVICE_W / 2 + 6} y={DEVICE_Y + 12} textAnchor="start" fontSize={8} fontWeight="bold" fill="#fff">
                   {deviceType}
                 </text>
-                {/* Diagnostics icon — small clickable target in top-right.
-                    The port number (P{N}) is already shown in the port box below
-                    the card, so reusing this slot for the diag affordance is
-                    information-preserving. */}
+                {/* Diagnostics pill — high-contrast clickable target in
+                    top-right. The card headers are saturated green/red/gray
+                    in both light and dark modes, so a near-white pill with
+                    dark text holds contrast either way. The port number
+                    (P{N}) still shows in the port box below the card. */}
                 {onOpenDiagnostics && port.deviceName ? (
                   <g
                     className="cursor-pointer"
@@ -693,18 +696,22 @@ function StarDiagram({
                       onOpenDiagnostics(port.deviceName!)
                     }}
                   >
-                    <title>{`Diagnostics: ${port.deviceName}`}</title>
-                    <circle cx={cx + DEVICE_W / 2 - 9} cy={DEVICE_Y + 9} r={6}
-                      fill="rgba(255,255,255,0.2)"
-                      stroke="rgba(255,255,255,0.55)"
-                      strokeWidth={0.8}
+                    <title>{`Open diagnostics for ${port.deviceName}`}</title>
+                    <rect
+                      x={cx + DEVICE_W / 2 - 58} y={DEVICE_Y + 3}
+                      width={54} height={13} rx={2.5}
+                      fill="#ffffff"
+                      stroke="rgba(15,20,25,0.25)"
+                      strokeWidth={0.6}
                     />
                     <text
-                      x={cx + DEVICE_W / 2 - 9} y={DEVICE_Y + 12}
-                      textAnchor="middle" fontSize={8} fontWeight="bold"
-                      fill="#fff" pointerEvents="none"
+                      x={cx + DEVICE_W / 2 - 31} y={DEVICE_Y + 12}
+                      textAnchor="middle" fontSize={7.5} fontWeight={700}
+                      fill="#0f1419"
+                      letterSpacing="0.4"
+                      pointerEvents="none"
                     >
-                      ⚡
+                      DIAGNOSTIC
                     </text>
                   </g>
                 ) : (
