@@ -32,6 +32,12 @@ type Port = Snapshot['ports'][number]
 interface Props {
   /** Drop the snapshot cache and tear down WS when false. */
   active: boolean
+  /**
+   * If set, the view scrolls the matching device's section into view as soon
+   * as its first snapshot arrives. Used when the user opens the modal from a
+   * single node card on the topology page.
+   */
+  focusDevice?: string
 }
 
 const STALE_MS = 60_000 // device considered "down" if no snapshot in this window
@@ -143,10 +149,12 @@ interface DeviceState {
   lastSeen: number
 }
 
-export function NetworkDiagnosticsView({ active }: Props) {
+export function NetworkDiagnosticsView({ active, focusDevice }: Props) {
   const [devices, setDevices] = useState<Map<string, DeviceState>>(new Map())
   const [wsConnected, setWsConnected] = useState(false)
   const [now, setNow] = useState(() => Date.now())
+  /** Tracks whether we've already scrolled to focusDevice this session — only scroll once per modal-open. */
+  const focusedDoneRef = useRef(false)
 
   // 1-second tick so the "Xs ago" / staleness check stays current without
   // re-rendering on every WS message.
@@ -155,6 +163,28 @@ export function NetworkDiagnosticsView({ active }: Props) {
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [active])
+
+  // Reset the "have I scrolled to focusDevice yet" flag whenever the modal
+  // opens/closes or the target device changes.
+  useEffect(() => {
+    focusedDoneRef.current = false
+  }, [active, focusDevice])
+
+  // Scroll the focused device section into view as soon as its snapshot
+  // arrives. We watch `devices` so this fires after the section is rendered.
+  useEffect(() => {
+    if (!active || !focusDevice || focusedDoneRef.current) return
+    if (!devices.has(focusDevice)) return
+    // Defer to the next paint so the section has its DOM node.
+    const id = window.setTimeout(() => {
+      const el = document.getElementById(`${focusDevice}_NN`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        focusedDoneRef.current = true
+      }
+    }, 50)
+    return () => window.clearTimeout(id)
+  }, [active, focusDevice, devices])
 
   // WS subscription scoped to view active state.
   useEffect(() => {
