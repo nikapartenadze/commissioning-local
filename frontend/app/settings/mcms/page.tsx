@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 /**
  * MCM connection management.
@@ -88,9 +89,12 @@ export default function McmSettingsPage() {
               MCM CONFIGURATION
             </h1>
           </div>
-          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-            {mcms.length} CONFIGURED
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+              {mcms.length} CONFIGURED
+            </span>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 
