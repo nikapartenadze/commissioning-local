@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { getClientForIo, getMcmIdForIo, hasAnyMcm } from '@/lib/mcm-registry'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 
@@ -20,10 +21,18 @@ export async function GET(req: Request, res: Response) {
       return res.status(404).json({ success: false, error: 'IO not found' })
     }
 
-    const client = getPlcClient()
+    // Multi-MCM: read from the controller that owns this IO. Fallback to the
+    // legacy singleton when no MCM is registered.
+    const subsystemId = getMcmIdForIo(ioId)
+    const client = hasAnyMcm() ? getClientForIo(ioId) ?? getPlcClient() : getPlcClient()
 
     if (!client.isConnected) {
-      return res.status(503).json({ success: false, error: 'PLC not connected' })
+      return res.status(503).json({
+        success: false,
+        error: subsystemId
+          ? `PLC for MCM ${subsystemId} not connected`
+          : 'PLC not connected',
+      })
     }
 
     const readResult = client.readOutputBit({
@@ -44,6 +53,7 @@ export async function GET(req: Request, res: Response) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'UpdateState',
+          subsystemId,
           id: ioId,
           state: state
         })

@@ -12,6 +12,11 @@ import { execSync } from 'child_process'
 import { db } from '@/lib/db-sqlite'
 import { resolveDatabasePath } from '@/lib/storage-paths'
 import { hasPlcClient, getPlcStatus, getLatestNetworkDeviceSnapshots } from '@/lib/plc-client-manager'
+import {
+  getAggregateStatus,
+  getAllNetworkSnapshots,
+  hasAnyMcm,
+} from '@/lib/mcm-registry'
 import type { NetworkDeviceSnapshot } from '@/lib/plc/network'
 
 // Captured once at module load — the moment the server process started.
@@ -45,6 +50,20 @@ export interface HeartbeatSystemInfo {
     connected: boolean
     host?: string | null
     lastError?: string | null
+    /**
+     * Central-tool multi-MCM rollup. When the server is configured to manage
+     * multiple controllers, each is listed here. Empty/absent on legacy
+     * single-PLC deployments.
+     */
+    mcms?: Array<{
+      subsystemId: string
+      name: string
+      ip: string
+      connected: boolean
+      tagCount: number
+    }>
+    connectedMcmCount?: number
+    totalMcmCount?: number
   }
   pendingSyncCount?: number
   lastCloudSyncAt?: string | null
@@ -53,8 +72,11 @@ export interface HeartbeatSystemInfo {
    * Populated when the poller has completed at least one cycle on a PLC
    * that has *_NetworkNode tags. Cloud receiver stores this inside the
    * systemInfo JSONB blob; no separate column.
+   *
+   * Central-tool: each snapshot is decorated with `subsystemId` so the
+   * cloud can attribute diagnostics to the correct MCM.
    */
-  networkDevices?: NetworkDeviceSnapshot[]
+  networkDevices?: Array<NetworkDeviceSnapshot & { subsystemId?: string }>
 }
 
 function bytesToMb(bytes: number): number {
@@ -119,6 +141,37 @@ function collectDbSizeMb(): number | undefined {
 }
 
 function collectPlcStatus(): HeartbeatSystemInfo['plc'] {
+  // Multi-MCM path: when the registry has entries, return the per-MCM
+  // rollup. Legacy singleton info is still included on the top-level
+  // `connected`/`host` fields so existing cloud receivers stay compatible.
+  if (hasAnyMcm()) {
+    try {
+      const agg = getAggregateStatus()
+      const firstConnected = agg.mcms.find((m) => m.connected) ?? agg.mcms[0]
+      return {
+        connected: agg.anyConnected,
+        host: firstConnected?.ip ?? null,
+        lastError: null,
+        mcms: agg.mcms.map((m) => ({
+          subsystemId: m.subsystemId,
+          name: m.name,
+          ip: m.ip,
+          connected: m.connected,
+          tagCount: m.tagCount,
+        })),
+        connectedMcmCount: agg.connectedCount,
+        totalMcmCount: agg.totalCount,
+      }
+    } catch (err) {
+      return {
+        connected: false,
+        host: null,
+        lastError: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+
+  // Legacy singleton path (field-laptop single-PLC deployments).
   // Never construct the PLC client just to ask its status — that would
   // load libplctag on demand and could fail. Only inspect existing state.
   if (!hasPlcClient()) {
@@ -226,14 +279,20 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
 let lastNetworkDevicesAttachedAt = 0
 const NETWORK_DEVICES_HEARTBEAT_INTERVAL_MS = 60_000
 
-function collectNetworkDevices(): NetworkDeviceSnapshot[] {
+function collectNetworkDevices(): Array<NetworkDeviceSnapshot & { subsystemId?: string }> {
   const now = Date.now()
   if (now - lastNetworkDevicesAttachedAt < NETWORK_DEVICES_HEARTBEAT_INTERVAL_MS) {
     return []
   }
   // Best-effort: never let a poller crash break the heartbeat.
   try {
-    const snapshots = getLatestNetworkDeviceSnapshots()
+    // Multi-MCM: union of every MCM's network snapshots, each tagged with
+    // its owning subsystemId. Legacy single-PLC path emits unattributed
+    // snapshots (cloud receiver treats absence of subsystemId as the default
+    // subsystem from the heartbeat payload).
+    const snapshots = hasAnyMcm()
+      ? getAllNetworkSnapshots()
+      : getLatestNetworkDeviceSnapshots()
     if (snapshots.length > 0) {
       lastNetworkDevicesAttachedAt = now
     }

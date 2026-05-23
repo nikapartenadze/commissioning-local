@@ -239,12 +239,172 @@ export function hasMcm(subsystemId: string): boolean {
 }
 
 /**
+ * Whether any MCM is currently connected. Used by legacy routes to decide
+ * if they should route through the registry vs the old singleton.
+ */
+export function hasAnyConnectedMcm(): boolean {
+  for (const entry of reg().mcms.values()) {
+    if (entry.client.isConnected) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the registry has any MCM entries at all (connected or not).
+ */
+export function hasAnyMcm(): boolean {
+  return reg().mcms.size > 0;
+}
+
+/**
  * Latest per-device network snapshots from one MCM. Empty array if the
  * poller is off or hasn't completed a cycle yet.
  */
 export function getMcmNetworkSnapshots(subsystemId: string): NetworkDeviceSnapshot[] {
   const entry = reg().mcms.get(subsystemId);
   return entry?.networkPoller?.getLatestSnapshots() ?? [];
+}
+
+/**
+ * Latest network snapshots across every MCM. Each snapshot is decorated
+ * with `subsystemId` so the cloud receiver can attribute the diagnostic
+ * data correctly.
+ */
+export function getAllNetworkSnapshots(): Array<NetworkDeviceSnapshot & { subsystemId: string }> {
+  const out: Array<NetworkDeviceSnapshot & { subsystemId: string }> = [];
+  for (const entry of reg().mcms.values()) {
+    const snaps = entry.networkPoller?.getLatestSnapshots() ?? [];
+    for (const s of snaps) {
+      out.push({ ...s, subsystemId: entry.subsystemId });
+    }
+  }
+  return out;
+}
+
+// ── IO-aware resolution (per-IO routing) ──────────────────────────────────
+
+/**
+ * Cache for Ios.id → SubsystemId lookup. Populated lazily on first lookup
+ * for an ioId and invalidated on disconnect/dispose. SQLite is fast enough
+ * for ad-hoc lookups, but the test path can fire hundreds of reads per
+ * second so we keep it in-memory.
+ */
+const ioToSubsystemCache = new Map<number, string>();
+
+/**
+ * Invalidate the IO→subsystem cache. Call after pulling fresh IOs from the
+ * cloud or otherwise mutating the Ios table's SubsystemId column.
+ */
+export function invalidateIoSubsystemCache(): void {
+  ioToSubsystemCache.clear();
+}
+
+/**
+ * Look up which subsystem (and therefore which MCM) owns a given IO. Cached.
+ * Returns null when the IO is unknown.
+ *
+ * Lazy-imported `db` to avoid a module-init cycle — mcm-registry is imported
+ * early by the PLC layer, and `db-sqlite` initializes pragmas on first load.
+ */
+export function getMcmIdForIo(ioId: number): string | null {
+  const cached = ioToSubsystemCache.get(ioId);
+  if (cached !== undefined) return cached;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { db } = require('@/lib/db-sqlite') as typeof import('@/lib/db-sqlite');
+    const row = db
+      .prepare('SELECT SubsystemId FROM Ios WHERE id = ?')
+      .get(ioId) as { SubsystemId: number } | undefined;
+    if (!row) return null;
+    const id = String(row.SubsystemId);
+    ioToSubsystemCache.set(ioId, id);
+    return id;
+  } catch (err) {
+    console.warn(`[McmRegistry] getMcmIdForIo(${ioId}) failed:`, err);
+    return null;
+  }
+}
+
+/**
+ * Resolve the PlcClient that owns a given IO. Returns null when:
+ *   - the IO is unknown
+ *   - the IO's subsystem has no registry entry (registry empty / not configured)
+ * Callers should fall back to their legacy path when this returns null.
+ */
+export function getClientForIo(ioId: number): PlcClient | null {
+  const subsystemId = getMcmIdForIo(ioId);
+  if (!subsystemId) return null;
+  const entry = reg().mcms.get(subsystemId);
+  return entry?.client ?? null;
+}
+
+/**
+ * Find the current tag value/state for an IO across every loaded MCM.
+ * Returns null if the IO isn't found in any registry client. The IO does
+ * not need to be currently connected — the tag reader caches the last
+ * read state on the client even after the connection drops.
+ */
+export function getTagForIo(ioId: number): IoTag | null {
+  const subsystemId = getMcmIdForIo(ioId);
+  if (subsystemId) {
+    const entry = reg().mcms.get(subsystemId);
+    if (entry) {
+      // Prefer the IO's owning MCM. Use getIoTag-by-id if available, else scan.
+      const tags = entry.client.getIoTags();
+      const tag = tags.find((t) => t.id === ioId);
+      if (tag) return tag;
+    }
+  }
+  // Fallback scan across every MCM in case the IO's SubsystemId was rewritten
+  // or the cache is stale.
+  for (const entry of reg().mcms.values()) {
+    const tags = entry.client.getIoTags();
+    const tag = tags.find((t) => t.id === ioId);
+    if (tag) return tag;
+  }
+  return null;
+}
+
+/**
+ * Union of every MCM's tag list, decorated with `subsystemId` so callers can
+ * tell which MCM each tag belongs to. Used by the legacy /api/plc/tags route
+ * when no subsystemId filter is supplied.
+ */
+export function getAllTags(): {
+  tags: Array<IoTag & { subsystemId: string }>;
+  count: number;
+} {
+  const tags: Array<IoTag & { subsystemId: string }> = [];
+  for (const entry of reg().mcms.values()) {
+    for (const t of entry.client.getIoTags()) {
+      tags.push({ ...t, subsystemId: entry.subsystemId });
+    }
+  }
+  return { tags, count: tags.length };
+}
+
+/**
+ * Aggregate connection status across every MCM. Used by /api/plc/status
+ * and the heartbeat when the legacy callers want one summary number.
+ */
+export function getAggregateStatus(): {
+  anyConnected: boolean;
+  connectedCount: number;
+  totalCount: number;
+  totalTagCount: number;
+  mcms: McmDescriptor[];
+} {
+  const mcms = listMcms();
+  const connectedCount = mcms.filter((m) => m.connected).length;
+  const totalTagCount = mcms.reduce((sum, m) => sum + m.tagCount, 0);
+  return {
+    anyConnected: connectedCount > 0,
+    connectedCount,
+    totalCount: mcms.length,
+    totalTagCount,
+    mcms,
+  };
 }
 
 /**
