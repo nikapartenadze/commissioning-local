@@ -1,7 +1,18 @@
 import fs from 'fs'
 import path from 'path'
 import { configService } from '@/lib/config'
+import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
 import { resolveUpdateStatePath } from '@/lib/storage-paths'
+
+/**
+ * Fallback manifest URL used when neither UPDATE_MANIFEST_URL env nor
+ * config.updateManifestUrl is set. Points at the cloud endpoint that
+ * scans `public/downloads/` and returns the highest-versioned installer.
+ * Keeping this defaulted means every tablet gets self-update for free
+ * after upgrading to a build that includes this code — no per-tablet
+ * config.json edit required.
+ */
+const DEFAULT_MANIFEST_URL = `${EMBEDDED_REMOTE_URL.replace(/\/$/, '')}/api/releases/latest`
 
 export interface ReleaseManifest {
   version: string
@@ -61,7 +72,10 @@ export async function getUpdateManifestUrl(): Promise<string> {
     return configuredUrl.trim()
   }
 
-  return ''
+  // Default: the cloud's directory-scanning endpoint. Lets every tablet
+  // self-update out of the box; per-tablet config edits are only needed
+  // when pinning to a non-default manifest (e.g. for staged rollouts).
+  return DEFAULT_MANIFEST_URL
 }
 
 export async function fetchReleaseManifest(): Promise<{ manifestUrl: string; manifest: ReleaseManifest | null; error?: string }> {
