@@ -72,6 +72,23 @@ export async function ensureDiagnosticData(): Promise<void> {
   }
 }
 
+// Generic steps for universal failure reasons. Stored under TagType='*'
+// so the steps API can fall back here when a specific (tagType, mode)
+// row doesn't exist — these reasons apply to every IO, so per-type rows
+// would be redundant.
+const UNIVERSAL_DIAGNOSTICS = [
+  {
+    tagType: '*',
+    failureMode: '3rd Party',
+    diagnosticSteps: `# 3rd Party — Awaiting Vendor / Integrator\n\nThis IO is blocked by a third-party vendor or integrator.\n\n## What to capture\n1. Which vendor / integrator owns the resolution\n2. The exact symptom or missing deliverable (firmware, parameter file, device not delivered, etc.)\n3. Open ticket / RMA number if one exists\n\n## Next steps\n- Add a note in the comments naming the vendor and the ask\n- Notify the lead so a follow-up is scheduled with the vendor\n- Re-test once the vendor confirms the dependency is resolved` ,
+  },
+  {
+    tagType: '*',
+    failureMode: 'Mech',
+    diagnosticSteps: `# Mech — Mechanical / Install Issue\n\nThe IO can't pass because of a mechanical or installation problem outside the controls scope.\n\n## What to capture\n1. The mechanical condition that blocks the test (alignment, missing bracket, damaged device, target offset, no air/hydraulic supply, etc.)\n2. Which trade or crew owns the fix (mechanical, millwright, fabrication)\n3. Whether the device is even powered / installed\n\n## Next steps\n- Add a note in the comments describing the mechanical issue and the responsible trade\n- Coordinate with the mech lead to schedule the fix\n- Re-test after the mechanical work is verified on site` ,
+  },
+];
+
 // Rows that must exist on every install — keyed on (TagType, FailureMode).
 // `ensureRequiredDiagnosticRowsOn` runs on every startup and is idempotent;
 // it only fills in rows that are missing and never overwrites existing ones.
@@ -79,10 +96,14 @@ const REQUIRED_ROWS = [
   { tagType: 'EPC', failureMode: 'Needs proper tension' },
   { tagType: 'EPC', failureMode: 'Other' },
   { tagType: 'TPE Dark Operated', failureMode: 'Needs alignment' },
+  { tagType: '*', failureMode: '3rd Party' },
+  { tagType: '*', failureMode: 'Mech' },
 ];
 
 function diagnosticStepsFor(tagType: string, failureMode: string): string {
-  const entry = DIAGNOSTICS.find(d => d.tagType === tagType && d.failureMode === failureMode);
+  const entry =
+    DIAGNOSTICS.find(d => d.tagType === tagType && d.failureMode === failureMode) ??
+    UNIVERSAL_DIAGNOSTICS.find(d => d.tagType === tagType && d.failureMode === failureMode);
   return entry?.diagnosticSteps ?? `# ${tagType} — ${failureMode}\n\nNo diagnostic steps available yet.`;
 }
 

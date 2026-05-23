@@ -72,8 +72,11 @@ export async function POST(req: Request, res: Response) {
 
     let testHistoryId: number | bigint = 0
     const txn = db.transaction(() => {
+      // Clear FailureMode alongside Result — a cleared IO has no active
+      // failure reason, so the cloud sidebar filter shouldn't keep matching
+      // it under '3rd Party' / 'Mech'.
       db.prepare(
-        'UPDATE Ios SET Result = NULL, Timestamp = NULL, Comments = NULL, Version = ? WHERE id = ?'
+        'UPDATE Ios SET Result = NULL, Timestamp = NULL, Comments = NULL, FailureMode = NULL, Version = ? WHERE id = ?'
       ).run(newVersion, ioId)
 
       const histResult = db.prepare(

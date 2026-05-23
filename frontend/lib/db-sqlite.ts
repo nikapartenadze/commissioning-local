@@ -36,6 +36,14 @@ try {
     'ALTER TABLE Ios ADD COLUMN PoweredUp INTEGER',
     'ALTER TABLE Ios ADD COLUMN TestedBy TEXT',
     'ALTER TABLE Ios ADD COLUMN IoNumber TEXT',
+    // Per-IO Yes/No flag that mechs/electricians toggle when an IO depends on
+    // outside work (third-party deliverable, mech install, etc.). Synced to
+    // cloud where it's displayed read-only. NULL = unset (treated as "No").
+    'ALTER TABLE Ios ADD COLUMN HasDependencies INTEGER',
+    // Latest failure reason, denormalised onto the Ios row so cloud quick
+    // filters ("3rd Party", "Mech") can match without joining TestHistories.
+    // Set on Fail, cleared on Pass/Clear, untouched on comment-only updates.
+    'ALTER TABLE Ios ADD COLUMN FailureMode TEXT',
     'ALTER TABLE L2Columns ADD COLUMN Description TEXT',
     'ALTER TABLE L2Columns ADD COLUMN InputType TEXT',
     'ALTER TABLE L2Columns ADD COLUMN IsSystem INTEGER DEFAULT 0',
@@ -43,6 +51,11 @@ try {
     'ALTER TABLE L2Columns ADD COLUMN IncludeInProgress INTEGER DEFAULT 0',
     'ALTER TABLE TestHistories ADD COLUMN Source TEXT',
     'ALTER TABLE EStopEpcChecks ADD COLUMN FailureMode TEXT',
+    // The pending-sync row needs to carry the failure mode so it lands on
+    // cloud alongside the rest of the IO update — without this column the
+    // cloud sidebar filter has nothing to filter on.
+    'ALTER TABLE PendingSyncs ADD COLUMN FailureMode TEXT',
+    'ALTER TABLE PendingSyncs ADD COLUMN HasDependencies INTEGER',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
@@ -473,6 +486,8 @@ export interface Io {
   PoweredUp: number | null
   TestedBy: string | null
   IoNumber: string | null
+  HasDependencies: number | null
+  FailureMode: string | null
 }
 
 export interface TestHistory {
@@ -509,6 +524,8 @@ export interface PendingSync {
   RetryCount: number
   LastError: string | null
   Version: number
+  FailureMode: string | null
+  HasDependencies: number | null
 }
 
 // ── Helper constants ─────────────────────────────────────────────
@@ -543,6 +560,8 @@ export function ioToApi(row: Io) {
     poweredUp: row.PoweredUp === 1 ? true : row.PoweredUp === 0 ? false : null,
     testedBy: row.TestedBy ?? null,
     ioNumber: row.IoNumber ?? null,
+    hasDependencies: row.HasDependencies === 1 ? true : row.HasDependencies === 0 ? false : null,
+    failureMode: row.FailureMode ?? null,
   }
 }
 

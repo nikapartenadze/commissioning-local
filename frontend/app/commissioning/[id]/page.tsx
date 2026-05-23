@@ -82,6 +82,8 @@ interface IoItem {
   installationStatus?: string | null
   installationPercent?: number | null
   poweredUp?: boolean | null
+  hasDependencies?: boolean | null
+  failureMode?: string | null
 }
 
 interface ChartData {
@@ -1617,6 +1619,34 @@ export default function CommissioningPage() {
     }
   }
 
+  const handleDependenciesChange = async (io: IoItem, hasDependencies: boolean) => {
+    // Optimistic update — server is authoritative but the grid feels instant.
+    // The PATCH route persists and queues a sync; SSE/WS broadcasts (if any)
+    // catch other clients up. Revert on HTTP failure so the checkbox doesn't
+    // lie about local state.
+    setIos(prevIos => prevIos.map(i =>
+      i.id === io.id ? { ...i, hasDependencies } : i
+    ))
+    try {
+      const response = await authFetch(API_ENDPOINTS.ioDependencies(io.id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hasDependencies, currentUser: currentUser?.fullName || 'Unknown' }),
+      })
+      if (!response.ok) {
+        logger.error('Failed to update dependencies:', response.status)
+        setIos(prevIos => prevIos.map(i =>
+          i.id === io.id ? { ...i, hasDependencies: !hasDependencies } : i
+        ))
+      }
+    } catch (error) {
+      logger.error('Error updating dependencies:', error instanceof Error ? error.message : error)
+      setIos(prevIos => prevIos.map(i =>
+        i.id === io.id ? { ...i, hasDependencies: !hasDependencies } : i
+      ))
+    }
+  }
+
   const handleClearTesting = async () => {
     try {
       // Clear all test results
@@ -2130,6 +2160,7 @@ export default function CommissioningPage() {
             deviceStatuses={deviceStatuses}
             mutedIos={mutedIos}
             onToggleMute={toggleMuteIo}
+            onDependenciesChange={handleDependenciesChange}
             requireInstalledForTesting={requireInstalledForTesting}
           />
       </div>
