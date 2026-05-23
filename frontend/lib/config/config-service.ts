@@ -117,6 +117,13 @@ class ConfigurationService {
         // Only the literal `true` enables it, so a typo like "true" string still
         // defaults to off — safer than a string truthy check.
         requireInstalledForTesting: parsed.requireInstalledForTesting === true,
+        // UDT network poll cadence. Clamped to [1000, 600000] so a fat-finger
+        // can't set it faster than the IO reader can survive or so slow that
+        // the heartbeat thinks every device went stale. Undefined falls
+        // through to the poller's own default (60_000 ms).
+        networkPollingIntervalMs: typeof parsed.networkPollingIntervalMs === 'number' && Number.isFinite(parsed.networkPollingIntervalMs)
+          ? Math.max(1000, Math.min(600_000, Math.floor(parsed.networkPollingIntervalMs)))
+          : undefined,
       };
 
       console.log('[ConfigService] Configuration loaded:', {
@@ -181,6 +188,11 @@ class ConfigurationService {
       // machines that don't need the gate keeps config.json clean and
       // signals "default behavior" by its very absence.
       ...(newConfig.requireInstalledForTesting === true ? { requireInstalledForTesting: true } : {}),
+      // Same pattern: only write the field when it's set to a non-default
+      // value. An absent key is the universal "use default 60 s" signal.
+      ...(typeof newConfig.networkPollingIntervalMs === 'number'
+        ? { networkPollingIntervalMs: newConfig.networkPollingIntervalMs }
+        : {}),
     };
 
     // Mark as internal write to prevent watcher from triggering

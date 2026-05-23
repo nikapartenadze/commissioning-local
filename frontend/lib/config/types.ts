@@ -57,6 +57,17 @@ export interface AppConfig {
    * this in config.json hot-reloads — no restart needed.
    */
   requireInstalledForTesting?: boolean;
+
+  /**
+   * UDT_NETWORK_NODE_DATA polling cadence in milliseconds. Optional; defaults
+   * to 60_000 ms (one poll per minute). Reduce to 5_000 only for active
+   * field debugging — every poll queues N parallel CIP requests against
+   * the same controller that the IO tag reader is hammering, so a fast
+   * cadence steals CIP slots and makes the IO grid feel laggy. The cloud
+   * heartbeat downsamples to 60 s regardless, so faster polling does not
+   * give the cloud fresher data.
+   */
+  networkPollingIntervalMs?: number;
 }
 
 /**
@@ -96,6 +107,7 @@ export interface ConfigUpdateRequest {
   showTimestampColumn?: boolean;
   showHistoryColumn?: boolean;
   requireInstalledForTesting?: boolean;
+  networkPollingIntervalMs?: number;
 }
 
 /**

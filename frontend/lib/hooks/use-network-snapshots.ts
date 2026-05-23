@@ -4,7 +4,9 @@
  * Hook that maintains a live cache of NetworkDeviceSnapshot keyed by
  * deviceName. Subscribes to the server's WS feed once and keeps the cache
  * fresh, so opening the Diagnostics modal renders the last-known snapshot
- * immediately instead of waiting up to 5 s for the next broadcast.
+ * immediately instead of waiting for the next broadcast (cadence is
+ * driven by the server-side poller; defaults to 60 s, configurable via
+ * networkPollingIntervalMs in config.json).
  *
  * Designed for use at the Network page level — one subscription per tab.
  * Pass the returned map down to NetworkDiagnosticsView via prop; the view

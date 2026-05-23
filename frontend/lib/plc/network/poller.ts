@@ -2,9 +2,17 @@
  * Network device poller.
  *
  * Runs independently of the IO tag reader (lib/plc/tag-reader.ts) — its own
- * libplctag handles, its own loop, its own error path. Polls every 5 s by
+ * libplctag handles, its own loop, its own error path. Polls every 60 s by
  * default; if a cycle overruns it starts the next one immediately rather than
  * queueing, so the cadence is "at most every N s" not "exactly every N s".
+ *
+ * Cadence note: this poller used to run every 5 s, which caused noticeable
+ * lag in the IO testing grid on busy controllers — every cycle queued N
+ * parallel CIP requests against the same PLC the IO tag reader hammers at
+ * ~75 ms × 600+ tags. The cloud-side consumer (heartbeat in system-info.ts)
+ * already downsamples to 60 s, so faster polling here was pure overhead.
+ * Operators who need fresh data for active network debugging can override
+ * via `networkPollingIntervalMs` in config.json.
  *
  * Discovery is two-stage:
  *   1. @tags browse on the controller. Filter by structure-bit + known tag
@@ -15,9 +23,9 @@
  * Error / log policy (deliberate, see audit findings):
  *   - Per-device errors only log when the error CHANGES (or every N cycles as
  *     a heartbeat). The original [TagReader] logged every failure every cycle;
- *     that was unreadable spam for a 5 s × N device loop and obscured real
- *     issues. The deviceError event still fires every cycle for consumers
- *     (e.g. WS broadcast) that want fine-grained data.
+ *     that was unreadable spam for a fast loop and obscured real issues. The
+ *     deviceError event still fires every cycle for consumers (e.g. WS
+ *     broadcast) that want fine-grained data.
  *   - A device with a hard size mismatch is refused at create-time, not
  *     dropped silently later. Silent garbage data was the worst failure
  *     mode from the previous revision.
@@ -42,16 +50,17 @@ import {
 } from './types';
 import { bufferReader, parseNetworkDevice } from './parser';
 
-const DEFAULT_POLL_INTERVAL_MS = 5_000;
+/** Default poll cadence. Operators can override via config.networkPollingIntervalMs. */
+const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_READ_TIMEOUT_MS = 4_000;
 /** Upper bound on tag-list buffer we'll request. 256 KB easily fits thousands of tag names. */
 const TAG_LIST_BUFFER_BYTES = 256 * 1024;
 /** Bit 13 of TagInfoEntry.symbol_type — set when the symbol is a structured (UDT) type. */
 const SYMBOL_TYPE_STRUCTURE_BIT = 0x2000;
-/** Force-re-log a per-device error every N cycles even if the message didn't change. Keeps a stuck device visible without spamming. */
-const ERROR_HEARTBEAT_CYCLES = 12; // at 5 s/cycle = once every ~60 s
-/** Drop cached snapshots older than this from getLatestSnapshots() so heartbeat doesn't ship stale data. */
-const STALE_SNAPSHOT_MS = 60_000;
+/** Force-re-log a per-device error every N cycles even if the message didn't change. Keeps a stuck device visible without spamming. At 60 s/cycle = once every 5 min. */
+const ERROR_HEARTBEAT_CYCLES = 5;
+/** Drop cached snapshots older than this so heartbeat doesn't ship stale data. Set to 3× the default poll interval so a single missed cycle doesn't drop a still-recent snapshot; operators tightening pollIntervalMs below 60 s pick up correspondingly fresher staleness anyway. */
+const STALE_SNAPSHOT_MS = 180_000;
 
 export interface NetworkPollerConfig {
   pollIntervalMs?: number;

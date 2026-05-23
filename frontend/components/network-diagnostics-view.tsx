@@ -254,7 +254,7 @@ export function NetworkDiagnosticsView({
                 <>
                   <span>{groups[0]?.[0] ?? 'Other'}</span>
                   <span className="text-muted-foreground/40">·</span>
-                  <span>{wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}</span>
+                  <span>{wsConnected ? 'live' : 'reconnecting…'}</span>
                 </>
               ) : (
                 <>
@@ -264,7 +264,7 @@ export function NetworkDiagnosticsView({
                   <span className="text-muted-foreground/40">·</span>
                   <span>{totalGroups} group{totalGroups === 1 ? '' : 's'}</span>
                   <span className="text-muted-foreground/40">·</span>
-                  <span>{wsConnected ? 'live · 5 s refresh' : 'reconnecting…'}</span>
+                  <span>{wsConnected ? 'live' : 'reconnecting…'}</span>
                 </>
               )}
             </p>
@@ -773,7 +773,7 @@ function SkeletonSection({ deviceName, active }: { deviceName: string; active: b
             </div>
             <p className="text-[10px] text-muted-foreground mt-1.5 max-w-prose uppercase tracking-wider">
               {active
-                ? `Awaiting first UDT snapshot — values fill within 5 s of polling ${deviceName}_NN`
+                ? `Awaiting first UDT snapshot — values fill on the next poll of ${deviceName}_NN`
                 : 'Diagnostics view inactive'}
             </p>
           </div>
