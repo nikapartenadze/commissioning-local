@@ -50,6 +50,13 @@ import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
 import * as cloudPullRoadmap from '@/app/api/cloud/pull-roadmap/route'
 import * as guidedResetSubsystem from '@/app/api/guided/reset-subsystem/route'
 import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
+// ── central-tool: multi-MCM namespace ───────────────────────────
+import * as mcmList from '@/app/api/mcm/route'
+import * as mcmEntry from '@/app/api/mcm/[subsystemId]/route'
+import * as mcmPlcStatus from '@/app/api/mcm/[subsystemId]/plc/status/route'
+import * as mcmPlcConnect from '@/app/api/mcm/[subsystemId]/plc/connect/route'
+import * as mcmPlcDisconnect from '@/app/api/mcm/[subsystemId]/plc/disconnect/route'
+import * as mcmPlcTags from '@/app/api/mcm/[subsystemId]/plc/tags/route'
 import * as updateStatus from '@/app/api/update/status/route'
 import * as updateInstall from '@/app/api/update/install/route'
 import * as history from '@/app/api/history/route'
@@ -185,6 +192,17 @@ export function createApiRouter(): Router {
   router.post('/api/cloud/pull-mcm-diagram', asyncHandler(cloudPullMcmDiagram.POST))
   router.post('/api/cloud/pull-roadmap', asyncHandler(cloudPullRoadmap.POST))
   router.get('/api/mcm-diagram/:mcm', asyncHandler(mcmDiagram.GET))
+
+  // ── MCM Registry (central-tool multi-MCM) ─────────────────────
+  router.get('/api/mcm', asyncHandler(mcmList.GET))
+  router.post('/api/mcm', asyncHandler(mcmList.POST))
+  router.get('/api/mcm/:subsystemId', asyncHandler(mcmEntry.GET))
+  router.put('/api/mcm/:subsystemId', asyncHandler(mcmEntry.PUT))
+  router.delete('/api/mcm/:subsystemId', asyncHandler(mcmEntry.DELETE))
+  router.get('/api/mcm/:subsystemId/plc/status', asyncHandler(mcmPlcStatus.GET))
+  router.post('/api/mcm/:subsystemId/plc/connect', asyncHandler(mcmPlcConnect.POST))
+  router.post('/api/mcm/:subsystemId/plc/disconnect', asyncHandler(mcmPlcDisconnect.POST))
+  router.get('/api/mcm/:subsystemId/plc/tags', asyncHandler(mcmPlcTags.GET))
 
   // ── App Updates ───────────────────────────────────────────────────────────
   router.get('/api/update/status', asyncHandler(updateStatus.GET))

@@ -48,6 +48,15 @@ export interface AppConfig {
    * locked-down PLCs.
    */
   networkPollingDevices?: string[];
+
+  /**
+   * Central-tool multi-MCM configuration. When present, the server exposes
+   * each entry at `/api/mcm/:subsystemId/...` and the new landing page lists
+   * them all. The legacy `ip`/`path`/`subsystemId` fields remain authoritative
+   * for the field-laptop single-MCM flow and continue to mirror the first
+   * enabled entry for backwards compatibility.
+   */
+  mcms?: McmConnection[];
 }
 
 /**
@@ -143,6 +152,24 @@ export interface PlcProfile {
   plcIp: string;
   /** PLC communication path */
   plcPath: string;
+}
+
+/**
+ * One configured MCM entry in the central-tool multi-controller config.
+ * A single server instance manages an array of these and serves each one
+ * at /api/mcm/:subsystemId/...
+ */
+export interface McmConnection {
+  /** Subsystem ID in the cloud — also the route key (`/api/mcm/:subsystemId`). */
+  subsystemId: string;
+  /** Human-readable name shown in the UI (e.g., "MCM03"). */
+  name: string;
+  /** PLC IP address. */
+  ip: string;
+  /** PLC Ethernet/IP routing path (e.g., "1,0"). */
+  path: string;
+  /** When false, the registry skips this MCM on bulk operations. */
+  enabled?: boolean;
 }
 
 /**

@@ -8,6 +8,9 @@ const GuidePage = lazy(() => import('../app/guide/page'))
 const GuideScreenshots = lazy(() => import('../app/guide/screenshots/page'))
 const DiagramPage = lazy(() => import('../app/diagram/page'))
 const GuidedPage = lazy(() => import('../app/commissioning/[id]/guided/page'))
+// central-tool: multi-MCM landing + settings
+const McmLandingPage = lazy(() => import('../app/mcm/page'))
+const McmSettingsPage = lazy(() => import('../app/settings/mcms/page'))
 
 function Loading() {
   return (
@@ -34,4 +37,7 @@ export const router = createBrowserRouter([
   { path: '/guide', element: <LazyPage Component={GuidePage} /> },
   { path: '/guide/screenshots', element: <LazyPage Component={GuideScreenshots} /> },
   { path: '/diagram', element: <LazyPage Component={DiagramPage} /> },
+  // central-tool: multi-MCM landing + settings
+  { path: '/mcm', element: <LazyPage Component={McmLandingPage} /> },
+  { path: '/settings/mcms', element: <LazyPage Component={McmSettingsPage} /> },
 ])
