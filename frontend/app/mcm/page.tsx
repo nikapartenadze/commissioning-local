@@ -11,6 +11,7 @@ import {
   Hexagon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 /**
  * Multi-MCM landing page (central-tool).
@@ -117,6 +118,7 @@ export default function McmLandingPage() {
               }
             />
             <Stat label="UTC" value={<span className="text-foreground">{utcTime}</span>} />
+            <ThemeToggle />
           </div>
         </div>
       </header>
