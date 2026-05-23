@@ -57,6 +57,7 @@ import * as mcmPlcStatus from '@/app/api/mcm/[subsystemId]/plc/status/route'
 import * as mcmPlcConnect from '@/app/api/mcm/[subsystemId]/plc/connect/route'
 import * as mcmPlcDisconnect from '@/app/api/mcm/[subsystemId]/plc/disconnect/route'
 import * as mcmPlcTags from '@/app/api/mcm/[subsystemId]/plc/tags/route'
+import * as mcmPull from '@/app/api/mcm/[subsystemId]/pull/route'
 import * as updateStatus from '@/app/api/update/status/route'
 import * as updateInstall from '@/app/api/update/install/route'
 import * as history from '@/app/api/history/route'
@@ -203,6 +204,7 @@ export function createApiRouter(): Router {
   router.post('/api/mcm/:subsystemId/plc/connect', asyncHandler(mcmPlcConnect.POST))
   router.post('/api/mcm/:subsystemId/plc/disconnect', asyncHandler(mcmPlcDisconnect.POST))
   router.get('/api/mcm/:subsystemId/plc/tags', asyncHandler(mcmPlcTags.GET))
+  router.post('/api/mcm/:subsystemId/pull', asyncHandler(mcmPull.POST))
 
   // ── App Updates ───────────────────────────────────────────────────────────
   router.get('/api/update/status', asyncHandler(updateStatus.GET))
