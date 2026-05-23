@@ -87,7 +87,7 @@ So every v2.38.0+ tablet gets self-update for free, no per-tablet config edit.
 
 ### Bootstrap state
 
-**v2.38.0 was the last manual install.** Tablets on builds older than v2.38.0 don't recognize the `update` command — the cloud will still queue it, but the laptop reports `failed: unknown command type` in the fleet UI, telling the admin which tablets still need a manual install.
+**v2.38.1 is the last manual install.** (v2.38.0 was published briefly but superseded by v2.38.1, which folds in the UDT-network-polling performance fix; install v2.38.1 directly — you don't need v2.38.0.) Tablets on builds older than v2.38.0 don't recognize the `update` command — the cloud will still queue it, but the laptop reports `failed: unknown command type` in the fleet UI, telling the admin which tablets still need a manual install.
 
 ### Shipping a new release (e.g. v2.39.0)
 
@@ -101,6 +101,25 @@ So every v2.38.0+ tablet gets self-update for free, no per-tablet config edit.
 8. Open the cloud admin UI → fleet tab → click **Push update** on each tablet. Cards flip to the new version as each tablet finishes installing.
 
 The manifest endpoint auto-picks the highest semver in `public/downloads/` — leaving older `.exe`s there is harmless but bloats the image. Prune to the last two or three on each release.
+
+## Per-Tablet Runtime Config
+
+A handful of fields in `config.json` (lives at `C:\ProgramData\CommissioningTool\config.json` for installer builds, or beside `database.db` for portable) let you tune behavior per tablet without redeploying. The `ConfigurationService` hot-reloads on file change — most fields take effect immediately; cadence-sensitive ones noted below need a service restart.
+
+| Field | Default | Effect | Hot-reload? |
+|---|---|---|---|
+| `networkPollingIntervalMs` | `60000` (60 s) | UDT_NETWORK_NODE_DATA poll cadence. Lower it (down to `1000`) only for active field debugging — every poll queues N parallel CIP requests against the same controller the IO tag reader hammers at ~75 ms × 600+ tags. The cloud heartbeat already downsamples to 60 s, so faster polling here doesn't give the cloud fresher data. Clamped to `[1000, 600000]` by the loader. | Restart needed (the poller is started once at PLC connect). |
+| `requireInstalledForTesting` | `false` | When `true`, rejects Pass/Fail attempts on any non-SPARE IO whose `installationStatus` is not `'complete'`. Used on projects like CDW5 where mechanical installation must be signed off before testing is allowed. | ✅ — server reads `getConfigSync()` on every test attempt. |
+| `updateManifestUrl` | (empty → defaults to `https://commissioning.autstand.com/api/releases/latest`) | Where the auto-update manifest lives. Override for staged-rollout scenarios or when pinning a tablet to a private build channel. | ✅ on next manifest fetch. |
+| `subsystemId`, `apiPassword`, `ip`, `path`, etc. | per tablet | Existing PLC and cloud-sync settings. | Mixed — see `lib/config/config-service.ts`. |
+
+### Why `networkPollingIntervalMs` matters
+
+The UDT poller used to run every 5 s by default. On busy controllers this caused noticeable lag in the IO testing grid because every cycle queued N parallel CIP requests against the same PLC the IO tag reader was already hammering. v2.38.1 ships with a 60 s default; if you ever see field techs report IO lag again, the diagnosis steps are:
+
+1. Confirm tablet is on v2.38.1+ (heartbeat in cloud fleet view shows the `version` field).
+2. Check `config.json` for an override that's been dropped to 5000 — if so, restart service to clear it.
+3. If still slow, look at `components/network-status-breadcrumbs.tsx` — it has a *separate* 5 s polling loop that reads `:I.ConnectionFaulted` bits per node. That's the next CIP load source if v2.38.1 alone isn't enough.
 
 ## Project Structure
 
