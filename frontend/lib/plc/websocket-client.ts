@@ -89,6 +89,14 @@ export interface WebSocketConnectionOptions {
   maxReconnectAttempts?: number
   /** If false, won't auto-connect. Default: true */
   enabled?: boolean
+  /**
+   * Central-tool: limit delivered events to these subsystemIds. The server
+   * filters; this client only sees events whose payload subsystemId matches.
+   * Pass `['*']` or omit to receive everything (default — backwards compat).
+   * Useful when a single browser tab is scoped to one MCM and shouldn't be
+   * woken by tag-state events for sibling controllers.
+   */
+  subscribeTo?: string[]
 }
 
 /**
@@ -198,10 +206,16 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
     reconnectInterval: _reconnectInterval = DEFAULT_RECONNECT_INTERVAL,
     // No hard cap by default. Pass an explicit number to opt back in.
     maxReconnectAttempts = Infinity,
-    enabled = true
+    enabled = true,
+    subscribeTo,
   } = options
   void _reconnectInterval
   void enabled
+
+  // Stable ref so reconnect handlers see the latest subscription set without
+  // forcing the connect effect to re-run on every render.
+  const subscribeToRef = useRef<string[] | undefined>(subscribeTo)
+  useEffect(() => { subscribeToRef.current = subscribeTo }, [subscribeTo])
 
   const [isConnected, setIsConnected] = useState(false)
   const [isConfigReloading, setIsConfigReloading] = useState(false)
@@ -599,6 +613,20 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
       ws.onopen = () => {
         WS_DEBUG && console.log('[PlcWebSocket] Connected to:', url)
         setIsConnected(true)
+
+        // Central-tool: opt into per-MCM filtering as soon as the socket is
+        // ready. Sending '*' or omitting subscribeTo means "receive all
+        // events" — that's the legacy default and what every existing UI
+        // that doesn't yet know about MCMs continues to get.
+        const subs = subscribeToRef.current
+        if (subs && subs.length > 0) {
+          try {
+            ws.send(JSON.stringify({ type: 'Subscribe', subsystemIds: subs }))
+            WS_DEBUG && console.log('[PlcWebSocket] Subscribed to subsystemIds:', subs)
+          } catch (err) {
+            console.warn('[PlcWebSocket] Subscribe send failed:', err)
+          }
+        }
 
         // Capture the reconnect-attempt count BEFORE resetting it. The old
         // code reset to 0 first and then checked `> 0`, so the conditional

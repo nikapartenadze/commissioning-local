@@ -557,8 +557,16 @@ export default function CommissioningPage() {
     }
   }, [activeTab, plcConfig.subsystemId])
 
-  // SignalR connection for real-time updates
-  const signalR = useSignalR(getSignalRHubUrl())
+  // SignalR connection for real-time updates.
+  //
+  // Central-tool: when this tab is scoped to a specific MCM (paramId is the
+  // subsystemId), subscribe server-side so we only receive broadcasts for
+  // that MCM. Without this, a browser on /commissioning/37 was processing
+  // tag-state events from every other connected MCM (3000+ irrelevant tags
+  // worth of WS traffic) and the UI thread couldn't keep up. The "_" case
+  // (unconfigured landing) keeps the legacy receive-everything behavior.
+  const wsSubscribeTo = !isUnconfigured ? [String(projectId)] : undefined
+  const signalR = useSignalR(getSignalRHubUrl(), wsSubscribeTo)
 
   // Load PLC config function (defined before useEffect that uses it)
   const loadPlcConfig = useCallback(async (updateTestingState: boolean = true) => {

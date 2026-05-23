@@ -42,9 +42,13 @@ export interface SignalRConnection extends WebSocketConnection {
  * useSignalR hook - backward compatible alias for usePlcWebSocket
  *
  * @param hubUrl - Optional WebSocket URL (ignored, uses WebSocket URL configuration)
+ * @param subscribeTo - Central-tool: subsystemIds this tab cares about.
+ *                     When set, the server filters events server-side so the
+ *                     browser only receives broadcasts for these MCMs. Pass
+ *                     `['*']` or omit for the legacy receive-everything mode.
  * @returns SignalRConnection interface
  */
-export function useSignalR(hubUrl?: string): SignalRConnection {
+export function useSignalR(hubUrl?: string, subscribeTo?: string[]): SignalRConnection {
   // Convert the old hubUrl format to WebSocket options if provided
   // The old hubUrl was like "http://localhost:5000/hub"
   // The new WebSocket URL should be like "ws://localhost:3000/ws"
@@ -58,6 +62,10 @@ export function useSignalR(hubUrl?: string): SignalRConnection {
     } catch {
       // If URL parsing fails, use default
     }
+  }
+
+  if (subscribeTo && subscribeTo.length > 0) {
+    options.subscribeTo = subscribeTo
   }
 
   const wsConnection = usePlcWebSocket(options)
