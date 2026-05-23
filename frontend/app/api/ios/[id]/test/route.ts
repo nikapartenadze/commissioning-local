@@ -2,12 +2,19 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import {
+  getClientForIo,
+  getMcmIdForIo,
+  getMcmTags,
+  hasAnyMcm,
+} from '@/lib/mcm-registry'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import {
   sanitizeComment,
   createTimestamp,
-  TEST_CONSTANTS
+  TEST_CONSTANTS,
+  getPlcStateForIo,
 } from '@/lib/services/io-test-service'
 
 /**
@@ -36,15 +43,27 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'Comment must be 500 characters or fewer' })
     }
 
-    const plcClient = getPlcTags()
-    if (!plcClient.tags || plcClient.count === 0) {
-      return res.status(400).json({ error: 'PLC not connected — connect to PLC before testing' })
-    }
-
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
 
     if (!io) {
       return res.status(404).json({ error: 'IO not found' })
+    }
+
+    // Multi-MCM: confirm the controller that owns this IO is reachable. If
+    // no MCMs are registered, fall back to the legacy singleton check.
+    const subsystemId = getMcmIdForIo(ioId) ?? String(io.SubsystemId)
+    if (hasAnyMcm()) {
+      const ownerClient = getClientForIo(ioId)
+      if (!ownerClient || !ownerClient.isConnected) {
+        return res.status(400).json({
+          error: `MCM ${subsystemId} not connected — connect from the stations page before testing`,
+        })
+      }
+    } else {
+      const plcClient = getPlcTags()
+      if (!plcClient.tags || plcClient.count === 0) {
+        return res.status(400).json({ error: 'PLC not connected — connect to PLC before testing' })
+      }
     }
 
     // Install-tracker status is informational only — techs often test devices
@@ -61,9 +80,11 @@ export async function POST(req: Request, res: Response) {
           'SELECT 1 FROM NetworkPorts WHERE DeviceName = ? LIMIT 1'
         ).get(deviceName)
         if (hasNetworkDevice) {
-          const client = getPlcTags()
+          // Look for the fault tag in the owning MCM's tag list first, then
+          // fall back to the singleton aggregate (single-PLC deployments).
+          const ownerTags = hasAnyMcm() ? getMcmTags(subsystemId).tags : getPlcTags().tags
           const faultTag = `${deviceName}:I.ConnectionFaulted`
-          const faultState = client.tags.find(t => t.name === faultTag)
+          const faultState = ownerTags.find(t => t.name === faultTag)
           if (faultState && faultState.state === 'TRUE') {
             return res.status(400).json({
               error: `Cannot test — parent device ${deviceName} has a connection fault. Fix the fault first.`
@@ -73,9 +94,8 @@ export async function POST(req: Request, res: Response) {
       }
     }
 
-    const { tags } = getPlcTags()
-    const tag = tags.find(t => t.id === ioId)
-    const plcState = tag?.state
+    // Owner-aware state lookup. Falls back to singleton inside getPlcStateForIo.
+    const plcState = getPlcStateForIo(ioId)
 
     const sanitizedComments = sanitizeComment(comments)
     const timestamp = createTimestamp()
@@ -151,6 +171,7 @@ export async function POST(req: Request, res: Response) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'UpdateIO',
+          subsystemId,
           id: ioId,
           result: normalizedResult,
           state: plcState ?? '',
