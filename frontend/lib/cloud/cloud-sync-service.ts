@@ -781,7 +781,11 @@ export class CloudSyncService {
   }
 
   private async tryBatchSyncPending(batch: PendingSync[]): Promise<number[]> {
-    // Convert batch to DTOs
+    // Convert batch to DTOs. failureMode / hasDependencies live only on the
+    // SQLite PendingSyncs row, not on this in-memory mirror; drainPendingSyncsForIo
+    // is the authoritative drain path and it includes them via
+    // mapPendingSyncToIoUpdate. This in-memory queue is only used as a
+    // best-effort fallback when the DB-backed queue isn't available.
     const updates: IoUpdateDto[] = batch.map(pending => ({
       id: pending.ioId,
       testedBy: pending.inspectorName,

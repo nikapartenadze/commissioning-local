@@ -59,17 +59,20 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
         const response = await fetch(`${API_ENDPOINTS.diagnosticFailureModes}?tagType=${encodeURIComponent(io.tagType)}`)
         if (response.ok) {
           const modes = await response.json()
+          // Universal reasons ('3rd Party', 'Mech') already come from the
+          // server merge; we only re-pin 'Not Installed' to the top and
+          // 'Other' to the bottom here.
           const filtered = modes.filter((m: string) => m !== 'Other' && m !== 'Not Installed')
           setFailureModes(['Not Installed', ...filtered, 'Other'])
         } else {
-          setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Other'])
+          setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', '3rd Party', 'Mech', 'Other'])
         }
       } else {
-        setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Configuration error', 'Other'])
+        setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Configuration error', '3rd Party', 'Mech', 'Other'])
       }
     } catch (error) {
       console.error('Error loading failure modes:', error)
-      setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Other'])
+      setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', '3rd Party', 'Mech', 'Other'])
     } finally {
       setLoadingModes(false)
     }

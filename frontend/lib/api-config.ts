@@ -164,6 +164,7 @@ export const API_ENDPOINTS = {
   ioClear: (id: number) => `/api/ios/${id}/reset`,
   ioFireOutput: (id: number) => `/api/ios/${id}/fire-output`,
   ioComment: (id: number) => `/api/ios/${id}`,
+  ioDependencies: (id: number) => `/api/ios/${id}/dependencies`,
   ioStats: '/api/ios/stats',
 
   // Testing

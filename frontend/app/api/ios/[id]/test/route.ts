@@ -97,11 +97,19 @@ export async function POST(req: Request, res: Response) {
     const oldComment = io.Comments
     const newVersion = (io.Version ?? 0) + 1
 
+    // Denormalise the failure reason onto the Ios row so the cloud-side
+    // quick filters ('3rd Party', 'Mech') can match without joining
+    // TestHistories. On Pass the field is cleared — a passing IO has no
+    // active failure reason.
+    const newFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (failureMode || null)
+      : null
+
     let testHistoryId: number | bigint = 0
     const txn = db.transaction(() => {
       db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ? WHERE id = ?'
-      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, ioId)
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ? WHERE id = ?'
+      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, ioId)
 
       const histResult = db.prepare(
         'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -114,7 +122,7 @@ export async function POST(req: Request, res: Response) {
 
     try {
       const info = db.prepare(
-        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(
         ioId,
         currentUser || null,
@@ -122,7 +130,8 @@ export async function POST(req: Request, res: Response) {
         combinedComment || null,
         plcState ?? null,
         new Date().toISOString(),
-        newVersion - 1
+        newVersion - 1,
+        newFailureMode,
       )
       console.log(
         `[Test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +

@@ -13,7 +13,12 @@ export async function GET(req: Request, res: Response) {
     }
 
     if (failureMode) {
-      const diagnostic = db.prepare('SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?').get(tagType, failureMode) as DiagnosticRow | undefined
+      // Try the specific (tagType, failureMode) first, then fall back to the
+      // universal row (TagType='*') for cross-cutting reasons like '3rd Party'
+      // and 'Mech' that apply to every IO type.
+      const diagnostic =
+        db.prepare('SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?').get(tagType, failureMode) as DiagnosticRow | undefined
+        ?? db.prepare('SELECT * FROM TagTypeDiagnostics WHERE TagType = ? AND FailureMode = ?').get('*', failureMode) as DiagnosticRow | undefined
       if (!diagnostic) {
         return res.status(404).json({ error: 'No diagnostic steps found for this tag type and failure mode' })
       }

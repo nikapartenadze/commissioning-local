@@ -63,6 +63,18 @@ export interface IoUpdateDto {
   testedBy?: string | null
   state?: string | null
   version: number
+  /**
+   * Failure reason chosen in the fail dialog (e.g. '3rd Party', 'Mech',
+   * 'No response'). Denormalised onto the cloud `ios` row so the sidebar
+   * quick filters can match without joining test history. Null on
+   * Pass / Cleared / comment-only ops.
+   */
+  failureMode?: string | null
+  /**
+   * Per-IO Yes/No flag toggled in the new Dependencies column. Cloud
+   * stores and displays read-only. Null = unset (treated as 'No').
+   */
+  hasDependencies?: boolean | null
 }
 
 export interface IoSyncBatchDto {

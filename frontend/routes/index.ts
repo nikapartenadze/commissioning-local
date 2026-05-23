@@ -27,6 +27,7 @@ import * as ioReset from '@/app/api/ios/[id]/reset/route'
 import * as ioState from '@/app/api/ios/[id]/state/route'
 import * as ioFireOutput from '@/app/api/ios/[id]/fire-output/route'
 import * as ioPunchlist from '@/app/api/ios/[id]/punchlist/route'
+import * as ioDependencies from '@/app/api/ios/[id]/dependencies/route'
 import * as plcConnect from '@/app/api/plc/connect/route'
 import * as plcDisconnect from '@/app/api/plc/disconnect/route'
 import * as plcStatus from '@/app/api/plc/status/route'
@@ -152,6 +153,7 @@ export function createApiRouter(): Router {
   router.get('/api/ios/:id/state', authMiddleware, asyncHandler(ioState.GET))
   router.post('/api/ios/:id/fire-output', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioFireOutput.POST))
   router.patch('/api/ios/:id/punchlist', authMiddleware, asyncHandler(ioPunchlist.PATCH))
+  router.patch('/api/ios/:id/dependencies', authMiddleware, asyncHandler(ioDependencies.PATCH))
 
   // ── PLC ────────────────────────────────────────────────────────
   router.post('/api/plc/connect', asyncHandler(plcConnect.POST))

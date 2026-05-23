@@ -12,6 +12,12 @@ export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
     state: pending.State,
     version: pending.Version,
     timestamp: pending.Timestamp ?? undefined,
+    // New: ride along with the rest of the IO update so the cloud can store
+    // the latest failure reason (drives sidebar quick filters) and the
+    // Dependencies Yes/No flag (read-only display on cloud).
+    failureMode: pending.FailureMode ?? null,
+    hasDependencies:
+      pending.HasDependencies == null ? null : pending.HasDependencies === 1,
   }
 }
 
