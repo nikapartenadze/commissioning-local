@@ -29,7 +29,9 @@ function LazyPage({ Component }: { Component: React.LazyExoticComponent<any> }) 
 }
 
 export const router = createBrowserRouter([
-  { path: '/', element: <Navigate to="/commissioning/_" replace /> },
+  // central-tool: multi-MCM dashboard is the default landing.
+  // Direct deep-links to /commissioning/:id still work for single-MCM focus.
+  { path: '/', element: <Navigate to="/mcm" replace /> },
   { path: '/commissioning', element: <LazyPage Component={CommissioningRedirect} /> },
   { path: '/commissioning/:id/guided', element: <LazyPage Component={GuidedPage} /> },
   { path: '/commissioning/:id', element: <LazyPage Component={CommissioningPage} /> },
