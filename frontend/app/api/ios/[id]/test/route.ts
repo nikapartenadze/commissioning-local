@@ -9,6 +9,7 @@ import {
   createTimestamp,
   TEST_CONSTANTS
 } from '@/lib/services/io-test-service'
+import { checkInstallGate } from '@/lib/services/install-gate'
 
 /**
  * POST /api/ios/:id/test
@@ -47,8 +48,14 @@ export async function POST(req: Request, res: Response) {
       return res.status(404).json({ error: 'IO not found' })
     }
 
-    // Install-tracker status is informational only — techs often test devices
-    // before the tracker is updated, so Pass is no longer gated on it.
+    // Install-tracker status is informational by default, but operators can
+    // opt in via config.requireInstalledForTesting (e.g. CDW5). The gate
+    // helper centralizes that policy — SPARE IOs are exempt and the flag
+    // defaults off, so existing fleets see no behavior change.
+    const gate = checkInstallGate(io)
+    if (!gate.allowed) {
+      return res.status(409).json({ error: gate.error })
+    }
 
     if (io.Description?.toUpperCase().includes('SPARE') && normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
       return res.status(400).json({ error: 'SPARE IOs cannot be passed' })

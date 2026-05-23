@@ -112,6 +112,11 @@ class ConfigurationService {
         networkPollingDevices: Array.isArray(parsed.networkPollingDevices)
           ? parsed.networkPollingDevices.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
           : [],
+        // Opt-in install-status gate. Undefined / missing / falsy → off (existing
+        // behavior unchanged for every machine that hasn't explicitly set it).
+        // Only the literal `true` enables it, so a typo like "true" string still
+        // defaults to off — safer than a string truthy check.
+        requireInstalledForTesting: parsed.requireInstalledForTesting === true,
       };
 
       console.log('[ConfigService] Configuration loaded:', {
@@ -172,6 +177,10 @@ class ConfigurationService {
       showResultColumn: newConfig.showResultColumn,
       showTimestampColumn: newConfig.showTimestampColumn,
       showHistoryColumn: newConfig.showHistoryColumn,
+      // Persist only when explicitly enabled — leaving the key absent on
+      // machines that don't need the gate keeps config.json clean and
+      // signals "default behavior" by its very absence.
+      ...(newConfig.requireInstalledForTesting === true ? { requireInstalledForTesting: true } : {}),
     };
 
     // Mark as internal write to prevent watcher from triggering

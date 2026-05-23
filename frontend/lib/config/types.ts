@@ -48,6 +48,15 @@ export interface AppConfig {
    * locked-down PLCs.
    */
   networkPollingDevices?: string[];
+
+  /**
+   * Per-machine opt-in gate (default off / undefined). When true, the server
+   * rejects Pass/Fail attempts on any IO whose InstallationStatus is not
+   * 'complete' (SPARE IOs exempt). Used on projects like CDW5 where mechanical
+   * installation must be signed off before IO testing is allowed. Flipping
+   * this in config.json hot-reloads — no restart needed.
+   */
+  requireInstalledForTesting?: boolean;
 }
 
 /**
@@ -86,6 +95,7 @@ export interface ConfigUpdateRequest {
   showResultColumn?: boolean;
   showTimestampColumn?: boolean;
   showHistoryColumn?: boolean;
+  requireInstalledForTesting?: boolean;
 }
 
 /**

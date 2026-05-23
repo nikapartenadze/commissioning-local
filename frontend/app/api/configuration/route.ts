@@ -30,6 +30,7 @@ export async function GET(req: Request, res: Response) {
       showResultColumn: config.showResultColumn,
       showTimestampColumn: config.showTimestampColumn,
       showHistoryColumn: config.showHistoryColumn,
+      requireInstalledForTesting: config.requireInstalledForTesting === true,
       isConfigured: configService.isConfigured(),
     });
   } catch (error) {
