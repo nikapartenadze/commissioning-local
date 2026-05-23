@@ -302,18 +302,21 @@ async function startNetworkPoller(): Promise<void> {
     return;
   }
 
-  // Best-effort config read for the optional fallback device list. A
-  // missing/unreadable config is fine — the poller will still try @tags
-  // browse, which is the primary discovery path.
+  // Best-effort config read for the optional fallback device list and the
+  // poll-cadence override. A missing/unreadable config is fine — the poller
+  // will still try @tags browse (primary discovery path) and fall back to
+  // its built-in 60 s default cadence.
   let fallbackDevices: string[] = [];
+  let pollIntervalMs: number | undefined;
   try {
     const cfg = await configService.getConfig();
     fallbackDevices = cfg.networkPollingDevices ?? [];
+    pollIntervalMs = cfg.networkPollingIntervalMs;
   } catch (err) {
-    console.warn('[PlcClientManager] Could not load network poller fallback list:', err);
+    console.warn('[PlcClientManager] Could not load network poller config:', err);
   }
 
-  const poller = new NetworkPoller({ fallbackDevices });
+  const poller = new NetworkPoller({ fallbackDevices, pollIntervalMs });
   poller.setConnection(connConfig.ip, connConfig.path);
 
   poller.on('snapshot', (snapshot) => {
