@@ -9,6 +9,7 @@
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '../plc-client-manager'
+import { checkInstallGate } from './install-gate'
 
 // Test result constants (matching C# TestConstants)
 export const TEST_CONSTANTS = {
@@ -336,6 +337,14 @@ function updateTestResult(
 
     if (!io) {
       return { success: false, error: 'IO not found' }
+    }
+
+    // Server-side authoritative gate. The UI also disables the buttons, but
+    // a stale client / direct API hit would bypass that — this is the only
+    // place that's safe.
+    const gate = checkInstallGate(io)
+    if (!gate.allowed) {
+      return { success: false, error: gate.error }
     }
 
     const sanitizedComments = sanitizeComment(options.comments) ?? null

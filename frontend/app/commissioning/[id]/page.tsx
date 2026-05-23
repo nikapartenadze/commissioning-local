@@ -462,6 +462,27 @@ export default function CommissioningPage() {
     remoteUrl: ""
   })
 
+  // Opt-in per-machine policy: when on, Pass/Fail attempts are blocked for any
+  // non-SPARE IO whose installationStatus is not 'complete'. Server enforces
+  // this authoritatively; this state drives the UX (button disable + skipping
+  // auto-Pass on noisy PLC state changes). Sourced from /api/configuration —
+  // re-fetched on every page load so flipping config.json is reflected after
+  // a refresh. ConfigService hot-reloads on file change so the server side
+  // catches up without restart even sooner.
+  const [requireInstalledForTesting, setRequireInstalledForTesting] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    authFetch('/api/configuration')
+      .then(r => r.ok ? r.json() : null)
+      .then(cfg => {
+        if (!cancelled && cfg) {
+          setRequireInstalledForTesting(cfg.requireInstalledForTesting === true)
+        }
+      })
+      .catch(() => { /* default off is fine */ })
+    return () => { cancelled = true }
+  }, [])
+
   // Fetch punchlists on load
   useEffect(() => {
     if (!plcConfig.subsystemId || plcConfig.subsystemId === '0') return
@@ -1280,8 +1301,13 @@ export default function CommissioningPage() {
   }
 
   const handleMarkPassed = async (io: IoItem) => {
-    // Install-tracker status is informational only — techs often test devices
-    // before the tracker is updated, so we don't block Pass on it.
+    // Install-status gate (opt-in per machine via config.json). Skip silently
+    // for auto-Pass triggered by PLC state changes — toasting on every state
+    // flip would spam the operator on a half-installed subsystem. The server
+    // still rejects authoritatively for any path that reaches it.
+    if (requireInstalledForTesting && !(io.description?.toUpperCase().includes('SPARE')) && (io.installationStatus ?? '').toLowerCase() !== 'complete') {
+      return
+    }
 
     // Block if parent device is faulted (only for IOs with real network devices)
     const deviceName = io.networkDeviceName || getDeviceName(io.name)
@@ -2104,6 +2130,7 @@ export default function CommissioningPage() {
             deviceStatuses={deviceStatuses}
             mutedIos={mutedIos}
             onToggleMute={toggleMuteIo}
+            requireInstalledForTesting={requireInstalledForTesting}
           />
       </div>
       </>

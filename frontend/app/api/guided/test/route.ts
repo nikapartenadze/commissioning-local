@@ -5,6 +5,7 @@ import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import { sanitizeComment, createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
+import { checkInstallGate } from '@/lib/services/install-gate'
 
 /**
  * POST /api/guided/test
@@ -49,8 +50,14 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'SPARE IOs cannot be passed' })
     }
 
-    // Install-tracker status is informational only — techs often test devices
-    // before the tracker is updated, so Pass is no longer gated on it.
+    // Install-tracker status is informational by default, but operators can
+    // opt in via config.requireInstalledForTesting (e.g. CDW5). Same gate
+    // policy as POST /api/ios/:id/test — kept consistent so guided mode
+    // can't sneak past the rule that holds for the main grid.
+    const gate = checkInstallGate(io)
+    if (!gate.allowed) {
+      return res.status(409).json({ error: gate.error })
+    }
 
     // Best-effort PLC state for the history row — null if PLC isn't connected.
     let plcState: string | null = null

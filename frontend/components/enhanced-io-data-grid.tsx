@@ -62,6 +62,26 @@ interface EnhancedIoDataGridProps {
   deviceStatuses?: Map<string, 'green' | 'red' | 'gray'>
   mutedIos?: Set<number>
   onToggleMute?: (ioId: number) => void
+  /**
+   * When true (driven by config.requireInstalledForTesting on the server),
+   * Mark Pass/Fail are disabled for any non-SPARE IO whose installationStatus
+   * is not 'complete'. Server still enforces this authoritatively; this flag
+   * only drives the UX (button disable + tooltip).
+   */
+  requireInstalledForTesting?: boolean
+}
+
+/**
+ * Mirror of server-side checkInstallGate. Returns true when the install-status
+ * gate would block a Pass/Fail attempt on this IO. SPARE IOs are exempt to
+ * match the server. Kept inline (rather than in a shared module) because the
+ * grid sees the lowercase API shape, not the SQLite PascalCase Io type.
+ */
+function isBlockedByInstallGate(io: IoItem, gateActive: boolean): boolean {
+  if (!gateActive) return false
+  const desc = (io.description ?? '').toUpperCase()
+  if (desc.includes('SPARE')) return false
+  return (io.installationStatus ?? '').toLowerCase() !== 'complete'
 }
 
 // Natural sort: "X2" before "X10", "UL26_19" before "UL26_20".
@@ -206,6 +226,7 @@ export function EnhancedIoDataGrid({
   onMarkPassed,
   onMarkFailed,
   onClearResult,
+  requireInstalledForTesting = false,
   onRowClick,
   onShowFireOutputDialog,
   onCommentChange,
@@ -1456,9 +1477,17 @@ export function EnhancedIoDataGrid({
                   </div>
                   {/* Fail */}
                   <div className="px-1 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.failed}px` }}>
-                    <Button variant="ghost" size="icon" className="h-10 w-10 text-red-600 hover:text-red-700 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-30" onClick={(e) => { e.stopPropagation(); onMarkFailed?.(io) }} disabled={!isTesting} title="Mark Failed">
-                      <AlertTriangle className="h-5 w-5" />
-                    </Button>
+                    {(() => {
+                      const installBlocked = isBlockedByInstallGate(io, requireInstalledForTesting)
+                      const failTitle = installBlocked
+                        ? `Installation not complete (status: ${io.installationStatus ?? 'not set'}) — testing gated on this machine`
+                        : 'Mark Failed'
+                      return (
+                        <Button variant="ghost" size="icon" className="h-10 w-10 text-red-600 hover:text-red-700 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-30" onClick={(e) => { e.stopPropagation(); onMarkFailed?.(io) }} disabled={!isTesting || installBlocked} title={failTitle}>
+                          <AlertTriangle className="h-5 w-5" />
+                        </Button>
+                      )
+                    })()}
                   </div>
                   {/* Clear */}
                   <div className="px-1 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.clear}px` }}>
