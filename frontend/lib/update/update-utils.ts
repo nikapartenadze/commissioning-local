@@ -120,6 +120,21 @@ export function readLocalUpdateState(): LocalUpdateState | null {
   }
 }
 
+/**
+ * Best-effort write of the local update state. Used by the command handler
+ * to stamp a fresh "checking" the moment a cloud-pushed update launches, so
+ * the heartbeat stops reporting the PREVIOUS run's success/error while the
+ * new install is in flight. install-update.ps1 overwrites this immediately
+ * with its own Write-State progression. Never throws.
+ */
+export function writeLocalUpdateState(state: LocalUpdateState): void {
+  try {
+    fs.writeFileSync(resolveUpdateStatePath(), JSON.stringify(state, null, 2), 'utf8')
+  } catch {
+    // non-fatal — the ps1 will write its own state on the next step
+  }
+}
+
 export function resolveUpdateScriptPath(): string | null {
   const candidates = [
     path.resolve(process.cwd(), 'tools', 'install-update.ps1'),
