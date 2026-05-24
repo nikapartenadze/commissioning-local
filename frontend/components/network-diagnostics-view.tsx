@@ -19,7 +19,7 @@
  *     panel switches to an amber-bezel when any of its counters > 0.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, Network, ServerCrash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage } from '@/lib/plc/types'
@@ -568,7 +568,13 @@ function Chip({
 
 // ─── Port row (one row per port, three panels) ──────────────────────────
 
-function PortRow({ port: p }: { port: Port }) {
+// Memoized: a port's panels depend only on its `port` snapshot, never on the
+// 1s `now` ticker that re-renders the parent DeviceSection every second. The
+// `port` reference is stable between server snapshots (~60s cadence), so memo
+// holds across now-ticks and busts only when fresh data arrives. This is what
+// keeps the GLOBAL diagnostics view (N devices × 32 ports × ~29 counters) from
+// re-rendering the entire matrix once per second.
+const PortRow = memo(function PortRow({ port: p }: { port: Port }) {
   const media = hasMediaErrors(p)
   const down = isActivelyDown(p)
   const ifErr = p.errorsIn > 0 || p.errorsOut > 0
@@ -658,7 +664,7 @@ function PortRow({ port: p }: { port: Port }) {
       </div>
     </div>
   )
-}
+})
 
 function LinkBadges({ port: p }: { port: Port }) {
   if (!p.linkUp) {
@@ -756,7 +762,11 @@ function KV({
 
 // ─── Skeleton (no live snapshot yet) ────────────────────────────────────
 
-function SkeletonSection({ deviceName, active }: { deviceName: string; active: boolean }) {
+// Memoized for the same reason as PortRow: the skeleton's 32 placeholder rows
+// depend only on { deviceName, active }, not on the 1s `now` tick. Without this
+// the global view re-renders every skeleton device's 32 placeholder rows once
+// per second while waiting for the first snapshot.
+const SkeletonSection = memo(function SkeletonSection({ deviceName, active }: { deviceName: string; active: boolean }) {
   return (
     <section
       id={`${deviceName}_NN`}
@@ -792,7 +802,7 @@ function SkeletonSection({ deviceName, active }: { deviceName: string; active: b
       </div>
     </section>
   )
-}
+})
 
 function PlaceholderPortRow({ portNumber }: { portNumber: number }) {
   return (

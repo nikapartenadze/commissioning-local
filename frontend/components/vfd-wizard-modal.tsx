@@ -1425,17 +1425,21 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   //                   actually types HP and clicks Confirm, the spreadsheet
   //                   stays blank. Without this, the cascade marks the step
   //                   green and the operator walks past without typing.
-  //   Step 3 (Bump) — gated on Valid_Direction AND a polarity choice recorded.
-  //                   Same reasoning: PLC remembers the direction validation
-  //                   from a prior session, but the new "Polarity" cell only
-  //                   gets a value when the operator clicks Forward / Reverse.
+  //   Step 3 (Bump) — gated on Valid_Direction ALONE. Pressing Forward/Reverse
+  //                   records the polarity choice (and is what writes
+  //                   Valid_Direction to the PLC on a fresh device), but a
+  //                   recorded polarity is NOT required to advance. On a
+  //                   reopened/already-tracked device the PLC has
+  //                   Valid_Direction latched while the Polarity L2 cell may
+  //                   never have restored — requiring it stranded operators on
+  //                   Bump Test with no way forward. Polarity is now optional.
   const stepDoneOwn: Array<boolean | null> = [
     sts.Check_Allowed,
     sts.Valid_Map,
     sts.Valid_HP === true && hpFieldsFilled ? true
       : sts.Valid_HP === false ? false
       : null,
-    sts.Valid_Direction === true && polaritySetDone !== null ? true
+    sts.Valid_Direction === true ? true
       : sts.Valid_Direction === false ? false
       : null,
     check4Complete ? true : null,
