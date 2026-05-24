@@ -58,6 +58,48 @@ function Wait-For-ServiceState {
   return $false
 }
 
+# Wait for any node.exe whose binary lives under $InstallDir to actually
+# EXIT. The service reporting Stopped can precede node fully releasing
+# its LoadLibrary handle on plctag.dll -- and while that handle is alive,
+# the silent installer File overwrite is skipped, leaving the DLL
+# missing after the upgrade. Polling the process list closes that race.
+function Wait-NodeExit {
+  param([string]$InstallDir, [int]$TimeoutSeconds = 30)
+  if (-not $InstallDir) { return $true }
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    $procs = Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallDir, [System.StringComparison]::OrdinalIgnoreCase) }
+    if (-not $procs) { return $true }
+    Start-Sleep -Seconds 1
+  }
+  return $false
+}
+
+# True only when the native PLC library landed in BOTH locations the
+# runtime searches. The web server starts and /api/health returns
+# healthy even when libplctag failed to load (PLC init is non-fatal to
+# HTTP), so a green health check is NOT proof the update succeeded -- this
+# is the real gate.
+function Test-PlcDll {
+  param([string]$InstallDir)
+  if (-not $InstallDir) { return $false }
+  $a = Join-Path $InstallDir 'app\plctag.dll'
+  $b = Join-Path $InstallDir 'app\dist-server\plctag.dll'
+  return ((Test-Path $a) -and (Test-Path $b))
+}
+
+# Best-effort Defender path exclusion so the unsigned plctag.dll isn't
+# quarantined on newer Win11 laptops. No-ops under third-party AV; may be
+# refused on org-managed Defender with Tamper Protection.
+function Add-DefenderExclusion {
+  param([string]$InstallDir, [string]$DataDir)
+  try {
+    if ($InstallDir) { Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue }
+    if ($DataDir)    { Add-MpPreference -ExclusionPath $DataDir -ErrorAction SilentlyContinue }
+  } catch { }
+}
+
 $script:StartedAt = (Get-Date).ToString("o")
 
 try {
@@ -66,9 +108,17 @@ try {
   $installDir = Get-RegistryValue -Path "HKLM:\Software\CommissioningTool" -Name "InstallDir"
   $dataDir = Get-RegistryValue -Path "HKLM:\Software\CommissioningTool" -Name "DataDir"
 
+  if (-not $installDir) {
+    $installDir = Join-Path ${env:ProgramFiles} "CommissioningTool"
+  }
   if (-not $dataDir) {
     $dataDir = Join-Path $env:ProgramData "CommissioningTool"
   }
+
+  # Set the Defender exclusion up front so the freshly-written DLL lands in
+  # an already-excluded path (the installer also does this, but doing it
+  # here covers the window before/around the install too).
+  Add-DefenderExclusion -InstallDir $installDir -DataDir $dataDir
 
   if (-not (Test-Path $dataDir)) {
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
@@ -98,6 +148,17 @@ try {
     }
   }
 
+  # Service "Stopped" != node.exe fully exited. Wait for the process to
+  # die so it isn't still holding a LoadLibrary lock on plctag.dll when
+  # the installer tries to overwrite it (the v2.39.0 dropped-DLL bug).
+  if (-not (Wait-NodeExit -InstallDir $installDir -TimeoutSeconds 30)) {
+    Write-State -Status "installing" -Message "node.exe still running; forcing kill before install"
+    Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($installDir, [System.StringComparison]::OrdinalIgnoreCase) } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
+  }
+
   $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
   $dbPath = Join-Path $dataDir "database.db"
   if (Test-Path $dbPath) {
@@ -112,6 +173,28 @@ try {
   $installProcess = Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -PassThru
   if ($installProcess.ExitCode -ne 0) {
     throw "Installer exited with code $($installProcess.ExitCode)"
+  }
+
+  # Verify the native PLC library actually landed. If it didn't (locked
+  # overwrite skipped it, or AV grabbed it), make absolutely sure node is
+  # dead, re-assert the Defender exclusion, and run the installer once
+  # more -- the second pass writes into a now-empty, excluded path. Only
+  # give up (and report FAILURE, not success) if it's still missing, which
+  # means Windows Security is actively blocking it (Smart App Control /
+  # managed AV) and the laptop needs manual remediation.
+  if (-not (Test-PlcDll -InstallDir $installDir)) {
+    Write-State -Status "installing" -Message "plctag.dll missing after install - re-asserting exclusion and retrying"
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    Wait-For-ServiceState -Name $ServiceName -DesiredState "Stopped" -TimeoutSeconds 30 | Out-Null
+    Wait-NodeExit -InstallDir $installDir -TimeoutSeconds 20 | Out-Null
+    Add-DefenderExclusion -InstallDir $installDir -DataDir $dataDir
+    $retry = Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -PassThru
+    if ($retry.ExitCode -ne 0) {
+      throw "Installer retry exited with code $($retry.ExitCode)"
+    }
+    if (-not (Test-PlcDll -InstallDir $installDir)) {
+      throw "plctag.dll is still missing after reinstall. Windows Security (Smart App Control or managed AV) is blocking the unsigned DLL on this machine. Manual fix required: add a Defender exclusion for '$installDir' (or turn off Smart App Control), then reinstall."
+    }
   }
 
   Write-State -Status "restarting" -Message "Starting service"

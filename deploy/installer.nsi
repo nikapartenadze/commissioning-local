@@ -161,6 +161,29 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
     Goto process_kill_loop
   process_kill_done:
 
+  ; ══════════════════════════════════════════════════════════════════
+  ; WINDOWS DEFENDER EXCLUSION (best-effort, runs elevated)
+  ;
+  ; Newer Win11 laptops quarantine our UNSIGNED native DLL (plctag.dll).
+  ; The app then can't initialize libplctag and PLC testing dies with
+  ; "Failed to load libplctag … searched paths …". Code-signing is the
+  ; proper fix but we have no cert budget, so we add a Defender path
+  ; exclusion for the install + data dirs *before* copying files — the
+  ; DLL then lands in an already-excluded path and is never scanned /
+  ; quarantined. Also register an ASR-only exclusion for the two DLL
+  ; paths in case an Attack-Surface-Reduction "block untrusted/low-
+  ; reputation executables" rule is the blocker rather than plain
+  ; real-time scanning.
+  ;
+  ; Best-effort and non-fatal: wrapped in try/catch. No-ops when a third-
+  ; party AV is in use, and may be refused on org-managed Defender with
+  ; Tamper Protection on (those laptops need a central exclusion pushed
+  ; from IT). Does NOT defeat Smart App Control — an SAC-enforced machine
+  ; still requires a signed binary or SAC turned off.
+  ; ══════════════════════════════════════════════════════════════════
+  DetailPrint "Adding Windows Defender exclusion for $INSTDIR ..."
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { Add-MpPreference -ExclusionPath \"$INSTDIR\",\"$DATA_DIR\" -ErrorAction Stop; Add-MpPreference -AttackSurfaceReductionOnlyExclusions \"$INSTDIR\app\plctag.dll\",\"$INSTDIR\app\dist-server\plctag.dll\" -ErrorAction SilentlyContinue } catch {}"'
+
   ; ── Create data directory (preserved across upgrades) ──
   CreateDirectory "$DATA_DIR"
   CreateDirectory "$DATA_DIR\logs"
