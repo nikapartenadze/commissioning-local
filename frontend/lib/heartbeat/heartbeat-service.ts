@@ -11,7 +11,7 @@
  *   - Auth: X-API-Key header (per-project apiKey from config.json)
  *   - Body: { machineId, hostname?, version?, currentUserEmail?,
  *            currentSubsystemId?, currentMcm?, systemInfo?,
- *            commandResults? }
+ *            updateStatus?, commandResults? }
  *   - Response: { ok: true, commands: Array<{ id, type, payload }> }
  *
  * Commands flow: cloud may include pending commands in the response;
@@ -21,7 +21,7 @@
 
 import os from 'os'
 import { configService } from '@/lib/config'
-import { getCurrentAppVersion } from '@/lib/update/update-utils'
+import { getCurrentAppVersion, readLocalUpdateState, type LocalUpdateState } from '@/lib/update/update-utils'
 import { getMachineId } from './machine-id'
 import { collectSystemInfo, type HeartbeatSystemInfo } from './system-info'
 import { executeCommand, type IncomingCommand, type CommandResult } from './command-handler'
@@ -38,6 +38,11 @@ export interface HeartbeatPayload {
   currentSubsystemId: number | null
   currentMcm: string | null
   systemInfo: HeartbeatSystemInfo
+  // Last-known host-managed update state (the file install-update.ps1
+  // writes). Lets the cloud fleet UI show the REAL update lifecycle
+  // (downloading → installing → success|error) instead of the launch-ack
+  // the command queue reports. Null when no update has ever run.
+  updateStatus: LocalUpdateState | null
   commandResults?: CommandResult[]
 }
 
@@ -80,6 +85,8 @@ export async function buildHeartbeatPayload(): Promise<HeartbeatPayload> {
     // profile pointer to config or derive it from subsystemId.
     currentMcm: null,
     systemInfo: collectSystemInfo(),
+    // readLocalUpdateState already swallows read/parse errors → null.
+    updateStatus: readLocalUpdateState(),
   }
 }
 

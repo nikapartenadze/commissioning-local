@@ -26,6 +26,7 @@ import {
   compareVersions,
   getCurrentAppVersion,
   readLocalUpdateState,
+  writeLocalUpdateState,
 } from '@/lib/update/update-utils'
 import { resolveUpdateStatePath } from '@/lib/storage-paths'
 
@@ -192,6 +193,17 @@ async function handleUpdateCommand(cmd: IncomingCommand): Promise<CommandResult>
     }
   }
 
+  // Stamp a fresh "checking" BEFORE spawning so the very next heartbeat
+  // reflects this run rather than a previous update's success/error. The
+  // ps1 overwrites this within a second via its own Write-State calls.
+  writeLocalUpdateState({
+    status: 'checking',
+    message: 'update command received from cloud',
+    version: expectedVersion,
+    startedAt: new Date().toISOString(),
+    installerUrl,
+  })
+
   try {
     const child = spawn(
       'powershell.exe',
@@ -207,10 +219,14 @@ async function handleUpdateCommand(cmd: IncomingCommand): Promise<CommandResult>
     )
     child.unref()
     console.log(`[Command] update started: ${currentVersion} → ${expectedVersion} (${installerUrl})`)
+    // NOTE: 'done' here is a LAUNCH ACK, not update success. The installer
+    // runs detached and this process is replaced when the service restarts.
+    // The cloud must judge real success from the heartbeat-reported
+    // `version` + `updateStatus` (see spec 2026-05-24-cloud-controlled-update-feedback).
     return {
       id: cmd.id,
       status: 'done',
-      result: clampResult(`install started: ${currentVersion} → ${expectedVersion}`),
+      result: clampResult(`install launched ${currentVersion} -> ${expectedVersion}; track via heartbeat updateStatus`),
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
