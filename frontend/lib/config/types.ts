@@ -68,58 +68,6 @@ export interface AppConfig {
    * give the cloud fresher data.
    */
   networkPollingIntervalMs?: number;
-
-  /**
-   * Ring Commissioning settings. The feature reads each DPM's embedded Moxa
-   * switch directly over read-only SNMP v2c. All fields optional — sensible
-   * defaults (community "public", port 161) apply when omitted.
-   */
-  ring?: RingConfig;
-}
-
-/** Ring Commissioning configuration (see lib/network/ring/). */
-export interface RingConfig {
-  /** SNMP v2c read community (default "public"). */
-  snmpCommunity?: string;
-  /** SNMP UDP port (default 161). */
-  snmpPort?: number;
-  /** Per-request timeout in ms (default 3000). */
-  snmpTimeoutMs?: number;
-  /** Retries per request (default 1). */
-  snmpRetries?: number;
-  /**
-   * Moxa private-MIB scalar OIDs for ring redundancy state. Resolve these
-   * against the actual switch model during field validation; when absent, ring
-   * health reports "unknown" and the rest of the check still runs.
-   */
-  moxaOids?: {
-    protocol?: string;
-    ringStatus?: string;
-    masterSlave?: string;
-  };
-  /**
-   * Modbus/TCP fallback for ring status, used when SNMP doesn't expose ring
-   * state on a given firmware. Reads the documented Moxa ring registers
-   * (0x3000/0x3300/0x3600) read-only.
-   */
-  modbus?: {
-    enabled?: boolean;
-    port?: number;
-    unitId?: number;
-    timeoutMs?: number;
-  };
-  /**
-   * Optional management-IP overrides per DPM name, for when the Moxa switch's
-   * management interface differs from the DPM's EtherNet/IP address.
-   */
-  ipOverrides?: Record<string, string>;
-  /**
-   * Whether to also SNMP-scan the MCM (the Rockwell EN module that closes the
-   * ring loop). Off by default because it's typically not an SNMP-managed Moxa
-   * switch and would otherwise show as unreachable. Enable only on sites where
-   * the MCM-side switch answers SNMP.
-   */
-  includeMcm?: boolean;
 }
 
 /**
