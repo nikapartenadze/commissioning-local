@@ -24,6 +24,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { createApiRouter } from './routes';
 import { resolveLogsDirPath } from '@/lib/storage-paths';
 import { getPlcTags } from '@/lib/plc-client-manager';
+import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
 
 // Startup backup is deferred to after server starts listening (see httpServer.listen callback)
 
@@ -462,6 +463,13 @@ httpServer.on('upgrade', (req, socket, head) => {
 httpServer.listen(PORT, HOSTNAME, () => {
   console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
   console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
+
+  // Heal a poisoned update-status.json left behind by an interrupted update.
+  // A successful self-update restarts us into the new build with a non-terminal
+  // status still on disk; reconciliation stamps it success (running ≥ target)
+  // or error (still on the old build) so the fleet UI reflects reality and the
+  // channel isn't stuck on "Updating…". Cheap sync file op — safe inline.
+  reconcileUpdateStateOnBoot();
 
   // Deferred startup backup — runs after server is listening so it doesn't block startup
   setTimeout(() => {

@@ -28,6 +28,9 @@ function Write-State {
     New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
   }
   $payload | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding UTF8
+  # Echo every transition to the transcript too, so a run that dies before a
+  # terminal state still shows exactly which step it reached.
+  Write-Host ("[{0}] {1} - {2}" -f (Get-Date).ToString("HH:mm:ss"), $Status, $Message)
 }
 
 function Get-RegistryValue {
@@ -101,6 +104,24 @@ function Add-DefenderExclusion {
 }
 
 $script:StartedAt = (Get-Date).ToString("o")
+
+# Transcript so a failed/interrupted run leaves a diagnosable trail. The updater
+# is spawned detached with stdio: 'ignore', so without this it ran completely
+# blind -- when the ps1 died mid-flight (e.g. Stop-Service tearing down the
+# service process tree took this child with it) there was zero evidence of
+# which step failed. Best-effort: Start-Transcript can be refused on some hosts.
+$logDir = Join-Path (Split-Path -Parent $StatePath) 'logs'
+try {
+  if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+  $transcriptPath = Join-Path $logDir ("update-{0}.log" -f (Get-Date -Format "yyyyMMddTHHmmss"))
+  Start-Transcript -Path $transcriptPath -Append | Out-Null
+} catch { }
+
+Write-Host "=== CommissioningTool update ==="
+Write-Host ("Target version : {0}" -f $ExpectedVersion)
+Write-Host ("Installer URL  : {0}" -f $InstallerUrl)
+Write-Host ("Service name   : {0}" -f $ServiceName)
+Write-Host ("Started        : {0}" -f $script:StartedAt)
 
 try {
   Write-State -Status "checking" -Message "Preparing update"
@@ -222,6 +243,10 @@ try {
 
   Write-State -Status "success" -Message "Update installed successfully" -CompletedAt ((Get-Date).ToString("o"))
 } catch {
+  Write-Host "ERROR: $($_.Exception.Message)"
+  Write-Host $_.ScriptStackTrace
   Write-State -Status "error" -Message $_.Exception.Message -CompletedAt ((Get-Date).ToString("o"))
   throw
+} finally {
+  try { Stop-Transcript | Out-Null } catch { }
 }

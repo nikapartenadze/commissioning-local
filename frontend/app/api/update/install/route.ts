@@ -1,67 +1,22 @@
 import { Request, Response } from 'express'
-import { spawn } from 'child_process'
-import { resolveUpdateStatePath } from '@/lib/storage-paths'
-import {
-  compareVersions,
-  fetchReleaseManifest,
-  getCurrentAppVersion,
-  readLocalUpdateState,
-  resolveUpdateScriptPath,
-} from '@/lib/update/update-utils'
 
-export async function POST(req: Request, res: Response) {
-  try {
-    if (process.platform !== 'win32') {
-      return res.status(400).json({ success: false, error: 'Host-managed update is only supported on Windows' })
-    }
-
-    const scriptPath = resolveUpdateScriptPath()
-    if (!scriptPath) {
-      return res.status(500).json({ success: false, error: 'Updater script is not packaged on this host' })
-    }
-
-    const currentState = readLocalUpdateState()
-    if (currentState && ['checking', 'downloading', 'installing', 'restarting'].includes(currentState.status)) {
-      return res.status(409).json({ success: false, error: 'An update is already in progress' })
-    }
-
-    const currentVersion = getCurrentAppVersion()
-    const { manifest, error } = await fetchReleaseManifest()
-    if (!manifest) {
-      return res.status(400).json({ success: false, error: error || 'No update manifest available' })
-    }
-
-    if (compareVersions(manifest.version, currentVersion) <= 0) {
-      return res.json({ success: true, message: 'Already on latest version', currentVersion, latestVersion: manifest.version })
-    }
-
-    const child = spawn(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', scriptPath,
-        '-InstallerUrl', manifest.installerUrl,
-        '-ExpectedVersion', manifest.version,
-        '-StatePath', resolveUpdateStatePath(),
-      ],
-      {
-        detached: true,
-        stdio: 'ignore',
-      }
-    )
-    child.unref()
-
-    return res.json({
-      success: true,
-      message: `Update to ${manifest.version} started`,
-      currentVersion,
-      latestVersion: manifest.version,
-    })
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error instanceof Error ? error.message : 'Failed to start update',
-    })
-  }
+/**
+ * POST /api/update/install — DISABLED.
+ *
+ * Self-update from the field tool is intentionally removed: the version a
+ * tablet runs is controlled centrally from the cloud fleet UI (Push update),
+ * never locally. This keeps every version change auditable and operator-gated
+ * from one place. The actual install pipeline still lives in
+ * lib/heartbeat/command-handler.ts (the cloud `update` command) — this HTTP
+ * route is only the old in-app "Install On Host" entry point, now neutered so
+ * it can't be triggered from the tablet (UI button removed) or by curling it.
+ *
+ * GET /api/update/status remains available so the tool can still SHOW the
+ * lifecycle of a cloud-pushed update (read-only).
+ */
+export async function POST(_req: Request, res: Response) {
+  return res.status(403).json({
+    success: false,
+    error: 'Local update trigger is disabled. Updates are pushed centrally from the cloud.',
+  })
 }

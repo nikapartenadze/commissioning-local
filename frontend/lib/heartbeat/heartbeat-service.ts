@@ -21,7 +21,7 @@
 
 import os from 'os'
 import { configService } from '@/lib/config'
-import { getCurrentAppVersion, readLocalUpdateState, type LocalUpdateState } from '@/lib/update/update-utils'
+import { getCurrentAppVersion, getEffectiveUpdateState, type LocalUpdateState } from '@/lib/update/update-utils'
 import { getMachineId } from './machine-id'
 import { collectSystemInfo, type HeartbeatSystemInfo } from './system-info'
 import { executeCommand, type IncomingCommand, type CommandResult } from './command-handler'
@@ -85,8 +85,10 @@ export async function buildHeartbeatPayload(): Promise<HeartbeatPayload> {
     // profile pointer to config or derive it from subsystemId.
     currentMcm: null,
     systemInfo: collectSystemInfo(),
-    // readLocalUpdateState already swallows read/parse errors → null.
-    updateStatus: readLocalUpdateState(),
+    // getEffectiveUpdateState swallows read/parse errors → null, and downgrades
+    // a STALE non-terminal state to `error` so the cloud banner stops reporting
+    // a phantom "installing…" for a tablet whose updater died mid-flight.
+    updateStatus: getEffectiveUpdateState(),
   }
 }
 

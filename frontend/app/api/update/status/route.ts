@@ -4,14 +4,16 @@ import {
   compareVersions,
   fetchReleaseManifest,
   getCurrentAppVersion,
-  readLocalUpdateState,
+  getEffectiveUpdateState,
   resolveUpdateScriptPath,
 } from '@/lib/update/update-utils'
 
 export async function GET(req: Request, res: Response) {
   try {
     const currentVersion = getCurrentAppVersion()
-    const installState = readLocalUpdateState()
+    // Effective (not raw) state: a stale non-terminal status reads as `error`
+    // so the toolbar pill un-sticks instead of showing "Updating…" forever.
+    const installState = getEffectiveUpdateState()
     const { manifestUrl, manifest, error } = await fetchReleaseManifest()
     const latestVersion = manifest?.version
     const updateAvailable = !!latestVersion && compareVersions(latestVersion, currentVersion) > 0
@@ -34,7 +36,7 @@ export async function GET(req: Request, res: Response) {
       currentVersion: getCurrentAppVersion(),
       manifestConfigured: false,
       updateAvailable: false,
-      installState: readLocalUpdateState(),
+      installState: getEffectiveUpdateState(),
       supported: process.platform === 'win32' && !!resolveUpdateScriptPath(),
       error: error instanceof Error ? error.message : 'Failed to load update status',
     } satisfies AppUpdateStatusResponse)
