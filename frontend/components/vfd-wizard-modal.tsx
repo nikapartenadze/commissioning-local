@@ -982,6 +982,11 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   const [runAt30Sending, setRunAt30Sending] = useState(false)
   const [runAt30Sent, setRunAt30Sent] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Soft amber warning, distinct from `error`. Used when the measurement was
+  // recorded successfully but a non-fatal caveat applies — e.g. the drive's
+  // HMI.Speed_At_30rev tag doesn't exist on this controller, so we couldn't
+  // push the RVS to the AOI but still stamped the spreadsheet.
+  const [warning, setWarning] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<{ fpm: number; rvs: number; ts: number } | null>(null)
 
   // Keep a ref in sync with the latest `sts` so async handlers see live values
@@ -1041,6 +1046,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
     if (!plcConnected || !fpm) return
     setSending(true)
     setError(null)
+    setWarning(null)
     try {
       // STS.RVS is now continuously updated by Rung 14:
       // MOVE(Drive_Outputs.CommandedVelocity, CTRL.STS.RVS) — always runs when Valid_Direction is true.
@@ -1057,13 +1063,18 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       // 1. Write the calibrated RVS to the drive's HMI tag so the APF AOI
       //    picks it up automatically — replaces the old workflow where
       //    operators had to copy the cloud value by hand into the AOI.
-      //    Treat the PLC write as the authoritative action: if it fails
-      //    we abort BEFORE stamping L2, so the spreadsheet never promises
-      //    a PLC value that isn't actually live.
+      //    This is BEST-EFFORT: some controllers (older AOI revs, partial
+      //    maps) simply don't expose HMI.Speed_At_30rev. When the tag exists
+      //    we write it; when it doesn't, we do NOT abort — the operator still
+      //    needs the measured FPM↔RVS pair recorded on the spreadsheet. A
+      //    failed write becomes a soft amber warning, not a red error, and we
+      //    fall through to stamp L2 anyway.
+      let plcWarning: string | null = null
       const plcResult = await writeTag(deviceName, 'Speed_At_30rev', capturedRvs, 'REAL', 'HMI')
       if (plcResult?.success === false || plcResult?.error) {
         const tagPath = `${deviceName}.HMI.Speed_At_30rev`
-        throw new Error(`PLC write to ${tagPath} failed: ${plcResult?.error || 'unknown error'}`)
+        plcWarning = `Couldn't write ${tagPath} on the controller (${plcResult?.error || 'tag missing'}). The measurement was still recorded to the spreadsheet — set the RVS in the AOI manually if this drive needs it.`
+        console.warn(`[Step5] ${plcWarning}`)
       }
 
       // 2. Stamp "Speed Set Up" with the enriched format so the FPM↔RVS pair is
@@ -1079,6 +1090,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       }
 
       setLastResult({ fpm: fpmVal, rvs: capturedRvs, ts: Date.now() })
+      if (plcWarning) setWarning(plcWarning)
       onSpeedLogged?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1135,7 +1147,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
         <div>
           <p className="text-sm font-semibold">Record the FPM ↔ RVS pair</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Writes the captured RVS to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> so the APF AOI picks it up automatically, then records the measured FPM and PLC RVS to the commissioning spreadsheet. If the PLC write fails, the spreadsheet is <strong>not</strong> stamped — fix the controller and retry.
+            Writes the captured RVS to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> so the APF AOI picks it up automatically, then records the measured FPM and PLC RVS to the commissioning spreadsheet. If that tag doesn't exist on this controller, the measurement is <strong>still</strong> recorded — you'll just get an amber warning to set the RVS in the AOI manually.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1145,7 +1157,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
               type="number"
               placeholder="e.g. 450"
               value={fpm}
-              onChange={e => { setFpm(e.target.value); setError(null) }}
+              onChange={e => { setFpm(e.target.value); setError(null); setWarning(null) }}
               className="h-10 w-28 font-mono"
             />
           </div>
@@ -1165,6 +1177,13 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
         <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400 rounded-lg border border-red-300 dark:border-red-800 bg-red-50/50 dark:bg-red-950/20 p-3">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {warning && !error && (
+        <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/20 p-3">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>{warning}</span>
         </div>
       )}
 
