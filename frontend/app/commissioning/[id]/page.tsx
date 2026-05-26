@@ -306,7 +306,6 @@ export default function CommissioningPage() {
   const [tagStatus, setTagStatus] = useState<TagStatus | null>(null)
   const [showTagStatusDialog, setShowTagStatusDialog] = useState(false)
   const [showTour, setShowTour] = useState(false)
-  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
 
   // Muted IOs — suppress dialog triggers for noisy IOs
   const [mutedIos, setMutedIos] = useState<Set<number>>(new Set())
@@ -1676,37 +1675,9 @@ export default function CommissioningPage() {
     setShowCloudSyncDialog(true)
   }
 
-  const handleInstallUpdate = async () => {
-    try {
-      setIsInstallingUpdate(true)
-      const response = await authFetch(API_ENDPOINTS.updateInstall, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      const result = await response.json().catch(() => ({}))
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || result.message || `Update request failed (${response.status})`)
-      }
-
-      toast({
-        title: "Update started",
-        description: result.message || "The host machine is downloading and installing the new version.",
-      })
-
-      setShowUpdateDialog(true)
-      setTimeout(() => refreshUpdateStatus(), 2000)
-    } catch (error) {
-      toast({
-        title: "Update failed to start",
-        description: error instanceof Error ? error.message : 'Unknown error',
-        variant: "destructive",
-      })
-    } finally {
-      setIsInstallingUpdate(false)
-    }
-  }
-
+  // NOTE: in-app self-update was removed. Version changes are triggered only
+  // from the cloud fleet dashboard (POST /api/update/install is now disabled).
+  // The update dialog/pill below are read-only status surfaces.
 
   const handleCloudPull = async (newConfig: PlcConfig) => {
     logger.log('Cloud pull completed with config:', newConfig)
@@ -1968,7 +1939,7 @@ export default function CommissioningPage() {
                       : updateState?.message || appUpdateStatus.error || 'Update error'
                 }
               >
-                {updateBusy ? 'Updating…' : appUpdateStatus.updateAvailable ? `Update ${appUpdateStatus.latestVersion}` : 'Update Error'}
+                {updateBusy ? 'Updating…' : appUpdateStatus.updateAvailable ? `${appUpdateStatus.latestVersion} available` : 'Update Error'}
               </button>
             )}
             <UserMenu />
@@ -2279,10 +2250,14 @@ export default function CommissioningPage() {
                 </div>
               )}
 
+              <div className="rounded-lg border border-blue-200 bg-blue-50/50 dark:border-blue-900/40 dark:bg-blue-950/20 p-3 text-xs text-blue-800 dark:text-blue-300">
+                Updates are pushed <strong>centrally from the cloud</strong>. This tool shows update status but cannot install a new version itself — to update this tablet, trigger it from the fleet dashboard.
+              </div>
+
               <div className="rounded-lg border p-3 bg-muted/20">
                 <div className="text-sm font-medium">Updater state</div>
                 <div className="text-xs text-muted-foreground mt-1">
-                  {updateState?.message || appUpdateStatus?.error || (appUpdateStatus?.updateAvailable ? 'Update available on host machine' : 'Already on latest version')}
+                  {updateState?.message || appUpdateStatus?.error || (appUpdateStatus?.updateAvailable ? 'A newer version is available — push it from the cloud' : 'Up to date with the latest published version')}
                 </div>
                 {updateState?.startedAt && (
                   <div className="text-xs text-muted-foreground mt-1">
@@ -2306,14 +2281,8 @@ export default function CommissioningPage() {
               <Button variant="outline" onClick={() => { setShowUpdateDialog(false); refreshUpdateStatus() }}>
                 Close
               </Button>
-              <Button variant="outline" onClick={refreshUpdateStatus} disabled={isInstallingUpdate}>
+              <Button variant="outline" onClick={refreshUpdateStatus}>
                 Refresh
-              </Button>
-              <Button
-                onClick={handleInstallUpdate}
-                disabled={!appUpdateStatus?.supported || !appUpdateStatus?.updateAvailable || updateBusy || isInstallingUpdate}
-              >
-                {updateBusy || isInstallingUpdate ? 'Installing…' : 'Install On Host'}
               </Button>
             </DialogFooter>
           </DialogContent>

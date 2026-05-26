@@ -135,6 +135,126 @@ export function writeLocalUpdateState(state: LocalUpdateState): void {
   }
 }
 
+// ── Stuck-state recovery ────────────────────────────────────────────────────
+//
+// An update writes update-status.json through a lifecycle:
+//   checking → downloading → installing → restarting → success | error
+// The first four are NON-TERMINAL ("in progress"). If install-update.ps1 dies
+// before it writes a terminal state — e.g. Stop-Service tears down the service
+// process tree and takes the detached updater child with it — the file is
+// frozen on a non-terminal value. Without recovery that is permanent: the UI
+// shows "Updating…" forever AND every retry is refused with "update already in
+// progress", so one interrupted attempt bricks the channel for that tablet
+// until someone hand-deletes the file. The helpers below heal that:
+//   - a non-terminal state older than STALE_UPDATE_MS is treated as failed
+//   - on every boot we reconcile against the actually-running version
+const STALE_UPDATE_MS = 15 * 60 * 1000
+
+const NON_TERMINAL_STATUSES: ReadonlyArray<LocalUpdateState['status']> = [
+  'checking', 'downloading', 'installing', 'restarting',
+]
+
+export function isNonTerminalUpdateStatus(status: string): boolean {
+  return (NON_TERMINAL_STATUSES as ReadonlyArray<string>).includes(status)
+}
+
+/**
+ * True when a non-terminal update has been sitting longer than the window a
+ * real install could plausibly take (download + install + restart + health
+ * check). A missing/unparseable startedAt is treated as stale — we can't prove
+ * it's live, so don't let it block forever. Pure (now injectable for tests).
+ */
+export function isStaleUpdate(state: LocalUpdateState | null, now: number = Date.now()): boolean {
+  if (!state || !isNonTerminalUpdateStatus(state.status)) return false
+  const started = state.startedAt ? Date.parse(state.startedAt) : NaN
+  if (!Number.isFinite(started)) return true
+  return now - started > STALE_UPDATE_MS
+}
+
+/**
+ * Project the on-disk state into what callers should ACT on. A stale
+ * non-terminal state is surfaced as an `error` so the UI un-sticks and the
+ * cloud banner stops reporting a phantom install. Pure.
+ */
+export function computeEffectiveUpdateState(
+  state: LocalUpdateState | null,
+  now: number = Date.now(),
+): LocalUpdateState | null {
+  if (!state) return null
+  if (!isStaleUpdate(state, now)) return state
+  return {
+    ...state,
+    status: 'error',
+    message: `Update did not complete — stuck at "${state.status}" for over ${Math.round(STALE_UPDATE_MS / 60000)} min. Re-push from the cloud to retry.`,
+    completedAt: new Date(now).toISOString(),
+  }
+}
+
+/**
+ * Decide how to heal update-status.json at startup. Only acts on a
+ * non-terminal state (a clean success/error/idle is left alone). The running
+ * version is ground truth: if we booted on (or past) the target, the install
+ * actually landed → success; otherwise the updater died mid-flight → error.
+ * Returns the state to persist, or null when no action is needed. Pure.
+ */
+export function computeBootReconciliation(
+  state: LocalUpdateState | null,
+  currentVersion: string,
+  now: number = Date.now(),
+): LocalUpdateState | null {
+  if (!state || !isNonTerminalUpdateStatus(state.status)) return null
+  const target = state.version
+  const completedAt = new Date(now).toISOString()
+  if (target && compareVersions(currentVersion, target) >= 0) {
+    return {
+      ...state,
+      status: 'success',
+      message: `Update completed (verified on startup: running ${currentVersion})`,
+      completedAt,
+    }
+  }
+  return {
+    ...state,
+    status: 'error',
+    message: `Update interrupted — tool restarted while status was "${state.status}" (running ${currentVersion}${target ? `, target ${target}` : ''})`,
+    completedAt,
+  }
+}
+
+/**
+ * Effective state for the UI / heartbeat / cloud banner. Wraps the raw read
+ * with the staleness projection so a dead install never reads as "in progress".
+ */
+export function getEffectiveUpdateState(): LocalUpdateState | null {
+  return computeEffectiveUpdateState(readLocalUpdateState())
+}
+
+/**
+ * True only when a real install is genuinely live (non-terminal AND not stale).
+ * This is the gate the command handler and the install route use to refuse
+ * stacking — a stale state no longer blocks a fresh retry.
+ */
+export function isUpdateInProgress(): boolean {
+  const state = readLocalUpdateState()
+  return !!state && isNonTerminalUpdateStatus(state.status) && !isStaleUpdate(state)
+}
+
+/**
+ * Heal a poisoned update-status.json once, at server startup. Safe to call
+ * unconditionally — no-ops on a terminal/absent state. Never throws.
+ */
+export function reconcileUpdateStateOnBoot(): void {
+  try {
+    const healed = computeBootReconciliation(readLocalUpdateState(), getCurrentAppVersion())
+    if (healed) {
+      writeLocalUpdateState(healed)
+      console.log(`[Update] Boot reconciliation: status → ${healed.status} (${healed.message})`)
+    }
+  } catch {
+    // best-effort — a failed reconcile must not block startup
+  }
+}
+
 export function resolveUpdateScriptPath(): string | null {
   const candidates = [
     path.resolve(process.cwd(), 'tools', 'install-update.ps1'),

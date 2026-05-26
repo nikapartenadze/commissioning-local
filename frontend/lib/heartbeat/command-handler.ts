@@ -27,6 +27,7 @@ import {
   getCurrentAppVersion,
   readLocalUpdateState,
   writeLocalUpdateState,
+  isUpdateInProgress,
 } from '@/lib/update/update-utils'
 import { resolveUpdateStatePath } from '@/lib/storage-paths'
 
@@ -141,15 +142,17 @@ async function handleUpdateCommand(cmd: IncomingCommand): Promise<CommandResult>
     }
   }
 
-  // Refuse to stack updates — if one is in flight, this command waits
-  // for the next heartbeat after restart rather than fighting the
-  // running ps1 over the service control manager.
-  const live = readLocalUpdateState()
-  if (live && ['checking', 'downloading', 'installing', 'restarting'].includes(live.status)) {
+  // Refuse to stack updates — if one is GENUINELY in flight, this command
+  // waits for the next heartbeat after restart rather than fighting the
+  // running ps1 over the service control manager. isUpdateInProgress()
+  // ignores a STALE non-terminal state (a dead/interrupted prior run), so a
+  // poisoned status file no longer permanently blocks fresh cloud retries.
+  if (isUpdateInProgress()) {
+    const live = readLocalUpdateState()
     return {
       id: cmd.id,
       status: 'failed',
-      result: `update already in progress (status=${live.status})`,
+      result: `update already in progress (status=${live?.status ?? 'unknown'})`,
     }
   }
 
