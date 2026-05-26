@@ -237,28 +237,6 @@ export function initializeSchema() {
     CREATE INDEX IF NOT EXISTS idx_networkports_nodeid ON NetworkPorts(NodeId);
     CREATE INDEX IF NOT EXISTS idx_networkports_parentportid ON NetworkPorts(ParentPortId);
 
-    -- Ring Commissioning: saved "expected" wiring per ring (the hybrid baseline),
-    -- and a history of check runs for sign-off. Links/ChassisMap/Report are JSON
-    -- blobs (read/written whole), matching the feature's point-in-time semantics.
-    CREATE TABLE IF NOT EXISTS NetworkRingBaselines (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      RingId INTEGER NOT NULL UNIQUE REFERENCES NetworkRings(id) ON DELETE CASCADE,
-      Links TEXT NOT NULL,
-      ChassisMap TEXT NOT NULL,
-      SavedBy TEXT,
-      SavedAt TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS NetworkRingCheckRuns (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      RingId INTEGER NOT NULL REFERENCES NetworkRings(id) ON DELETE CASCADE,
-      Overall TEXT NOT NULL,
-      Report TEXT NOT NULL,
-      RunBy TEXT,
-      GeneratedAt TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_networkringchecks_ringid ON NetworkRingCheckRuns(RingId);
-
     CREATE TABLE IF NOT EXISTS EStopZones (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       SubsystemId INTEGER,
