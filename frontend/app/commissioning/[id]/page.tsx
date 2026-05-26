@@ -382,12 +382,6 @@ export default function CommissioningPage() {
     fetchTagStatus()
   }, [])
 
-  // Helper function to check if an IO is an output
-  const isOutput = (ioName: string | null): boolean => {
-    if (!ioName) return false
-    return ioName.includes(':O.') || ioName.includes(':SO.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.endsWith('_DO')
-  }
-
   // Auto-show next dialog from queue
   useEffect(() => {
     // Don't advance queue if FailCommentDialog or FireOutputDialog is open
@@ -1618,34 +1612,6 @@ export default function CommissioningPage() {
     }
   }
 
-  const handleDependenciesChange = async (io: IoItem, hasDependencies: boolean) => {
-    // Optimistic update — server is authoritative but the grid feels instant.
-    // The PATCH route persists and queues a sync; SSE/WS broadcasts (if any)
-    // catch other clients up. Revert on HTTP failure so the checkbox doesn't
-    // lie about local state.
-    setIos(prevIos => prevIos.map(i =>
-      i.id === io.id ? { ...i, hasDependencies } : i
-    ))
-    try {
-      const response = await authFetch(API_ENDPOINTS.ioDependencies(io.id), {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hasDependencies, currentUser: currentUser?.fullName || 'Unknown' }),
-      })
-      if (!response.ok) {
-        logger.error('Failed to update dependencies:', response.status)
-        setIos(prevIos => prevIos.map(i =>
-          i.id === io.id ? { ...i, hasDependencies: !hasDependencies } : i
-        ))
-      }
-    } catch (error) {
-      logger.error('Error updating dependencies:', error instanceof Error ? error.message : error)
-      setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, hasDependencies: !hasDependencies } : i
-      ))
-    }
-  }
-
   const handleClearTesting = async () => {
     try {
       // Clear all test results
@@ -2131,7 +2097,6 @@ export default function CommissioningPage() {
             deviceStatuses={deviceStatuses}
             mutedIos={mutedIos}
             onToggleMute={toggleMuteIo}
-            onDependenciesChange={handleDependenciesChange}
             requireInstalledForTesting={requireInstalledForTesting}
           />
       </div>
