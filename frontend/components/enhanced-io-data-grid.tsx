@@ -147,11 +147,17 @@ function useColumnWidths() {
   // text truncates with a tooltip.
   const reasonW = width < 768 ? 96 : width < 1400 ? 116 : 132
 
+  // Install column shows an "Installed" badge (or "NN%") — needs ~88px so
+  // the "Installed" label isn't clipped to "IN…". Fixed across breakpoints;
+  // the grid scrolls horizontally, so we spend the width on a legible label
+  // rather than squeezing it into the viewport.
+  const installW = 88
+
   if (width < 768) {
     // Phone: fixed readable sizes, horizontal scroll handles overflow
     return {
       description: 200, ioPoint: 180, state: 60,
-      deviceStatus: 60, installStatus: 60, result: 80,
+      deviceStatus: 60, installStatus: installW, result: 80,
       timestamp: 0, comments: 180, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
@@ -162,7 +168,7 @@ function useColumnWidths() {
     // Small tablet
     return {
       description: 220, ioPoint: 200, state: 70,
-      deviceStatus: 60, installStatus: 60, result: 90,
+      deviceStatus: 60, installStatus: installW, result: 90,
       timestamp: 0, comments: 200, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
@@ -173,7 +179,7 @@ function useColumnWidths() {
     // Large tablet / small laptop
     return {
       description: 260, ioPoint: 220, state: 70,
-      deviceStatus: 60, installStatus: 60, result: 90,
+      deviceStatus: 60, installStatus: installW, result: 90,
       timestamp: 150, comments: 220, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
@@ -187,7 +193,7 @@ function useColumnWidths() {
   return {
     description: Math.floor(dataWidth * 0.22), ioPoint: Math.floor(dataWidth * 0.17),
     state: Math.floor(dataWidth * 0.06), deviceStatus: Math.floor(dataWidth * 0.05),
-    installStatus: Math.floor(dataWidth * 0.05), result: Math.floor(dataWidth * 0.07),
+    installStatus: installW, result: Math.floor(dataWidth * 0.07),
     timestamp: Math.floor(dataWidth * 0.12), comments: Math.floor(dataWidth * 0.16),
     reason: reasonW,
     history: 50, help: 50, failed: 50, clear: 50,
