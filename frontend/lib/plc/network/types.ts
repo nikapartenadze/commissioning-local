@@ -234,3 +234,27 @@ export function stripNetworkTagSuffix(tagName: string): string | null {
   }
   return null;
 }
+
+/**
+ * Controller-chassis rack slots to drop from network diagnostics (field
+ * request, 2026-05-26). SLOT5/6/7 carry no real network node on these
+ * controllers — they were surfacing as noise in the readings — so we exclude
+ * them at discovery: never polled, never shown, never shipped in the
+ * heartbeat.
+ */
+export const EXCLUDED_RACK_SLOTS = [5, 6, 7] as const;
+
+// Matches a SLOT<n> token (at the start of a name or after an underscore)
+// whose number is one of EXCLUDED_RACK_SLOTS and is NOT followed by another
+// digit — so "SLOT5", "SLOT6_EN4TR", "MCM04_SLOT7_NN" match, while "SLOT15",
+// "SLOT57", and "SLOT2_EN4TR" do not. Case-insensitive; works on either a raw
+// tag name or a stripped device name.
+const EXCLUDED_RACK_SLOT_RE = new RegExp(
+  `(^|_)SLOT(${EXCLUDED_RACK_SLOTS.join('|')})(?![0-9])`,
+  'i',
+);
+
+/** True if a device/tag name refers to one of the EXCLUDED_RACK_SLOTS. */
+export function isExcludedRackSlot(name: string): boolean {
+  return EXCLUDED_RACK_SLOT_RE.test(name);
+}

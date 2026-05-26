@@ -3,6 +3,7 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { isOutputIo } from "@/lib/io-classification"
 
 interface IoItem {
   id: number
@@ -44,12 +45,7 @@ export function ValueChangeDialog({
 
   const isSpare = io.description?.toUpperCase().includes('SPARE')
 
-  const isOutput = (ioName: string | null): boolean => {
-    if (!ioName) return false
-    return ioName.includes(':O.') || ioName.includes(':SO.') || ioName.includes('.O.') || ioName.includes(':O:') || ioName.includes('.Outputs.') || ioName.endsWith('.DO') || ioName.endsWith('_DO')
-  }
-
-  const isOutputTag = isOutput(io.name)
+  const isOutputTag = isOutputIo(io.name, io.description)
 
   const handleYes = () => {
     onYes(io)

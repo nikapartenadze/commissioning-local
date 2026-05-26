@@ -6,6 +6,7 @@ import { useUser } from '@/lib/user-context'
 import { usePlcWebSocket, type IOUpdate } from '@/lib/plc/websocket-client'
 import { FailCommentDialog } from '@/components/fail-comment-dialog'
 import { TestHistoryDialog } from '@/components/test-history-dialog'
+import { isOutputIo, isSafetyOutput } from '@/lib/io-classification'
 
 type HistoryRecord = {
   id: number
@@ -788,7 +789,7 @@ export function DeviceTestPanel({
                   (DO / AO / :O. / :SO.). Toggles the real PLC bit via the
                   same endpoint the regular grid uses. Safety outputs (:SO.)
                   are server-side rejected; we surface that as a banner. */}
-              {isOutputIo(currentIo.name) && (
+              {isOutputIo(currentIo.name, currentIo.description) && (
                 <div className="gm-actions gm-actions--single">
                   <button
                     className="gm-action gm-action-fire"
@@ -1161,25 +1162,6 @@ function RoadmapCompleteCard({
 function shortIoCode(name: string): string {
   const idx = name.lastIndexOf(':')
   return idx >= 0 ? name.slice(idx + 1) : name
-}
-
-/**
- * Cheap heuristic for output-vs-input IO based on the tag name. Patterns
- * seen in the local Ios table:
- *   - Outputs: name ends with `_DO`, `_AO`, contains `:O.`, `:SO.`,
- *     contains `_DO.` / `_AO.` mid-string (FIOM output pin paths).
- *   - Inputs (NOT output): `_DI`, `:I.`, `:SI.`, `_AI`.
- * Used to decide whether to surface the "Fire output" button.
- */
-function isOutputIo(name: string): boolean {
-  return /(?:_DO\b|_AO\b|_DO\.|_AO\.|:O\.|:SO\.|:AO\.)/i.test(name)
-}
-
-/** Safety outputs are controlled by the safety PLC and cannot be fired
- *  directly. The server enforces this too (`/api/ios/:id/fire-output`),
- *  but disabling the button up-front avoids a wasted round-trip. */
-function isSafetyOutput(name: string): boolean {
-  return /:SO\./i.test(name)
 }
 
 function simulateSwap(

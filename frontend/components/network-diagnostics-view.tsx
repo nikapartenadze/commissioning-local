@@ -23,6 +23,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, Network, ServerCrash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage } from '@/lib/plc/types'
+import { isExcludedRackSlot } from '@/lib/plc/network/types'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
 type Port = Snapshot['ports'][number]
@@ -63,6 +64,35 @@ function deviceTypeOf(name: string): string {
   if (name.includes('POINT') || name.includes('IB16') || name.includes('OB16')) return 'I/O'
   if (name.includes('DPM') || name.includes('EN4TR') || name.includes('EN2TR') || name.includes('SLOT')) return 'DPM'
   return 'Other'
+}
+
+// Port-visibility policy (field request, 2026-05-26):
+//   - The Octopus switch (the DPM/managed switch in each ring) carries real
+//     traffic across all of its ports → show every port (1–32).
+//   - Every other device (VFD, FIOM, PMM, …) only uses the two ring uplink
+//     ports → show ports 1–2 only. The rest of the 33-slot UDT array is
+//     unused noise on those devices.
+// A device is the Octopus switch iff it classifies as the DPM group above.
+const OCTOPUS_PORT_CAP = 32
+const DEFAULT_PORT_CAP = 2
+
+function isOctopusSwitch(deviceName: string): boolean {
+  return deviceTypeOf(deviceName) === 'DPM'
+}
+
+/** Highest physical port number we surface for this device. */
+function portCapFor(deviceName: string): number {
+  return isOctopusSwitch(deviceName) ? OCTOPUS_PORT_CAP : DEFAULT_PORT_CAP
+}
+
+/**
+ * Ports we actually display + summarize for a device. Everything downstream
+ * (summary counts, status badges, error chips, port rows) keys off this so the
+ * status can never reference a port the operator can't see.
+ */
+function visiblePorts(snap: Snapshot): Port[] {
+  const cap = portCapFor(snap.deviceName)
+  return snap.ports.filter((p) => p.portNumber >= 1 && p.portNumber <= cap)
 }
 
 function formatNumber(n: number): string {
@@ -113,7 +143,8 @@ function summarize(snap: Snapshot): DeviceSummary {
   const errorPorts: Port[] = []
   const mediaPorts: Port[] = []
   const downPorts: Port[] = []
-  for (const p of snap.ports) {
+  // Only the visible ports count toward the device's health roll-up.
+  for (const p of visiblePorts(snap)) {
     if (p.linkUp) activePorts++
     const down = isActivelyDown(p)
     if (down) downPorts.push(p)
@@ -174,6 +205,9 @@ export function NetworkDiagnosticsView({
     if (!liveSnapshots) return out
     const now2 = Date.now()
     for (const [deviceName, snap] of Array.from(liveSnapshots.entries())) {
+      // Excluded rack slots (SLOT5/6/7) are dropped at the poller, but guard
+      // here too so a stale cached snapshot can never resurface them.
+      if (isExcludedRackSlot(deviceName)) continue
       const prev = lastSeenRef.current.get(deviceName)
       const lastSeen = prev && prev.snapshot === snap ? prev.lastSeen : now2
       out.set(deviceName, { snapshot: snap, lastSeen })
@@ -182,9 +216,16 @@ export function NetworkDiagnosticsView({
     return out
   }, [liveSnapshots])
 
+  // Known devices come from the topology (rings), which can still list
+  // excluded rack slots — filter them so they don't render as empty skeletons.
+  const visibleKnownDevices = useMemo(
+    () => knownDevices.filter((n) => n && !isExcludedRackSlot(n)),
+    [knownDevices],
+  )
+
   const groups = useMemo(() => {
     const union = new Map<string, { deviceName: string; live?: DeviceState }>()
-    for (const name of knownDevices) {
+    for (const name of visibleKnownDevices) {
       if (!name) continue
       union.set(name, { deviceName: name })
     }
@@ -211,15 +252,15 @@ export function NetworkDiagnosticsView({
       list.sort((a, b) => a.deviceName.localeCompare(b.deviceName))
     }
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b))
-  }, [devices, knownDevices, singleDevice])
+  }, [devices, visibleKnownDevices, singleDevice])
 
   const totalDevices = devices.size
   const totalKnown = useMemo(() => {
     const set = new Set<string>()
-    for (const n of knownDevices) if (n) set.add(n)
+    for (const n of visibleKnownDevices) if (n) set.add(n)
     for (const ds of Array.from(devices.values())) set.add(ds.snapshot.deviceName)
     return set.size
-  }, [devices, knownDevices])
+  }, [devices, visibleKnownDevices])
   const totalGroups = groups.length
 
   return (
@@ -360,12 +401,13 @@ function NavToc({
                   status === 'error' ? 'border-l-red-500/60 bg-red-500/[0.03]' :
                   status === 'warn' ? 'border-l-orange-500/60 bg-orange-500/[0.03]' :
                   'border-l-muted-foreground/20'
+                const portCap = portCapFor(entry.deviceName)
                 const trailing = entry.live && summary
                   ? summary.errorCount > 0
-                    ? `${summary.activePorts}/32 · ${summary.errorCount} err`
+                    ? `${summary.activePorts}/${portCap} · ${summary.errorCount} err`
                     : summary.softWarnCount > 0
-                      ? `${summary.activePorts}/32 · ${summary.softWarnCount} warn`
-                      : `${summary.activePorts}/32 · ok`
+                      ? `${summary.activePorts}/${portCap} · ${summary.softWarnCount} warn`
+                      : `${summary.activePorts}/${portCap} · ok`
                   : 'awaiting'
                 return (
                   <a
@@ -406,6 +448,8 @@ function NavToc({
 function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
   const { snapshot, lastSeen } = state
   const summary = useMemo(() => summarize(snapshot), [snapshot])
+  const ports = useMemo(() => visiblePorts(snapshot), [snapshot])
+  const portCap = portCapFor(snapshot.deviceName)
   const isStale = now - lastSeen > STALE_MS
   const tagStatus: 'ok' | 'error' | 'warn' | 'stale' = isStale
     ? 'stale'
@@ -446,7 +490,7 @@ function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
               <TagBadge status={tagStatus} count={summary.warnCount} />
               {summary.activePorts > 0 && (
                 <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider">
-                  {summary.activePorts}/32 linked
+                  {summary.activePorts}/{portCap} linked
                 </span>
               )}
             </div>
@@ -477,7 +521,7 @@ function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
       </header>
 
       <div className="p-3 space-y-2">
-        {snapshot.ports.map((p) => (
+        {ports.map((p) => (
           <PortRow port={p} key={p.portNumber} />
         ))}
       </div>
@@ -762,9 +806,10 @@ function KV({
 
 // ─── Skeleton (no live snapshot yet) ────────────────────────────────────
 
-// Memoized for the same reason as PortRow: the skeleton's 32 placeholder rows
+// Memoized for the same reason as PortRow: the skeleton's placeholder rows
+// (one per visible port — 32 for the Octopus switch, 2 for everything else)
 // depend only on { deviceName, active }, not on the 1s `now` tick. Without this
-// the global view re-renders every skeleton device's 32 placeholder rows once
+// the global view re-renders every skeleton device's placeholder rows once
 // per second while waiting for the first snapshot.
 const SkeletonSection = memo(function SkeletonSection({ deviceName, active }: { deviceName: string; active: boolean }) {
   return (
@@ -796,7 +841,7 @@ const SkeletonSection = memo(function SkeletonSection({ deviceName, active }: { 
         </div>
       </header>
       <div className="p-3 space-y-2">
-        {Array.from({ length: 32 }, (_, i) => (
+        {Array.from({ length: portCapFor(deviceName) }, (_, i) => (
           <PlaceholderPortRow portNumber={i + 1} key={i + 1} />
         ))}
       </div>

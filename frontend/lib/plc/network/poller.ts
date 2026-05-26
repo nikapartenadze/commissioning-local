@@ -43,6 +43,8 @@ import {
 } from '../libplctag';
 import { PlcTagStatus, getStatusMessage, type TagHandle } from '../types';
 import {
+  EXCLUDED_RACK_SLOTS,
+  isExcludedRackSlot,
   NETWORK_NODE_LAYOUT,
   NETWORK_TAG_SUFFIXES,
   stripNetworkTagSuffix,
@@ -177,6 +179,17 @@ export class NetworkPoller extends EventEmitter {
 
       if (discoveredNames.length === 0 && this.fallbackDevices.length > 0) {
         discoveredNames = await this.probeFallbackDevices();
+      }
+
+      // Drop excluded controller-chassis rack slots (field request) — these
+      // carry no real network node and were just noise in the readings.
+      const beforeExclude = discoveredNames.length;
+      discoveredNames = discoveredNames.filter((tagName) => !isExcludedRackSlot(tagName));
+      const excludedCount = beforeExclude - discoveredNames.length;
+      if (excludedCount > 0) {
+        console.log(
+          `[NetworkPoller] Excluded ${excludedCount} rack-slot device(s) (SLOT${EXCLUDED_RACK_SLOTS.join('/')}) from polling.`,
+        );
       }
 
       if (discoveredNames.length === 0) {

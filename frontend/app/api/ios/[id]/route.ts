@@ -5,6 +5,7 @@ import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import { sanitizeComment, createTimestamp } from '@/lib/services/io-test-service'
+import { isOutputIo } from '@/lib/io-classification'
 
 /**
  * GET /api/ios/:id
@@ -38,7 +39,7 @@ export async function GET(req: Request, res: Response) {
       version: (io.Version ?? 0).toString(),
       state: tag?.state ?? null,
       networkDeviceName: io.NetworkDeviceName ?? null,
-      isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO'),
+      isOutput: isOutputIo(io.Name, io.Description),
       hasResult: !!io.Result,
       isPassed: io.Result === 'Passed',
       isFailed: io.Result === 'Failed'
