@@ -65,14 +65,14 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
           const filtered = modes.filter((m: string) => m !== 'Other' && m !== 'Not Installed')
           setFailureModes(['Not Installed', ...filtered, 'Other'])
         } else {
-          setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', '3rd Party', 'Mech', 'Other'])
+          setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', '3rd Party', 'Mech', 'Electrical', 'Other'])
         }
       } else {
-        setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Configuration error', '3rd Party', 'Mech', 'Other'])
+        setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', 'Configuration error', '3rd Party', 'Mech', 'Electrical', 'Other'])
       }
     } catch (error) {
       console.error('Error loading failure modes:', error)
-      setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', '3rd Party', 'Mech', 'Other'])
+      setFailureModes(['Not Installed', 'No response', 'Intermittent', 'Damaged', 'Wrong wiring', '3rd Party', 'Mech', 'Electrical', 'Other'])
     } finally {
       setLoadingModes(false)
     }

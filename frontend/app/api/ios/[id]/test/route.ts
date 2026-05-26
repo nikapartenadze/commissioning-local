@@ -87,12 +87,11 @@ export async function POST(req: Request, res: Response) {
     const sanitizedComments = sanitizeComment(comments)
     const timestamp = createTimestamp()
 
-    let combinedComment = ''
-    if (failureMode && failureMode !== 'Other') {
-      combinedComment = sanitizedComments ? `${failureMode} — ${sanitizedComments}` : failureMode
-    } else {
-      combinedComment = sanitizedComments || ''
-    }
+    // Comment stores ONLY the tester's free-text note. The failure reason
+    // lives in its own column (the FailureMode field, set below), so it is
+    // no longer prepended here. Prepending caused duplicated text like
+    // "Mech — mechanical issue" when a tester also typed the reason out.
+    const combinedComment = sanitizedComments || ''
 
     const oldComment = io.Comments
     const newVersion = (io.Version ?? 0) + 1

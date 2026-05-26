@@ -11,6 +11,7 @@ import { TEST_CONSTANTS } from "@/lib/constants"
 import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
+import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
 
 type IoItem = {
   id: number
@@ -63,11 +64,6 @@ interface EnhancedIoDataGridProps {
   deviceStatuses?: Map<string, 'green' | 'red' | 'gray'>
   mutedIos?: Set<number>
   onToggleMute?: (ioId: number) => void
-  /**
-   * Toggles the per-IO `hasDependencies` flag (Dependencies Yes/No column).
-   * Parent owns the optimistic update + server PATCH + rollback on failure.
-   */
-  onDependenciesChange?: (io: IoItem, hasDependencies: boolean) => void
   /**
    * When true (driven by config.requireInstalledForTesting on the server),
    * Mark Pass/Fail are disabled for any non-SPARE IO whose installationStatus
@@ -145,17 +141,18 @@ function useColumnWidths() {
   // Available space for data columns after actions
   const available = width - actionsTotal - 16
 
-  // Dependencies (Yes/No checkbox) sits at the right of the data columns,
-  // just before the action icons. Narrow on phones, slightly wider on
-  // desktop so the Yes/No label stays legible.
-  const depsW = width < 768 ? 70 : width < 1400 ? 80 : 90
+  // Reason (read-only failure reason) sits at the right of the data
+  // columns, just before the action icons. Wider than the old Yes/No
+  // cell so reasons like "Communication error" stay legible; longer
+  // text truncates with a tooltip.
+  const reasonW = width < 768 ? 96 : width < 1400 ? 116 : 132
 
   if (width < 768) {
     // Phone: fixed readable sizes, horizontal scroll handles overflow
     return {
       description: 200, ioPoint: 180, state: 60,
       deviceStatus: 60, installStatus: 60, result: 80,
-      timestamp: 0, comments: 180, dependencies: depsW,
+      timestamp: 0, comments: 180, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
@@ -166,7 +163,7 @@ function useColumnWidths() {
     return {
       description: 220, ioPoint: 200, state: 70,
       deviceStatus: 60, installStatus: 60, result: 90,
-      timestamp: 0, comments: 200, dependencies: depsW,
+      timestamp: 0, comments: 200, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
@@ -177,22 +174,22 @@ function useColumnWidths() {
     return {
       description: 260, ioPoint: 220, state: 70,
       deviceStatus: 60, installStatus: 60, result: 90,
-      timestamp: 150, comments: 220, dependencies: depsW,
+      timestamp: 150, comments: 220, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
   }
 
-  // Full desktop: use available width proportionally. Reserve depsW (fixed)
-  // from the data budget rather than letting it scale — the Yes/No badge
+  // Full desktop: use available width proportionally. Reserve reasonW (fixed)
+  // from the data budget rather than letting it scale — the reason cell
   // doesn't need elastic width.
-  const dataWidth = (available - depsW) * 0.85 // 85% for data columns, 15% for actions
+  const dataWidth = (available - reasonW) * 0.85 // 85% for data columns, 15% for actions
   return {
     description: Math.floor(dataWidth * 0.22), ioPoint: Math.floor(dataWidth * 0.17),
     state: Math.floor(dataWidth * 0.06), deviceStatus: Math.floor(dataWidth * 0.05),
     installStatus: Math.floor(dataWidth * 0.05), result: Math.floor(dataWidth * 0.07),
     timestamp: Math.floor(dataWidth * 0.12), comments: Math.floor(dataWidth * 0.16),
-    dependencies: depsW,
+    reason: reasonW,
     history: 50, help: 50, failed: 50, clear: 50,
     mute: 50, output: 60,
   }
@@ -253,7 +250,6 @@ export function EnhancedIoDataGrid({
   deviceStatuses = new Map(),
   mutedIos = new Set(),
   onToggleMute,
-  onDependenciesChange,
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -570,12 +566,10 @@ export function EnhancedIoDataGrid({
       if (activeQuickFilter === 'not-tested' && io.result) return false
       if (activeQuickFilter === 'passed' && io.result !== 'Passed') return false
       if (activeQuickFilter === 'outputs') {
-        const name = io.name || ''
-        if (!(name.includes(':O.') || name.includes(':SO.'))) return false
+        if (!isOutputIo(io.name, io.description)) return false
       }
       if (activeQuickFilter === 'inputs') {
-        const name = io.name || ''
-        if (name.includes(':O.') || name.includes(':SO.')) return false
+        if (isOutputIo(io.name, io.description)) return false
       }
       if (activeQuickFilter === 'my-ios') {
         if (!currentUser?.fullName || io.assignedTo !== currentUser.fullName) return false
@@ -798,19 +792,7 @@ export function EnhancedIoDataGrid({
     return <div className="w-6 h-6 min-w-[24px] rounded-full bg-gray-300 dark:bg-gray-600" />
   }
 
-  // Match backend Io.IsOutput property - check for O after colon before dot
-  const isOutput = (ioName: string) =>
-    ioName.includes(':O.') ||
-    ioName.includes(':SO.') ||   // Safety Output - cannot be fired directly
-    ioName.includes('.O.') ||
-    ioName.includes(':O:') ||
-    ioName.includes('.Outputs.') ||
-    ioName.endsWith('.DO') ||
-    ioName.endsWith('_DO') ||
-    ioName.startsWith('STD_')   // Safety intermediary tags (STO/BSD control)
-
-  // Safety outputs cannot be written - they're controlled by safety PLC
-  const isSafetyOutput = (ioName: string) => ioName.includes(':SO.')
+  // Output / safety-output classification lives in @/lib/io-classification
 
   const handleShowDiagnostic = async (io: IoItem) => {
     // If IO doesn't have failureMode, fetch it from history
@@ -847,7 +829,7 @@ export function EnhancedIoDataGrid({
     (showResultColumn ? COLUMN_WIDTHS.result : 0) +
     (showTimestamp ? COLUMN_WIDTHS.timestamp : 0) +
     (showComments ? COLUMN_WIDTHS.comments : 0) +
-    COLUMN_WIDTHS.dependencies +
+    COLUMN_WIDTHS.reason +
     COLUMN_WIDTHS.history +
     COLUMN_WIDTHS.help +
     COLUMN_WIDTHS.failed +
@@ -1052,16 +1034,17 @@ export function EnhancedIoDataGrid({
               Notes
             </div>
             )}
-            {/* Dependencies (Yes/No). Sits at the right of the data columns
-                so coordinators can flag IOs blocked on outside work. The
-                cloud app displays this read-only and uses it for sidebar
-                filtering. */}
+            {/* Reason (read-only failure reason). Sits at the right of the
+                data columns. Shows the failure reason chosen in the fail
+                dialog so testers can see it at a glance without opening the
+                comment; the cloud app maps the "who" reasons (3rd Party /
+                Mech / Electrical) into its Party Responsible column. */}
             <div
               className="px-2 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
-              style={{ width: `${COLUMN_WIDTHS.dependencies}px` }}
-              title="Dependencies on outside work (third-party, mech, etc.)"
+              style={{ width: `${COLUMN_WIDTHS.reason}px` }}
+              title="Failure reason selected when the IO was marked failed"
             >
-              Deps
+              Reason
             </div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history}px` }}>Hist</div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.help}px` }}>Help</div>
@@ -1224,7 +1207,7 @@ export function EnhancedIoDataGrid({
             )}
 
             {/* Spacer for Dependencies + action columns (no per-column filter for these) */}
-            <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.dependencies + COLUMN_WIDTHS.history + COLUMN_WIDTHS.help + COLUMN_WIDTHS.failed + COLUMN_WIDTHS.clear + COLUMN_WIDTHS.mute + COLUMN_WIDTHS.output}px` }} />
+            <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.reason + COLUMN_WIDTHS.history + COLUMN_WIDTHS.help + COLUMN_WIDTHS.failed + COLUMN_WIDTHS.clear + COLUMN_WIDTHS.mute + COLUMN_WIDTHS.output}px` }} />
 
             {/* Clear column filters button */}
             {hasActiveColumnFilters && (
@@ -1486,33 +1469,23 @@ export function EnhancedIoDataGrid({
                      )}
                    </div>
                    )}
-                  {/* Dependencies — Yes/No toggle. Click anywhere in the
-                      cell to flip the value; parent handler does the
-                      optimistic update + server PATCH. Stops row-click. */}
+                  {/* Reason — read-only failure reason for this IO. Only
+                      set while the IO is failed (cleared on pass), so it is
+                      blank for everything else. Truncates with a tooltip. */}
                   <div
-                    className="px-1 py-2 flex items-center justify-center flex-shrink-0"
-                    style={{ width: `${COLUMN_WIDTHS.dependencies}px` }}
-                    onClick={(e) => e.stopPropagation()}
+                    className="px-1 py-2 flex items-center justify-center flex-shrink-0 overflow-hidden"
+                    style={{ width: `${COLUMN_WIDTHS.reason}px` }}
                   >
-                    {(() => {
-                      const yes = io.hasDependencies === true
-                      return (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); onDependenciesChange?.(io, !yes) }}
-                          aria-pressed={yes}
-                          title={yes ? "Has dependencies — click to clear" : "No dependencies — click to flag"}
-                          className={cn(
-                            "h-8 min-w-[44px] px-2 rounded text-xs font-bold uppercase tracking-wider border transition-colors",
-                            yes
-                              ? "bg-amber-500 text-white border-amber-600 hover:bg-amber-600"
-                              : "bg-muted text-muted-foreground border-border hover:bg-accent"
-                          )}
-                        >
-                          {yes ? 'Yes' : 'No'}
-                        </button>
-                      )
-                    })()}
+                    {io.failureMode ? (
+                      <span
+                        className="text-xs text-muted-foreground truncate"
+                        title={io.failureMode}
+                      >
+                        {io.failureMode}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/30">—</span>
+                    )}
                   </div>
                   {/* History */}
                   <div className="px-1 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history}px` }}>
@@ -1558,7 +1531,7 @@ export function EnhancedIoDataGrid({
                   </div>
                   {/* Fire */}
                   <div className="px-2 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.output}px` }} onClick={(e) => e.stopPropagation()}>
-                    {isOutput(io.name) ? (
+                    {isOutputIo(io.name, io.description) ? (
                       isSafetyOutput(io.name) ? (
                         <span className="text-xs text-muted-foreground/50 px-2" title="Safety outputs cannot be fired directly">SAFETY</span>
                       ) : (

@@ -87,6 +87,11 @@ const UNIVERSAL_DIAGNOSTICS = [
     failureMode: 'Mech',
     diagnosticSteps: `# Mech — Mechanical / Install Issue\n\nThe IO can't pass because of a mechanical or installation problem outside the controls scope.\n\n## What to capture\n1. The mechanical condition that blocks the test (alignment, missing bracket, damaged device, target offset, no air/hydraulic supply, etc.)\n2. Which trade or crew owns the fix (mechanical, millwright, fabrication)\n3. Whether the device is even powered / installed\n\n## Next steps\n- Add a note in the comments describing the mechanical issue and the responsible trade\n- Coordinate with the mech lead to schedule the fix\n- Re-test after the mechanical work is verified on site` ,
   },
+  {
+    tagType: '*',
+    failureMode: 'Electrical',
+    diagnosticSteps: `# Electrical — Electrical / Controls Issue\n\nThe IO can't pass because of an electrical or controls problem owned by the electrical team.\n\n## What to capture\n1. The electrical condition that blocks the test (wiring fault, wrong landing, blown fuse, no 24V, bad termination, swapped wires, etc.)\n2. Where in the loop the fault sits (device, field cable, panel terminal, IO card)\n3. Any measurements taken (voltage present/absent, continuity)\n\n## Next steps\n- Add a note in the comments describing the electrical fault and where it was found\n- Coordinate with the electrical lead to schedule the fix\n- Re-test after the electrical work is verified on site` ,
+  },
 ];
 
 // Rows that must exist on every install — keyed on (TagType, FailureMode).
@@ -98,6 +103,7 @@ const REQUIRED_ROWS = [
   { tagType: 'TPE Dark Operated', failureMode: 'Needs alignment' },
   { tagType: '*', failureMode: '3rd Party' },
   { tagType: '*', failureMode: 'Mech' },
+  { tagType: '*', failureMode: 'Electrical' },
 ];
 
 function diagnosticStepsFor(tagType: string, failureMode: string): string {

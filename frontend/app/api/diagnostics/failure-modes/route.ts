@@ -5,12 +5,12 @@ function isTpeFamily(tagType: string): boolean {
   return tagType === 'TPE' || tagType.startsWith('TPE ')
 }
 
-// Failure reasons that apply to every tag type. The cloud sidebar
-// surfaces "3rd Party" and "Mech" as quick filters so coordinators
-// can isolate non-electrical blockers across the project — they
-// must therefore be selectable on any IO regardless of tagType.
-// 'Other' (when present) is kept last to match historical ordering.
-const UNIVERSAL_MODES = ['3rd Party', 'Mech'] as const
+// Failure reasons that apply to every tag type. These three map to a
+// "Party Responsible" in the cloud dashboard ('3rd Party' → 3rd Party,
+// 'Mech' → Mechanical, 'Electrical' → Electrical) and drive its sidebar
+// filters + export, so they must be selectable on any IO regardless of
+// tagType. 'Other' (when present) is kept last to match historical ordering.
+const UNIVERSAL_MODES = ['3rd Party', 'Mech', 'Electrical'] as const
 
 function mergeUniversalModes(dbModes: string[]): string[] {
   const otherIdx = dbModes.indexOf('Other')
