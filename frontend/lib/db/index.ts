@@ -5,6 +5,7 @@
  */
 
 import { db, Io, TestHistory, User, PendingSync, TestConstants, checkDatabaseHealth, ioToApi } from '@/lib/db-sqlite'
+import { isOutputIo } from '@/lib/io-classification'
 
 // Re-export the db instance as both `db` and `prisma` (for files that still import prisma from here)
 export { db, db as prisma }
@@ -33,16 +34,9 @@ export interface IoWithComputed extends Io {
 
 // Add computed properties to IO
 export function enrichIo(io: Io): IoWithComputed {
-  const name = io.Name ?? ''
   return {
     ...io,
-    isOutput:
-      name.includes(':O.') ||
-      name.includes(':SO.') ||
-      name.includes('.O.') ||
-      name.includes(':O:') ||
-      name.includes('.Outputs.') ||
-      name.endsWith('.DO'),
+    isOutput: isOutputIo(io.Name, io.Description),
     hasResult: !!io.Result,
     isPassed: io.Result === TestConstants.RESULT_PASSED,
     isFailed: io.Result === TestConstants.RESULT_FAILED,

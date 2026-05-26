@@ -14,6 +14,7 @@ import { QuickFilters } from "@/components/quick-filters"
 import { AllTestHistoryDialog } from "@/components/all-test-history-dialog"
 import { ArrowLeft, PieChart, Download, History } from "lucide-react"
 import { isValidTestableItem } from "@/lib/utils"
+import { isOutputIo } from "@/lib/io-classification"
 import { TEST_CONSTANTS } from "@/lib/constants"
 
 type IoWithSubsystem = {
@@ -166,7 +167,7 @@ export function ProjectDashboard({ project, ios, subsystems }: ProjectDashboardP
         'IsOutput', 'HasResult', 'IsPassed', 'IsFailed' // Computed properties
       ],
       ...dataToExport.map(io => {
-        const isOutput = io.name?.includes(':O.') || io.name?.includes('.O.') || io.name?.includes(':O:') || io.name?.includes('.Outputs.') || io.name?.endsWith('.DO') || io.name?.endsWith('_DO') || io.name?.toLowerCase().includes('output') || false
+        const isOutput = isOutputIo(io.name, io.description)
         const hasResult = !!io.result
         const isPassed = io.result === TEST_CONSTANTS.RESULT_PASSED
         const isFailed = io.result === TEST_CONSTANTS.RESULT_FAILED

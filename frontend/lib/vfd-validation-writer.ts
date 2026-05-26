@@ -56,6 +56,13 @@ let syncRunning = false
 let pendingSync = false
 const MIN_SYNC_INTERVAL_MS = 5_000 // at most once per 5 s
 
+// Tags that returned a definitive PLCTAG_ERR_NOT_FOUND, keyed `${gateway}::${tagPath}`.
+// Once a CMD flag tag is known absent on a given PLC we stop re-creating it every
+// sync. Cleared only by a tool restart (or naturally by switching to a gateway
+// whose program does have the tag). Prevents the 10 s safety-net from spamming
+// tens of thousands of failing createTag calls at the controller's CIP queue.
+const knownMissingTags = new Set<string>()
+
 // ── L2 query ───────────────────────────────────────────────────────
 
 /**
@@ -97,16 +104,23 @@ function batchWriteFlags(
   gateway: string,
   path: string,
   devices: ValidatedDevice[],
-): { ok: number; fail: number } {
+): { ok: number; fail: number; skipped: number } {
   const handles: TagHandle[] = []
   let ok = 0
   let fail = 0
+  let skipped = 0
 
   try {
     // ── Phase 1: create all handles ────────────────────────────────
     for (const device of devices) {
       for (const field of CMD_FIELDS) {
         const tagPath = `CBT_${device.deviceName}.CTRL.CMD.${field}`
+        // Skip tags already proven absent on THIS PLC — see knownMissingTags.
+        const cacheKey = `${gateway}::${tagPath}`
+        if (knownMissingTags.has(cacheKey)) {
+          skipped++
+          continue
+        }
         const handle = createTag({
           gateway,
           path,
@@ -119,6 +133,12 @@ function batchWriteFlags(
           handles.push({ deviceName: device.deviceName, field, tagPath, handle })
         } else {
           fail++
+          // Cache ONLY definitive "not in the program" results. Transient
+          // failures (timeout/busy/connection) must NOT be cached — the tag may
+          // exist and should be retried once the PLC is responsive again.
+          if (handle === PlcTagStatus.PLCTAG_ERR_NOT_FOUND) {
+            knownMissingTags.add(cacheKey)
+          }
           if (fail <= 3) {
             console.warn(`[VfdValidationWriter] createTag failed: ${tagPath}: ${getStatusMessage(handle)}`)
           }
@@ -126,7 +146,7 @@ function batchWriteFlags(
       }
     }
 
-    if (handles.length === 0) return { ok: 0, fail }
+    if (handles.length === 0) return { ok: 0, fail, skipped }
 
     // ── Phase 2: tight read → set → write loop ────────────────────
     for (const h of handles) {
@@ -150,7 +170,7 @@ function batchWriteFlags(
       }
     }
 
-    return { ok, fail }
+    return { ok, fail, skipped }
   } finally {
     // ── Phase 3: destroy all handles ───────────────────────────────
     for (const h of handles) {
@@ -208,7 +228,7 @@ export async function syncValidationFlags(): Promise<void> {
     }
 
     const t0 = Date.now()
-    const { ok, fail } = batchWriteFlags(
+    const { ok, fail, skipped } = batchWriteFlags(
       connectionConfig.ip,
       connectionConfig.path,
       devices,
@@ -217,7 +237,7 @@ export async function syncValidationFlags(): Promise<void> {
 
     console.log(
       `[VfdValidationWriter] Sync done: ${devices.length} device(s), ` +
-      `${ok} ok, ${fail} failed, ${elapsed} ms`,
+      `${ok} ok, ${fail} failed, ${skipped} skipped (known-missing), ${elapsed} ms`,
     )
   } catch (err) {
     console.error('[VfdValidationWriter] Sync error:', err)

@@ -392,6 +392,15 @@ export async function connectPlc(config: PlcConnectionConfig): Promise<{
     state.currentConnectionConfig = config;
     syncState();
 
+    // Tear down any existing network poller before (re)connecting. It's bound to
+    // the PREVIOUS gateway + device handles; if left in place, the post-connect
+    // 'initialized' → startNetworkPoller() no-ops on its `if (state.networkPoller)
+    // return` guard, so on a subsystem switch or a reconnect that didn't emit a
+    // clean 'error'/'disconnected' first, the poller keeps polling the OLD PLC
+    // and the new connection gets no network/diagnostics data (audit 2026-05-26).
+    // Clearing it here lets 'initialized' start a fresh poller for this config.
+    await stopNetworkPoller();
+
     const result = await client.connect(config);
 
     return {

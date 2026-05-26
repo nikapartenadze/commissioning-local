@@ -25,6 +25,7 @@ import {
   plc_tag_get_bit,
   readTagAsync,
 } from './libplctag';
+import { connectionVerdict } from './connection-verdict';
 
 // Tag state interface
 export interface TagState {
@@ -100,6 +101,8 @@ export class TagReaderService extends EventEmitter {
   private path: string = '';
   private isConnected: boolean = true;
   private consecutiveErrorCycles: number = 0;
+  /** Wall-clock ms when the current total-failure streak began (0 = not failing). */
+  private connectionLossFirstErrorAt: number = 0;
   private lastConnectionStatus: boolean = true;
 
   // Performance tracking
@@ -526,6 +529,7 @@ export class TagReaderService extends EventEmitter {
     this.isReading = true;
     this.abortController = new AbortController();
     this.consecutiveErrorCycles = 0;
+    this.connectionLossFirstErrorAt = 0;
 
     // Start the continuous reading loop
     this.continuousReadLoop();
@@ -661,6 +665,7 @@ export class TagReaderService extends EventEmitter {
     await this.delay(300);
     this.destroyAllHandles();
     this.consecutiveErrorCycles = 0;
+    this.connectionLossFirstErrorAt = 0;
     this.totalReadCycles = 0;
     this.totalReadTimeMs = 0;
   }
@@ -732,9 +737,11 @@ export class TagReaderService extends EventEmitter {
         successCount = grouped.s + individual.s;
         failCount = grouped.f + individual.f;
 
-        // Update connection status based on results
-        const cycleSuccessful = failCount === 0 || successCount > failCount;
-        this.updateConnectionStatus(cycleSuccessful);
+        // Update connection status. A cycle signals connection LOSS only when
+        // EVERY read failed; partial failures (busy PLC, a few missing tags,
+        // a brief blip) keep the connection up and let libplctag retry next
+        // cycle. See connectionVerdict() — prevents the false-disconnect thrash.
+        this.updateConnectionStatus(successCount, failCount);
 
         // Track performance
         const cycleTimeMs = Date.now() - cycleStart;
@@ -833,22 +840,27 @@ export class TagReaderService extends EventEmitter {
   }
 
   /**
-   * Update connection status based on read results
+   * Update connection status from a read cycle's success/fail counts. Only a
+   * sustained TOTAL failure (every read failing for CONNECTION_LOSS_MIN_CYCLES
+   * cycles AND CONNECTION_LOSS_MIN_MS) declares the PLC lost; any successful
+   * read keeps the connection up. See connectionVerdict().
    */
-  private updateConnectionStatus(cycleSuccessful: boolean): void {
-    if (cycleSuccessful) {
-      this.consecutiveErrorCycles = 0;
-      if (!this.isConnected) {
-        this.isConnected = true;
-        this.emit('connectionStatusChanged', true);
-      }
-    } else {
-      this.consecutiveErrorCycles++;
-      // Mark as disconnected after 3 consecutive error cycles
-      if (this.consecutiveErrorCycles >= 3 && this.isConnected) {
-        this.isConnected = false;
-        this.emit('connectionStatusChanged', false);
-      }
+  private updateConnectionStatus(successCount: number, failCount: number): void {
+    const { state, changedTo } = connectionVerdict(
+      {
+        isConnected: this.isConnected,
+        totalFailureCycles: this.consecutiveErrorCycles,
+        firstFailureAt: this.connectionLossFirstErrorAt,
+      },
+      successCount,
+      failCount,
+      Date.now(),
+    );
+    this.isConnected = state.isConnected;
+    this.consecutiveErrorCycles = state.totalFailureCycles;
+    this.connectionLossFirstErrorAt = state.firstFailureAt;
+    if (changedTo !== undefined) {
+      this.emit('connectionStatusChanged', changedTo);
     }
   }
 

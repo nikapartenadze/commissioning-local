@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { db, ioToApi } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '@/lib/plc-client-manager'
+import { isOutputIo } from '@/lib/io-classification'
 
 /**
  * GET /api/ios
@@ -33,7 +34,7 @@ export async function GET(req: Request, res: Response) {
         ...ioToApi(io),
         state: stateMap.get(io.id) ?? null,
         hasNetworkDevice: deviceName ? networkDevices.has(deviceName) : false,
-        isOutput: io.Name?.includes(':O.') || io.Name?.includes(':SO.') || io.Name?.includes('.O.') || io.Name?.includes(':O:') || io.Name?.includes('.Outputs.') || io.Name?.endsWith('.DO') || io.Name?.endsWith('_DO') || io.Name?.startsWith('STD_'),
+        isOutput: isOutputIo(io.Name, io.Description),
         hasResult: !!io.Result,
         isPassed: io.Result === 'Passed',
         isFailed: io.Result === 'Failed'

@@ -221,7 +221,11 @@ export class PlcClient extends EventEmitter {
               ? `PLC connected but none of the ${totalFailed.length} tags exist on the PLC. Tag names may not match the PLC program.`
               : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
             this.emit('error', new Error(errorMsg));
-            this.scheduleReconnect();
+            // Only auto-retry on genuine unreachability — a tag/program mismatch
+            // can't be fixed by reconnecting, so don't loop on it.
+            if (!plcReachable) {
+              this.scheduleReconnect();
+            }
             return {
               success: false,
               plcReachable,
@@ -275,7 +279,13 @@ export class PlcClient extends EventEmitter {
             ? `PLC connected but none of the ${result.failed.length} tags exist on the PLC. Tag names may not match the PLC program.`
             : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
           this.emit('error', new Error(errorMsg));
-          this.scheduleReconnect();
+          // Only auto-retry when the PLC is genuinely unreachable. If it IS
+          // reachable but no tags matched, the loaded program/subsystem is
+          // wrong — reconnecting every few seconds can't fix that and just
+          // thrashes the CIP queue; wait for the operator to fix the config.
+          if (!result.plcReachable) {
+            this.scheduleReconnect();
+          }
           return {
             success: false,
             plcReachable: result.plcReachable,
