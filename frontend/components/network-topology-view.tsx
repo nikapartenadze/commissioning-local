@@ -3,10 +3,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy, Check, Activity } from 'lucide-react'
+import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy, Check, Activity, Cable } from 'lucide-react'
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 import { NetworkDiagnosticsView } from '@/components/network-diagnostics-view'
+import { RingCommissioningView } from '@/components/ring-commissioning-view'
 import { useNetworkSnapshots } from '@/lib/hooks/use-network-snapshots'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 
@@ -879,6 +880,8 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   // Esc / backdrop closes.
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [diagnosticsSingleDevice, setDiagnosticsSingleDevice] = useState<string | undefined>(undefined)
+  // Ring Commissioning modal — direct SNMP scan of the DPM switches.
+  const [ringCheckOpen, setRingCheckOpen] = useState(false)
 
   // Page-level WS subscription to the network poller. Runs while the Network
   // page is mounted, so when the operator opens the Diagnostics modal the
@@ -1095,6 +1098,14 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
           >
             <Activity className="w-4 h-4" />
             Diagnostics
+          </button>
+          <button
+            type="button"
+            onClick={() => setRingCheckOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors"
+          >
+            <Cable className="w-4 h-4" />
+            Ring Commissioning
           </button>
         <button
           onClick={() => fetchTopology(true)}
@@ -1322,6 +1333,27 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
               knownDevices={rings.flatMap((r) => r.nodes.map((n) => n.name))}
               liveSnapshots={networkSnapshots.snapshots}
               wsConnected={networkSnapshots.wsConnected}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={ringCheckOpen} onOpenChange={setRingCheckOpen}>
+        <DialogContent
+          className={cn(
+            'fixed left-[50%] top-[50%] translate-x-[-50%] translate-y-[-50%]',
+            'w-[96vw] max-w-none h-[92vh] p-0 gap-0 overflow-hidden rounded-lg',
+            'bg-card border border-border shadow-2xl shadow-black/30',
+          )}
+        >
+          <DialogTitle className="sr-only">Ring commissioning</DialogTitle>
+          <DialogDescription className="sr-only">
+            Direct read-only SNMP check of the DPM switches: ring health, switch-to-switch topology vs the saved baseline, and per-port termination quality.
+          </DialogDescription>
+          <div className="h-full overflow-auto">
+            <RingCommissioningView
+              active={ringCheckOpen}
+              rings={rings.map((r) => ({ id: r.id, name: r.name }))}
             />
           </div>
         </DialogContent>
