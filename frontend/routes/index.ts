@@ -67,6 +67,8 @@ import * as networkChainStatus from '@/app/api/network/chain-status/route'
 import * as networkDevices from '@/app/api/network/devices/route'
 import * as networkModules from '@/app/api/network/modules/route'
 import * as networkFiomPorts from '@/app/api/network/fiom-ports/route'
+import * as networkRingCheck from '@/app/api/network/ring-check/route'
+import * as networkRingBaseline from '@/app/api/network/ring-baseline/route'
 import * as changeRequests from '@/app/api/change-requests/route'
 import * as changeRequestById from '@/app/api/change-requests/[id]/route'
 import * as estopStatus from '@/app/api/estop/status/route'
@@ -215,6 +217,10 @@ export function createApiRouter(): Router {
   router.get('/api/network/devices', asyncHandler(networkDevices.GET))
   router.get('/api/network/modules', asyncHandler(networkModules.GET))
   router.get('/api/network/fiom-ports', asyncHandler(networkFiomPorts.GET))
+  router.post('/api/network/ring-check', asyncHandler(networkRingCheck.POST))
+  router.get('/api/network/ring-baseline', asyncHandler(networkRingBaseline.GET))
+  router.put('/api/network/ring-baseline', authMiddleware, asyncHandler(networkRingBaseline.PUT))
+  router.delete('/api/network/ring-baseline', authMiddleware, asyncHandler(networkRingBaseline.DELETE))
 
   // ── Change Requests ────────────────────────────────────────────
   router.get('/api/change-requests', asyncHandler(changeRequests.GET))
