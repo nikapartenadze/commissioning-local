@@ -104,6 +104,15 @@ Ran `test-dlr-read.ts` against the dev PLC (`192.168.5.106`). Findings, via read
 
 **Engineer explanation:** a standalone plain-language doc for controls engineers (what the DLR ring is, what closed/healthy means, the exact CIP object/attributes read, that it's read-only, and why the Hirschmann ring is separate).
 
+## Update 2026-05-27 — engineer feedback (Nika): EN4TR supervisor is the single source
+
+Field engineer (Nika Partenadze) clarified: **the EN4TR is the DLR ring supervisor, so it already *sees* a ring break — "what the DPMs don't do, the EN4TR does."** This supersedes the per-port DPM heuristic:
+
+- **Removed** the per-port "DPM ring" badge + `dpm-ring.ts` (a weaker proxy). The EN4TR's DLR object is the authoritative ring-health source and covers breaks between DPM switches *provided the DPMs are participants on the DLR ring the EN4TR supervises* (confirm on-site via DLR Attr 8 Ring Participants).
+- **Added** break localization to the DLR reader/badge: DLR **Attr 6/7 (Last Active Node on Port 1/2)** → the badge shows "Ring Fault · between `<A>` and `<B>`". `parseRingNodeIp` is unit-tested; IP byte order is best-effort pending a field capture.
+- **Single badge** now: "Ring — Healthy/Degraded/Unknown" from the EN4TR DLR supervisor.
+- **Open question for the site:** are the 5 DPM switches on the EN4TR's DLR ring (then the DLR badge fully covers them), or on a separate Hirschmann MRP segment (then add SNMP `hmMrpMRMRealRingState`, needs OS30 IPs + community)? The DLR Participants list answers this on hardware.
+
 ## Reference material (provided by user + research)
 - Rockwell **1756-UM004** ControlLogix chassis/controller manual (local: `Downloads\1756-um004_-en-p.pdf`; web: https://literature.rockwellautomation.com/idc/groups/literature/documents/um/1756-um004_-en-p.pdf). NOTE: chassis/controller reference — DLR ring specifics are NOT here; see ENET-AT007 / ENET-TD015 below.
 - Hirschmann **Octopus OS30** (model `OS30-002404T6T6T5-TBBY999HHSE2S`).

@@ -45,6 +45,11 @@ export interface DlrStatus {
   faultCount: number | null
   /** Attr 8 — number of ring participants (null if unread) */
   participants: number | null
+  /** Attr 6 — IP of the last active node on supervisor port 1 (one side of a
+   *  break), or null. On a ring fault, nodes 1 & 2 bracket the break. */
+  lastActiveNode1: string | null
+  /** Attr 7 — IP of the last active node on supervisor port 2, or null. */
+  lastActiveNode2: string | null
 }
 
 export type RingState = 'healthy' | 'degraded' | 'unknown'
@@ -57,6 +62,10 @@ export interface RingStatus {
   networkStatus?: number
   faultCount?: number | null
   participants?: number | null
+  /** On a degraded ring, the two nodes bracketing the break (from the
+   *  supervisor's Last Active Node on Port 1/2). */
+  lastActiveNode1?: string | null
+  lastActiveNode2?: string | null
 }
 
 /** Build a `@raw` Get_Attribute_Single (0x0E) request for DLR class 0x47 / inst 1 / `attr`. */
@@ -84,8 +93,8 @@ export function parseDlrReply(raw: Buffer): { cipStatus: number; value: Buffer }
  */
 export function ringVerdict(dlr: DlrStatus | null): RingStatus {
   if (!dlr) return { state: 'unknown', reason: 'No DLR object / not read' }
-  const { topology, networkStatus, faultCount, participants } = dlr
-  const carry = { topology, networkStatus, faultCount, participants }
+  const { topology, networkStatus, faultCount, participants, lastActiveNode1, lastActiveNode2 } = dlr
+  const carry = { topology, networkStatus, faultCount, participants, lastActiveNode1, lastActiveNode2 }
   if (topology !== 1) {
     return { state: 'unknown', reason: 'Linear topology — not a DLR ring', ...carry }
   }
@@ -93,6 +102,20 @@ export function ringVerdict(dlr: DlrStatus | null): RingStatus {
     return { state: 'healthy', reason: 'Ring closed (Normal)', ...carry }
   }
   return { state: 'degraded', reason: NETWORK_STATUS[networkStatus] ?? `Status ${networkStatus}`, ...carry }
+}
+
+/**
+ * Parse the IP from a DLR "Last Active Node" struct (Attr 6/7): 4-byte IP
+ * (UDINT) followed by a 6-byte MAC. Returns the dotted-quad IP, or null when
+ * the node is all-zero (no localized break / not populated).
+ * NOTE: bytes are taken in on-wire order; if a field capture shows the IP
+ * reversed, flip the order here (unverifiable on the Emulate bench).
+ */
+export function parseRingNodeIp(value: Buffer): string | null {
+  if (value.length < 4) return null
+  const a = value[0], b = value[1], c = value[2], d = value[3]
+  if ((a | b | c | d) === 0) return null
+  return `${a}.${b}.${c}.${d}`
 }
 
 /**
@@ -153,12 +176,17 @@ export async function readDlrStatus(
   if (!a2.transportOk || a2.cipStatus !== 0 || a2.value.length < 1) return null
   const a5 = await getDlrAttr(gateway, path, 5, timeoutMs)
   const a8 = await getDlrAttr(gateway, path, 8, timeoutMs)
-  const u16 = (a: { transportOk: boolean; cipStatus: number; value: Buffer }) =>
-    a.transportOk && a.cipStatus === 0 && a.value.length >= 2 ? a.value.readUInt16LE(0) : null
+  const a6 = await getDlrAttr(gateway, path, 6, timeoutMs)
+  const a7 = await getDlrAttr(gateway, path, 7, timeoutMs)
+  type Attr = { transportOk: boolean; cipStatus: number; value: Buffer }
+  const u16 = (a: Attr) => (a.transportOk && a.cipStatus === 0 && a.value.length >= 2 ? a.value.readUInt16LE(0) : null)
+  const node = (a: Attr) => (a.transportOk && a.cipStatus === 0 ? parseRingNodeIp(a.value) : null)
   return {
     topology: a1.value[0],
     networkStatus: a2.value[0],
     faultCount: u16(a5),
     participants: u16(a8),
+    lastActiveNode1: node(a6),
+    lastActiveNode2: node(a7),
   }
 }
