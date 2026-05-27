@@ -112,6 +112,11 @@ class ConfigurationService {
         networkPollingDevices: Array.isArray(parsed.networkPollingDevices)
           ? parsed.networkPollingDevices.filter((d: unknown): d is string => typeof d === 'string' && d.length > 0)
           : [],
+        // Optional backplane path to the DLR ring supervisor (e.g. "1,2").
+        // Undefined → poller auto-derives from a SLOTn_EN4TR device name.
+        dlrSupervisorPath: typeof parsed.dlrSupervisorPath === 'string' && parsed.dlrSupervisorPath.trim().length > 0
+          ? parsed.dlrSupervisorPath.trim()
+          : undefined,
         // Opt-in install-status gate. Undefined / missing / falsy → off (existing
         // behavior unchanged for every machine that hasn't explicitly set it).
         // Only the literal `true` enables it, so a typo like "true" string still

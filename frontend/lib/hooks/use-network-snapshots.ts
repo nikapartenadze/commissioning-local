@@ -14,20 +14,24 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import type { NetworkDeviceSnapshotMessage } from '@/lib/plc/types'
+import type { NetworkDeviceSnapshotMessage, RingStatusUpdateMessage } from '@/lib/plc/types'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
+type RingStatus = RingStatusUpdateMessage['ring']
 
 export interface NetworkSnapshotsState {
   /** Latest snapshot per device. Identity changes on every new message so React re-renders. */
   snapshots: Map<string, Snapshot>
   /** True while the WS is open. */
   wsConnected: boolean
+  /** Latest DLR ring verdict from the poller, or null until the first push. */
+  ringStatus: RingStatus | null
 }
 
 export function useNetworkSnapshots(enabled = true): NetworkSnapshotsState {
   const [snapshots, setSnapshots] = useState<Map<string, Snapshot>>(() => new Map())
   const [wsConnected, setWsConnected] = useState(false)
+  const [ringStatus, setRingStatus] = useState<RingStatus | null>(null)
   // Keep a ref of the map for synchronous reads from the WS callback so we
   // never race a stale setState. setSnapshots always creates a new Map so
   // React notices the change.
@@ -63,7 +67,11 @@ export function useNetworkSnapshots(enabled = true): NetworkSnapshotsState {
       ws.onerror = () => { /* onclose handles retry */ }
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data) as { type?: string; snapshot?: Snapshot }
+          const msg = JSON.parse(event.data) as { type?: string; snapshot?: Snapshot; ring?: RingStatus }
+          if (msg.type === 'RingStatusUpdate' && msg.ring) {
+            setRingStatus(msg.ring)
+            return
+          }
           if (msg.type !== 'NetworkDeviceSnapshot' || !msg.snapshot) return
           const next = new Map(mapRef.current)
           next.set(msg.snapshot.deviceName, msg.snapshot)
@@ -83,5 +91,5 @@ export function useNetworkSnapshots(enabled = true): NetworkSnapshotsState {
     }
   }, [enabled])
 
-  return { snapshots, wsConnected }
+  return { snapshots, wsConnected, ringStatus }
 }

@@ -50,6 +50,15 @@ export interface AppConfig {
   networkPollingDevices?: string[];
 
   /**
+   * Backplane path to the DLR ring supervisor (the 1756-EN2TR/EN4TR), e.g.
+   * "1,2" (backplane port 1, slot 2). Drives the DLR ring-health indicator.
+   * When omitted, the poller derives it from a discovered SLOTn_EN4TR device
+   * name; set this explicitly when the EN4TR isn't named SLOTn_EN4TR or sits
+   * in a different slot. No path resolvable → ring status shows Unknown.
+   */
+  dlrSupervisorPath?: string;
+
+  /**
    * Per-machine opt-in gate (default off / undefined). When true, the server
    * rejects Pass/Fail attempts on any IO whose InstallationStatus is not
    * 'complete' (SPARE IOs exempt). Used on projects like CDW5 where mechanical

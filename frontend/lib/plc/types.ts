@@ -433,6 +433,24 @@ export interface VfdTagUpdateMessage {
   ts: number
 }
 
+/**
+ * Broadcast by the server-side NetworkPoller after each DLR ring probe
+ * (lib/plc/network/poller.ts → dlr.ts). Carries the current Rockwell DLR
+ * ring verdict for the Network page indicator. `state` is never 'healthy'
+ * unless the DLR object confirmed Topology=Ring AND Network Status=Normal.
+ */
+export interface RingStatusUpdateMessage {
+  type: 'RingStatusUpdate'
+  ring: {
+    state: 'healthy' | 'degraded' | 'unknown'
+    reason: string
+    topology?: number
+    networkStatus?: number
+    faultCount?: number | null
+    participants?: number | null
+  }
+}
+
 export type PlcWebSocketMessage =
   | UpdateStateMessage
   | UpdateIOMessage
@@ -446,3 +464,4 @@ export type PlcWebSocketMessage =
   | L2CellUpdatedMessage
   | VfdTagUpdateMessage
   | NetworkDeviceSnapshotMessage
+  | RingStatusUpdateMessage
