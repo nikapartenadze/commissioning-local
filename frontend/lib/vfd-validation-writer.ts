@@ -31,12 +31,15 @@ import {
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
+import { deviceFlagWrites } from '@/lib/vfd-polarity'
 
 // ── Types ──────────────────────────────────────────────────────────
 
 interface ValidatedDevice {
   deviceName: string
   sheetName: string
+  /** Raw "Polarity" L2 cell ("… · Normal|Inverter"), or null when unrecorded. */
+  polarityRaw: string | null
 }
 
 interface TagHandle {
@@ -44,10 +47,9 @@ interface TagHandle {
   field: string
   tagPath: string
   handle: number
+  /** Value to assert on this CMD bit (0 or 1). */
+  value: number
 }
-
-// The three validation CMD fields we assert for every validated VFD.
-const CMD_FIELDS = ['Valid_Map', 'Valid_HP', 'Valid_Direction'] as const
 
 // ── Throttle / state ───────────────────────────────────────────────
 
@@ -74,11 +76,13 @@ const knownMissingTags = new Set<string>()
 function getValidatedDevices(): ValidatedDevice[] {
   try {
     const rows = db.prepare(`
-      SELECT d.DeviceName AS deviceName, s.Name AS sheetName
+      SELECT d.DeviceName AS deviceName, s.Name AS sheetName, pcv.Value AS polarityRaw
       FROM L2Devices d
       JOIN L2Sheets   s  ON s.id = d.SheetId
       JOIN L2Columns  c  ON c.SheetId = d.SheetId
       JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
+      LEFT JOIN L2Columns    pc  ON pc.SheetId = d.SheetId AND pc.Name = 'Polarity'
+      LEFT JOIN L2CellValues pcv ON pcv.DeviceId = d.id AND pcv.ColumnId = pc.id
       WHERE c.Name = 'Check Direction'
         AND cv.Value IS NOT NULL AND cv.Value != ''
         AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
@@ -113,7 +117,8 @@ function batchWriteFlags(
   try {
     // ── Phase 1: create all handles ────────────────────────────────
     for (const device of devices) {
-      for (const field of CMD_FIELDS) {
+      // Validation flags (=1) + polarity bits (when the Polarity cell is set).
+      for (const { field, value } of deviceFlagWrites(device.polarityRaw)) {
         const tagPath = `CBT_${device.deviceName}.CTRL.CMD.${field}`
         // Skip tags already proven absent on THIS PLC — see knownMissingTags.
         const cacheKey = `${gateway}::${tagPath}`
@@ -130,7 +135,7 @@ function batchWriteFlags(
           timeout: 5000,
         })
         if (handle >= 0) {
-          handles.push({ deviceName: device.deviceName, field, tagPath, handle })
+          handles.push({ deviceName: device.deviceName, field, tagPath, handle, value })
         } else {
           fail++
           // Cache ONLY definitive "not in the program" results. Transient
@@ -157,7 +162,7 @@ function batchWriteFlags(
           continue
         }
 
-        plc_tag_set_int8(h.handle, 0, 1)
+        plc_tag_set_int8(h.handle, 0, h.value)
 
         const writeSt = plc_tag_write(h.handle, 2000)
         if (writeSt === PlcTagStatus.PLCTAG_STATUS_OK) {
