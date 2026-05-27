@@ -79,6 +79,31 @@ Ran `test-dlr-read.ts` against the dev PLC (`192.168.5.106`). Findings, via read
 2. Then brainstorm → spec → plan the "Ring Health" indicator: extend the poller to read DLR `0x47` via `@raw` (path to the EN4TR slot), AND add an SNMP poll of the OS30 for `hmMrpMRMRealRingState` (the Hirschmann backbone ring — no CIP). Verdict = (DLR Status Normal) AND (MRP closed).
 3. **Heads-up for the feature design:** because the dev PLC is an emulator with no ring objects, the ring-health code needs a clean "no DLR object / not a ring device" path (don't error) — the field tool will hit emulators and non-DLR setups too.
 
+## Phase 1 Design — DLR Ring Health indicator (APPROVED 2026-05-26)
+
+**Scope:** a Network-page indicator for the **Rockwell DLR ring only** (read via `@raw` CIP, proven). The Hirschmann/DPM (OS30 MRP) backbone ring is **Phase 2** (needs an SNMP poller + OS30 credentials) — explicitly out of scope here.
+
+**Read (server):** new `lib/plc/network/dlr.ts` —
+- pure: `buildDlrRequest(attr)` (the `@raw` Get_Attribute_Single bytes), `parseDlrReply(buf)` (reply header → cipStatus + value), `ringVerdict(dlr|null)` (the state machine), enums.
+- impure: `readDlrStatus(gateway, path, timeout)` — issues the `@raw` reads for Attr 1 (Topology), 2 (Network Status), 5 (Fault Count), 8 (Participants) and returns a `DlrStatus` (or `null` when no DLR object / timeout). Refactored from the proven `test-dlr-read.ts`.
+
+**Where it reads:** the DLR object lives on the EN4TR, addressed by a backplane path to its slot — distinct from the controller path the poller already uses. New optional `config.json` field **`dlrSupervisorPath`** (e.g. `"1,2"`); when absent, derive from a discovered `SLOTn_EN4TR` device name (`SLOT2_*` → `"1,2"`), else skip the DLR read (→ Unknown).
+
+**Verdict (`ringVerdict`, pure, unit-tested):**
+- **healthy** — Topology = Ring (1) AND Network Status = Normal (0).
+- **degraded** — Topology = Ring AND Status ≠ Normal (carries the reason: Ring Fault / Unexpected Loop / Partial / Rapid).
+- **unknown** — no DLR object, CIP error, timeout, or Topology = Linear. **Never `healthy` unless the object confirms it** (safety rule — must not false-green on the emulator or a non-DLR site).
+
+**Integration:** `poller.ts` reads DLR once per cycle (after device polling), stores latest, emits `ringStatus`; `getLatestRingStatus()` added. `plc-client-manager.ts` wires `poller.on('ringStatus')` → `broadcastToWebSocket({ type: 'RingStatusUpdate', ... })` (mirrors `NetworkDeviceSnapshot`). New `RingStatusUpdateMessage` in `lib/plc/types.ts`.
+
+**UI:** `network-diagnostics-view.tsx` header shows a compact badge — **"DPM Ring: ● Healthy / ● Degraded — <reason> / ○ Unknown"** + a detail line (Topology / Status / Fault Count / Participants). Fed via the same WS path as snapshots.
+
+**Error handling:** every failure path → Unknown, never throws, de-spammed logging like the poller.
+
+**Testing:** unit tests for `ringVerdict` (all enum→state mappings, null/linear→unknown) and `parseDlrReply` (fixture reply bytes incl. CIP-error and extended-status cases) and `buildDlrRequest` (exact bytes). **Live green/degraded paths are field-unverified** — the Emulate 5580 dev PLC has no DLR object, so locally the badge correctly reads **Unknown**; on-site verification required before trusting the colored states.
+
+**Engineer explanation:** a standalone plain-language doc for controls engineers (what the DLR ring is, what closed/healthy means, the exact CIP object/attributes read, that it's read-only, and why the Hirschmann ring is separate).
+
 ## Reference material (provided by user + research)
 - Rockwell **1756-UM004** ControlLogix chassis/controller manual (local: `Downloads\1756-um004_-en-p.pdf`; web: https://literature.rockwellautomation.com/idc/groups/literature/documents/um/1756-um004_-en-p.pdf). NOTE: chassis/controller reference — DLR ring specifics are NOT here; see ENET-AT007 / ENET-TD015 below.
 - Hirschmann **Octopus OS30** (model `OS30-002404T6T6T5-TBBY999HHSE2S`).

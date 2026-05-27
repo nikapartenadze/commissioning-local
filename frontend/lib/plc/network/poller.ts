@@ -51,6 +51,7 @@ import {
   type NetworkDeviceSnapshot,
 } from './types';
 import { bufferReader, parseNetworkDevice } from './parser';
+import { readDlrStatus, ringVerdict, deriveDlrPath, type RingStatus } from './dlr';
 
 /** Default poll cadence. Operators can override via config.networkPollingIntervalMs. */
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
@@ -63,6 +64,10 @@ const SYMBOL_TYPE_STRUCTURE_BIT = 0x2000;
 const ERROR_HEARTBEAT_CYCLES = 5;
 /** Drop cached snapshots older than this so heartbeat doesn't ship stale data. Set to 3× the default poll interval so a single missed cycle doesn't drop a still-recent snapshot; operators tightening pollIntervalMs below 60 s pick up correspondingly fresher staleness anyway. */
 const STALE_SNAPSHOT_MS = 180_000;
+/** When the DLR ring reads UNKNOWN (no supervisor reply — absent module times
+ * out, which is costly), only re-probe every N cycles instead of every cycle.
+ * While the ring IS readable we probe every cycle so a break is caught fast. */
+const DLR_REPROBE_CYCLES = 5;
 
 export interface NetworkPollerConfig {
   pollIntervalMs?: number;
@@ -73,11 +78,19 @@ export interface NetworkPollerConfig {
    * "no network devices" in logs and need to populate it.
    */
   fallbackDevices?: string[];
+  /**
+   * Backplane path to the DLR ring supervisor (the EN2TR/EN4TR), e.g. "1,2".
+   * When omitted, derived from a discovered SLOTn_EN4TR device name; when
+   * neither is available, the DLR ring read is skipped (ring → unknown).
+   */
+  dlrPath?: string;
 }
 
 export interface NetworkPollerEvents {
   /** Fired once per device per successful read. */
   snapshot: (snapshot: NetworkDeviceSnapshot) => void;
+  /** Fired after each DLR ring probe with the current ring verdict. */
+  ringStatus: (status: RingStatus) => void;
   /** Fired with the discovered tag names at start time. */
   discovered: (tagNames: string[]) => void;
   /** Fired once when polling actually begins (after discovery + handle setup). */
@@ -133,12 +146,19 @@ export class NetworkPoller extends EventEmitter {
   private cycleIndex = 0;
   /** Whether we've already warned about a slow cycle this streak. Resets on a fast cycle. */
   private warnedSlowThisStreak = false;
+  /** Backplane path to the DLR supervisor (configured or derived); '' = none. */
+  private dlrPath: string | undefined;
+  /** Latest DLR ring verdict. Unknown until the first successful probe. */
+  private latestRing: RingStatus = { state: 'unknown', reason: 'Not yet probed' };
+  /** Cycle index of the last DLR probe — drives the unknown-state backoff. */
+  private lastDlrProbeCycle = -DLR_REPROBE_CYCLES;
 
   constructor(config: NetworkPollerConfig = {}) {
     super();
     this.pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.readTimeoutMs = config.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
     this.fallbackDevices = config.fallbackDevices ?? [];
+    this.dlrPath = config.dlrPath;
 
     // Defensive guard — node's EventEmitter throws on un-listened 'error' events.
     this.on('error', (err) => {
@@ -191,6 +211,15 @@ export class NetworkPoller extends EventEmitter {
           `[NetworkPoller] Excluded ${excludedCount} rack-slot device(s) (SLOT${EXCLUDED_RACK_SLOTS.join('/')}) from polling.`,
         );
       }
+
+      // Resolve the DLR ring-supervisor path: explicit config wins, else derive
+      // from a SLOTn_EN4TR device name. No path → ring status stays Unknown.
+      if (!this.dlrPath) this.dlrPath = deriveDlrPath(discoveredNames);
+      console.log(
+        this.dlrPath
+          ? `[NetworkPoller] DLR ring supervisor path: ${this.dlrPath}`
+          : '[NetworkPoller] No DLR supervisor path (no SLOTn_EN4TR found / none configured) — ring status = Unknown.',
+      );
 
       if (discoveredNames.length === 0) {
         console.warn(
@@ -258,6 +287,8 @@ export class NetworkPoller extends EventEmitter {
     this.errorState.clear();
     this.cycleIndex = 0;
     this.warnedSlowThisStreak = false;
+    this.latestRing = { state: 'unknown', reason: 'Not yet probed' };
+    this.lastDlrProbeCycle = -DLR_REPROBE_CYCLES;
     this.emit('stopped');
   }
 
@@ -280,7 +311,39 @@ export class NetworkPoller extends EventEmitter {
     return out;
   }
 
+  /** Latest DLR ring verdict (Unknown until the first probe / when no path). */
+  getLatestRingStatus(): RingStatus {
+    return this.latestRing;
+  }
+
   // ===== internal =====
+
+  /**
+   * Probe the DLR ring supervisor once per cycle while the ring is readable;
+   * back off to once per DLR_REPROBE_CYCLES while Unknown (an absent module
+   * times out, which is costly). No path → leave ring Unknown, never probe.
+   * Never throws — a DLR read failure must not break the device poll loop.
+   */
+  private async maybeProbeDlr(): Promise<void> {
+    if (!this.dlrPath) return;
+    const due = this.cycleIndex - this.lastDlrProbeCycle >= DLR_REPROBE_CYCLES;
+    if (this.latestRing.state === 'unknown' && !due) return;
+    this.lastDlrProbeCycle = this.cycleIndex;
+
+    let verdict: RingStatus;
+    try {
+      verdict = ringVerdict(await readDlrStatus(this.gateway, this.dlrPath));
+    } catch {
+      verdict = { state: 'unknown', reason: 'DLR read error' };
+    }
+    const changed =
+      verdict.state !== this.latestRing.state || verdict.reason !== this.latestRing.reason;
+    this.latestRing = verdict;
+    if (changed) {
+      console.log(`[NetworkPoller] DLR ring: ${verdict.state}${verdict.reason ? ` — ${verdict.reason}` : ''}`);
+    }
+    this.emit('ringStatus', verdict);
+  }
 
   private async loop(): Promise<void> {
     const signal = this.abort?.signal;
@@ -292,6 +355,7 @@ export class NetworkPoller extends EventEmitter {
       // libplctag pools connections internally. 4-8 devices in parallel is
       // well within its comfort zone.
       await Promise.all(this.devices.map((d) => this.pollDevice(d)));
+      await this.maybeProbeDlr();
 
       const elapsed = Date.now() - cycleStart;
       const delay = Math.max(0, this.pollIntervalMs - elapsed);

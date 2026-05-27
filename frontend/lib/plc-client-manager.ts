@@ -308,21 +308,29 @@ async function startNetworkPoller(): Promise<void> {
   // its built-in 60 s default cadence.
   let fallbackDevices: string[] = [];
   let pollIntervalMs: number | undefined;
+  let dlrPath: string | undefined;
   try {
     const cfg = await configService.getConfig();
     fallbackDevices = cfg.networkPollingDevices ?? [];
     pollIntervalMs = cfg.networkPollingIntervalMs;
+    dlrPath = cfg.dlrSupervisorPath;
   } catch (err) {
     console.warn('[PlcClientManager] Could not load network poller config:', err);
   }
 
-  const poller = new NetworkPoller({ fallbackDevices, pollIntervalMs });
+  const poller = new NetworkPoller({ fallbackDevices, pollIntervalMs, dlrPath });
   poller.setConnection(connConfig.ip, connConfig.path);
 
   poller.on('snapshot', (snapshot) => {
     broadcastToWebSocket({
       type: 'NetworkDeviceSnapshot',
       snapshot,
+    });
+  });
+  poller.on('ringStatus', (ring) => {
+    broadcastToWebSocket({
+      type: 'RingStatusUpdate',
+      ring,
     });
   });
   // 'discovered' and per-device errors are already logged inside the poller

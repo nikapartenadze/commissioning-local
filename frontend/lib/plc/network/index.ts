@@ -8,3 +8,5 @@ export {
   stripNetworkTagSuffix,
 } from './types';
 export type { NetworkDeviceSnapshot, PortStat } from './types';
+export { readDlrStatus, ringVerdict, deriveDlrPath } from './dlr';
+export type { DlrStatus, RingState, RingStatus } from './dlr';

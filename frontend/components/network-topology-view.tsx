@@ -1322,6 +1322,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
               knownDevices={rings.flatMap((r) => r.nodes.map((n) => n.name))}
               liveSnapshots={networkSnapshots.snapshots}
               wsConnected={networkSnapshots.wsConnected}
+              ringStatus={networkSnapshots.ringStatus}
             />
           </div>
         </DialogContent>
