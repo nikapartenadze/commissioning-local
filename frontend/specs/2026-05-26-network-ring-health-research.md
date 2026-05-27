@@ -59,7 +59,7 @@ Use to localize faults and to cover single-port/leaf devices the protocol object
 
 - **DLR (0x47):**
   - (a) **Ladder-MSG path (most reliable):** add a MSG in `IOCT_COMMUNICATION_MONITOR` to copy `0x47` Attr 1/2/5/6/7 into a tag; extend `UDT_NETWORK_NODE_DATA` (or a new UDT) and the poller/parser to read it. Consistent with how 0xF6 is collected today. Requires a PLC program change.
-  - (b) **Direct-CIP path (no ladder change):** have the poller issue a raw CIP read of `0x47` on the EN4TR via libplctag. Avoids touching the PLC program, but depends on libplctag raw-CIP support — **needs a spike to confirm feasibility.**
+  - (b) **Direct-CIP path (no ladder change) — FEASIBILITY CONFIRMED 2026-05-26.** libplctag's **`@raw`** passthrough is present in our bundled `plctag.dll` (2.6.3 build, verified by binary scan). Recipe: create a tag with `protocol=ab_eip&gateway=<PLC_IP>&path=1,<EN4TR slot>&cpu=logix&name=@raw` (keep `cpu=logix` — `@raw` is rejected under `plc=generic`; omit `elem_size`/`elem_count`). Then **set the request bytes and `plc_tag_write`** (the write *sends* the CIP request; it is NOT a CIP write — service `0x0E` Get_Attribute_Single is read-only). Request for DLR Attr N = `0E 03 20 47 24 01 30 <N>`. Reply lands back in the tag buffer: `[0]=0x8E reply_service, [2]=general status (0=ok), [3]=num ext-status words, [4 + 2*words]=USINT value`. **Spike script: `test-dlr-read.ts` (`npm run test:plc:dlr`)** — reads Attr 1/2/5/8 and prints the verdict. Not yet run against the live EN4TR.
 - **MRP (OS30):** new capability — an **SNMP poll** from the Node/Express side (e.g. `net-snmp`) to the OS30 MRM for `hmMrpMRMRealRingState`. No PLC involvement is possible. Needs SNMP enabled + community/v3 creds reachable from the field laptop.
 
 ## Open questions to confirm before building
@@ -68,7 +68,7 @@ Use to localize faults and to cover single-port/leaf devices the protocol object
 3. Are the **VFD Ethernet cards dual-port (ring) or single-port (star)?** Affects which devices are ring nodes.
 
 ## Suggested next step
-A tiny **spike**: read DLR `0x47` Attr 1 + Attr 2 off the EN4TR on the live PLC to (a) confirm it really is a DLR ring and (b) prove the read path (ladder-MSG vs direct libplctag CIP) before designing the full feature. Then brainstorm → spec → plan the "Ring Health" indicator.
+The spike script now exists: **`test-dlr-read.ts`** (`npm run test:plc:dlr`, defaults `PLC_IP=192.168.5.106 PLC_PATH=1,2`). **Run it against the live EN4TR** to (a) confirm Topology=Ring (it really is a DLR ring) and (b) get the Network Status verdict. Adjust `PLC_PATH=1,<slot>` if the EN4TR isn't in slot 2. Once confirmed, brainstorm → spec → plan the "Ring Health" indicator (likely: extend the poller to read DLR `0x47` via `@raw`, plus an SNMP poll of the OS30 for `hmMrpMRMRealRingState`).
 
 ## Reference material (provided by user + research)
 - Rockwell **1756-UM004** ControlLogix chassis/controller manual (local: `Downloads\1756-um004_-en-p.pdf`; web: https://literature.rockwellautomation.com/idc/groups/literature/documents/um/1756-um004_-en-p.pdf). NOTE: chassis/controller reference — DLR ring specifics are NOT here; see ENET-AT007 / ENET-TD015 below.

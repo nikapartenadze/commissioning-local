@@ -14,6 +14,7 @@
     "test:plc": "tsx test-plc.ts",
     "test:plc:simple": "tsx test-plc-simple.ts",
     "test:plc:network": "tsx test-network-poll.ts",
+    "test:plc:dlr": "tsx test-dlr-read.ts",
     "seed:diagnostics": "tsx prisma/seed-diagnostics.ts",
     "seed:network": "tsx prisma/seed-network.ts",
     "seed:estop": "tsx prisma/seed-estop.ts",
