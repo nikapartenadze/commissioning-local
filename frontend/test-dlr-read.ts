@@ -12,100 +12,80 @@
  * no pass/fail, no config are modified.)
  * ─────────────────────────────────────────────────────────────────────────
  *
+ * NOTE (verified 2026-05-26): the dev PLC at 192.168.5.106 is a Studio 5000
+ * "Emulate 5580 Safety Controller" (software emulator). It has NO physical
+ * chassis / EN4TR / DLR object, so this spike can only print the no-module
+ * result there. Run it on-site against a REAL controller whose chassis holds
+ * the EN4TR to get a live ring verdict.
+ *
  * Usage:
  *   npm run test:plc:dlr
- *   PLC_IP=192.168.5.106 PLC_PATH=1,2 npm run test:plc:dlr
+ *   PLC_IP=<controller-ip> PLC_PATH=1,<EN4TR slot> npm run test:plc:dlr
  *
  * Env:
- *   PLC_IP    Ethernet IP to connect to        (default 192.168.5.106)
- *   PLC_PATH  CIP path to the EN4TR module      (default 1,2 = backplane, slot 2 = SLOT2_EN4TR)
- *             - Option A (default): gateway=<controller IP>, path=1,<EN4TR slot>
- *             - Option B: gateway=<EN4TR's own IP>, path=1,0
- *   TIMEOUT   per-request timeout ms            (default 5000)
- *
- * The DLR object lives on the Ethernet *module* (the ring supervisor), NOT the
- * controller — so PLC_PATH must end at the EN4TR's slot, not slot 0.
+ *   PLC_IP    Ethernet IP to connect to    (default 192.168.5.106)
+ *   PLC_PATH  CIP path to the EN4TR module (default 1,2 = backplane, slot 2 = SLOT2_EN4TR)
+ *   TIMEOUT   per-request timeout ms       (default 5000)
  */
 
 import {
-  initLibrary,
-  plc_tag_create,
-  plc_tag_set_size,
-  plc_tag_set_uint8,
-  writeTagAsync,
-  plc_tag_get_size,
-  plc_tag_get_raw_bytes,
-  plc_tag_destroy,
-  getStatusMessage,
-  PlcTagStatus,
+  initLibrary, plc_tag_create, plc_tag_set_size, plc_tag_set_uint8,
+  writeTagAsync, plc_tag_get_size, plc_tag_get_raw_bytes, plc_tag_destroy,
+  getStatusMessage, PlcTagStatus,
 } from './lib/plc/libplctag'
 
 const PLC_IP = process.env.PLC_IP ?? '192.168.5.106'
 const PLC_PATH = process.env.PLC_PATH ?? '1,2'
 const TIMEOUT = Number(process.env.TIMEOUT ?? '5000')
 
-const DLR_CLASS = 0x47 // DLR Object
-const DLR_INSTANCE = 0x01
-
-// Human-readable DLR enums (ODVA DLR Object; see the research doc).
 const TOPOLOGY = ['Linear', 'Ring'] as const
 const NETWORK_STATUS = [
-  'Normal',
-  'Ring Fault',
-  'Unexpected Loop Detected',
-  'Partial Network Fault',
-  'Rapid Fault/Restore Cycle',
+  'Normal', 'Ring Fault', 'Unexpected Loop Detected',
+  'Partial Network Fault', 'Rapid Fault/Restore Cycle',
 ] as const
 
-/** Build a Get_Attribute_Single (0x0E) raw-CIP request for DLR class/inst/attr. */
-function buildGetAttrSingle(attr: number): Uint8Array {
-  // [service][path size in 16-bit WORDS][EPATH: class, inst, attr][no data]
-  // EPATH = 20 47 24 01 30 <attr>  => 6 bytes = 3 words
-  return Uint8Array.from([0x0e, 0x03, 0x20, DLR_CLASS, 0x24, DLR_INSTANCE, 0x30, attr])
-}
-
 interface AttrResult {
-  ok: boolean
+  /** transport-level (did a CIP reply come back at all) */
+  transportOk: boolean
+  transportStatus: number
+  /** CIP general status byte (0 = success; 0x05 = object/path doesn't exist) */
   cipStatus: number
-  /** raw value bytes (little-endian) after the CIP reply header, when ok */
+  /** attribute payload bytes (LE) when cipStatus === 0 */
   value: Buffer
   raw: Buffer
 }
 
-/**
- * Send one Get_Attribute_Single and return the parsed reply.
- * @raw reply layout: [0]=reply_service(0x8E) [1]=0 [2]=general status
- * [3]=num extended-status words [4 + 2*words ...]=attribute payload.
- */
-async function readAttr(attr: number): Promise<AttrResult> {
-  const attribStr = `protocol=ab_eip&gateway=${PLC_IP}&path=${PLC_PATH}&cpu=logix&name=@raw`
+/** One Get_Attribute_Single via @raw. Never throws — returns transportOk=false on timeout. */
+async function getAttr(path: string, cls: number, inst: number, attr: number): Promise<AttrResult> {
+  const empty = Buffer.alloc(0)
+  const attribStr = `protocol=ab_eip&gateway=${PLC_IP}&path=${path}&cpu=logix&name=@raw`
   const tag = plc_tag_create(attribStr, TIMEOUT)
-  if (tag < 0) {
-    return { ok: false, cipStatus: -1, value: Buffer.alloc(0), raw: Buffer.alloc(0) }
-  }
+  if (tag < 0) return { transportOk: false, transportStatus: tag, cipStatus: -1, value: empty, raw: empty }
   try {
-    const req = buildGetAttrSingle(attr)
+    const req = Uint8Array.from([0x0e, 0x03, 0x20, cls, 0x24, inst, 0x30, attr])
     plc_tag_set_size(tag, req.length)
     for (let i = 0; i < req.length; i++) plc_tag_set_uint8(tag, i, req[i])
-
     const status = await writeTagAsync(tag, TIMEOUT) // WRITE sends the request; reply lands in the buffer
     if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
-      throw new Error(`transport: ${getStatusMessage(status)} (${status})`)
+      return { transportOk: false, transportStatus: status, cipStatus: -1, value: empty, raw: empty }
     }
-
     const size = plc_tag_get_size(tag)
     const raw = Buffer.alloc(Math.max(0, size))
     if (size > 0) plc_tag_get_raw_bytes(tag, 0, raw)
-
-    if (raw.length < 4) return { ok: false, cipStatus: -1, value: Buffer.alloc(0), raw }
+    if (raw.length < 4) return { transportOk: true, transportStatus: status, cipStatus: -1, value: empty, raw }
     const cipStatus = raw[2]
-    const numStatusWords = raw[3]
-    const valueOffset = 4 + 2 * numStatusWords
-    const value = raw.subarray(valueOffset)
-    return { ok: cipStatus === 0, cipStatus, value: Buffer.from(value), raw }
+    const value = Buffer.from(raw.subarray(4 + 2 * raw[3]))
+    return { transportOk: true, transportStatus: status, cipStatus, value, raw }
   } finally {
     try { plc_tag_destroy(tag) } catch { /* best-effort */ }
   }
+}
+
+/** CIP SHORT_STRING: 1-byte length + chars. */
+function decodeShortString(buf: Buffer): string {
+  if (buf.length < 1) return ''
+  const len = buf[0]
+  return buf.subarray(1, 1 + len).toString('ascii')
 }
 
 function fmtEnum(table: readonly string[], n: number): string {
@@ -119,32 +99,54 @@ async function main() {
   console.log('────────────────────────────────────────────────────────')
   initLibrary()
 
-  // Attr 1 = Network Topology (USINT), Attr 2 = Network Status (USINT),
-  // Attr 5 = Ring Fault Count (UINT), Attr 8 = Ring Participants Count (UINT).
-  const a1 = await readAttr(1)
-  const a2 = await readAttr(2)
-  const a5 = await readAttr(5)
-  const a8 = await readAttr(8)
+  // Identity probe at the target path first — tells us what (if anything)
+  // answers there, before we ask for the DLR object.
+  const ident = await getAttr(PLC_PATH, 0x01, 1, 7) // Identity, Product Name
+  if (!ident.transportOk) {
+    console.log(`\n✗ No CIP device responded at gateway=${PLC_IP} path=${PLC_PATH} (${getStatusMessage(ident.transportStatus)}).`)
+    console.log('  Likely causes:')
+    console.log('   • The controller is a software emulator (Studio 5000 Emulate) — no physical chassis/EN4TR exists.')
+    console.log('   • PLC_PATH points at an empty/wrong slot — set PLC_PATH=1,<EN4TR slot>.')
+    console.log('   • Wrong gateway IP, or the EN4TR is unreachable.')
+    // Show what the gateway controller itself is, for context.
+    const ctl = await getAttr('1,0', 0x01, 1, 7)
+    if (ctl.transportOk && ctl.cipStatus === 0) {
+      console.log(`  (Controller at path 1,0 identifies as: "${decodeShortString(ctl.value)}")`)
+    }
+    return
+  }
+  if (ident.cipStatus === 0) {
+    console.log(`\nDevice at path ${PLC_PATH}: "${decodeShortString(ident.value)}"`)
+  }
 
-  if (!a1.ok && a1.cipStatus !== 0) {
-    console.log(`\n✗ Attr 1 read failed (CIP status 0x${a1.cipStatus.toString(16)}). raw=[${a1.raw.toString('hex')}]`)
-    console.log('  → This device may not implement the DLR object at this path.')
-    console.log('    Check PLC_PATH points at the EN4TR slot (e.g. 1,2), not the controller (1,0).')
+  const a1 = await getAttr(PLC_PATH, 0x47, 1, 1)
+  if (a1.transportOk && a1.cipStatus === 0x05) {
+    console.log('\n✗ This device has no DLR object (CIP status 0x05 = object does not exist).')
+    console.log('  The DLR object lives on the Ethernet ring module (EN2TR/EN4TR), not the controller.')
+    console.log('  Point PLC_PATH at the EN4TR slot.')
+    return
+  }
+  if (!a1.transportOk || a1.cipStatus !== 0) {
+    console.log(`\n✗ DLR Attr 1 read failed (transport=${getStatusMessage(a1.transportStatus)}, cipStatus=0x${a1.cipStatus.toString(16)}).`)
     return
   }
 
+  const a2 = await getAttr(PLC_PATH, 0x47, 1, 2)
+  const a5 = await getAttr(PLC_PATH, 0x47, 1, 5)
+  const a8 = await getAttr(PLC_PATH, 0x47, 1, 8)
+
   const topology = a1.value[0]
   const netStatus = a2.value[0]
-  const faultCount = a5.ok && a5.value.length >= 2 ? a5.value.readUInt16LE(0) : null
-  const participants = a8.ok && a8.value.length >= 2 ? a8.value.readUInt16LE(0) : null
+  const faultCount = a5.transportOk && a5.cipStatus === 0 && a5.value.length >= 2 ? a5.value.readUInt16LE(0) : null
+  const participants = a8.transportOk && a8.cipStatus === 0 && a8.value.length >= 2 ? a8.value.readUInt16LE(0) : null
 
   console.log('\nDLR attributes:')
   console.log(`  Attr 1  Network Topology : ${fmtEnum(TOPOLOGY, topology)}`)
-  console.log(`  Attr 2  Network Status   : ${a2.ok ? fmtEnum(NETWORK_STATUS, netStatus) : `read failed (0x${a2.cipStatus.toString(16)})`}`)
+  console.log(`  Attr 2  Network Status   : ${a2.transportOk && a2.cipStatus === 0 ? fmtEnum(NETWORK_STATUS, netStatus) : 'read failed'}`)
   console.log(`  Attr 5  Ring Fault Count : ${faultCount ?? 'n/a'}`)
   console.log(`  Attr 8  Participants     : ${participants ?? 'n/a'}`)
 
-  const healthy = topology === 1 && a2.ok && netStatus === 0
+  const healthy = topology === 1 && a2.transportOk && a2.cipStatus === 0 && netStatus === 0
   console.log('\nVerdict:')
   if (topology !== 1) {
     console.log('  ⚠ Topology is LINEAR — this is NOT a DLR ring (redundancy, if any, is in the Hirschmann/MRP layer).')
