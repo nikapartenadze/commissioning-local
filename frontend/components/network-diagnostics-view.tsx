@@ -20,9 +20,10 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Network, ServerCrash } from 'lucide-react'
+import { Activity, Network, ServerCrash, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage, RingStatusUpdateMessage } from '@/lib/plc/types'
+import { RingHealthBadge } from '@/components/ring-health-badge'
 import { isExcludedRackSlot } from '@/lib/plc/network/types'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
@@ -186,48 +187,6 @@ interface DeviceState {
 
 // ─── Main view ───────────────────────────────────────────────────────────
 
-/**
- * DLR ring-health badge. Reflects the Rockwell DLR ring (read via the DLR
- * Object). Gray "Unknown" until the poller confirms a ring — never shows
- * Healthy unless Topology=Ring AND Network Status=Normal.
- */
-function RingBadge({ ring }: { ring: RingStatusUpdateMessage['ring'] | null }) {
-  const state = ring?.state ?? 'unknown'
-  const style =
-    state === 'healthy'
-      ? { dot: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', label: 'Healthy' }
-      : state === 'degraded'
-        ? { dot: 'bg-red-500', text: 'text-red-600 dark:text-red-400', label: 'Degraded' }
-        : { dot: 'bg-muted-foreground/40', text: 'text-muted-foreground', label: 'Unknown' }
-  const facts =
-    ring && ring.state !== 'unknown'
-      ? [
-          `Topology ${ring.topology === 1 ? 'Ring' : 'Linear'}`,
-          ring.faultCount != null ? `Faults ${ring.faultCount}` : null,
-          ring.participants != null ? `${ring.participants} nodes` : null,
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : ring?.reason ?? 'No ring reading yet'
-  return (
-    <div className="shrink-0 flex flex-col items-end gap-0.5" title={facts}>
-      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold uppercase tracking-wide">
-        <span className={cn('w-2 h-2 rounded-full', style.dot)} />
-        <span className="text-muted-foreground/80">DLR Ring</span>
-        <span className={style.text}>{style.label}</span>
-      </span>
-      {state === 'degraded' && ring?.reason && (
-        <span className="text-[9px] text-red-600/80 dark:text-red-400/80 max-w-[240px] truncate">
-          {ring.reason}
-          {(ring.lastActiveNode1 || ring.lastActiveNode2)
-            ? ` · between ${ring.lastActiveNode1 ?? '?'} and ${ring.lastActiveNode2 ?? '?'}`
-            : ''}
-        </span>
-      )}
-    </div>
-  )
-}
-
 export function NetworkDiagnosticsView({
   active,
   singleDevice,
@@ -240,7 +199,9 @@ export function NetworkDiagnosticsView({
 
   useEffect(() => {
     if (!active) return
-    const id = setInterval(() => setNow(Date.now()), 1000)
+    // 5s, not 1s — `now` only drives staleness + "X ago" labels against a ~60s
+    // data cadence, so the extra ticks just churned the header/TOC re-renders.
+    const id = setInterval(() => setNow(Date.now()), 5000)
     return () => clearInterval(id)
   }, [active])
 
@@ -355,7 +316,7 @@ export function NetworkDiagnosticsView({
               )}
             </p>
           </div>
-          <RingBadge ring={ringStatus} />
+          <RingHealthBadge ring={ringStatus} />
         </div>
       </header>
 
@@ -388,7 +349,7 @@ export function NetworkDiagnosticsView({
                   <div className="space-y-3">
                     {deviceList.map((entry) =>
                       entry.live ? (
-                        <DeviceSection key={entry.deviceName} state={entry.live} now={now} />
+                        <DeviceSection key={entry.deviceName} state={entry.live} now={now} defaultExpanded={!!singleDevice} />
                       ) : (
                         <SkeletonSection key={entry.deviceName} deviceName={entry.deviceName} active={active} />
                       ),
@@ -491,8 +452,13 @@ function NavToc({
 
 // ─── Device section ──────────────────────────────────────────────────────
 
-function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
+function DeviceSection({ state, now, defaultExpanded }: { state: DeviceState; now: number; defaultExpanded?: boolean }) {
   const { snapshot, lastSeen } = state
+  // Collapsed by default in the all-devices view. Even with memoized port rows
+  // and the 2-port cap on non-switch devices, rendering every DPM's 32 ports at
+  // once on open is a lot of DOM and froze the modal. Header still shows status
+  // + error chips; ports render on expand. Single-device view expands on open.
+  const [expanded, setExpanded] = useState(!!defaultExpanded)
   const summary = useMemo(() => summarize(snapshot), [snapshot])
   const ports = useMemo(() => visiblePorts(snapshot), [snapshot])
   const portCap = portCapFor(snapshot.deviceName)
@@ -528,15 +494,27 @@ function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
       id={`${snapshot.deviceName}_NN`}
       className="border bg-card rounded-md overflow-hidden scroll-mt-4 target:ring-2 target:ring-primary"
     >
-      <header className="px-5 py-3 border-b bg-muted/30">
+      <header
+        className="px-5 py-3 border-b bg-muted/30 cursor-pointer select-none hover:bg-muted/50 transition-colors"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
+              {expanded
+                ? <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+                : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />}
               <h2 className="font-mono text-base font-bold tracking-tight">{snapshot.deviceName}</h2>
               <TagBadge status={tagStatus} count={summary.warnCount} />
               {summary.activePorts > 0 && (
                 <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider">
                   {summary.activePorts}/{portCap} linked
+                </span>
+              )}
+              {!expanded && (
+                <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wider">
+                  · {ports.length} port{ports.length === 1 ? '' : 's'} — click to expand
                 </span>
               )}
             </div>
@@ -566,11 +544,13 @@ function DeviceSection({ state, now }: { state: DeviceState; now: number }) {
         </div>
       </header>
 
-      <div className="p-3 space-y-2">
-        {ports.map((p) => (
-          <PortRow port={p} key={p.portNumber} />
-        ))}
-      </div>
+      {expanded && (
+        <div className="p-3 space-y-2">
+          {ports.map((p) => (
+            <PortRow port={p} key={p.portNumber} />
+          ))}
+        </div>
+      )}
     </section>
   )
 }

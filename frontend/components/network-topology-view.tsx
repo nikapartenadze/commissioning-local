@@ -7,6 +7,7 @@ import { Loader2, Network, ChevronDown, ChevronRight, X, RefreshCw, Search, Copy
 import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 import { NetworkDiagnosticsView } from '@/components/network-diagnostics-view'
+import { RingHealthBadge } from '@/components/ring-health-badge'
 import { useNetworkSnapshots } from '@/lib/hooks/use-network-snapshots'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 
@@ -1088,6 +1089,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
           </span>
         </div>
         <div className="flex items-center gap-2">
+          <RingHealthBadge ring={networkSnapshots.ringStatus} />
           <button
             type="button"
             onClick={() => openDiagnostics()}
