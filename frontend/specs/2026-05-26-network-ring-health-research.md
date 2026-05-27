@@ -67,8 +67,17 @@ Use to localize faults and to cover single-port/leaf devices the protocol object
 2. Is **SNMP enabled/reachable** on the OS30 from the field laptop (community string or v3)? If not, the backbone ring can only be proxied via per-port link.
 3. Are the **VFD Ethernet cards dual-port (ring) or single-port (star)?** Affects which devices are ring nodes.
 
+## Spike result (2026-05-26) — dev PLC is an EMULATOR
+
+Ran `test-dlr-read.ts` against the dev PLC (`192.168.5.106`). Findings, via read-only CIP `Get_Attribute_Single`:
+- **The `@raw` DLR read path is PROVEN CORRECT.** Identity Object reads on path `1,0` succeed: VendorID = 1 (Allen-Bradley), and **Product Name = "Emulate 5580 Safety Controller"**. So `@raw`, the request encoding (`0E 03 20 <cls> 24 <inst> 30 <attr>`), and the reply parsing (`[2]`=status, `[4+2*words]`=value) all work.
+- **The dev PLC is Studio 5000 Logix Emulate (Emulate 5580), a software emulator — there is NO physical chassis, NO 1756-EN4TR in slot 2, and NO real DLR ring.** Identity at path `1,2` times out (nothing in that slot); DLR `0x47` at path `1,0` returns CIP status `0x05` (object doesn't exist — controllers have no DLR object). The `SLOT2_EN4TR_NN` etc. are just tags in the emulated program.
+- **Consequence:** ring health CANNOT be validated against this dev environment. The DLR read must be run **on-site against the real controller whose chassis holds the EN4TR**. The spike now self-reports the emulator/no-module case (prints the controller's Identity + likely causes).
+
 ## Suggested next step
-The spike script now exists: **`test-dlr-read.ts`** (`npm run test:plc:dlr`, defaults `PLC_IP=192.168.5.106 PLC_PATH=1,2`). **Run it against the live EN4TR** to (a) confirm Topology=Ring (it really is a DLR ring) and (b) get the Network Status verdict. Adjust `PLC_PATH=1,<slot>` if the EN4TR isn't in slot 2. Once confirmed, brainstorm → spec → plan the "Ring Health" indicator (likely: extend the poller to read DLR `0x47` via `@raw`, plus an SNMP poll of the OS30 for `hmMrpMRMRealRingState`).
+1. **On-site:** run `npm run test:plc:dlr` with `PLC_IP=<real controller IP>` and `PLC_PATH=1,<EN4TR slot>` against the physical hardware to confirm Topology=Ring and read Network Status. (Confirm the EN4TR slot — the `SLOT2_` tag prefix suggests slot 2, but verify on the real chassis.)
+2. Then brainstorm → spec → plan the "Ring Health" indicator: extend the poller to read DLR `0x47` via `@raw` (path to the EN4TR slot), AND add an SNMP poll of the OS30 for `hmMrpMRMRealRingState` (the Hirschmann backbone ring — no CIP). Verdict = (DLR Status Normal) AND (MRP closed).
+3. **Heads-up for the feature design:** because the dev PLC is an emulator with no ring objects, the ring-health code needs a clean "no DLR object / not a ring device" path (don't error) — the field tool will hit emulators and non-DLR setups too.
 
 ## Reference material (provided by user + research)
 - Rockwell **1756-UM004** ControlLogix chassis/controller manual (local: `Downloads\1756-um004_-en-p.pdf`; web: https://literature.rockwellautomation.com/idc/groups/literature/documents/um/1756-um004_-en-p.pdf). NOTE: chassis/controller reference — DLR ring specifics are NOT here; see ENET-AT007 / ENET-TD015 below.
