@@ -24,6 +24,7 @@ import { Activity, Network, ServerCrash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage, RingStatusUpdateMessage } from '@/lib/plc/types'
 import { isExcludedRackSlot } from '@/lib/plc/network/types'
+import { summarizeDpmRing, type DpmRingSummary } from '@/lib/plc/network/dpm-ring'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
 type Port = Snapshot['ports'][number]
@@ -223,6 +224,41 @@ function RingBadge({ ring }: { ring: RingStatusUpdateMessage['ring'] | null }) {
   )
 }
 
+/**
+ * DPM (Hirschmann OS30) ring-health badge — link-level view from the per-port
+ * data we already poll. Catches a broken ring link (a port that lost link) or
+ * a hardware fault on a DPM switch. Gray "Unknown" when no DPM switch is in the
+ * live data. (Full MRP redundancy state would require SNMP — see the docs.)
+ */
+function DpmRingBadge({ summary }: { summary: DpmRingSummary }) {
+  const style =
+    summary.state === 'healthy'
+      ? { dot: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', label: 'Healthy' }
+      : summary.state === 'degraded'
+        ? { dot: 'bg-red-500', text: 'text-red-600 dark:text-red-400', label: 'Degraded' }
+        : { dot: 'bg-muted-foreground/40', text: 'text-muted-foreground', label: 'Unknown' }
+  const title =
+    summary.state === 'unknown'
+      ? 'No DPM (Octopus) switches in the live data yet'
+      : summary.issues.length > 0
+        ? summary.issues.map((i) => `${i.deviceName}: ${i.detail}`).join(' · ')
+        : `${summary.switchCount} DPM switch${summary.switchCount === 1 ? '' : 'es'} — all in-use links up`
+  return (
+    <div className="shrink-0 flex flex-col items-end gap-0.5" title={title}>
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold uppercase tracking-wide">
+        <span className={cn('w-2 h-2 rounded-full', style.dot)} />
+        <span className="text-muted-foreground/80">DPM Ring</span>
+        <span className={style.text}>{style.label}</span>
+      </span>
+      {summary.state === 'degraded' && summary.issues[0] && (
+        <span className="text-[9px] text-red-600/80 dark:text-red-400/80 max-w-[220px] truncate">
+          {summary.issues[0].deviceName}: {summary.issues[0].detail}
+        </span>
+      )}
+    </div>
+  )
+}
+
 export function NetworkDiagnosticsView({
   active,
   singleDevice,
@@ -261,6 +297,13 @@ export function NetworkDiagnosticsView({
   const visibleKnownDevices = useMemo(
     () => knownDevices.filter((n) => n && !isExcludedRackSlot(n)),
     [knownDevices],
+  )
+
+  // DPM (Hirschmann OS30) ring health, derived from the live per-port link
+  // data of the DPM switches we already poll.
+  const dpmRing = useMemo(
+    () => summarizeDpmRing(Array.from(devices.values()).map((ds) => ds.snapshot)),
+    [devices],
   )
 
   const groups = useMemo(() => {
@@ -350,7 +393,10 @@ export function NetworkDiagnosticsView({
               )}
             </p>
           </div>
-          <RingBadge ring={ringStatus} />
+          <div className="shrink-0 flex items-center gap-2">
+            <DpmRingBadge summary={dpmRing} />
+            <RingBadge ring={ringStatus} />
+          </div>
         </div>
       </header>
 

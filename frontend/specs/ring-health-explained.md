@@ -5,7 +5,14 @@ technical notes in `2026-05-26-network-ring-health-research.md`.*
 
 ## What it shows
 
-The Network Diagnostics page now has a small badge: **DLR Ring — Healthy / Degraded / Unknown**.
+The Network Diagnostics page header now has **two** ring badges:
+
+- **DPM Ring** — health of the Hirschmann Octopus (OS30) switch ring (the "DPM" devices).
+- **DLR Ring** — health of the Rockwell Device-Level Ring (the EN4TR + its nodes).
+
+Each reads **Healthy / Degraded / Unknown**. They use different sources because the two rings run different protocols (details below).
+
+### The DLR Ring badge
 
 - **🟢 Healthy** — the Device-Level Ring is **closed** and redundancy is intact. If any single ring link or device drops, traffic re-routes the other way around the ring with no loss.
 - **🔴 Degraded** — the ring is **open** (a break, a misconfiguration, or flapping). Data may still be flowing on a single path, but **there is no redundancy left** — the next break could drop devices. The badge shows the reason (Ring Fault, Unexpected Loop, Partial Fault, Rapid Fault/Restore).
@@ -37,6 +44,19 @@ The verdict is simply: **Topology = Ring AND Network Status = Normal → Healthy
 
 The read runs once per network-poll cycle (default every 60 s). While the ring is readable it's checked every cycle, so a break is caught within one cycle; when no DLR ring is present it backs off to avoid wasted traffic.
 
+## The DPM Ring badge — how it reads the Hirschmann ring
+
+The Hirschmann OS30 switches do **not** expose their ring (MRP) state over EtherNet/IP — only over SNMP. So instead of asking the switch "is the ring closed?", the **DPM Ring** badge uses the **per-port link data we already collect for every DPM switch** (the same `*_NN` data the PLC gathers and we poll):
+
+- For each DPM (OS30) switch, it looks at every port that **was carrying traffic and then lost link** (a real, in-use link that went down — e.g. a pulled or broken ring cable), and any port reporting a **hardware fault**.
+- **🟢 Healthy** — DPM switches seen, all their in-use links up, no faults.
+- **🔴 Degraded** — a DPM switch has an in-use port that dropped link, or a hardware fault (the badge names the switch + port).
+- **⚪ Unknown** — no DPM switch data yet.
+
+Unused spare ports (never carried traffic) are ignored, so they don't false-alarm.
+
+**What this catches:** the common, important case — a **physically broken ring link / down ring port** on a Hirschmann switch. **What it does not catch (yet):** the *logical* MRP redundancy state ("ring closed vs open but still passing traffic"), which only the switch's MRP manager knows and is only readable over **SNMP** (`hmMrpMRMRealRingState`). Adding that is a planned refinement — it needs the OS30 management IPs + SNMP community string, and on-site access (the dev bench has no real switches). Until then, the DPM Ring badge is a **link-level** health view, which still flags a broken ring segment.
+
 ## Setup (per site)
 
 The tool addresses the EN4TR by its **chassis slot**. By default it auto-detects this from the device naming (`SLOT2_EN4TR` → backplane slot 2). If your EN4TR isn't named that way or sits elsewhere, set one line in the tool's `config.json`:
@@ -47,5 +67,5 @@ The tool addresses the EN4TR by its **chassis slot**. By default it auto-detects
 
 ## Current status / limitations
 
-- **Phase 1 = Rockwell DLR ring only.** The Hirschmann/DPM backbone ring (MRP, via SNMP) is not covered yet.
-- **Field verification pending.** It was developed against a Studio 5000 **Emulate** controller, which has no physical ring — so on the bench the badge correctly reads **Unknown**. The Healthy/Degraded logic follows the ODVA DLR specification and the read mechanism is proven, but the colored states should be confirmed once on real hardware (unplug a ring cable → expect Degraded → Ring Fault; reconnect → Healthy).
+- **DLR Ring** — full ODVA DLR state, read-only over CIP. **DPM Ring** — link-level health from per-port data (catches a broken/down ring link or a switch hardware fault); the *logical* MRP redundancy state (via SNMP) is a planned refinement.
+- **Field verification pending.** Developed against a Studio 5000 **Emulate** controller, which has no physical chassis/ring — so on the bench the DLR badge reads **Unknown** and the DPM badge reflects only emulated per-port data. The logic is sound (DLR follows the ODVA spec; DPM uses real link semantics) but the colored states should be confirmed on real hardware: unplug a DPM ring cable → **DPM Ring → Degraded**; unplug a DLR ring cable → **DLR Ring → Degraded (Ring Fault)**; reconnect → **Healthy**.
