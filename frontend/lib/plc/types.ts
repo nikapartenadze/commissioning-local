@@ -448,6 +448,10 @@ export interface RingStatusUpdateMessage {
     networkStatus?: number
     faultCount?: number | null
     participants?: number | null
+    /** On a degraded ring, the two nodes bracketing the break (supervisor's
+     *  Last Active Node on Port 1/2) — localizes where the ring opened. */
+    lastActiveNode1?: string | null
+    lastActiveNode2?: string | null
   }
 }
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   buildDlrRequest,
   parseDlrReply,
+  parseRingNodeIp,
   ringVerdict,
   deriveDlrPath,
   type DlrStatus,
@@ -43,8 +44,27 @@ describe('parseDlrReply', () => {
   })
 })
 
+describe('parseRingNodeIp', () => {
+  it('reads the 4-byte IP from a Last Active Node struct (IP + MAC)', () => {
+    // IP 192.168.5.10 then a 6-byte MAC
+    const buf = Buffer.from([192, 168, 5, 10, 0x00, 0x1d, 0x9c, 0x11, 0x22, 0x33])
+    expect(parseRingNodeIp(buf)).toBe('192.168.5.10')
+  })
+
+  it('returns null for an all-zero node (no break localized / not populated)', () => {
+    expect(parseRingNodeIp(Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))).toBeNull()
+  })
+
+  it('returns null for a too-short buffer', () => {
+    expect(parseRingNodeIp(Buffer.from([1, 2]))).toBeNull()
+  })
+})
+
 describe('ringVerdict', () => {
-  const base: DlrStatus = { topology: 1, networkStatus: 0, faultCount: 0, participants: 5 }
+  const base: DlrStatus = {
+    topology: 1, networkStatus: 0, faultCount: 0, participants: 5,
+    lastActiveNode1: null, lastActiveNode2: null,
+  }
 
   it('is unknown when there is no DLR reading', () => {
     expect(ringVerdict(null).state).toBe('unknown')
@@ -68,9 +88,16 @@ describe('ringVerdict', () => {
   })
 
   it('carries the raw attribute values through for display', () => {
-    const v = ringVerdict({ topology: 1, networkStatus: 0, faultCount: 2, participants: 7 })
+    const v = ringVerdict({ ...base, faultCount: 2, participants: 7 })
     expect(v.faultCount).toBe(2)
     expect(v.participants).toBe(7)
+  })
+
+  it('carries the break location (Last Active Node 1/2) on a degraded ring', () => {
+    const v = ringVerdict({ ...base, networkStatus: 1, lastActiveNode1: '192.168.5.10', lastActiveNode2: '192.168.5.11' })
+    expect(v.state).toBe('degraded')
+    expect(v.lastActiveNode1).toBe('192.168.5.10')
+    expect(v.lastActiveNode2).toBe('192.168.5.11')
   })
 })
 

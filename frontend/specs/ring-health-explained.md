@@ -1,71 +1,54 @@
-# DLR Ring Health Indicator — How It Works (for engineers)
+# Ring Health Indicator — How It Works (for engineers)
 
 *Plain-language explainer for the controls/commissioning team. Companion to the
 technical notes in `2026-05-26-network-ring-health-research.md`.*
 
 ## What it shows
 
-The Network Diagnostics page header now has **two** ring badges:
+The Network Diagnostics page header has a **Ring** badge: **Healthy / Degraded / Unknown**, driven by the **EN4TR acting as the DLR ring supervisor**.
 
-- **DPM Ring** — health of the Hirschmann Octopus (OS30) switch ring (the "DPM" devices).
-- **DLR Ring** — health of the Rockwell Device-Level Ring (the EN4TR + its nodes).
+- **🟢 Healthy** — the ring is **closed** (Topology = Ring, Network Status = Normal). Redundancy is intact: a single link or device drop re-routes the other way with no loss.
+- **🔴 Degraded** — the supervisor reports a **Ring Fault** (or other non-normal state). The badge shows the reason and, when the supervisor provides it, **where the break is** — "between `<node A>` and `<node B>`".
+- **⚪ Unknown** — no DLR supervisor answered (no DLR object, timeout, or Topology = Linear). **The badge never shows Healthy unless the supervisor confirms a closed ring.**
 
-Each reads **Healthy / Degraded / Unknown**. They use different sources because the two rings run different protocols (details below).
+## Why this is the right source (the key point)
 
-### The DLR Ring badge
+The **EN4TR is the DLR ring supervisor.** A DLR supervisor continuously sends beacons around the ring; the moment a link breaks, beacons stop completing the loop, the supervisor declares a **Ring Fault**, and it records the **last active node on each of its two ring ports** — i.e. the two devices bracketing the break.
 
-- **🟢 Healthy** — the Device-Level Ring is **closed** and redundancy is intact. If any single ring link or device drops, traffic re-routes the other way around the ring with no loss.
-- **🔴 Degraded** — the ring is **open** (a break, a misconfiguration, or flapping). Data may still be flowing on a single path, but **there is no redundancy left** — the next break could drop devices. The badge shows the reason (Ring Fault, Unexpected Loop, Partial Fault, Rapid Fault/Restore).
-- **⚪ Unknown** — we could not read a DLR ring (no DLR-capable supervisor answered, the controller is an emulator, or the path isn't configured). **The badge never shows Healthy unless the ring hardware actually confirms it.**
+The Hirschmann Octopus (**"DPM"**) switches **cannot report their ring state over EtherNet/IP** (that lives only in their SNMP MRP data). **But they don't need to:** if the DPM switches sit on the DLR ring, then a break *between* two of them stops the supervisor's beacons just the same — so the **EN4TR sees it**. As the engineer put it: *what the DPMs don't do, the EN4TR does.*
 
-## What "the ring" is here
+So there is **one authoritative source of ring health — the EN4TR's DLR object** — and that's exactly what the badge reads. (An earlier per-port "DPM ring" heuristic was removed; the supervisor view supersedes it and is more reliable.)
 
-This site has **two** redundant rings:
+## "Does it tell me the 5 DPMs are connected healthy?"
 
-1. **The Rockwell DLR ring** — the 1756-**EN2TR/EN4TR** Ethernet module (the ring "supervisor") plus the DLR-capable nodes daisy-chained on it (Murr Impact67 IO-Link masters, Belden 0980 safety I/O, dual-port drives). This is a **Device-Level Ring (DLR)**, an EtherNet/IP standard.
-2. **The Hirschmann "DPM" backbone ring** — the Octopus OS30 managed switches, running **MRP / HIPER-Ring**.
+**Yes — if the DPM switches are participants on the DLR ring the EN4TR supervises.** A break between any two of them → the EN4TR reports **Ring Fault**, and the **Last Active Node on Port 1/Port 2** values name the two nodes on either side of the break, so you know *where*. The **Ring Participants count** (Attr 8) shows how many nodes the supervisor sees — confirm on-site that it includes all the DPMs.
 
-**This indicator covers ring #1 (the Rockwell DLR ring) only.** Ring #2 (the Hirschmann backbone) uses a different protocol whose status is only available over SNMP, not EtherNet/IP — that's a planned Phase 2. So a fault *purely* inside the Hirschmann backbone will not yet light this badge.
+> If the DPMs turn out to sit on a *separate* Hirschmann-only MRP ring (not the EN4TR's DLR ring), the EN4TR would not see those breaks — in that case we add an SNMP read of the OS30 MRP manager (`hmMrpMRMRealRingState`), which needs the OS30 management IPs + SNMP community. Confirm which it is using the Participants list on real hardware.
 
-## How it reads the ring (and why it's safe)
+## What we read (and why it's safe)
 
-Every EN2TR/EN4TR keeps a standard CIP object — the **DLR Object, Class 0x47** — that reports the live ring state. The tool reads four attributes from the supervisor:
+The EN4TR keeps a standard CIP object — the **DLR Object, Class 0x47** — reporting live ring state. The tool reads, **read-only**:
 
 | Attribute | Meaning | Used for |
 |---|---|---|
-| **Attr 1 — Network Topology** | 0 = Linear, **1 = Ring** | Is it even wired/configured as a ring? |
-| **Attr 2 — Network Status** | **0 = Normal**, 1 = Ring Fault, 2 = Unexpected Loop, 3 = Partial Fault, 4 = Rapid Fault/Restore | The healthy/degraded verdict |
-| **Attr 5 — Ring Fault Count** | faults since power-up | Spot intermittent/flapping rings |
-| **Attr 8 — Ring Participants** | number of nodes in the ring | Sanity-check device count |
+| **Attr 1 — Network Topology** | 0 = Linear, **1 = Ring** | Is it wired/configured as a ring? |
+| **Attr 2 — Network Status** | **0 = Normal**, 1 = Ring Fault, 2 = Unexpected Loop, 3 = Partial Fault, 4 = Rapid Fault/Restore | The Healthy/Degraded verdict |
+| **Attr 6 / 7 — Last Active Node, Port 1 / 2** | IP of the node each side of the break | **Where** the ring opened |
+| **Attr 5 — Ring Fault Count** | faults since power-up | Intermittent/flapping detection |
+| **Attr 8 — Ring Participants** | nodes in the ring | Confirm the DPMs are on the ring |
 
-The verdict is simply: **Topology = Ring AND Network Status = Normal → Healthy.** Anything else → Degraded (if it's a ring) or Unknown (if it isn't / didn't answer).
-
-**It is strictly read-only.** The tool uses the CIP service **`Get_Attribute_Single` (0x0E)** — a *read* service. It does not write tags, change I/O, alter configuration, or affect the PLC program or the ring in any way. It's the same kind of query Studio 5000's "Ring Statistics" page makes.
-
-The read runs once per network-poll cycle (default every 60 s). While the ring is readable it's checked every cycle, so a break is caught within one cycle; when no DLR ring is present it backs off to avoid wasted traffic.
-
-## The DPM Ring badge — how it reads the Hirschmann ring
-
-The Hirschmann OS30 switches do **not** expose their ring (MRP) state over EtherNet/IP — only over SNMP. So instead of asking the switch "is the ring closed?", the **DPM Ring** badge uses the **per-port link data we already collect for every DPM switch** (the same `*_NN` data the PLC gathers and we poll):
-
-- For each DPM (OS30) switch, it looks at every port that **was carrying traffic and then lost link** (a real, in-use link that went down — e.g. a pulled or broken ring cable), and any port reporting a **hardware fault**.
-- **🟢 Healthy** — DPM switches seen, all their in-use links up, no faults.
-- **🔴 Degraded** — a DPM switch has an in-use port that dropped link, or a hardware fault (the badge names the switch + port).
-- **⚪ Unknown** — no DPM switch data yet.
-
-Unused spare ports (never carried traffic) are ignored, so they don't false-alarm.
-
-**What this catches:** the common, important case — a **physically broken ring link / down ring port** on a Hirschmann switch. **What it does not catch (yet):** the *logical* MRP redundancy state ("ring closed vs open but still passing traffic"), which only the switch's MRP manager knows and is only readable over **SNMP** (`hmMrpMRMRealRingState`). Adding that is a planned refinement — it needs the OS30 management IPs + SNMP community string, and on-site access (the dev bench has no real switches). Until then, the DPM Ring badge is a **link-level** health view, which still flags a broken ring segment.
+Verdict: **Topology = Ring AND Network Status = Normal → Healthy.** It uses the CIP service **`Get_Attribute_Single` (0x0E)** — a *read*. It writes nothing: no tags, no I/O, no configuration, no effect on the PLC or the ring. Same kind of query as Studio 5000's "Ring Statistics" page. The read runs once per network-poll cycle (default 60 s); while the ring is readable it's checked every cycle, so a break is caught within one cycle.
 
 ## Setup (per site)
 
-The tool addresses the EN4TR by its **chassis slot**. By default it auto-detects this from the device naming (`SLOT2_EN4TR` → backplane slot 2). If your EN4TR isn't named that way or sits elsewhere, set one line in the tool's `config.json`:
+The tool reaches the EN4TR by its chassis slot. By default it auto-detects from the device naming (`SLOT2_EN4TR` → backplane slot 2). If the EN4TR isn't named that way or sits elsewhere, set one line in `config.json`:
 
 ```json
 "dlrSupervisorPath": "1,2"   // backplane port 1, slot <EN4TR slot>
 ```
 
-## Current status / limitations
+## Status / limitations
 
-- **DLR Ring** — full ODVA DLR state, read-only over CIP. **DPM Ring** — link-level health from per-port data (catches a broken/down ring link or a switch hardware fault); the *logical* MRP redundancy state (via SNMP) is a planned refinement.
-- **Field verification pending.** Developed against a Studio 5000 **Emulate** controller, which has no physical chassis/ring — so on the bench the DLR badge reads **Unknown** and the DPM badge reflects only emulated per-port data. The logic is sound (DLR follows the ODVA spec; DPM uses real link semantics) but the colored states should be confirmed on real hardware: unplug a DPM ring cable → **DPM Ring → Degraded**; unplug a DLR ring cable → **DLR Ring → Degraded (Ring Fault)**; reconnect → **Healthy**.
+- **Field-unverified.** Developed against a Studio 5000 **Emulate 5580** controller, which has no physical chassis/ring — so on the bench the badge correctly reads **Unknown**. The logic follows the ODVA DLR spec and the read is proven, but the colored states must be confirmed on real hardware: unplug a ring cable → **Degraded · Ring Fault · between X and Y**; reconnect → **Healthy**.
+- **Break-location IP byte order** is best-effort (the bench can't confirm it). If the "between X and Y" IPs show reversed on real hardware, it's a one-line fix.
+- **DPM coverage** depends on the DPMs being DLR ring participants (see the section above).
