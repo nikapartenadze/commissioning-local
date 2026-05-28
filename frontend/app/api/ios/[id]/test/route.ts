@@ -23,7 +23,7 @@ export async function POST(req: Request, res: Response) {
     }
 
     const body = req.body
-    const { result, comments, currentUser, failureMode } = body
+    const { result, comments, currentUser, failureMode, blockerDescription } = body
 
     if (!result || !['Pass', 'Fail', 'Passed', 'Failed'].includes(result)) {
       return res.status(400).json({ error: 'Invalid result. Must be "Pass" or "Fail"' })
@@ -48,13 +48,24 @@ export async function POST(req: Request, res: Response) {
       return res.status(404).json({ error: 'IO not found' })
     }
 
+    // Distinguish a plain Fail from an "unpass" (Pass → Fail) early so the
+    // install gate, SPARE check, and network-fault check can let the unpass
+    // through. Catching a temp install needs to work even when the device
+    // currently reports incomplete or faulted — that's the situation the
+    // tester is trying to record.
+    const isUnpass = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      && (io.Result === TEST_CONSTANTS.RESULT_PASSED || io.Result === 'Pass' || io.Result === 'Passed')
+
     // Install-tracker status is informational by default, but operators can
     // opt in via config.requireInstalledForTesting (e.g. CDW5). The gate
     // helper centralizes that policy — SPARE IOs are exempt and the flag
-    // defaults off, so existing fleets see no behavior change.
-    const gate = checkInstallGate(io)
-    if (!gate.allowed) {
-      return res.status(409).json({ error: gate.error })
+    // defaults off, so existing fleets see no behavior change. Unpass is
+    // exempt — the tester is recording that the install was actually wrong.
+    if (!isUnpass) {
+      const gate = checkInstallGate(io)
+      if (!gate.allowed) {
+        return res.status(409).json({ error: gate.error })
+      }
     }
 
     if (io.Description?.toUpperCase().includes('SPARE') && normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
@@ -103,16 +114,26 @@ export async function POST(req: Request, res: Response) {
     const newFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
       ? (failureMode || null)
       : null
+    // BlockerDescription mirrors FailureMode's lifecycle — it's the specific
+    // reason ("Not installed", "Not powered", …) chosen in the fail dialog
+    // alongside the Blocker (responsible party). Cleared on Pass.
+    const newBlockerDescription = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (blockerDescription || null)
+      : null
+    // isUnpass already determined above (used to skip the install gate).
+    // We also stamp it on the TestHistory.Source so the per-row history
+    // distinguishes a plain Fail from a Pass→Fail correction.
+    const historySource = isUnpass ? 'unpass' : 'local'
 
     let testHistoryId: number | bigint = 0
     const txn = db.transaction(() => {
       db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ? WHERE id = ?'
-      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, ioId)
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ?, BlockerDescription = ? WHERE id = ?'
+      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, newBlockerDescription, ioId)
 
       const histResult = db.prepare(
-        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(ioId, normalizedResult, timestamp, oldComment, plcState ?? null, currentUser ?? 'Unknown', failureMode || null, 'local')
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source, BlockerDescription) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(ioId, normalizedResult, timestamp, oldComment, plcState ?? null, currentUser ?? 'Unknown', failureMode || null, historySource, blockerDescription || null)
       testHistoryId = histResult.lastInsertRowid
     })
     txn()
@@ -121,7 +142,7 @@ export async function POST(req: Request, res: Response) {
 
     try {
       const info = db.prepare(
-        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode, BlockerDescription) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(
         ioId,
         currentUser || null,
@@ -131,6 +152,7 @@ export async function POST(req: Request, res: Response) {
         new Date().toISOString(),
         newVersion - 1,
         newFailureMode,
+        newBlockerDescription,
       )
       console.log(
         `[Test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +

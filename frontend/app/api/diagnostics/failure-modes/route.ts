@@ -5,12 +5,14 @@ function isTpeFamily(tagType: string): boolean {
   return tagType === 'TPE' || tagType.startsWith('TPE ')
 }
 
-// Failure reasons that apply to every tag type. These three map to a
-// "Party Responsible" in the cloud dashboard ('3rd Party' → 3rd Party,
-// 'Mech' → Mechanical, 'Electrical' → Electrical) and drive its sidebar
-// filters + export, so they must be selectable on any IO regardless of
-// tagType. 'Other' (when present) is kept last to match historical ordering.
-const UNIVERSAL_MODES = ['3rd Party', 'Mech', 'Electrical'] as const
+// Failure reasons that apply to every tag type. The local tool is the
+// commissioning/IO-check phase: the tester only has context for the
+// immediate upstream phase (Electrical) or for Controls. Mechanical blockers
+// are NOT predefined here — they're the installation-tracker's lane (an
+// electrical installer with mechanical context reassigns to Mechanical
+// over there). The dashboard maps these to "Party Responsible". 'Other'
+// (when present) is kept last to match historical ordering.
+const UNIVERSAL_MODES = ['Electrical', 'Controls', '3rd Party'] as const
 
 function mergeUniversalModes(dbModes: string[]): string[] {
   const otherIdx = dbModes.indexOf('Other')
