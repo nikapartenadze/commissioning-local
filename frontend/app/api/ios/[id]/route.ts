@@ -216,6 +216,9 @@ export async function PUT(req: Request, res: Response) {
           state: plcState ?? '',
           timestamp: updatedIo.Timestamp ?? '',
           comments: updatedIo.Comments ?? '',
+          // Carry the canonical failureMode from the updated row so other
+          // tabs reflect the change without a refetch.
+          failureMode: updatedIo.FailureMode ?? null,
         }),
       })
     } catch {

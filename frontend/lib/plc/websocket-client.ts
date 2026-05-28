@@ -27,6 +27,10 @@ export interface IOUpdate {
   State: 'TRUE' | 'FALSE'
   Timestamp?: string
   Comments?: string
+  // Failure reason chosen in the Fail dialog. Carried on UpdateIO so other
+  // tabs / client laptops see the Party Responsible badge change without a
+  // refetch. null on Pass / Clear; absent on state-only updates.
+  FailureMode?: string | null
 }
 
 export interface ConfigurationEvent {
@@ -324,7 +328,11 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
             Result: ioMsg.result as IOUpdate['Result'],
             State: ioMsg.state === 'TRUE' ? 'TRUE' : ioMsg.state === 'FALSE' ? 'FALSE' : 'NOT_SET' as any,
             Timestamp: ioMsg.timestamp,
-            Comments: ioMsg.comments
+            Comments: ioMsg.comments,
+            // Forward failureMode so cross-tab grids update the Party
+            // Responsible column in lockstep with Result/Comments. Server
+            // omits the field on state-only events.
+            FailureMode: ioMsg.failureMode,
           }
           ioCallbacksRef.current.forEach((cb) => {
             try {

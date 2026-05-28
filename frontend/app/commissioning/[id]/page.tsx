@@ -1105,7 +1105,16 @@ export default function CommissioningPage() {
                 state: normalizedUpdateState ?? io.state,
                 result: update.Result === "Not Tested" ? null : update.Result,
                 timestamp: update.Timestamp || io.timestamp,
-                comments: update.Comments !== undefined ? update.Comments : io.comments // Handle null comments explicitly
+                comments: update.Comments !== undefined ? update.Comments : io.comments, // Handle null comments explicitly
+                // FailureMode rides on Pass/Fail/Clear WS events so other
+                // tabs / client laptops see the Party Responsible badge
+                // change without waiting for a pull. `undefined` means the
+                // server didn't include the field (state-only update path
+                // is already filtered above), so we preserve the existing
+                // value. Explicit null is the Pass/Clear case → blank the
+                // badge. Explicit string is the Fail case → derive the
+                // badge.
+                failureMode: update.FailureMode !== undefined ? update.FailureMode : io.failureMode,
               }
               if (DEBUG_OTHER) {
                 console.log('📡 Full IO update for:', io.name, 'New state:', update.State, 'New result:', updatedIo.result)
@@ -1318,11 +1327,22 @@ export default function CommissioningPage() {
     // Save previous state for rollback
     const previousResult = io.result
     const previousTimestamp = io.timestamp
+    // Snapshot failureMode too: a passing IO has no failure reason, so the
+    // server clears Ios.FailureMode. Mirror that locally and restore on
+    // rollback so the Party Responsible column tracks the result.
+    const previousFailureMode = io.failureMode ?? null
 
     try {
-      // Optimistically update UI immediately for better UX
+      // Optimistically update UI immediately for better UX. Clearing
+      // failureMode is what makes the Party Responsible badge disappear
+      // without a refresh.
       setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, result: 'Passed', timestamp: new Date().toISOString() } : i
+        i.id === io.id ? {
+          ...i,
+          result: 'Passed',
+          timestamp: new Date().toISOString(),
+          failureMode: null,
+        } : i
       ))
 
       if (DEBUG_OTHER) {
@@ -1343,9 +1363,14 @@ export default function CommissioningPage() {
       } else {
         const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
         logger.error('Failed to mark IO as passed:', response.status, errorBody)
-        // Rollback optimistic update
+        // Rollback optimistic update — restore failureMode in lockstep.
         setIos(prevIos => prevIos.map(i =>
-          i.id === io.id ? { ...i, result: previousResult, timestamp: previousTimestamp } : i
+          i.id === io.id ? {
+            ...i,
+            result: previousResult,
+            timestamp: previousTimestamp,
+            failureMode: previousFailureMode,
+          } : i
         ))
         if (errorBody?.reason === 'server-laptop-no-testing') {
           toast({
@@ -1363,9 +1388,14 @@ export default function CommissioningPage() {
       }
     } catch (error) {
       logger.error('Error marking IO as passed:', error)
-      // Rollback optimistic update
+      // Rollback optimistic update — restore failureMode in lockstep.
       setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, result: previousResult, timestamp: previousTimestamp } : i
+        i.id === io.id ? {
+          ...i,
+          result: previousResult,
+          timestamp: previousTimestamp,
+          failureMode: previousFailureMode,
+        } : i
       ))
       toast({ title: "Failed to mark as passed", description: "Network error", variant: "destructive" })
     }
@@ -1394,26 +1424,34 @@ export default function CommissioningPage() {
     const previousResult = io.result
     const previousComments = io.comments
     const previousTimestamp = io.timestamp
+    // Also snapshot failureMode so a rollback fully restores the row. Without
+    // this, a failed POST would leave the new failureMode visible while the
+    // result/comments reverted, masking that the write didn't land.
+    const previousFailureMode = io.failureMode ?? null
 
-    // Build the comment that gets stored and synced. The structured Blocker
-    // (failureMode) and Blocker Description live on their own columns now, so
-    // the comment field is just the tester's free-text note. We still surface
-    // the reason in the comment line for legacy displays that only show
-    // comments — but no duplication when the description IS "Other" and the
-    // tester typed their own text.
-    let displayComment = ''
-    if (blockerDescription && blockerDescription !== 'Other') {
-      displayComment = comments ? `${blockerDescription} — ${comments}` : blockerDescription
-    } else if (failureMode && failureMode !== 'Other') {
-      displayComment = comments ? `${failureMode} — ${comments}` : failureMode
-    } else {
-      displayComment = comments
-    }
+    // Build the comment that gets stored and synced. With the v2.39.7 design
+    // the Party Responsible column derives FROM failureMode (via
+    // lib/party-responsible), so we no longer prepend the reason into the
+    // comment — the comment is the tester's free-text note only. Older builds
+    // that only render comments still see the reason if the dialog passed an
+    // explicit blockerDescription on Unpass.
+    const displayComment = blockerDescription && blockerDescription !== 'Other'
+      ? (comments ? `${blockerDescription} — ${comments}` : blockerDescription)
+      : (comments || '')
 
     try {
-      // Optimistically update UI immediately for better UX
+      // Optimistically update UI immediately for better UX. failureMode is
+      // included so the Party Responsible column lights up without waiting
+      // for the round-trip / WS echo — that gap is what made testers think
+      // they had to refresh the page before their selection appeared.
       setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, result: 'Failed', comments: displayComment || null, timestamp: new Date().toISOString() } : i
+        i.id === io.id ? {
+          ...i,
+          result: 'Failed',
+          comments: displayComment || null,
+          timestamp: new Date().toISOString(),
+          failureMode: failureMode ?? null,
+        } : i
       ))
 
       if (DEBUG_OTHER) {
@@ -1445,9 +1483,16 @@ export default function CommissioningPage() {
       } else {
         const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
         logger.error('Failed to mark IO as failed:', response.status, errorBody)
-        // Rollback optimistic update
+        // Rollback optimistic update — also restores the previous failureMode
+        // so the Party Responsible column reverts in lockstep.
         setIos(prevIos => prevIos.map(i =>
-          i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+          i.id === io.id ? {
+            ...i,
+            result: previousResult,
+            comments: previousComments,
+            timestamp: previousTimestamp,
+            failureMode: previousFailureMode,
+          } : i
         ))
         if (errorBody?.reason === 'server-laptop-no-testing') {
           toast({
@@ -1465,9 +1510,15 @@ export default function CommissioningPage() {
       }
     } catch (error) {
       logger.error('Error marking IO as failed:', error)
-      // Rollback optimistic update
+      // Rollback optimistic update — same row-level restore as above.
       setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+        i.id === io.id ? {
+          ...i,
+          result: previousResult,
+          comments: previousComments,
+          timestamp: previousTimestamp,
+          failureMode: previousFailureMode,
+        } : i
       ))
       toast({ title: "Failed to mark as failed", description: "Network error", variant: "destructive" })
     }
@@ -1478,11 +1529,22 @@ export default function CommissioningPage() {
     const previousResult = io.result
     const previousComments = io.comments
     const previousTimestamp = io.timestamp
+    // Snapshot failureMode so a rollback restores the Party Responsible
+    // badge too — the server clears Ios.FailureMode on Clear, and we mirror
+    // that optimistically below.
+    const previousFailureMode = io.failureMode ?? null
 
     try {
-      // Optimistically update UI immediately
+      // Optimistically update UI immediately — null out failureMode so the
+      // Party Responsible column blanks without waiting for a refetch.
       setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, result: null, comments: null, timestamp: null } : i
+        i.id === io.id ? {
+          ...i,
+          result: null,
+          comments: null,
+          timestamp: null,
+          failureMode: null,
+        } : i
       ))
 
       const response = await authFetch(API_ENDPOINTS.ioClear(io.id), {
@@ -1501,9 +1563,15 @@ export default function CommissioningPage() {
       } else {
         const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
         logger.error('Failed to clear IO:', response.status, errorBody)
-        // Rollback optimistic update
+        // Rollback optimistic update — restore failureMode too.
         setIos(prevIos => prevIos.map(i =>
-          i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+          i.id === io.id ? {
+            ...i,
+            result: previousResult,
+            comments: previousComments,
+            timestamp: previousTimestamp,
+            failureMode: previousFailureMode,
+          } : i
         ))
         if (errorBody?.reason === 'server-laptop-no-testing') {
           toast({
@@ -1521,9 +1589,15 @@ export default function CommissioningPage() {
       }
     } catch (error) {
       logger.error('Error clearing IO:', error)
-      // Rollback optimistic update
+      // Rollback optimistic update — restore failureMode too.
       setIos(prevIos => prevIos.map(i =>
-        i.id === io.id ? { ...i, result: previousResult, comments: previousComments, timestamp: previousTimestamp } : i
+        i.id === io.id ? {
+          ...i,
+          result: previousResult,
+          comments: previousComments,
+          timestamp: previousTimestamp,
+          failureMode: previousFailureMode,
+        } : i
       ))
       toast({ title: "Failed to clear result", description: "Network error", variant: "destructive" })
     }

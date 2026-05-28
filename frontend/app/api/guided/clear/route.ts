@@ -100,6 +100,9 @@ export async function POST(req: Request, res: Response) {
           state: plcState ?? '',
           timestamp,
           comments: '',
+          // Guided Clear blanks Ios.FailureMode server-side; mirror on the
+          // WS event.
+          failureMode: null,
         }),
       })
     } catch { /* WS broadcast best-effort */ }

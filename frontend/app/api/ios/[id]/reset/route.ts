@@ -135,6 +135,9 @@ export async function POST(req: Request, res: Response) {
           state: plcState ?? '',
           timestamp: timestamp,
           comments: '',
+          // Reset clears Ios.FailureMode server-side; mirror that on the
+          // WS event so the Party Responsible badge blanks across tabs.
+          failureMode: null,
         }),
       })
     } catch {

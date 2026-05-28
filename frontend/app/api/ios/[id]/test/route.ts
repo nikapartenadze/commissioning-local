@@ -199,6 +199,11 @@ export async function POST(req: Request, res: Response) {
           state: plcState ?? '',
           timestamp,
           comments: combinedComment || '',
+          // Carry failureMode on the WS event so cross-tab / multi-laptop
+          // grids update the Party Responsible badge without a refetch.
+          // newFailureMode is already null on Pass/Clear (see above), which
+          // is exactly what listeners need to blank the badge.
+          failureMode: newFailureMode,
         }),
       })
     } catch {
