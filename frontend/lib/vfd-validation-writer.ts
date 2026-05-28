@@ -65,6 +65,60 @@ const MIN_SYNC_INTERVAL_MS = 5_000 // at most once per 5 s
 // tens of thousands of failing createTag calls at the controller's CIP queue.
 const knownMissingTags = new Set<string>()
 
+// ── Mass-failure circuit breaker ────────────────────────────────────
+// When the PLC's EtherNet/IP ring breaks (e.g. the 2026-05-28 16:30 UTC
+// CDW5 incident), many devices flip ConnectionFaulted=true simultaneously.
+// Before this guard, the writer attempted createTag for every validated VFD
+// regardless of fault state, holding ~5 s of CIP slot per doomed handle.
+// That saturated the controller's CIP queue and starved the IO tag reader,
+// which then mistakenly declared the PLC unreachable and the "Connection
+// Lost — Reconnecting" banner appeared and could not clear without an NSSM
+// service restart. Two new guards prevent that wedge:
+//   1. Skip devices whose `:I.ConnectionFaulted` is true in the cached tag
+//      state. Zero CIP traffic to known-down devices.
+//   2. Fast-abort the cycle after N consecutive createTag failures. Even if
+//      cache is stale (e.g. ring just broke this second), we stop after a
+//      handful of timeouts instead of marching through 100 devices.
+const MAX_CONSECUTIVE_CREATE_FAILURES = 5
+
+// createTag timeout for validation writes. The happy-path response from a
+// healthy ControlLogix is 50-200 ms; 5 s was overkill and meant a doomed
+// handle held its CIP slot for 5 full seconds before timeout. 2 s still
+// gives a generous margin on a slow controller and fails fast on a dead
+// device, releasing the slot for other CIP traffic.
+const CREATE_TAG_TIMEOUT_MS = 2_000
+
+/**
+ * Build a Set of validated-device names that are currently faulted on the
+ * EtherNet/IP ring. Looks each device's `:I.ConnectionFaulted` bit up in
+ * the PLC client's tag cache (populated by the network status reader; the
+ * IO tag reader's main loop refreshes it every ~75 ms).
+ *
+ * Semantics — what counts as "skip":
+ *   - true   → SKIP (device is down per the controller's view)
+ *   - false  → DO NOT SKIP (device is up)
+ *   - null   → DO NOT SKIP (tag not loaded yet, e.g. fresh boot before the
+ *              network-status endpoint has been hit). Letting it through
+ *              preserves the existing behavior; if the device really is
+ *              down, the createTag will time out and the mass-failure
+ *              circuit breaker downstream will catch it.
+ *
+ * Cost is O(devices), no fresh PLC reads.
+ */
+function buildFaultedDeviceSet(
+  readTagCached: (name: string) => boolean | null,
+  devices: ValidatedDevice[],
+): Set<string> {
+  const faulted = new Set<string>()
+  for (const device of devices) {
+    const faultTag = `${device.deviceName}:I.ConnectionFaulted`
+    if (readTagCached(faultTag) === true) {
+      faulted.add(device.deviceName)
+    }
+  }
+  return faulted
+}
+
 // ── L2 query ───────────────────────────────────────────────────────
 
 /**
@@ -108,16 +162,48 @@ function batchWriteFlags(
   gateway: string,
   path: string,
   devices: ValidatedDevice[],
-): { ok: number; fail: number; skipped: number } {
+  faultedDevices: Set<string>,
+): { ok: number; fail: number; skipped: number; skippedFaulted: number; abortedAt: number | null } {
   const handles: TagHandle[] = []
   let ok = 0
   let fail = 0
   let skipped = 0
+  // Devices we deliberately did NOT touch because they're currently in
+  // ConnectionFaulted state. Separate counter from `skipped` (which counts
+  // tags known absent from the PLC program) so the periodic log line lets
+  // operators see "we held back 50 devices because the ring is broken" vs
+  // "this PLC's program doesn't define these tags".
+  let skippedFaulted = 0
+  // If we trip the mass-failure circuit breaker, remember the device index
+  // we stopped at so the log line is actionable.
+  let abortedAt: number | null = null
+  // Count of consecutive createTag failures across all devices in this
+  // cycle. Resets on any success. When it hits MAX_CONSECUTIVE_CREATE_
+  // FAILURES we stop creating new handles — Phase 2/3 still run for any
+  // handles already created so we don't waste the work or leak them.
+  let consecutiveCreateFailures = 0
 
   try {
     // ── Phase 1: create all handles ────────────────────────────────
-    for (const device of devices) {
+    for (let deviceIdx = 0; deviceIdx < devices.length; deviceIdx++) {
+      const device = devices[deviceIdx]
+
+      // Skip devices currently in ConnectionFaulted/Communication_Faulted.
+      // Their CTRL.CMD tags live on the controller but the controller is
+      // routing traffic to a dead endpoint when these get written, which
+      // is what saturated the CIP queue in the 2026-05-28 incident. The
+      // device will be re-tried automatically on the next cycle once
+      // ConnectionFaulted flips back to false (the IO reader updates the
+      // cache continuously).
+      if (faultedDevices.has(device.deviceName)) {
+        // Count once per device regardless of how many flag writes it
+        // would have produced — easier to read in the log line.
+        skippedFaulted++
+        continue
+      }
+
       // Validation flags (=1) + polarity bits (when the Polarity cell is set).
+      let deviceAborted = false
       for (const { field, value } of deviceFlagWrites(device.polarityRaw)) {
         const tagPath = `CBT_${device.deviceName}.CTRL.CMD.${field}`
         // Skip tags already proven absent on THIS PLC — see knownMissingTags.
@@ -132,26 +218,43 @@ function batchWriteFlags(
           name: tagPath,
           elemSize: 1,
           elemCount: 1,
-          timeout: 5000,
+          timeout: CREATE_TAG_TIMEOUT_MS,
         })
         if (handle >= 0) {
           handles.push({ deviceName: device.deviceName, field, tagPath, handle, value })
+          consecutiveCreateFailures = 0
         } else {
           fail++
+          consecutiveCreateFailures++
           // Cache ONLY definitive "not in the program" results. Transient
           // failures (timeout/busy/connection) must NOT be cached — the tag may
           // exist and should be retried once the PLC is responsive again.
           if (handle === PlcTagStatus.PLCTAG_ERR_NOT_FOUND) {
             knownMissingTags.add(cacheKey)
+            // PLCTAG_ERR_NOT_FOUND is a definitive answer from the
+            // controller — don't count it as a "CIP queue is sick" signal.
+            consecutiveCreateFailures = 0
           }
           if (fail <= 3) {
             console.warn(`[VfdValidationWriter] createTag failed: ${tagPath}: ${getStatusMessage(handle)}`)
           }
+          // Mass-failure circuit breaker. When we hit N transient
+          // failures in a row across any devices, the CIP queue is
+          // almost certainly saturated (or the controller is briefly
+          // unreachable). Stop hammering it — Phase 2/3 will drain
+          // anything we already created, and the next 10 s cycle will
+          // retry with a hopefully recovered queue.
+          if (consecutiveCreateFailures >= MAX_CONSECUTIVE_CREATE_FAILURES) {
+            abortedAt = deviceIdx
+            deviceAborted = true
+            break
+          }
         }
       }
+      if (deviceAborted) break
     }
 
-    if (handles.length === 0) return { ok: 0, fail, skipped }
+    if (handles.length === 0) return { ok: 0, fail, skipped, skippedFaulted, abortedAt }
 
     // ── Phase 2: tight read → set → write loop ────────────────────
     for (const h of handles) {
@@ -175,7 +278,7 @@ function batchWriteFlags(
       }
     }
 
-    return { ok, fail, skipped }
+    return { ok, fail, skipped, skippedFaulted, abortedAt }
   } finally {
     // ── Phase 3: destroy all handles ───────────────────────────────
     for (const h of handles) {
@@ -232,17 +335,39 @@ export async function syncValidationFlags(): Promise<void> {
       return
     }
 
+    // Build the set of currently-faulted device names from the cached
+    // tag state. This is the guard that prevents the writer from flooding
+    // the CIP queue with doomed handle creations during a ring break or
+    // controller hiccup. `:I.ConnectionFaulted` tags are loaded by the
+    // network-status endpoint and refreshed continuously by the IO
+    // reader's main poll loop (~75 ms), so the lookup is O(1) per device
+    // and the data is at most a fraction of a second stale.
+    const faultedDevices = buildFaultedDeviceSet(
+      (name) => client.readTagCached(name),
+      devices,
+    )
+
     const t0 = Date.now()
-    const { ok, fail, skipped } = batchWriteFlags(
+    const { ok, fail, skipped, skippedFaulted, abortedAt } = batchWriteFlags(
       connectionConfig.ip,
       connectionConfig.path,
       devices,
+      faultedDevices,
     )
     const elapsed = Date.now() - t0
 
+    // Single structured log line per cycle. Critical for diagnosing what
+    // the writer is doing in the field — operators / cloud heartbeat can
+    // grep for `[VfdValidationWriter] Sync done` and see at a glance
+    // whether the system is healthy (all ok), partially degraded (some
+    // skipped-faulted), or short-circuited (aborted-mass-failure).
+    const abortNote = abortedAt != null
+      ? `, ABORTED at device ${abortedAt + 1}/${devices.length} after ${MAX_CONSECUTIVE_CREATE_FAILURES} consecutive createTag failures (CIP queue likely saturated; will retry next cycle)`
+      : ''
     console.log(
       `[VfdValidationWriter] Sync done: ${devices.length} device(s), ` +
-      `${ok} ok, ${fail} failed, ${skipped} skipped (known-missing), ${elapsed} ms`,
+      `${ok} ok, ${fail} failed, ${skipped} skipped (known-missing), ` +
+      `${skippedFaulted} skipped-faulted, ${elapsed} ms${abortNote}`,
     )
   } catch (err) {
     console.error('[VfdValidationWriter] Sync error:', err)
