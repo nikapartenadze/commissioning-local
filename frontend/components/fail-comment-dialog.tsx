@@ -24,64 +24,67 @@ interface FailCommentDialogProps<T extends FailCommentDialogIo> {
   onOpenChange: (open: boolean) => void
   io: T | null
   /**
-   * Submit handler. `failureMode` carries the BLOCKER (responsible party)
-   * — Electrical | Controls | 3rd Party. `blockerDescription` carries the
-   * specific reason picked from that party's options. Kept as separate args
-   * so the existing test-endpoint contract didn't have to change.
+   * Submit handler.
+   *   - `failureMode` is the chosen Failure Reason and is set on every Fail.
+   *     Stored on the IO row (Io.failure_mode) and synced to cloud.
+   *   - `blockerResponsibleParty` + `blockerDescription` are sent ONLY in
+   *     unpass mode. They are the install-tracker's two columns on the
+   *     shared `Devices` row (Devices.BlockerResponsibleParty /
+   *     BlockerDescription) — a regular Fail does NOT touch them.
    */
-  onSubmit: (io: T, comment: string, failureMode?: string, blockerDescription?: string) => void
+  onSubmit: (
+    io: T,
+    comment: string,
+    failureMode?: string,
+    blockerResponsibleParty?: string,
+    blockerDescription?: string,
+  ) => void
   onCancel: () => void
   /**
-   * When true, the dialog presents as an "Unpass" action (a Pass → Fail
-   * correction for an item marked passed on a temp install). Only the
-   * heading and button label change — the data shape is identical.
+   * When true, this is a Pass → Fail correction (Raul's "Unpass a temp
+   * install" case). The dialog additionally asks for the two Blocker
+   * fields, which propagate to the shared Devices row. When false, only
+   * the Failure Reason is collected.
    */
   unpassMode?: boolean
 }
 
-// ── Blocker / Blocker Description taxonomy ────────────────────────────────
-//
-// Controlled vocabulary the tester picks from. The local commissioning
-// tool ONLY exposes Electrical, Controls, and 3rd Party — never Mechanical
-// (that's the installation-tracker's responsibility, an electrical
-// installer with mechanical context reassigns there).
-//
-// Keep these lists in sync with the cloud's display logic. Adding a new
-// description to one of the existing parties is safe; adding a new party
-// requires touching the failure-modes API + the cloud's party-responsible
-// derivation.
+// ── Vocabularies ──────────────────────────────────────────────────────────
 
-type Blocker = 'Electrical' | 'Controls' | '3rd Party'
+// Failure-reason list shown on every Fail. The local commissioning tool's
+// scope is the IO-check phase, so the reasons are Electrical- and
+// Controls-flavored — Mechanical reasons are intentionally absent (those
+// belong in the installation-tracker, where the electrical installer with
+// the mechanical context reassigns to Mechanical). Picking one of these
+// writes ONLY to Io.failure_mode; it does NOT auto-populate the Blocker
+// (responsible-party) columns on Devices.
+const FAILURE_REASONS = [
+  'Not installed',
+  'Not powered',
+  'Not aligned',
+  'Wrong wiring',
+  'Damaged',
+  'Temp install',
+  'Not programmed',
+  'Missing drawings',
+  'Config error',
+  'Wrong tag',
+  'Vendor blocked',
+  'Awaiting vendor',
+  'Other',
+]
 
-const BLOCKERS: Blocker[] = ['Electrical', 'Controls', '3rd Party']
+// Blocker assignment vocabulary — only shown in unpass mode. These map
+// directly to the two install-tracker columns on Devices, which is why the
+// party list excludes Mechanical (the same exclusion rule as Failure Reason).
+type BlockerParty = 'Electrical' | 'Controls' | '3rd Party'
 
-const BLOCKER_DESCRIPTIONS: Record<Blocker, string[]> = {
-  // The IO-check / "immediate upstream phase" lane. 'Temp install' is the
-  // explicit unpass reason — an item that was marked installed but isn't.
-  Electrical: [
-    'Not installed',
-    'Not powered',
-    'Not aligned',
-    'Wrong wiring',
-    'Damaged',
-    'Temp install',
-    'Other',
-  ],
-  // Anything programming / drawing / tag-mapping related — where the
-  // tester has context but it's not an installer issue.
-  Controls: [
-    'Not programmed',
-    'Missing drawings',
-    'Config error',
-    'Wrong tag',
-    'Other',
-  ],
-  // External vendor — VFD/PLC/etc. needing vendor action.
-  '3rd Party': [
-    'Vendor blocked',
-    'Awaiting vendor',
-    'Other',
-  ],
+const BLOCKER_PARTIES: BlockerParty[] = ['Electrical', 'Controls', '3rd Party']
+
+const BLOCKER_DESCRIPTIONS: Record<BlockerParty, string[]> = {
+  Electrical: ['Not installed', 'Not powered', 'Not aligned', 'Wrong wiring', 'Damaged', 'Temp install', 'Other'],
+  Controls: ['Not programmed', 'Missing drawings', 'Config error', 'Wrong tag', 'Other'],
+  '3rd Party': ['Vendor blocked', 'Awaiting vendor', 'Other'],
 }
 
 export function FailCommentDialog<T extends FailCommentDialogIo>({
@@ -93,14 +96,16 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
   unpassMode = false,
 }: FailCommentDialogProps<T>) {
   const [comment, setComment] = useState("")
-  const [blocker, setBlocker] = useState<Blocker | "">("")
+  const [failureMode, setFailureMode] = useState<string>("")
+  const [blockerParty, setBlockerParty] = useState<BlockerParty | "">("")
   const [blockerDescription, setBlockerDescription] = useState<string>("")
 
   // Reset every time the dialog reopens for a new IO.
   useEffect(() => {
     if (open && io) {
       setComment("")
-      setBlocker("")
+      setFailureMode("")
+      setBlockerParty("")
       setBlockerDescription("")
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -108,44 +113,59 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
 
   if (!io) return null
 
-  // When Blocker changes, drop any stale Blocker Description that no longer
-  // belongs to the new party. Keeps the cascade honest.
-  const handleBlockerChange = (next: string) => {
-    const b = next as Blocker | ""
-    setBlocker(b)
-    if (b === "" || !BLOCKER_DESCRIPTIONS[b].includes(blockerDescription)) {
+  // When Blocker Party changes, drop any stale Blocker Description that no
+  // longer belongs to the new party.
+  const handleBlockerPartyChange = (next: string) => {
+    const p = next as BlockerParty | ""
+    setBlockerParty(p)
+    if (p === "" || !BLOCKER_DESCRIPTIONS[p].includes(blockerDescription)) {
       setBlockerDescription("")
     }
   }
 
-  const descriptionOptions = blocker ? BLOCKER_DESCRIPTIONS[blocker] : []
-  const otherRequiresComment = blockerDescription === 'Other'
-  const otherMissingComment = otherRequiresComment && !comment.trim()
+  const descriptionOptions = blockerParty ? BLOCKER_DESCRIPTIONS[blockerParty] : []
+  const isOther = failureMode === 'Other'
+  const otherMissingComment = isOther && !comment.trim()
 
   const handleSubmit = () => {
-    if (!blocker) {
-      toast({ title: "Please select a blocker (responsible party)", variant: "destructive" })
-      return
-    }
-    if (!blockerDescription) {
-      toast({ title: "Please select a blocker description", variant: "destructive" })
+    if (!failureMode) {
+      toast({ title: "Please select a failure reason", variant: "destructive" })
       return
     }
     if (otherMissingComment) {
       toast({ title: "Comment is required when the reason is 'Other'", variant: "destructive" })
       return
     }
+    if (unpassMode) {
+      if (!blockerParty) {
+        toast({ title: "Pick a Blocker (responsible party) for the unpass", variant: "destructive" })
+        return
+      }
+      if (!blockerDescription) {
+        toast({ title: "Pick a Blocker Description for the unpass", variant: "destructive" })
+        return
+      }
+    }
 
-    onSubmit(io, comment, blocker, blockerDescription)
+    // Regular Fail: only failureMode goes through. Unpass: also pass the
+    // Blocker fields — the page/sync route forwards them to the shared
+    // Devices row.
+    if (unpassMode) {
+      onSubmit(io, comment, failureMode, blockerParty || undefined, blockerDescription || undefined)
+    } else {
+      onSubmit(io, comment, failureMode)
+    }
     setComment("")
-    setBlocker("")
+    setFailureMode("")
+    setBlockerParty("")
     setBlockerDescription("")
     onOpenChange(false)
   }
 
   const handleCancel = () => {
     setComment("")
-    setBlocker("")
+    setFailureMode("")
+    setBlockerParty("")
     setBlockerDescription("")
     onCancel()
     onOpenChange(false)
@@ -165,9 +185,7 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">Tag:</span>
-              <Badge variant="outline" className="font-mono">
-                {io.name}
-              </Badge>
+              <Badge variant="outline" className="font-mono">{io.name}</Badge>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">Description:</span>
@@ -184,96 +202,112 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
             {unpassMode && (
               <p className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1 mt-1">
                 <AlertCircle className="w-3 h-3" />
-                This will reverse the Pass and record a blocker. The full history is preserved.
+                You&apos;re reversing a Pass and assigning a Blocker. The Blocker fields write to the shared device row that the installation tracker also uses.
               </p>
             )}
           </div>
 
+          {/* Failure Reason — always present. This is what lands on
+              Io.failure_mode. It does NOT write to the Blocker columns on
+              Devices. */}
           <div className="space-y-2">
-            <Label htmlFor="blocker">
-              Blocker (responsible party) <span className="text-destructive">*</span>
+            <Label htmlFor="failureMode">
+              Failure Reason <span className="text-destructive">*</span>
             </Label>
-            <Select value={blocker} onValueChange={handleBlockerChange}>
-              <SelectTrigger id="blocker">
-                <SelectValue placeholder="Select responsible party..." />
+            <Select value={failureMode} onValueChange={setFailureMode}>
+              <SelectTrigger id="failureMode">
+                <SelectValue placeholder="Select a failure reason..." />
               </SelectTrigger>
               <SelectContent>
-                {BLOCKERS.map((b) => (
-                  <SelectItem key={b} value={b}>
-                    {b}
-                  </SelectItem>
+                {FAILURE_REASONS.map((r) => (
+                  <SelectItem key={r} value={r}>{r}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] text-muted-foreground">
-              Mechanical isn&apos;t listed here — those are reassigned in the installation tracker.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="blockerDescription">
-              Blocker description <span className="text-destructive">*</span>
-            </Label>
-            <Select
-              value={blockerDescription}
-              onValueChange={setBlockerDescription}
-              disabled={!blocker}
-            >
-              <SelectTrigger id="blockerDescription">
-                <SelectValue placeholder={blocker ? "Select a reason..." : "Pick a Blocker first"} />
-              </SelectTrigger>
-              <SelectContent>
-                {descriptionOptions.map((d) => (
-                  <SelectItem key={d} value={d}>
-                    {d}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {!blockerDescription && blocker && (
-              <p className="text-xs text-muted-foreground flex items-center gap-1">
-                <AlertCircle className="w-3 h-3" />
-                Required — pick the specific reason for the blocker
+            {!unpassMode && (
+              <p className="text-[11px] text-muted-foreground">
+                The Blocker (responsible party) column is left alone on a regular Fail — assign one explicitly via Unpass when warranted.
               </p>
             )}
           </div>
+
+          {/* Blocker fields — only in unpass mode. These go to the shared
+              Devices row (the same two columns the installation tracker
+              owns). */}
+          {unpassMode && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="blockerParty">
+                  Blocker (responsible party) <span className="text-destructive">*</span>
+                </Label>
+                <Select value={blockerParty} onValueChange={handleBlockerPartyChange}>
+                  <SelectTrigger id="blockerParty">
+                    <SelectValue placeholder="Select responsible party..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BLOCKER_PARTIES.map((p) => (
+                      <SelectItem key={p} value={p}>{p}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  Mechanical isn&apos;t listed here — those are reassigned in the installation tracker.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="blockerDescription">
+                  Blocker Description <span className="text-destructive">*</span>
+                </Label>
+                <Select
+                  value={blockerDescription}
+                  onValueChange={setBlockerDescription}
+                  disabled={!blockerParty}
+                >
+                  <SelectTrigger id="blockerDescription">
+                    <SelectValue placeholder={blockerParty ? "Select a blocker..." : "Pick a party first"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {descriptionOptions.map((d) => (
+                      <SelectItem key={d} value={d}>{d}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="comment">
-              {otherRequiresComment ? (
+              {isOther ? (
                 <span className="text-destructive font-semibold">Comment required</span>
               ) : (
-                <>Additional Comments {blockerDescription && <span className="text-muted-foreground text-xs">(optional)</span>}</>
+                <>Additional Comments <span className="text-muted-foreground text-xs">(optional)</span></>
               )}
             </Label>
             <Textarea
               id="comment"
-              placeholder={
-                otherRequiresComment
-                  ? "Explain the specific issue..."
-                  : "Optional — add any additional notes..."
-              }
+              placeholder={isOther ? "Explain the specific issue..." : "Optional — add any additional notes..."}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               maxLength={500}
               rows={4}
-              className={cn(
-                "resize-none",
-                otherMissingComment && "border-destructive ring-1 ring-destructive",
-              )}
+              className={cn("resize-none", otherMissingComment && "border-destructive ring-1 ring-destructive")}
             />
             <p className="text-xs text-muted-foreground text-right">{comment.length}/500</p>
           </div>
         </div>
 
         <DialogFooter className="flex gap-2">
-          <Button variant="outline" onClick={handleCancel}>
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={handleCancel}>Cancel</Button>
           <Button
             variant="destructive"
             onClick={handleSubmit}
-            disabled={!blocker || !blockerDescription || otherMissingComment}
+            disabled={
+              !failureMode
+              || otherMissingComment
+              || (unpassMode && (!blockerParty || !blockerDescription))
+            }
           >
             {submitLabel}
           </Button>

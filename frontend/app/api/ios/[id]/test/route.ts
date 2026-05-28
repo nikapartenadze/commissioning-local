@@ -23,7 +23,7 @@ export async function POST(req: Request, res: Response) {
     }
 
     const body = req.body
-    const { result, comments, currentUser, failureMode, blockerDescription } = body
+    const { result, comments, currentUser, failureMode, blockerResponsibleParty, blockerDescription } = body
 
     if (!result || !['Pass', 'Fail', 'Passed', 'Failed'].includes(result)) {
       return res.status(400).json({ error: 'Invalid result. Must be "Pass" or "Fail"' })
@@ -114,9 +114,14 @@ export async function POST(req: Request, res: Response) {
     const newFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
       ? (failureMode || null)
       : null
-    // BlockerDescription mirrors FailureMode's lifecycle — it's the specific
-    // reason ("Not installed", "Not powered", …) chosen in the fail dialog
-    // alongside the Blocker (responsible party). Cleared on Pass.
+    // Blocker (party + description) only ride along on the cloud sync push —
+    // they end up on the shared Devices row (the install-tracker's two
+    // columns), NOT on the local Ios row. A regular Fail doesn't send them
+    // at all; only Unpass does. Stash them onto the PendingSync below so the
+    // cloud push can write Devices.
+    const newBlockerResponsibleParty = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (blockerResponsibleParty || null)
+      : null
     const newBlockerDescription = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
       ? (blockerDescription || null)
       : null
@@ -128,12 +133,12 @@ export async function POST(req: Request, res: Response) {
     let testHistoryId: number | bigint = 0
     const txn = db.transaction(() => {
       db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ?, BlockerDescription = ? WHERE id = ?'
-      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, newBlockerDescription, ioId)
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ? WHERE id = ?'
+      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, ioId)
 
       const histResult = db.prepare(
-        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source, BlockerDescription) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(ioId, normalizedResult, timestamp, oldComment, plcState ?? null, currentUser ?? 'Unknown', failureMode || null, historySource, blockerDescription || null)
+        'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(ioId, normalizedResult, timestamp, oldComment, plcState ?? null, currentUser ?? 'Unknown', failureMode || null, historySource)
       testHistoryId = histResult.lastInsertRowid
     })
     txn()
@@ -142,7 +147,7 @@ export async function POST(req: Request, res: Response) {
 
     try {
       const info = db.prepare(
-        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode, BlockerDescription) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode, BlockerResponsibleParty, BlockerDescription) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(
         ioId,
         currentUser || null,
@@ -152,6 +157,7 @@ export async function POST(req: Request, res: Response) {
         new Date().toISOString(),
         newVersion - 1,
         newFailureMode,
+        newBlockerResponsibleParty,
         newBlockerDescription,
       )
       console.log(

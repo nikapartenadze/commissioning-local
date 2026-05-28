@@ -12,12 +12,12 @@ export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
     state: pending.State,
     version: pending.Version,
     timestamp: pending.Timestamp ?? undefined,
-    // New: ride along with the rest of the IO update so the cloud can store
-    // the latest failure reason (drives sidebar quick filters), the
-    // Dependencies Yes/No flag (read-only display on cloud), and the
-    // structured BlockerDescription chosen alongside the Blocker (party) in
-    // the fail dialog.
+    // Failure reason (lands on Io.failure_mode for filters), the
+    // Dependencies Yes/No flag (read-only display on cloud), and — for
+    // Unpass / explicit blocker assignment ONLY — the Blocker party +
+    // description which the cloud routes to the shared Devices row.
     failureMode: pending.FailureMode ?? null,
+    blockerResponsibleParty: pending.BlockerResponsibleParty ?? null,
     blockerDescription: pending.BlockerDescription ?? null,
     hasDependencies:
       pending.HasDependencies == null ? null : pending.HasDependencies === 1,

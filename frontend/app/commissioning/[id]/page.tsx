@@ -1371,7 +1371,7 @@ export default function CommissioningPage() {
     }
   }
 
-  const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string, blockerDescription?: string) => {
+  const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string, blockerResponsibleParty?: string, blockerDescription?: string) => {
     // Unpass detection — Pass → Fail. Used to relax the faulted-device gate
     // below (catching a temp install needs to work even when the device is
     // currently faulted) and to label the toast.
@@ -1427,6 +1427,9 @@ export default function CommissioningPage() {
           comments,
           currentUser: currentUser?.fullName || 'Unknown',
           failureMode,
+          // Only sent in unpass mode; the cloud sync route routes these to
+          // the shared Devices row (the install-tracker's columns).
+          blockerResponsibleParty,
           blockerDescription,
         })
       })
@@ -1434,7 +1437,9 @@ export default function CommissioningPage() {
       if (response.ok) {
         toast({
           title: isUnpass ? `${io.name} unpassed` : `${io.name} marked as Failed`,
-          description: blockerDescription ? `Blocker: ${failureMode} · ${blockerDescription}` : undefined,
+          description: blockerResponsibleParty
+            ? `Blocker: ${blockerResponsibleParty}${blockerDescription ? ` · ${blockerDescription}` : ''}`
+            : undefined,
           variant: "destructive",
         })
       } else {
@@ -1556,14 +1561,21 @@ export default function CommissioningPage() {
     setShowValueChangeDialog(false) // Hide ValueChangeDialog but keep currentDialogIo set
   }
 
-  const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string, blockerDescription?: string) => {
-    // failureMode = Blocker (responsible party: Electrical | Controls | 3rd Party).
-    // blockerDescription = the specific reason ("Not installed", etc.). Both
-    // live on their own DB columns now and ride through to cloud via sync.
+  const handleFailCommentSubmit = (
+    io: IoItem,
+    comment: string,
+    failureMode?: string,
+    blockerResponsibleParty?: string,
+    blockerDescription?: string,
+  ) => {
+    // failureMode = the chosen Failure Reason (always set on Fail; lands on
+    // Io.failure_mode).
+    // blockerResponsibleParty + blockerDescription = the two Blocker columns
+    // sent ONLY on Unpass; cloud routes them to the shared Devices row.
     if (DEBUG_OTHER) {
-      console.log('🎯 Marking as failed with comment:', io.name, comment, 'Blocker:', failureMode, 'Description:', blockerDescription)
+      console.log('🎯 Marking as failed:', io.name, comment, 'Reason:', failureMode, 'Blocker:', blockerResponsibleParty, '/', blockerDescription)
     }
-    handleMarkFailed(io, comment, failureMode, blockerDescription)
+    handleMarkFailed(io, comment, failureMode, blockerResponsibleParty, blockerDescription)
     setPendingFailIo(null)
     // NOW clear currentDialogIo to advance the queue
     setCurrentDialogIo(null)
