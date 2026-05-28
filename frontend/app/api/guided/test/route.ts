@@ -133,6 +133,13 @@ export async function POST(req: Request, res: Response) {
           state: plcState ?? '',
           timestamp,
           comments: combinedComment || '',
+          // Forward failureMode so cross-tab Party Responsible badges update
+          // in lockstep with Result. Guided mode currently does NOT
+          // denormalise failureMode onto the Ios row (it only writes
+          // TestHistories.FailureMode — see the txn above) so we forward
+          // the request's failureMode directly. On Pass we explicitly send
+          // null to blank the badge.
+          failureMode: normalizedResult === TEST_CONSTANTS.RESULT_FAILED ? (failureMode ?? null) : null,
         }),
       })
     } catch { /* WS broadcast is best-effort */ }

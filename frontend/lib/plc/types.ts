@@ -302,6 +302,10 @@ export interface UpdateIOMessage {
   state: string
   timestamp: string
   comments: string
+  // Optional — server includes it on Pass / Fail / Clear so the Party
+  // Responsible column updates across tabs without a refetch. Absent on
+  // state-only events from the PLC reader.
+  failureMode?: string | null
 }
 
 export interface CommentUpdateMessage {

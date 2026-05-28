@@ -12,6 +12,7 @@ import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2,
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
+import { getPartyResponsible } from "@/lib/party-responsible"
 
 type IoItem = {
   id: number
@@ -1040,17 +1041,20 @@ export function EnhancedIoDataGrid({
               Notes
             </div>
             )}
-            {/* Reason (read-only failure reason). Sits at the right of the
-                data columns. Shows the failure reason chosen in the fail
-                dialog so testers can see it at a glance without opening the
-                comment; the cloud app maps the "who" reasons (3rd Party /
-                Mech / Electrical) into its Party Responsible column. */}
+            {/* Party Responsible — derived from io.failureMode via
+                lib/party-responsible. The tester picks a specific failure
+                reason in the Fail dialog (e.g. "Not aligned"); we render the
+                CATEGORISATION (Electrical / Controls / 3rd Party / Mechanical)
+                so coordinators see at a glance who needs to act. When the
+                tester picked "Other" the dropdown returns null and the column
+                stays blank — the required comment carries the detail. Mirrors
+                the cloud's Party Responsible column for consistency. */}
             <div
               className="px-2 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
               style={{ width: `${COLUMN_WIDTHS.reason}px` }}
-              title="Failure reason selected when the IO was marked failed"
+              title="Team responsible for resolving this failure — derived from the failure reason"
             >
-              Reason
+              Party Responsible
             </div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history}px` }}>Hist</div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.help}px` }}>Help</div>
@@ -1475,23 +1479,31 @@ export function EnhancedIoDataGrid({
                      )}
                    </div>
                    )}
-                  {/* Reason — read-only failure reason for this IO. Only
-                      set while the IO is failed (cleared on pass), so it is
-                      blank for everything else. Truncates with a tooltip. */}
+                  {/* Party Responsible — derived from io.failureMode. The
+                      tester picks a failure reason (e.g. "Not aligned"); the
+                      shared helper maps that into a category badge
+                      (Electrical / Controls / 3rd Party). "Other" returns null
+                      and the cell stays blank — the comment carries the
+                      detail. Same logic the cloud uses, so the columns line
+                      up across both apps. */}
                   <div
                     className="px-1 py-2 flex items-center justify-center flex-shrink-0 overflow-hidden"
                     style={{ width: `${COLUMN_WIDTHS.reason}px` }}
                   >
-                    {io.failureMode ? (
-                      <span
-                        className="text-xs text-muted-foreground truncate"
-                        title={io.failureMode}
-                      >
-                        {io.failureMode}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground/30">—</span>
-                    )}
+                    {(() => {
+                      const party = getPartyResponsible(io.failureMode)
+                      return party ? (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] whitespace-nowrap"
+                          title={io.failureMode ? `Reason: ${io.failureMode}` : undefined}
+                        >
+                          {party}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground/30">—</span>
+                      )
+                    })()}
                   </div>
                   {/* History */}
                   <div className="px-1 py-2 flex items-center justify-center flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history}px` }}>
