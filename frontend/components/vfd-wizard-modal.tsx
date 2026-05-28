@@ -1066,14 +1066,20 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       //    This is BEST-EFFORT: some controllers (older AOI revs, partial
       //    maps) simply don't expose HMI.Speed_At_30rev. When the tag exists
       //    we write it; when it doesn't, we do NOT abort — the operator still
-      //    needs the measured FPM↔RVS pair recorded on the spreadsheet. A
-      //    failed write becomes a soft amber warning, not a red error, and we
-      //    fall through to stamp L2 anyway.
+      //    needs the measured FPM↔RVS pair recorded on the spreadsheet. Any
+      //    failure here (HTTP error response OR a thrown fetch/parse error)
+      //    becomes a soft amber warning, not a red error, and we fall through
+      //    to stamp L2 anyway.
       let plcWarning: string | null = null
-      const plcResult = await writeTag(deviceName, 'Speed_At_30rev', capturedRvs, 'REAL', 'HMI')
-      if (plcResult?.success === false || plcResult?.error) {
-        const tagPath = `${deviceName}.HMI.Speed_At_30rev`
-        plcWarning = `Couldn't write ${tagPath} on the controller (${plcResult?.error || 'tag missing'}). The measurement was still recorded to the spreadsheet — set the RVS in the AOI manually if this drive needs it.`
+      const tagPath = `${deviceName}.HMI.Speed_At_30rev`
+      try {
+        const plcResult = await writeTag(deviceName, 'Speed_At_30rev', capturedRvs, 'REAL', 'HMI')
+        if (plcResult?.success === false || plcResult?.error) {
+          plcWarning = `Couldn't write ${tagPath} on the controller (${plcResult?.error || 'tag missing'}). The measurement was still saved to the spreadsheet — set the RVS in the AOI manually if this drive needs it.`
+          console.warn(`[Step5] ${plcWarning}`)
+        }
+      } catch (writeErr) {
+        plcWarning = `Couldn't write ${tagPath} on the controller (${writeErr instanceof Error ? writeErr.message : String(writeErr)}). The measurement was still saved to the spreadsheet — set the RVS in the AOI manually if this drive needs it.`
         console.warn(`[Step5] ${plcWarning}`)
       }
 
@@ -1101,7 +1107,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   return (
     <div className="space-y-4">
       <p className="text-sm text-foreground/80 leading-relaxed">
-        Calibrate the FPM ↔ RVS pair at 30 RVS. <strong>Start the belt from the VFD keypad (F1) first</strong> — this step only changes the speed setpoint of a belt that is already running. Then click <em>Send 30 RVS Setpoint</em>, tach the actual belt FPM, and click <em>Save Measurement</em>. Save writes the captured RVS straight to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> on the drive (so the APF AOI picks it up automatically) and records the FPM/RVS pair on the commissioning spreadsheet.
+        Calibrate the FPM ↔ RVS pair at 30 RVS. <strong>Start the belt from the VFD keypad (F1) first</strong> — this step only changes the speed setpoint of a belt that is already running. Then click <em>Send 30 RVS Setpoint</em>, tach the actual belt FPM, and click <em>Save Measurement</em>. The FPM/RVS pair is recorded on the commissioning spreadsheet, and the captured RVS is also pushed to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> on the drive when that tag is available so the APF AOI picks it up automatically.
       </p>
 
       {/* Live current speed from PLC — STS.RVS is continuously updated */}
@@ -1147,7 +1153,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
         <div>
           <p className="text-sm font-semibold">Record the FPM ↔ RVS pair</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Writes the captured RVS to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> so the APF AOI picks it up automatically, then records the measured FPM and PLC RVS to the commissioning spreadsheet. If that tag doesn't exist on this controller, the measurement is <strong>still</strong> recorded — you'll just get an amber warning to set the RVS in the AOI manually.
+            Records the measured FPM and PLC RVS to the commissioning spreadsheet, and pushes the captured RVS to <code className="font-mono">{deviceName}.HMI.Speed_At_30rev</code> on the drive when that tag is available so the APF AOI picks it up automatically. If the drive doesn't expose that tag you'll see an amber warning to set the RVS in the AOI manually — the spreadsheet is still stamped.
           </p>
         </div>
         <div className="flex items-center gap-3">
