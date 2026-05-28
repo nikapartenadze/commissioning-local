@@ -889,9 +889,17 @@ export default function CommissioningPage() {
   useEffect(() => {
     const handleNetworkStatus = (update: { moduleName: string; status: string; reconnecting?: boolean }) => {
       if (update.moduleName === 'plc') {
+        // The server emits status values 'connected' | 'disconnected' |
+        // 'connecting' | 'error' (see plc-client-manager.ts:169). Older
+        // code here compared against the literal 'online', which never
+        // matches — so this handler used to force isConnected to false on
+        // every event regardless of the real state, and the only thing
+        // saving the toolbar from showing "Disconnected" was the separate
+        // PlcConnectionChanged handler firing milliseconds later. Match
+        // the actual value here so a stale event doesn't flip the UI.
         setPlcStatus(prev => ({
           ...prev,
-          isConnected: update.status === 'online',
+          isConnected: update.status === 'connected',
           isReconnecting: update.reconnecting ?? false,
         }))
       }
@@ -902,6 +910,56 @@ export default function CommissioningPage() {
       signalR.offNetworkStatusChange(handleNetworkStatus)
     }
   }, [signalR.onNetworkStatusChange, signalR.offNetworkStatusChange])
+
+  // Lazy-load reconciliation poller for the PLC connection banner. The
+  // WebSocket NetworkStatusChanged event is the low-latency signal, but if
+  // the server has been in 'error' for a while without state-changing it
+  // also stops emitting fresh events, so the banner can latch ON forever
+  // even after the PLC recovers. This 20 s poll against /api/plc/status
+  // (which is a cached server-side read — zero PLC cost per call) is the
+  // self-healing pull that reconciles whatever the WebSocket missed.
+  //
+  // Reload of the browser used to NOT fix this either, because the initial
+  // state came from another WebSocket event that hadn't arrived. With this
+  // poll, the banner self-corrects within 20 s regardless of WS state.
+  useEffect(() => {
+    let cancelled = false
+    const reconcile = async () => {
+      try {
+        const res = await authFetch(API_ENDPOINTS.status, { signal: AbortSignal.timeout(8000) })
+        if (!res.ok || cancelled) return
+        const body = await res.json() as { connected?: boolean; isReconnecting?: boolean }
+        if (cancelled) return
+        setPlcStatus(prev => {
+          // Only update when the canonical view differs from local state,
+          // to avoid pointless re-renders during steady state.
+          const nextConnected = !!body.connected
+          const nextReconnecting = !!body.isReconnecting
+          if (prev.isConnected === nextConnected && prev.isReconnecting === nextReconnecting) {
+            return prev
+          }
+          if (DEBUG_OTHER) {
+            console.log('🔄 PLC status reconciled from /api/plc/status:',
+              `connected ${prev.isConnected}→${nextConnected},`,
+              `reconnecting ${prev.isReconnecting}→${nextReconnecting}`)
+          }
+          return { ...prev, isConnected: nextConnected, isReconnecting: nextReconnecting }
+        })
+      } catch {
+        // Reconciliation is best-effort — a transient fetch error must not
+        // change the banner. The WebSocket signal stays authoritative
+        // until the next reconcile tick.
+      }
+    }
+    // Tick immediately on mount so the banner reflects truth without
+    // waiting 20 s on first render.
+    void reconcile()
+    const id = setInterval(reconcile, 20_000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [])
 
   // Handle device fault changes instantly via WebSocket
   useEffect(() => {

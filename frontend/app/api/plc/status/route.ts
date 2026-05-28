@@ -33,10 +33,20 @@ export async function GET(req: Request, res: Response) {
     const ioCount = (db.prepare('SELECT COUNT(*) as count FROM Ios').get() as { count: number }).count;
     const libraryStatus = await getLibraryStatus();
 
+    // Derived: are we actively trying to reconnect right now? Mirrors the
+    // logic at plc-client-manager.ts:164 where the WebSocket broadcast is
+    // computed. The UI uses this as the AUTHORITATIVE answer to fix the
+    // "Connection Lost — Reconnecting" banner getting stuck when a
+    // NetworkStatusChanged WebSocket event is missed or arrives stale —
+    // the page polls this endpoint every ~20 s and reconciles its local
+    // banner state to the server's canonical view.
+    const isReconnecting = status.status === 'error' && status.connectionConfig !== null;
+
     return res.json({
       success: true,
       connected: status.connected,
       plcConnected: status.connected,
+      isReconnecting,
       status: status.status,
       tagCount: status.tagCount,
       totalIos: ioCount,
