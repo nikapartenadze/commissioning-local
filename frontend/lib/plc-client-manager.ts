@@ -162,12 +162,20 @@ function setupClientEventListeners(client: PlcClient): void {
   client.on('connectionStatusChanged', (status) => {
     const config = getState().currentConnectionConfig;
     const willReconnect = status === 'error' && config !== null;
+    // everConnected lets the UI distinguish a never-succeeded-once retry
+    // storm ("Cannot reach PLC — retrying") from a real reconnect after a
+    // previously-good session ("Reconnecting"). Previously the toolbar
+    // labelled both as "Reconnecting", which confused operators staring
+    // at a fresh failed connect attempt and seeing the icon imply a
+    // dropped session.
+    const everConnected = client.everConnected;
     console.log(`[PlcClientManager] Connection status: ${status}${willReconnect ? ' (will auto-reconnect)' : ''}`);
     broadcastToWebSocket({
       type: 'NetworkStatusChanged',
       moduleName: 'plc',
       status: status,
       reconnecting: willReconnect,
+      everConnected,
       errorCount: status === 'error' ? 1 : 0,
     });
     // Tear down the network poller on hard PLC errors. Without this the
@@ -261,9 +269,28 @@ function setupClientEventListeners(client: PlcClient): void {
     }, 1500);
   });
 
-  // Broadcast errors
+  // Broadcast errors. Throttle the server-side console.error so an auto-
+  // reconnect storm against an unreachable PLC doesn't pump the same
+  // message into the log every 5–60 s. The WebSocket broadcast still
+  // fires on every event so the browser console / dialog logs see the
+  // real frequency — only the server stdout (and the rolling app.log
+  // files it gets captured into in production) gets the dedupe.
+  const ERROR_LOG_DEDUPE_MS = 60_000;
+  const lastErrorLoggedAt = new Map<string, number>();
+  let suppressedSinceLastLog = 0;
   client.on('error', (error) => {
-    console.error(`[PlcClientManager] Error: ${error.message}`);
+    const now = Date.now();
+    const lastAt = lastErrorLoggedAt.get(error.message) ?? 0;
+    if (now - lastAt >= ERROR_LOG_DEDUPE_MS) {
+      const note = suppressedSinceLastLog > 0
+        ? ` (suppressed ${suppressedSinceLastLog} identical messages in the last ${ERROR_LOG_DEDUPE_MS / 1000}s)`
+        : '';
+      console.error(`[PlcClientManager] Error: ${error.message}${note}`);
+      lastErrorLoggedAt.set(error.message, now);
+      suppressedSinceLastLog = 0;
+    } else {
+      suppressedSinceLastLog++;
+    }
     broadcastToWebSocket({
       type: 'ErrorEvent',
       source: 'plc',
@@ -410,6 +437,26 @@ export async function connectPlc(config: PlcConnectionConfig): Promise<{
     await stopNetworkPoller();
 
     const result = await client.connect(config);
+
+    // Persist boot-time auto-connect memory whenever we've genuinely
+    // succeeded — PLC reachable AND tags matched. Without the tags-matched
+    // guard we'd remember connections to the wrong PLC at the same IP
+    // (different site / same VPN address), which is exactly what the boot
+    // auto-connect guard is meant to prevent. Best-effort; a config-write
+    // failure must never make a successful connect look like it failed.
+    if (result.success && (result.tagsSuccessful ?? 0) > 0) {
+      try {
+        const cfg = await configService.getConfig();
+        if (cfg.subsystemId) {
+          await configService.saveConfig({
+            lastConnectedSubsystemId: cfg.subsystemId,
+            lastConnectedAt: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        console.warn('[PlcClientManager] Failed to persist lastConnectedSubsystemId:', err);
+      }
+    }
 
     return {
       success: result.success,

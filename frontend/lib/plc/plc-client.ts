@@ -103,6 +103,35 @@ export class PlcClient extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isDisposed: boolean = false;
 
+  // True once any connect in this session has bound at least one tag. The
+  // moment we've seen a real working set, "PLC reachable + 0/N tags" can no
+  // longer mean "wrong program" — the same names worked, so a momentary
+  // 0/N is a CIP transient (controller throttling, brief unreachability
+  // during recreate, etc.) and we must keep retrying. See field log
+  // logs_MCM08_20260528 for the bug this guards against: a successful 3380/3380
+  // connect, a network blip 6 minutes later, then 0/3380 on the immediate
+  // recreate, after which the old code refused to reconnect for 53 minutes.
+  private hasEverConnectedSuccessfully: boolean = false;
+
+  // Backoff state for scheduleReconnect. Cleared on a successful connect.
+  // The 14-attempt-in-2-min storm at 12:51-12:53 on 5/28 spammed the
+  // controller's CIP queue with no spacing; exponential backoff with jitter
+  // keeps retry pressure low while the controller / network recovers.
+  private consecutiveReconnectFailures: number = 0;
+
+  /**
+   * Public readonly view of whether this session has ever reached the
+   * 'connected' state at least once. The toolbar uses this to label the
+   * pending state correctly: a retry storm BEFORE any successful connect
+   * should read as "Connecting…" / "Cannot reach PLC — retrying…", not
+   * "Reconnecting" (which falsely implies we were once attached and lost
+   * it). The internal field is private to preserve the existing transient-
+   * zero-tags guard semantics.
+   */
+  get everConnected(): boolean {
+    return this.hasEverConnectedSuccessfully;
+  }
+
   // Active write handles keyed by tag name (for concurrent multi-user output operations)
   private writeHandles: Map<string, TagHandle> = new Map();
 
@@ -217,13 +246,22 @@ export class PlcClient extends EventEmitter {
 
           if (totalSuccessful === 0) {
             this.setConnectionStatus('error');
+            // If we've ever successfully bound tags in this session, the
+            // program is provably correct; a transient 0/N is a CIP-layer
+            // issue (controller throttling during recreate, brief queue
+            // saturation) and will heal — keep retrying. Only treat
+            // 0/N as permanent on the first-ever connect, where it really
+            // could be a wrong-subsystem load.
+            const isTransientZero = plcReachable && this.hasEverConnectedSuccessfully;
             const errorMsg = plcReachable
-              ? `PLC connected but none of the ${totalFailed.length} tags exist on the PLC. Tag names may not match the PLC program.`
+              ? (isTransientZero
+                  ? `PLC reachable but 0 of ${totalFailed.length} tags responded (transient — retrying). The program previously matched; this looks like a CIP queue saturation or brief controller unreachability.`
+                  : `PLC connected but none of the ${totalFailed.length} tags exist on the PLC. Tag names may not match the PLC program.`)
               : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
             this.emit('error', new Error(errorMsg));
-            // Only auto-retry on genuine unreachability — a tag/program mismatch
-            // can't be fixed by reconnecting, so don't loop on it.
-            if (!plcReachable) {
+            // Reschedule on genuine unreachability OR on transient 0/N after
+            // a previously-successful session (see isTransientZero above).
+            if (!plcReachable || isTransientZero) {
               this.scheduleReconnect();
             }
             return {
@@ -255,6 +293,8 @@ export class PlcClient extends EventEmitter {
           }
 
           this.setConnectionStatus('connected');
+          this.hasEverConnectedSuccessfully = true;
+          this.consecutiveReconnectFailures = 0;
           this.emit('initialized');
 
           if (totalFailed.length > 0) {
@@ -275,15 +315,15 @@ export class PlcClient extends EventEmitter {
 
         if (result.successful.length === 0) {
           this.setConnectionStatus('error');
+          // See dual-reader branch above for rationale.
+          const isTransientZero = result.plcReachable && this.hasEverConnectedSuccessfully;
           const errorMsg = result.plcReachable
-            ? `PLC connected but none of the ${result.failed.length} tags exist on the PLC. Tag names may not match the PLC program.`
+            ? (isTransientZero
+                ? `PLC reachable but 0 of ${result.failed.length} tags responded (transient — retrying). The program previously matched; this looks like a CIP queue saturation or brief controller unreachability.`
+                : `PLC connected but none of the ${result.failed.length} tags exist on the PLC. Tag names may not match the PLC program.`)
             : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
           this.emit('error', new Error(errorMsg));
-          // Only auto-retry when the PLC is genuinely unreachable. If it IS
-          // reachable but no tags matched, the loaded program/subsystem is
-          // wrong — reconnecting every few seconds can't fix that and just
-          // thrashes the CIP queue; wait for the operator to fix the config.
-          if (!result.plcReachable) {
+          if (!result.plcReachable || isTransientZero) {
             this.scheduleReconnect();
           }
           return {
@@ -313,6 +353,8 @@ export class PlcClient extends EventEmitter {
         }
 
         this.setConnectionStatus('connected');
+        this.hasEverConnectedSuccessfully = true;
+        this.consecutiveReconnectFailures = 0;
         this.emit('initialized');
 
         if (result.failed.length > 0) {
@@ -350,6 +392,11 @@ export class PlcClient extends EventEmitter {
     if (this.tagReader2) await this.tagReader2.resetForReconnection();
 
     this.destroyAllWriteHandles();
+    // Operator-initiated disconnect — the next connect should start fresh.
+    // hasEverConnectedSuccessfully stays as-is: the program names haven't
+    // changed, so the transient-zero-tags guard still applies on the next
+    // reconnect cycle in this same session.
+    this.consecutiveReconnectFailures = 0;
     this.setConnectionStatus('disconnected');
   }
 
@@ -721,19 +768,40 @@ export class PlcClient extends EventEmitter {
   }
 
   /**
-   * Schedule a reconnection attempt
+   * Schedule a reconnection attempt with jittered exponential backoff.
+   * Spacing schedule (base reconnectIntervalMs = 5000):
+   *   attempt 0 → 5 s
+   *   attempt 1 → 10 s
+   *   attempt 2 → 20 s
+   *   attempt 3 → 40 s
+   *   attempt 4+ → 60 s (cap)
+   * Each delay gets ±20% jitter so multiple tablets reconnecting after a
+   * shared site outage don't all pound the controller at the same second.
+   * Counter resets to 0 on every confirmed-success connect (see hasEverConnectedSuccessfully
+   * setter sites). Without this, a 2-minute network flap produced 14 reconnect
+   * attempts in the field log at ~10 s spacing — that's CIP-queue pressure
+   * we don't need; the controller heals just as fast on slower retries.
    */
   private scheduleReconnect(): void {
     if (this.reconnectTimer || !this.config.autoReconnect || this.isDisposed) {
       return;
     }
 
+    const baseMs = this.config.reconnectIntervalMs || 5000;
+    const exponent = Math.min(this.consecutiveReconnectFailures, 4);
+    const uncapped = baseMs * Math.pow(2, exponent);
+    const CAP_MS = 60_000;
+    const capped = Math.min(uncapped, CAP_MS);
+    const jitter = capped * 0.2 * (Math.random() * 2 - 1); // ±20%
+    const delayMs = Math.max(1000, Math.round(capped + jitter));
+    this.consecutiveReconnectFailures += 1;
+
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.connectionConfig && !this.isDisposed) {
         await this.connect(this.connectionConfig);
       }
-    }, this.config.reconnectIntervalMs || 10000);
+    }, delayMs);
   }
 
   /**
