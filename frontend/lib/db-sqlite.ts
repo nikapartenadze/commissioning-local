@@ -56,15 +56,17 @@ try {
     // cloud sidebar filter has nothing to filter on.
     'ALTER TABLE PendingSyncs ADD COLUMN FailureMode TEXT',
     'ALTER TABLE PendingSyncs ADD COLUMN HasDependencies INTEGER',
-    // Structured blocker reason chosen alongside the Blocker (party) in the
-    // fail dialog. FailureMode now holds the responsible party (Electrical,
-    // Controls, 3rd Party — never Mechanical, that's the installation
-    // tracker's lane); BlockerDescription holds the specific reason (Not
-    // installed, Not powered, Not programmed, …). Same shape on the IO row,
-    // the test-history audit trail, and the cloud-sync queue.
+    // Blocker assignment carried alongside an Unpass on the sync queue. The
+    // canonical store for the two values is the shared Devices row on cloud
+    // (the install-tracker's columns); we just need them on the queue so the
+    // cloud-sync push can include them. FailureMode column still carries the
+    // tester's chosen Failure Reason. The unused legacy BlockerDescription
+    // columns on Ios/TestHistories from an earlier design iteration are
+    // kept (additive, harmless) — new code does not populate them.
+    'ALTER TABLE PendingSyncs ADD COLUMN BlockerResponsibleParty TEXT',
+    'ALTER TABLE PendingSyncs ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE Ios ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE TestHistories ADD COLUMN BlockerDescription TEXT',
-    'ALTER TABLE PendingSyncs ADD COLUMN BlockerDescription TEXT',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
@@ -537,6 +539,7 @@ export interface PendingSync {
   Version: number
   FailureMode: string | null
   HasDependencies: number | null
+  BlockerResponsibleParty: string | null
   BlockerDescription: string | null
 }
 

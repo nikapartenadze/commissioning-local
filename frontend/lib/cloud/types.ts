@@ -71,12 +71,12 @@ export interface IoUpdateDto {
    */
   failureMode?: string | null
   /**
-   * The specific reason picked alongside the Blocker (party) in the fail
-   * dialog — e.g. 'Not installed', 'Not powered', 'Not aligned' (Electrical
-   * lane) or 'Not programmed', 'Missing drawings' (Controls lane). Cleared
-   * on Pass. Cloud denormalises it on the ios row so the Blocker column
-   * shows party + reason side by side.
+   * Blocker assignment — the two columns the installation-tracker owns on
+   * the shared `Devices` row. Sent ONLY when the tester explicitly assigns
+   * a blocker (Unpass flow). Cloud routes these to Devices for the IO's
+   * resolved device; a regular Fail leaves Devices untouched.
    */
+  blockerResponsibleParty?: string | null
   blockerDescription?: string | null
   /**
    * Per-IO Yes/No flag toggled in the new Dependencies column. Cloud
