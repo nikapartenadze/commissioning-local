@@ -25,6 +25,14 @@ export interface IoState {
 export interface PlcConnectionStatus {
   isConnected: boolean
   isReconnecting: boolean
+  /**
+   * True once the PLC client has reached 'connected' at least once in
+   * this session. Lets the toolbar pick the right pending-state label —
+   * "Reconnecting…" vs "Cannot reach PLC — retrying…". Optional for
+   * back-compat with callers that don't track it; consumers default to
+   * false (which renders the "Cannot reach PLC" copy on a pending state).
+   */
+  hasEverConnected?: boolean
   isTesting: boolean
   lastUpdate: Date
 }

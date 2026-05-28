@@ -33,6 +33,14 @@ interface PlcToolbarProps {
   isTesting: boolean
   isPlcConnected: boolean
   isPlcReconnecting?: boolean
+  /**
+   * Whether this PLC session has ever reached 'connected' at least once.
+   * Lets the toolbar label the retry-pending state correctly: a fresh
+   * unreachable-PLC retry storm reads as "Cannot reach PLC — retrying…",
+   * while a drop after a previously-good session reads as "Reconnecting".
+   * Both used to render the misleading "Reconnecting" label.
+   */
+  hasEverConnected?: boolean
   isCloudConnected: boolean
   totalIos: number
   passedIos: number
@@ -71,6 +79,7 @@ export function PlcToolbar({
   isTesting,
   isPlcConnected,
   isPlcReconnecting = false,
+  hasEverConnected = false,
   isCloudConnected,
   totalIos,
   passedIos,
@@ -457,40 +466,52 @@ export function PlcToolbar({
             </Button>
           )}
 
-          {/* PLC Status */}
-          {currentUser?.isAdmin ? (
-            <Button
-              data-tour="plc-status"
-              variant={isPlcConnected ? "ghost" : "outline"}
-              size="lg"
-              className={cn(
-                "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-2",
-                isPlcConnected
-                  ? "text-green-600"
-                  : isPlcReconnecting
-                  ? "text-amber-500 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 animate-pulse"
-                  : "text-red-600 border-red-500/50 bg-red-500/10 hover:bg-red-500/20 animate-pulse"
-              )}
-              onClick={onShowConfig}
-              title={isPlcConnected ? "PLC Connected" : isPlcReconnecting ? "PLC Lost — Reconnecting..." : "PLC Disconnected — Click to configure"}
-            >
-              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse", isPlcReconnecting && "animate-spin")} />
-              <span className="text-xs uppercase hidden sm:inline">
-                {isPlcReconnecting ? "Reconnecting" : "PLC"}
-              </span>
-            </Button>
-          ) : (
-            <div
-              data-tour="plc-status"
-              className={cn(
-                "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-2 flex items-center rounded-md",
-                isPlcConnected ? "text-green-600" : isPlcReconnecting ? "text-amber-500 animate-pulse" : "text-red-600"
-              )}
-              title={isPlcConnected ? "PLC Connected" : isPlcReconnecting ? "PLC Lost — Reconnecting..." : "PLC Disconnected"}
-            >
-              <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse", isPlcReconnecting && "animate-spin")} />
-            </div>
-          )}
+          {/* PLC Status — three-state label.
+              isPlcConnected               → green "PLC"
+              isPlcReconnecting + ever     → amber "Reconnecting" (we lost a working session)
+              isPlcReconnecting + !ever    → amber "Cannot reach PLC" (first attempt failing)
+              else                         → red "PLC" (clean disconnected) */}
+          {(() => {
+            const pendingLabel = hasEverConnected ? 'Reconnecting' : "Can't reach PLC"
+            const pendingTitle = hasEverConnected
+              ? 'PLC Lost — Reconnecting…'
+              : `Cannot reach the PLC at the configured IP — retrying every few seconds in the background.`
+            const idleTitleAdmin = 'PLC Disconnected — Click to configure'
+            const idleTitle = 'PLC Disconnected'
+            return currentUser?.isAdmin ? (
+              <Button
+                data-tour="plc-status"
+                variant={isPlcConnected ? "ghost" : "outline"}
+                size="lg"
+                className={cn(
+                  "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-2",
+                  isPlcConnected
+                    ? "text-green-600"
+                    : isPlcReconnecting
+                    ? "text-amber-500 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 animate-pulse"
+                    : "text-red-600 border-red-500/50 bg-red-500/10 hover:bg-red-500/20 animate-pulse"
+                )}
+                onClick={onShowConfig}
+                title={isPlcConnected ? "PLC Connected" : isPlcReconnecting ? pendingTitle : idleTitleAdmin}
+              >
+                <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse", isPlcReconnecting && "animate-spin")} />
+                <span className="text-xs uppercase hidden sm:inline">
+                  {isPlcReconnecting ? pendingLabel : "PLC"}
+                </span>
+              </Button>
+            ) : (
+              <div
+                data-tour="plc-status"
+                className={cn(
+                  "h-10 sm:h-12 px-2 sm:px-3 gap-1 sm:gap-2 flex items-center rounded-md",
+                  isPlcConnected ? "text-green-600" : isPlcReconnecting ? "text-amber-500 animate-pulse" : "text-red-600"
+                )}
+                title={isPlcConnected ? "PLC Connected" : isPlcReconnecting ? pendingTitle : idleTitle}
+              >
+                <Cpu className={cn("w-5 h-5", isPlcConnected && "status-pulse", isPlcReconnecting && "animate-spin")} />
+              </div>
+            )
+          })()}
 
 
           {/* Cloud Status */}

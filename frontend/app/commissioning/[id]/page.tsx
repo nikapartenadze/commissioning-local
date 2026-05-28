@@ -215,6 +215,7 @@ export default function CommissioningPage() {
   const [plcStatus, setPlcStatus] = useState<PlcConnectionStatus>({
     isConnected: false,
     isReconnecting: false,
+    hasEverConnected: false,
     isTesting: false,
     lastUpdate: new Date()
   })
@@ -887,7 +888,7 @@ export default function CommissioningPage() {
 
   // Handle PLC network status (reconnecting indicator)
   useEffect(() => {
-    const handleNetworkStatus = (update: { moduleName: string; status: string; reconnecting?: boolean }) => {
+    const handleNetworkStatus = (update: { moduleName: string; status: string; reconnecting?: boolean; everConnected?: boolean }) => {
       if (update.moduleName === 'plc') {
         // The server emits status values 'connected' | 'disconnected' |
         // 'connecting' | 'error' (see plc-client-manager.ts:169). Older
@@ -897,10 +898,17 @@ export default function CommissioningPage() {
         // saving the toolbar from showing "Disconnected" was the separate
         // PlcConnectionChanged handler firing milliseconds later. Match
         // the actual value here so a stale event doesn't flip the UI.
+        const nowConnected = update.status === 'connected'
         setPlcStatus(prev => ({
           ...prev,
-          isConnected: update.status === 'connected',
+          isConnected: nowConnected,
           isReconnecting: update.reconnecting ?? false,
+          // hasEverConnected sticks once true for the lifetime of the
+          // session. Source of truth is the server-side flag, but we
+          // also OR in the local observation (`nowConnected`) so the
+          // toolbar flips to the "Reconnecting" copy immediately on
+          // first success, without waiting for the next reconcile tick.
+          hasEverConnected: prev.hasEverConnected || nowConnected || !!update.everConnected,
         }))
       }
     }
@@ -928,22 +936,33 @@ export default function CommissioningPage() {
       try {
         const res = await authFetch(API_ENDPOINTS.status, { signal: AbortSignal.timeout(8000) })
         if (!res.ok || cancelled) return
-        const body = await res.json() as { connected?: boolean; isReconnecting?: boolean }
+        const body = await res.json() as { connected?: boolean; isReconnecting?: boolean; everConnected?: boolean }
         if (cancelled) return
         setPlcStatus(prev => {
           // Only update when the canonical view differs from local state,
           // to avoid pointless re-renders during steady state.
           const nextConnected = !!body.connected
           const nextReconnecting = !!body.isReconnecting
-          if (prev.isConnected === nextConnected && prev.isReconnecting === nextReconnecting) {
+          // hasEverConnected only ever flips false → true. Server is the
+          // source of truth (the flag lives on PlcClient itself), but we
+          // OR with the local prev value so a server-side reset followed
+          // by a momentarily-stale poll doesn't reset the label back to
+          // "Cannot reach PLC" mid-session.
+          const nextEverConnected = prev.hasEverConnected || !!body.everConnected || nextConnected
+          if (
+            prev.isConnected === nextConnected
+            && prev.isReconnecting === nextReconnecting
+            && (prev.hasEverConnected ?? false) === nextEverConnected
+          ) {
             return prev
           }
           if (DEBUG_OTHER) {
             console.log('🔄 PLC status reconciled from /api/plc/status:',
               `connected ${prev.isConnected}→${nextConnected},`,
-              `reconnecting ${prev.isReconnecting}→${nextReconnecting}`)
+              `reconnecting ${prev.isReconnecting}→${nextReconnecting},`,
+              `everConnected ${prev.hasEverConnected ?? false}→${nextEverConnected}`)
           }
-          return { ...prev, isConnected: nextConnected, isReconnecting: nextReconnecting }
+          return { ...prev, isConnected: nextConnected, isReconnecting: nextReconnecting, hasEverConnected: nextEverConnected }
         })
       } catch {
         // Reconciliation is best-effort — a transient fetch error must not
@@ -2174,6 +2193,7 @@ export default function CommissioningPage() {
           isTesting={plcStatus.isTesting}
           isPlcConnected={plcStatus.isConnected}
           isPlcReconnecting={plcStatus.isReconnecting}
+          hasEverConnected={plcStatus.hasEverConnected ?? false}
           isCloudConnected={isCloudConnected}
           totalIos={ios.filter(io => !io.description?.toUpperCase().includes('SPARE')).length}
           passedIos={ios.filter(io => io.result === 'Passed' && !io.description?.toUpperCase().includes('SPARE')).length}

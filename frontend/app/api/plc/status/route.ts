@@ -41,12 +41,24 @@ export async function GET(req: Request, res: Response) {
     // the page polls this endpoint every ~20 s and reconciles its local
     // banner state to the server's canonical view.
     const isReconnecting = status.status === 'error' && status.connectionConfig !== null;
+    // everConnected lets the toolbar pick the right label between
+    // "Connecting…", "Cannot reach PLC — retrying…", and "Reconnecting".
+    // Without this distinction a fresh failed connect was showing the
+    // misleading "Reconnecting" — implying we had been attached and
+    // dropped, which we hadn't.
+    const { hasPlcClient } = await import('@/lib/plc-client-manager');
+    let everConnected = false;
+    if (hasPlcClient()) {
+      const { getPlcClient } = await import('@/lib/plc-client-manager');
+      everConnected = getPlcClient().everConnected;
+    }
 
     return res.json({
       success: true,
       connected: status.connected,
       plcConnected: status.connected,
       isReconnecting,
+      everConnected,
       status: status.status,
       tagCount: status.tagCount,
       totalIos: ioCount,
