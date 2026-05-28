@@ -1371,10 +1371,17 @@ export default function CommissioningPage() {
     }
   }
 
-  const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string) => {
-    // Block if parent device is faulted (only for IOs with real network devices)
+  const handleMarkFailed = async (io: IoItem, comments: string, failureMode?: string, blockerDescription?: string) => {
+    // Unpass detection — Pass → Fail. Used to relax the faulted-device gate
+    // below (catching a temp install needs to work even when the device is
+    // currently faulted) and to label the toast.
+    const isUnpass = io.result === 'Passed' || io.result === 'Pass'
+
+    // Block if parent device is faulted (only for IOs with real network devices).
+    // Skipped for unpass: the whole point is to record that the install was
+    // wrong even when the device currently looks bad.
     const failDeviceName = io.networkDeviceName || getDeviceName(io.name)
-    if (io.hasNetworkDevice && failDeviceName && faultedDevices.has(failDeviceName)) {
+    if (!isUnpass && io.hasNetworkDevice && failDeviceName && faultedDevices.has(failDeviceName)) {
       toast({
         title: "Cannot test — device faulted",
         description: `${failDeviceName} has a connection fault. Fix the fault first.`,
@@ -1388,13 +1395,18 @@ export default function CommissioningPage() {
     const previousComments = io.comments
     const previousTimestamp = io.timestamp
 
-    // Build the comment that gets stored and synced
+    // Build the comment that gets stored and synced. The structured Blocker
+    // (failureMode) and Blocker Description live on their own columns now, so
+    // the comment field is just the tester's free-text note. We still surface
+    // the reason in the comment line for legacy displays that only show
+    // comments — but no duplication when the description IS "Other" and the
+    // tester typed their own text.
     let displayComment = ''
-    if (failureMode && failureMode !== 'Other') {
-      // Named failure reason: use it as comment, append user text if any
+    if (blockerDescription && blockerDescription !== 'Other') {
+      displayComment = comments ? `${blockerDescription} — ${comments}` : blockerDescription
+    } else if (failureMode && failureMode !== 'Other') {
       displayComment = comments ? `${failureMode} — ${comments}` : failureMode
     } else {
-      // "Other" or no failure mode: just the user's comment
       displayComment = comments
     }
 
@@ -1414,12 +1426,17 @@ export default function CommissioningPage() {
           result: 'Fail',
           comments,
           currentUser: currentUser?.fullName || 'Unknown',
-          failureMode
+          failureMode,
+          blockerDescription,
         })
       })
 
       if (response.ok) {
-        toast({ title: `${io.name} marked as Failed`, variant: "destructive" })
+        toast({
+          title: isUnpass ? `${io.name} unpassed` : `${io.name} marked as Failed`,
+          description: blockerDescription ? `Blocker: ${failureMode} · ${blockerDescription}` : undefined,
+          variant: "destructive",
+        })
       } else {
         const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
         logger.error('Failed to mark IO as failed:', response.status, errorBody)
@@ -1539,12 +1556,14 @@ export default function CommissioningPage() {
     setShowValueChangeDialog(false) // Hide ValueChangeDialog but keep currentDialogIo set
   }
 
-  const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string) => {
-    // Pass comment and failureMode separately — test route combines them
+  const handleFailCommentSubmit = (io: IoItem, comment: string, failureMode?: string, blockerDescription?: string) => {
+    // failureMode = Blocker (responsible party: Electrical | Controls | 3rd Party).
+    // blockerDescription = the specific reason ("Not installed", etc.). Both
+    // live on their own DB columns now and ride through to cloud via sync.
     if (DEBUG_OTHER) {
-      console.log('🎯 Marking as failed with comment:', io.name, comment, 'Failure mode:', failureMode)
+      console.log('🎯 Marking as failed with comment:', io.name, comment, 'Blocker:', failureMode, 'Description:', blockerDescription)
     }
-    handleMarkFailed(io, comment, failureMode)
+    handleMarkFailed(io, comment, failureMode, blockerDescription)
     setPendingFailIo(null)
     // NOW clear currentDialogIo to advance the queue
     setCurrentDialogIo(null)
@@ -2177,6 +2196,7 @@ export default function CommissioningPage() {
           io={pendingFailIo ? ios.find(i => i.id === pendingFailIo.id) || pendingFailIo : null}
           onSubmit={handleFailCommentSubmit}
           onCancel={handleFailCommentCancel}
+          unpassMode={pendingFailIo?.result === 'Passed' || pendingFailIo?.result === 'Pass'}
         />
 
         {/* Cloud Sync Dialog */}

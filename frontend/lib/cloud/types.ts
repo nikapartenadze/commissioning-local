@@ -71,6 +71,14 @@ export interface IoUpdateDto {
    */
   failureMode?: string | null
   /**
+   * The specific reason picked alongside the Blocker (party) in the fail
+   * dialog — e.g. 'Not installed', 'Not powered', 'Not aligned' (Electrical
+   * lane) or 'Not programmed', 'Missing drawings' (Controls lane). Cleared
+   * on Pass. Cloud denormalises it on the ios row so the Blocker column
+   * shows party + reason side by side.
+   */
+  blockerDescription?: string | null
+  /**
    * Per-IO Yes/No flag toggled in the new Dependencies column. Cloud
    * stores and displays read-only. Null = unset (treated as 'No').
    */
@@ -170,6 +178,7 @@ export interface TestHistoryDto {
   testedBy?: string | null
   state?: string | null
   failureMode?: string | null
+  blockerDescription?: string | null
 }
 
 export interface TestHistorySyncBatchDto {

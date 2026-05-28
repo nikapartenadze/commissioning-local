@@ -56,6 +56,15 @@ try {
     // cloud sidebar filter has nothing to filter on.
     'ALTER TABLE PendingSyncs ADD COLUMN FailureMode TEXT',
     'ALTER TABLE PendingSyncs ADD COLUMN HasDependencies INTEGER',
+    // Structured blocker reason chosen alongside the Blocker (party) in the
+    // fail dialog. FailureMode now holds the responsible party (Electrical,
+    // Controls, 3rd Party — never Mechanical, that's the installation
+    // tracker's lane); BlockerDescription holds the specific reason (Not
+    // installed, Not powered, Not programmed, …). Same shape on the IO row,
+    // the test-history audit trail, and the cloud-sync queue.
+    'ALTER TABLE Ios ADD COLUMN BlockerDescription TEXT',
+    'ALTER TABLE TestHistories ADD COLUMN BlockerDescription TEXT',
+    'ALTER TABLE PendingSyncs ADD COLUMN BlockerDescription TEXT',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
@@ -488,6 +497,7 @@ export interface Io {
   IoNumber: string | null
   HasDependencies: number | null
   FailureMode: string | null
+  BlockerDescription: string | null
 }
 
 export interface TestHistory {
@@ -500,6 +510,7 @@ export interface TestHistory {
   State: string | null
   FailureMode: string | null
   Source: string | null
+  BlockerDescription: string | null
 }
 
 export interface User {
@@ -526,6 +537,7 @@ export interface PendingSync {
   Version: number
   FailureMode: string | null
   HasDependencies: number | null
+  BlockerDescription: string | null
 }
 
 // ── Helper constants ─────────────────────────────────────────────
