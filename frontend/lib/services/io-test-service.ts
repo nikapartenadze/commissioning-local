@@ -10,6 +10,7 @@ import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '../plc-client-manager'
 import { checkInstallGate } from './install-gate'
+import { getTagForIo, hasAnyMcm } from '../mcm-registry'
 
 // Test result constants (matching C# TestConstants)
 export const TEST_CONSTANTS = {
@@ -79,9 +80,19 @@ export function createTimestamp(): string {
 }
 
 /**
- * Get current PLC state for an IO by ID
+ * Get current PLC state for an IO by ID.
+ *
+ * Multi-MCM aware — if any MCM is registered (central-tool path), we resolve
+ * the tag through mcm-registry so each IO addresses its owning controller.
+ * If the registry is empty we fall back to the legacy single-PLC singleton.
  */
 export function getPlcStateForIo(ioId: number): string | undefined {
+  if (hasAnyMcm()) {
+    const tag = getTagForIo(ioId)
+    if (tag) return tag.state ?? undefined
+    // intentional fall-through: registry knows nothing about this IO yet
+    // (e.g. tags not loaded for the owning MCM), so try the singleton too
+  }
   const { tags } = getPlcTags()
   const tag = tags.find(t => t.id === ioId)
   return tag?.state
@@ -258,19 +269,18 @@ export async function getIoByIdAsync(ioId: number): Promise<IoWithState | null> 
 }
 
 /**
- * Get all IOs for a subsystem with current PLC states
+ * Get all IOs for a subsystem with current PLC states. Routes through
+ * mcm-registry first when populated so each IO's state comes from the right
+ * controller; falls back to the legacy singleton's tag list otherwise.
  */
 export function getIosBySubsystem(subsystemId: number): IoWithState[] {
   const ios = db.prepare(
     'SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC'
   ).all(subsystemId) as Io[]
 
-  const { tags } = getPlcTags()
-  const stateMap = new Map(tags.map(t => [t.id, t.state]))
-
   return ios.map(io => ({
     ...io,
-    state: stateMap.get(io.id)
+    state: getPlcStateForIo(io.id)
   }))
 }
 

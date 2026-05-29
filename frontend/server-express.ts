@@ -235,9 +235,33 @@ startupInfo.forEach(line => appendLog(LOG_FILE, `${logTimestamp()} ${line}`));
 const plcWss = new WebSocketServer({ noServer: true });
 const plcClients = new Set<AliveWebSocket>();
 
-// Extend WebSocket type for isAlive tracking
+// Extend WebSocket type for isAlive tracking and per-MCM subscription state.
 interface AliveWebSocket extends WebSocket {
   isAlive: boolean;
+  /**
+   * Set of subsystemIds this client is interested in. `undefined` means
+   * "subscribed to everything" (legacy/default behavior — required for the
+   * existing commissioning UI which never sends a Subscribe frame).
+   *
+   * Central-tool clients SEND `{ type: 'Subscribe', subsystemIds: [...] }`
+   * after connect to opt into filtered delivery.
+   */
+  subscribedSubsystemIds?: Set<string>;
+}
+
+/**
+ * Should a broadcast message reach this client? Honors per-client subscription.
+ * Messages without a `subsystemId` field are global (config reload, library
+ * errors, etc.) and always pass.
+ */
+function shouldDeliver(message: any, ws: AliveWebSocket): boolean {
+  // No subscription set → legacy client, receive everything.
+  if (!ws.subscribedSubsystemIds) return true;
+  // Global event (no subsystemId on the payload) → always pass.
+  if (message == null || typeof message !== 'object') return true;
+  const sid = message.subsystemId;
+  if (sid === undefined || sid === null || sid === '') return true;
+  return ws.subscribedSubsystemIds.has(String(sid));
 }
 
 // ============================================================================
@@ -273,20 +297,24 @@ const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerRespo
         const message = JSON.parse(body);
         const data = JSON.stringify(message);
         let sent = 0;
+        let filtered = 0;
         plcClients.forEach((ws) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            try {
-              ws.send(data);
-              sent++;
-            } catch (err: any) {
-              console.error('[WS] Failed to send to client, removing:', err.message);
-              plcClients.delete(ws);
-              try { ws.terminate(); } catch { /* ignore */ }
-            }
+          if (ws.readyState !== WebSocket.OPEN) return;
+          if (!shouldDeliver(message, ws)) {
+            filtered++;
+            return;
+          }
+          try {
+            ws.send(data);
+            sent++;
+          } catch (err: any) {
+            console.error('[WS] Failed to send to client, removing:', err.message);
+            plcClients.delete(ws);
+            try { ws.terminate(); } catch { /* ignore */ }
           }
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, clientsNotified: sent }));
+        res.end(JSON.stringify({ success: true, clientsNotified: sent, filtered }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON' }));
@@ -368,6 +396,29 @@ plcWss.on('connection', (ws: AliveWebSocket) => {
           serverVersion: SERVER_VERSION,
           timestamp: Date.now()
         }));
+        return;
+      }
+      // central-tool: client subscribes to a specific set of MCMs.
+      // { type: 'Subscribe', subsystemIds: ['37','41'] } → filter
+      // { type: 'Subscribe', subsystemIds: ['*'] }       → receive everything
+      // { type: 'Unsubscribe' }                          → revert to legacy "everything"
+      if (msg.type === 'Subscribe' && Array.isArray(msg.subsystemIds)) {
+        const ids = msg.subsystemIds.map((x: unknown) => String(x)).filter(Boolean);
+        if (ids.includes('*')) {
+          ws.subscribedSubsystemIds = undefined; // receive everything
+        } else {
+          ws.subscribedSubsystemIds = new Set(ids);
+        }
+        ws.send(JSON.stringify({
+          type: 'SubscribeAck',
+          subsystemIds: Array.from(ws.subscribedSubsystemIds ?? ['*']),
+        }));
+        return;
+      }
+      if (msg.type === 'Unsubscribe') {
+        ws.subscribedSubsystemIds = undefined;
+        ws.send(JSON.stringify({ type: 'SubscribeAck', subsystemIds: ['*'] }));
+        return;
       }
     } catch {}
   });

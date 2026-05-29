@@ -402,11 +402,23 @@ function getIoIdByName(name: string): number {
 }
 
 /**
- * Check if a PLC client instance exists
+ * Check if a PLC client instance exists.
+ *
+ * Multi-MCM aware: returns true when the registry has at least one MCM
+ * even if the legacy singleton was never instantiated. Routes that gate
+ * on "is there a PLC at all?" (heartbeat, status endpoints) need this
+ * to see the central-tool state.
  */
 export function hasPlcClient(): boolean {
   syncState();
-  return getState().plcClientInstance !== null;
+  if (getState().plcClientInstance !== null) return true;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const reg = require('./mcm-registry') as typeof import('./mcm-registry');
+    return reg.hasAnyMcm();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -515,7 +527,16 @@ export async function disconnectPlc(): Promise<{
 }
 
 /**
- * Get current PLC connection status
+ * Get current PLC connection status.
+ *
+ * Multi-MCM aware: when the mcm-registry has any MCMs configured, it is the
+ * source of truth and the singleton is bypassed. This catches the case where
+ * a legacy route (e.g. /api/ios/:id/fire-output) called getPlcClient() and
+ * thereby created an unconnected singleton instance — without this ordering,
+ * subsequent getPlcStatus() calls would return the singleton's disconnected
+ * state even though the registry has 4 MCMs live.
+ *
+ * Lazy-imports the registry to dodge a module-init cycle.
  */
 export function getPlcStatus(): {
   connected: boolean;
@@ -523,9 +544,27 @@ export function getPlcStatus(): {
   tagCount: number;
   connectionConfig: PlcConnectionConfig | null;
 } {
+  // Multi-MCM mode: registry wins.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const reg = require('./mcm-registry') as typeof import('./mcm-registry');
+    if (reg.hasAnyMcm()) {
+      const agg = reg.getAggregateStatus();
+      const first = agg.mcms.find((m) => m.connected) ?? agg.mcms[0];
+      return {
+        connected: agg.anyConnected,
+        status: (agg.anyConnected ? 'connected' : 'disconnected') as ConnectionStatus,
+        tagCount: agg.totalTagCount,
+        connectionConfig: first ? { ip: first.ip, path: first.path } : null,
+      };
+    }
+  } catch {
+    // registry not available — fall through to legacy singleton path
+  }
+
+  // Legacy single-MCM mode.
   syncState();
   const state = getState();
-
   if (!state.plcClientInstance) {
     return {
       connected: false,
@@ -534,7 +573,6 @@ export function getPlcStatus(): {
       connectionConfig: null,
     };
   }
-
   return {
     connected: state.plcClientInstance.isConnected,
     status: state.plcClientInstance.getConnectionStatus(),
@@ -544,7 +582,12 @@ export function getPlcStatus(): {
 }
 
 /**
- * Get all loaded tags with their current values
+ * Get all loaded tags with their current values.
+ *
+ * Registry-first: if any MCM is configured, returns the union of every
+ * MCM's tag list. Otherwise falls back to the legacy singleton. This
+ * matches the getPlcStatus() ordering so a stale-singleton can't shadow
+ * a live registry.
  */
 export function getPlcTags(): {
   tags: Array<{
@@ -558,18 +601,27 @@ export function getPlcTags(): {
   }>;
   count: number;
 } {
+  // Multi-MCM mode: registry wins.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const reg = require('./mcm-registry') as typeof import('./mcm-registry');
+    if (reg.hasAnyMcm()) {
+      return reg.getAllTags();
+    }
+  } catch {
+    // registry not available
+  }
+
+  // Legacy single-MCM mode.
   syncState();
   const state = getState();
-
   if (!state.plcClientInstance) {
     return {
       tags: [],
       count: 0,
     };
   }
-
   const tags = state.plcClientInstance.getIoTags();
-
   return {
     tags,
     count: tags.length,

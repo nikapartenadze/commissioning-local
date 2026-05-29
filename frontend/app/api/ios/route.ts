@@ -3,6 +3,7 @@ import { db, ioToApi } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '@/lib/plc-client-manager'
 import { isOutputIo } from '@/lib/io-classification'
+import { getAllTags, getMcmTags, hasAnyMcm, hasMcm } from '@/lib/mcm-registry'
 
 /**
  * GET /api/ios
@@ -19,9 +20,25 @@ export async function GET(req: Request, res: Response) {
       ios = db.prepare('SELECT * FROM Ios ORDER BY "Order" ASC').all() as Io[]
     }
 
-    const { tags, count } = getPlcTags()
-    console.log(`[IOs API] Got ${count} tags from PLC client`)
-    const stateMap = new Map(tags.map(t => [t.id, t.state]))
+    // Multi-MCM: scope tag-state lookup to the requested MCM when known,
+    // otherwise union across every registered MCM. Singleton fallback is
+    // unchanged when no MCMs are registered.
+    let stateMap: Map<number, string | undefined>
+    if (hasAnyMcm()) {
+      if (subsystemId && hasMcm(subsystemId)) {
+        const { tags: mcmTags } = getMcmTags(subsystemId)
+        stateMap = new Map(mcmTags.map((t) => [t.id, t.state]))
+        console.log(`[IOs API] Multi-MCM ${subsystemId}: ${mcmTags.length} tags`)
+      } else {
+        const { tags: allTags, count } = getAllTags()
+        stateMap = new Map(allTags.map((t) => [t.id, t.state]))
+        console.log(`[IOs API] Multi-MCM union: ${count} tags across all MCMs`)
+      }
+    } else {
+      const { tags, count } = getPlcTags()
+      console.log(`[IOs API] Singleton: ${count} tags from PLC client`)
+      stateMap = new Map(tags.map((t) => [t.id, t.state]))
+    }
 
     const networkDevices = new Set(
       (db.prepare('SELECT DISTINCT DeviceName FROM NetworkPorts WHERE DeviceName IS NOT NULL').all() as { DeviceName: string }[])

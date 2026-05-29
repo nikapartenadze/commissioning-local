@@ -1,10 +1,15 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
-import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { getMcmIdForIo } from '@/lib/mcm-registry'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
-import { createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
+import {
+  createTimestamp,
+  TEST_CONSTANTS,
+  getPlcStateForIo,
+} from '@/lib/services/io-test-service'
 
 /**
  * POST /api/ios/:id/reset
@@ -54,9 +59,9 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
-    const { tags } = getPlcTags()
-    const tag = tags.find(t => t.id === ioId)
-    const plcState = tag?.state
+    // Multi-MCM aware state lookup (falls back to singleton internally).
+    const plcState = getPlcStateForIo(ioId)
+    const subsystemId = getMcmIdForIo(ioId) ?? String(io.SubsystemId)
 
     let historyComment: string | null = null
     if (hadResult && hadComments) {
@@ -130,6 +135,7 @@ export async function POST(req: Request, res: Response) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'UpdateIO',
+          subsystemId,
           id: ioId,
           result: 'Not Tested',
           state: plcState ?? '',
