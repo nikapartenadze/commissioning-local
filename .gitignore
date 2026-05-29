@@ -71,3 +71,17 @@ commissioning-tool-*-portable/
 docs/
 images/
 installation-tracker
+
+# Per-device runtime identity — unique per tablet, must never be shared
+frontend/machine.id
+
+# Per-device field logs (one folder per tablet/MCM)
+logs-*/
+frontend/logs-*/
+
+# Claude Code local scheduler lock
+.claude/scheduled_tasks.lock
+
+# PLC program exports (large binaries) + local scratch/debug scripts
+*.L5X
+check-polarity.js
