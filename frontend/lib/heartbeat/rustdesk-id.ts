@@ -1,0 +1,156 @@
+/**
+ * RustDesk ID probe
+ *
+ * Reads this laptop's RustDesk ID so the heartbeat can self-report it to the
+ * cloud fleet view. The cloud prefers a self-reported ID over its hostname-
+ * based guess (commissioning-cloud's GET /api/admin/instances), which is
+ * ambiguous whenever several physical laptops reuse one Windows hostname (the
+ * shared-image "autstand" problem). Reporting the real ID here makes the
+ * one-click "Remote in" reliable and clears the "pick RustDesk" warning.
+ *
+ * Why shell out instead of parsing RustDesk.toml: modern RustDesk stores only
+ * an ENCRYPTED `enc_id` in the toml — the plaintext ID is not in the file.
+ * `rustdesk.exe --get-id` prints it. That GUI binary panics when its stdout is
+ * an ordinary pipe ("failed printing to stdout: The pipe is being closed"),
+ * so we redirect stdout to a temp file and read it back — which works cleanly.
+ *
+ * Caching: the ID is stable per machine, so we probe once and cache it for the
+ * process lifetime. While it's still unknown (RustDesk not installed yet, or
+ * the probe failed) we re-probe on a throttle so we don't spawn the client on
+ * every heartbeat. A reinstall that changes the ID is picked up on the next
+ * tool restart.
+ */
+
+import os from 'os'
+import fs from 'fs'
+import path from 'path'
+import { spawn } from 'child_process'
+
+// Windows-only feature; field laptops are all Windows. Anywhere else we never
+// report an ID and the cloud just falls back to its hostname guess.
+const IS_WIN = process.platform === 'win32'
+
+// Throttle re-probes while the ID is still unknown so we don't spawn the
+// client on every 30 s heartbeat. ~2 min ≈ "every few heartbeats".
+const RETRY_INTERVAL_MS = 2 * 60_000
+const PROBE_TIMEOUT_MS = 5_000
+
+let cachedId: string | null = null
+let lastAttemptAt = 0
+let inFlight: Promise<string | null> | null = null
+
+function candidateExePaths(): string[] {
+  const pf = process.env['ProgramFiles'] || 'C:\\Program Files'
+  const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+  const local = process.env['LOCALAPPDATA'] || ''
+  const paths = [
+    path.join(pf, 'RustDesk', 'rustdesk.exe'),
+    path.join(pf86, 'RustDesk', 'rustdesk.exe'),
+  ]
+  if (local) paths.push(path.join(local, 'Programs', 'RustDesk', 'rustdesk.exe'))
+  return paths
+}
+
+function findRustDeskExe(): string {
+  for (const p of candidateExePaths()) {
+    try {
+      if (fs.existsSync(p)) return p
+    } catch {
+      /* ignore and keep looking */
+    }
+  }
+  // Fall back to the bare name and let spawn resolve it via PATH. If it isn't
+  // installed, spawn emits an 'error' event and we treat it as "not found".
+  return 'rustdesk.exe'
+}
+
+// A RustDesk ID is a numeric string (typically 9-10 digits). Validate so a
+// panic message or stray output can never be shipped as an "ID".
+function sanitize(raw: string): string | null {
+  const m = raw.trim().match(/^\d{6,12}$/)
+  return m ? m[0] : null
+}
+
+/**
+ * Spawn `rustdesk.exe --get-id` once, redirecting stdout to a temp file
+ * (see header for why), and return the sanitized ID or null.
+ */
+async function probeOnce(): Promise<string | null> {
+  const exe = findRustDeskExe()
+
+  const tmp = path.join(os.tmpdir(), `rd-id-${process.pid}-${Date.now()}.txt`)
+  let fd: number
+  try {
+    fd = fs.openSync(tmp, 'w')
+  } catch {
+    return null
+  }
+
+  const readResult = (): string | null => {
+    try { fs.closeSync(fd) } catch { /* already closed */ }
+    let out = ''
+    try { out = fs.readFileSync(tmp, 'utf8') } catch { /* ignore */ }
+    try { fs.unlinkSync(tmp) } catch { /* ignore */ }
+    return sanitize(out)
+  }
+
+  return new Promise<string | null>((resolve) => {
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(readResult())
+    }
+
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(exe, ['--get-id'], {
+        stdio: ['ignore', fd, 'ignore'],
+        windowsHide: true,
+      })
+    } catch {
+      finish()
+      return
+    }
+
+    timer = setTimeout(() => {
+      try { child.kill() } catch { /* ignore */ }
+      finish()
+    }, PROBE_TIMEOUT_MS)
+
+    // 'error' = exe missing / spawn failed. 'close' = it ran; read whatever
+    // landed in the file. Either way finish() reads + sanitizes (or nulls).
+    child.on('error', finish)
+    child.on('close', finish)
+  })
+}
+
+/**
+ * Best-effort RustDesk ID for this machine, or null if not yet known.
+ *
+ * Non-blocking: returns the current cached value immediately and kicks the
+ * probe off in the background. So the heartbeat that triggers the first probe
+ * reports null, and the next tick (once the probe resolves) carries the real
+ * ID. Once found, it's cached for the process lifetime; while unknown,
+ * re-probes are throttled to RETRY_INTERVAL_MS.
+ */
+export function getRustDeskId(): string | null {
+  if (!IS_WIN) return null
+  if (cachedId) return cachedId
+
+  const now = Date.now()
+  if (!inFlight && now - lastAttemptAt >= RETRY_INTERVAL_MS) {
+    lastAttemptAt = now
+    inFlight = probeOnce()
+      .then((id) => {
+        if (id) cachedId = id
+        return id
+      })
+      .catch(() => null)
+      .finally(() => { inFlight = null })
+  }
+
+  return cachedId
+}

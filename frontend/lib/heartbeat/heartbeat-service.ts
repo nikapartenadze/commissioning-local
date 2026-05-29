@@ -23,6 +23,7 @@ import os from 'os'
 import { configService } from '@/lib/config'
 import { getCurrentAppVersion, getEffectiveUpdateState, type LocalUpdateState } from '@/lib/update/update-utils'
 import { getMachineId } from './machine-id'
+import { getRustDeskId } from './rustdesk-id'
 import { collectSystemInfo, type HeartbeatSystemInfo } from './system-info'
 import { executeCommand, type IncomingCommand, type CommandResult } from './command-handler'
 import { drainResults, enqueueResult, requeue } from './command-queue'
@@ -43,6 +44,11 @@ export interface HeartbeatPayload {
   // (downloading → installing → success|error) instead of the launch-ack
   // the command queue reports. Null when no update has ever run.
   updateStatus: LocalUpdateState | null
+  // This laptop's RustDesk ID (from `rustdesk --get-id`), so the cloud fleet
+  // view can show an authoritative one-click "Remote in" instead of guessing
+  // by hostname. Omitted while unknown so the cloud keeps any prior value and
+  // falls back to its hostname-based guess (see lib/heartbeat/rustdesk-id.ts).
+  rustDeskId?: string
   commandResults?: CommandResult[]
 }
 
@@ -65,6 +71,8 @@ export async function buildHeartbeatPayload(): Promise<HeartbeatPayload> {
     const parsed = parseInt(String(subsystemIdRaw), 10)
     currentSubsystemId = Number.isFinite(parsed) ? parsed : null
   }
+
+  const rustDeskId = getRustDeskId()
 
   return {
     machineId: getMachineId(),
@@ -89,6 +97,11 @@ export async function buildHeartbeatPayload(): Promise<HeartbeatPayload> {
     // a STALE non-terminal state to `error` so the cloud banner stops reporting
     // a phantom "installing…" for a tablet whose updater died mid-flight.
     updateStatus: getEffectiveUpdateState(),
+    // Non-blocking: null on the first tick after startup, then the real ID
+    // once the background probe resolves. Spread so it's omitted (not sent as
+    // null) while unknown — the cloud only overwrites its stored ID when the
+    // key is present, so this never wipes a previously-reported value.
+    ...(rustDeskId ? { rustDeskId } : {}),
   }
 }
 
