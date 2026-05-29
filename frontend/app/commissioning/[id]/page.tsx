@@ -1994,8 +1994,10 @@ export default function CommissioningPage() {
 
   return (
     <ErrorBoundary>
-    <ConnectionLostOverlay visible={signalR.isHeartbeatLost} />
-    <ConnectionSlowBanner visible={signalR.connectionHealth === 'slow'} lastAckAgeSec={signalR.lastAckAgeSec} />
+    {/* Connection-lost overlay + slow banner are rendered app-wide by
+        <ConnectionGuard /> in App.tsx, so they're intentionally not repeated
+        here (doing so without importing them is what caused the
+        "ConnectionLostOverlay is not defined" crash). */}
     {!userLoading && !currentUser && (
       <NamePrompt onNameSet={(name) => setCurrentUser({ fullName: name, isAdmin: true, loginTime: new Date() })} />
     )}
