@@ -146,6 +146,17 @@ export class NetworkPoller extends EventEmitter {
   private cycleIndex = 0;
   /** Whether we've already warned about a slow cycle this streak. Resets on a fast cycle. */
   private warnedSlowThisStreak = false;
+  /**
+   * Set once we've already printed the "no candidate tags discovered" / "no
+   * network device tags discovered" warnings for the current `start()`. The
+   * field log showed these printing on every restart of the poller (and the
+   * NetworkPoller restarts on every PLC connect/reconnect cycle), which
+   * filled the service-error log with 5+ identical multi-line blocks per
+   * minute during a connection storm. Cleared in `stop()` so a subsequent
+   * start() can re-warn if the situation hasn't been fixed.
+   */
+  private warnedNoDevicesThisStart = false;
+  private warnedNoCandidatesThisStart = false;
   /** Backplane path to the DLR supervisor (configured or derived); '' = none. */
   private dlrPath: string | undefined;
   /** Latest DLR ring verdict. Unknown until the first successful probe. */
@@ -222,10 +233,13 @@ export class NetworkPoller extends EventEmitter {
       );
 
       if (discoveredNames.length === 0) {
-        console.warn(
-          `[NetworkPoller] No network device tags discovered (gateway=${this.gateway} path=${this.path}). ` +
-            `Set config.networkPollingDevices or check @tags browse permissions.`,
-        );
+        if (!this.warnedNoDevicesThisStart) {
+          console.warn(
+            `[NetworkPoller] No network device tags discovered (gateway=${this.gateway} path=${this.path}). ` +
+              `Set config.networkPollingDevices or check @tags browse permissions.`,
+          );
+          this.warnedNoDevicesThisStart = true;
+        }
         return;
       }
 
@@ -287,6 +301,8 @@ export class NetworkPoller extends EventEmitter {
     this.errorState.clear();
     this.cycleIndex = 0;
     this.warnedSlowThisStreak = false;
+    this.warnedNoDevicesThisStart = false;
+    this.warnedNoCandidatesThisStart = false;
     this.latestRing = { state: 'unknown', reason: 'Not yet probed' };
     this.lastDlrProbeCycle = -DLR_REPROBE_CYCLES;
     this.emit('stopped');
@@ -594,13 +610,14 @@ export class NetworkPoller extends EventEmitter {
         console.log(
           `[NetworkPoller] @tags browse: ${names.length} candidate(s) of ${entriesParsed} tag(s) in ${size}B — ${names.slice(0, 8).join(', ')}${names.length > 8 ? ', …' : ''}`,
         );
-      } else {
+      } else if (!this.warnedNoCandidatesThisStart) {
         console.warn(
           `[NetworkPoller] @tags browse parsed ${entriesParsed} entries in ${size}B but matched 0 candidate(s). ` +
           `Suffix filter: ${NETWORK_TAG_SUFFIXES.join(' | ')}. ` +
           `Sample of first names seen: ${sampleAllNames.length === 0 ? '(none — parser broke early)' : sampleAllNames.join(', ')}. ` +
           `If the device tags use a different suffix on this controller, update NETWORK_TAG_SUFFIXES in lib/plc/network/types.ts.`,
         );
+        this.warnedNoCandidatesThisStart = true;
       }
       return names;
     } finally {

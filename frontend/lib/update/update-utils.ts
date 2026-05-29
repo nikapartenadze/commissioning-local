@@ -78,35 +78,87 @@ export async function getUpdateManifestUrl(): Promise<string> {
   return DEFAULT_MANIFEST_URL
 }
 
-export async function fetchReleaseManifest(): Promise<{ manifestUrl: string; manifest: ReleaseManifest | null; error?: string }> {
-  const manifestUrl = await getUpdateManifestUrl()
-  if (!manifestUrl) {
-    return { manifestUrl: '', manifest: null, error: 'Update manifest URL is not configured' }
+/**
+ * Module-level cache for the release-manifest fetch result. The toolbar pill
+ * polls /api/update/status frequently; the field log showed dozens of
+ * `SLOW GET /api/update/status → 10001ms` lines because every poll re-hit the
+ * cloud and the cloud sometimes took the full 10 s timeout to respond.
+ *
+ * Cache parameters:
+ *   - SUCCESS_TTL_MS:  successful results held for 30 s (next poll picks up
+ *                      new releases within half a minute — fine for our use).
+ *   - ERROR_TTL_MS:    failed results held for 60 s so we don't pound an
+ *                      unreachable endpoint on every poll. Long enough to
+ *                      mute the SLOW-log spam, short enough that the pill
+ *                      clears within ~1 min once connectivity returns.
+ */
+type ManifestResult = { manifestUrl: string; manifest: ReleaseManifest | null; error?: string }
+const SUCCESS_TTL_MS = 30_000
+const ERROR_TTL_MS = 60_000
+let cachedManifest: { value: ManifestResult; expiresAt: number } | null = null
+/** Deduplicate concurrent fetches — without this, the first 30 s of a slow
+ *  manifest fetch could spawn dozens of parallel HTTP requests. */
+let inflightManifestFetch: Promise<ManifestResult> | null = null
+
+export async function fetchReleaseManifest(): Promise<ManifestResult> {
+  const now = Date.now()
+  if (cachedManifest && cachedManifest.expiresAt > now) {
+    return cachedManifest.value
+  }
+  if (inflightManifestFetch) {
+    return inflightManifestFetch
   }
 
+  inflightManifestFetch = (async () => {
+    const manifestUrl = await getUpdateManifestUrl()
+    if (!manifestUrl) {
+      const result: ManifestResult = { manifestUrl: '', manifest: null, error: 'Update manifest URL is not configured' }
+      cachedManifest = { value: result, expiresAt: Date.now() + ERROR_TTL_MS }
+      return result
+    }
+
+    try {
+      // 4 s timeout sits below the API logger's 5 s SLOW threshold, so a
+      // genuinely unreachable manifest URL stops painting the log red on
+      // every poll. The cloud was responding inside ~2 s on the good path
+      // already, so 4 s leaves comfortable headroom.
+      const response = await fetch(manifestUrl, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(4000),
+      })
+
+      if (!response.ok) {
+        const result: ManifestResult = { manifestUrl, manifest: null, error: `Manifest HTTP ${response.status}` }
+        cachedManifest = { value: result, expiresAt: Date.now() + ERROR_TTL_MS }
+        return result
+      }
+
+      const manifest = await response.json() as ReleaseManifest
+      if (!manifest?.version || !manifest?.installerUrl) {
+        const result: ManifestResult = { manifestUrl, manifest: null, error: 'Manifest is missing version or installerUrl' }
+        cachedManifest = { value: result, expiresAt: Date.now() + ERROR_TTL_MS }
+        return result
+      }
+
+      const result: ManifestResult = { manifestUrl, manifest }
+      cachedManifest = { value: result, expiresAt: Date.now() + SUCCESS_TTL_MS }
+      return result
+    } catch (error) {
+      const result: ManifestResult = {
+        manifestUrl,
+        manifest: null,
+        error: error instanceof Error ? error.message : 'Failed to fetch update manifest',
+      }
+      cachedManifest = { value: result, expiresAt: Date.now() + ERROR_TTL_MS }
+      return result
+    }
+  })()
+
   try {
-    const response = await fetch(manifestUrl, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(10000),
-    })
-
-    if (!response.ok) {
-      return { manifestUrl, manifest: null, error: `Manifest HTTP ${response.status}` }
-    }
-
-    const manifest = await response.json() as ReleaseManifest
-    if (!manifest?.version || !manifest?.installerUrl) {
-      return { manifestUrl, manifest: null, error: 'Manifest is missing version or installerUrl' }
-    }
-
-    return { manifestUrl, manifest }
-  } catch (error) {
-    return {
-      manifestUrl,
-      manifest: null,
-      error: error instanceof Error ? error.message : 'Failed to fetch update manifest',
-    }
+    return await inflightManifestFetch
+  } finally {
+    inflightManifestFetch = null
   }
 }
 

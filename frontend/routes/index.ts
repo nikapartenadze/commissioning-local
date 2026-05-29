@@ -102,6 +102,7 @@ import * as guidedTest from '@/app/api/guided/test/route'
 import * as guidedClear from '@/app/api/guided/clear/route'
 import * as guidedDeviceByName from '@/app/api/guided/devices/[name]/route'
 import * as roadmap from '@/app/api/roadmap/route'
+import * as subsystemsList from '@/app/api/subsystems/list/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -276,6 +277,9 @@ export function createApiRouter(): Router {
   router.post('/api/guided/test', asyncHandler(guidedTest.POST))
   router.post('/api/guided/clear', asyncHandler(guidedClear.POST))
   router.get('/api/roadmap', asyncHandler(roadmap.GET))
+
+  // ── Subsystems list (MCM picker) ──────────────────────────────
+  router.get('/api/subsystems/list', asyncHandler(subsystemsList.GET))
 
   // ── Global Error Handler ──────────────────────────────────────
   // Catches all errors from asyncHandler() and prevents them from

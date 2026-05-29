@@ -129,6 +129,23 @@ class ConfigurationService {
         networkPollingIntervalMs: typeof parsed.networkPollingIntervalMs === 'number' && Number.isFinite(parsed.networkPollingIntervalMs)
           ? Math.max(1000, Math.min(600_000, Math.floor(parsed.networkPollingIntervalMs)))
           : undefined,
+        lastConnectedSubsystemId: typeof parsed.lastConnectedSubsystemId === 'string' && parsed.lastConnectedSubsystemId.length > 0
+          ? parsed.lastConnectedSubsystemId
+          : undefined,
+        lastConnectedAt: typeof parsed.lastConnectedAt === 'string' && parsed.lastConnectedAt.length > 0
+          ? parsed.lastConnectedAt
+          : undefined,
+        // Locally-cached MCM picker entries — populated from the cloud
+        // subsystems list, enriched with PLC IP/Path on each successful
+        // connect so the next visit doesn't make the operator retype the IP.
+        plcProfiles: Array.isArray(parsed.plcProfiles)
+          ? parsed.plcProfiles.filter((p: any): p is { name: string; subsystemId: string; plcIp: string; plcPath: string } =>
+              p
+              && typeof p.name === 'string'
+              && typeof p.subsystemId === 'string'
+              && typeof p.plcIp === 'string'
+              && typeof p.plcPath === 'string')
+          : [],
       };
 
       console.log('[ConfigService] Configuration loaded:', {
@@ -197,6 +214,21 @@ class ConfigurationService {
       // value. An absent key is the universal "use default 60 s" signal.
       ...(typeof newConfig.networkPollingIntervalMs === 'number'
         ? { networkPollingIntervalMs: newConfig.networkPollingIntervalMs }
+        : {}),
+      // Boot-time auto-connect memory. Both fields persist only after a
+      // confirmed successful PLC connect, so a fresh-installed tool with no
+      // history skips auto-connect (and the operator picks an MCM as usual).
+      ...(typeof newConfig.lastConnectedSubsystemId === 'string' && newConfig.lastConnectedSubsystemId.length > 0
+        ? { lastConnectedSubsystemId: newConfig.lastConnectedSubsystemId }
+        : {}),
+      ...(typeof newConfig.lastConnectedAt === 'string' && newConfig.lastConnectedAt.length > 0
+        ? { lastConnectedAt: newConfig.lastConnectedAt }
+        : {}),
+      // Only persist plcProfiles when there's at least one entry. Keeps a
+      // brand-new config.json clean (the key only appears after the operator
+      // has successfully connected to at least one MCM).
+      ...(Array.isArray(newConfig.plcProfiles) && newConfig.plcProfiles.length > 0
+        ? { plcProfiles: newConfig.plcProfiles }
         : {}),
     };
 

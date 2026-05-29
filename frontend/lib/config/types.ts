@@ -77,6 +77,23 @@ export interface AppConfig {
    * give the cloud fresher data.
    */
   networkPollingIntervalMs?: number;
+
+  /**
+   * Subsystem ID of the last PLC the tool *successfully* connected to. Used
+   * by the boot-time auto-connect to decide whether the stored `ip`/`path`
+   * still describes the same site. If `subsystemId` (the active selection)
+   * matches this value, auto-connect on startup; otherwise wait for the
+   * operator to pick an MCM in the UI. Prevents silently connecting to a
+   * different PLC that happens to live on the same IP at a different site.
+   */
+  lastConnectedSubsystemId?: string;
+
+  /**
+   * ISO timestamp of the last successful PLC connect. Diagnostic only —
+   * boot-time auto-connect doesn't gate on this, but it helps the UI
+   * surface "last connected …" hints when reconnect fails.
+   */
+  lastConnectedAt?: string;
 }
 
 /**
@@ -117,6 +134,9 @@ export interface ConfigUpdateRequest {
   showHistoryColumn?: boolean;
   requireInstalledForTesting?: boolean;
   networkPollingIntervalMs?: number;
+  lastConnectedSubsystemId?: string;
+  lastConnectedAt?: string;
+  plcProfiles?: PlcProfile[];
 }
 
 /**

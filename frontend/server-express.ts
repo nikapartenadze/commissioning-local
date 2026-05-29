@@ -23,7 +23,9 @@ import express from 'express';
 import WebSocket, { WebSocketServer } from 'ws';
 import { createApiRouter } from './routes';
 import { resolveLogsDirPath } from '@/lib/storage-paths';
-import { getPlcTags } from '@/lib/plc-client-manager';
+import { getPlcTags, connectPlc, loadPlcTags } from '@/lib/plc-client-manager';
+import { configService } from '@/lib/config';
+import { db } from '@/lib/db-sqlite';
 import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
 
 // Startup backup is deferred to after server starts listening (see httpServer.listen callback)
@@ -500,6 +502,86 @@ setTimeout(async () => {
     console.warn('[Server] Auto-sync startup failed:', e.message);
   }
 }, 8000);
+
+// ============================================================================
+// Boot-time PLC auto-connect
+// ============================================================================
+// On PC reboot / Windows service restart / crash recovery, the in-memory PLC
+// connectionConfig is gone. The PlcClient's scheduleReconnect only fires while
+// the process is alive, so without this hook the operator has to click Connect
+// again every time the machine starts. Guards:
+//
+//   1. config.subsystemId must equal config.lastConnectedSubsystemId — the
+//      last-known-good was for the currently-loaded IO set. Without this guard
+//      a tablet that drove away from Site A could auto-connect to Site B's PLC
+//      at the same IP and start broadcasting bits to the wrong controller.
+//   2. SQLite must hold IOs. Without them there is nothing to bind to, and the
+//      PlcClient would just count failed tags and not reconnect anyway.
+//   3. First attempt is fire-and-forget. Subsequent failures route through the
+//      same in-process scheduleReconnect that handles live disconnects.
+
+async function tryBootAutoConnect(): Promise<void> {
+  try {
+    const cfg = await configService.getConfig();
+    if (!cfg.ip || !cfg.path || !cfg.subsystemId) {
+      console.log('[Boot AutoConnect] Skipped: PLC config incomplete');
+      return;
+    }
+    // ── Upgrade migration ────────────────────────────────────────
+    // Tablets that ran a pre-auto-connect build have ip+path+subsystemId
+    // already wired up but no lastConnectedSubsystemId (the field didn't
+    // exist yet). Without this seed, every tablet upgraded from the old
+    // build would skip auto-connect on the very first boot and force the
+    // operator to click Connect — defeating the "stays connected through
+    // restarts" property the new version promises. Safe because:
+    //   - SQLite IOs were pulled for the active subsystemId
+    //   - if the PLC at the saved IP/path doesn't match (tablet moved
+    //     sites between the old build and now), client.connect() still
+    //     bails on 0/N tags exactly the same way as a wrong-PLC case.
+    let lastConnectedSubsystemId = cfg.lastConnectedSubsystemId;
+    if (!lastConnectedSubsystemId) {
+      try {
+        await configService.saveConfig({ lastConnectedSubsystemId: cfg.subsystemId });
+        lastConnectedSubsystemId = cfg.subsystemId;
+        console.log(`[Boot AutoConnect] Migration: seeded lastConnectedSubsystemId=${cfg.subsystemId} from existing config`);
+      } catch (err) {
+        console.warn('[Boot AutoConnect] Migration seed failed, skipping auto-connect:', err);
+        return;
+      }
+    }
+    if (lastConnectedSubsystemId !== cfg.subsystemId) {
+      console.log(`[Boot AutoConnect] Skipped: subsystem mismatch (active=${cfg.subsystemId}, last connected=${lastConnectedSubsystemId}) — operator must pick MCM in the UI`);
+      return;
+    }
+
+    interface IoRow { id: number; Name: string | null; Description: string | null; TagType: string | null; }
+    const ios = db.prepare('SELECT id, Name, Description, TagType FROM Ios').all() as IoRow[];
+    if (ios.length === 0) {
+      console.log('[Boot AutoConnect] Skipped: no IOs in local SQLite — pull from cloud first');
+      return;
+    }
+
+    const tags = ios.map((io) => ({
+      id: io.id,
+      name: io.Name || '',
+      description: io.Description || undefined,
+      tagType: io.TagType || undefined,
+    }));
+    loadPlcTags(tags);
+    console.log(`[Boot AutoConnect] Connecting to PLC at ${cfg.ip} (path ${cfg.path}) with ${tags.length} tags for subsystem ${cfg.subsystemId}…`);
+
+    const result = await connectPlc({ ip: cfg.ip, path: cfg.path });
+    if (result.success) {
+      console.log(`[Boot AutoConnect] Connected — ${result.tagsSuccessful ?? 0} tags ok, ${result.tagsFailed ?? 0} failed`);
+    } else {
+      console.warn(`[Boot AutoConnect] First attempt failed: ${result.error || 'unknown'}. PlcClient will retry in the background.`);
+    }
+  } catch (err) {
+    console.warn('[Boot AutoConnect] Unexpected error:', err instanceof Error ? err.message : err);
+  }
+}
+
+setTimeout(() => { void tryBootAutoConnect(); }, 5000);
 
 // ============================================================================
 // Graceful Shutdown & Crash Protection
