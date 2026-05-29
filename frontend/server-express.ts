@@ -27,6 +27,13 @@ import { getPlcTags, connectPlc, loadPlcTags } from '@/lib/plc-client-manager';
 import { configService } from '@/lib/config';
 import { db } from '@/lib/db-sqlite';
 import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
+import { getAppVersion } from '@/lib/app-version';
+
+// Resolved once at startup. Rides every HeartbeatAck so the browser can detect
+// a server upgrade (version differs across a reconnect) and full-reload to pick
+// up new client assets. NEXT_PUBLIC_BUILD_HASH is honoured if set (it never is
+// in current builds), otherwise this falls back to package.json version.
+const SERVER_VERSION = process.env.NEXT_PUBLIC_BUILD_HASH || getAppVersion();
 
 // Startup backup is deferred to after server starts listening (see httpServer.listen callback)
 
@@ -358,7 +365,7 @@ plcWss.on('connection', (ws: AliveWebSocket) => {
       if (msg.type === 'Heartbeat') {
         ws.send(JSON.stringify({
           type: 'HeartbeatAck',
-          serverVersion: process.env.NEXT_PUBLIC_BUILD_HASH || 'unknown',
+          serverVersion: SERVER_VERSION,
           timestamp: Date.now()
         }));
       }
