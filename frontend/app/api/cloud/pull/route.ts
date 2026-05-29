@@ -1,6 +1,6 @@
 import { Request, Response } from 'express'
 import { db, extractDeviceName } from '@/lib/db-sqlite'
-import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { getWsBroadcastUrl, getPlcClient } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
 import type { CloudPullResponse } from '@/lib/cloud/types'
 
@@ -127,6 +127,26 @@ export async function POST(req: Request, res: Response) {
 
     if (!subsystemId || isNaN(subsystemId) || subsystemId <= 0) {
       return res.status(400).json({ success: false, error: 'Valid subsystem ID is required' } as CloudPullResponse)
+    }
+
+    // Refuse to pull while the PLC is connected. A pull rewrites the Ios
+    // table; live tag handles in the PlcClient point at row IDs that would
+    // shift mid-pull, and the tag reader keeps emitting state changes for
+    // the OLD subsystem onto rows that now belong to a NEW one. The safe
+    // sequence is always: Disconnect → Pull → Connect. The dialog's
+    // Subsystem-switch button orchestrates this, but the server still
+    // enforces it so manual API calls / future UIs can't sneak past.
+    try {
+      const client = getPlcClient()
+      if (client.isConnected) {
+        return res.status(409).json({
+          success: false,
+          error: 'Disconnect the PLC before pulling IOs. The PLC is still connected — switching IO definitions while connected can corrupt live tag state.',
+        } as CloudPullResponse)
+      }
+    } catch {
+      // If the client singleton isn't initialized yet, fall through —
+      // there's no live connection to protect.
     }
 
     console.log(`[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
