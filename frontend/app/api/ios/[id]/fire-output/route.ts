@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { getClientForIo, getMcmIdForIo, hasAnyMcm } from '@/lib/mcm-registry'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 
@@ -44,10 +45,19 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
-    const client = getPlcClient()
+    // Multi-MCM: route the write to the controller that owns this IO. Falls
+    // back to the legacy singleton when no MCM is registered (field-laptop
+    // single-PLC deployments keep working unchanged).
+    const subsystemId = getMcmIdForIo(ioId)
+    const client = hasAnyMcm() ? getClientForIo(ioId) ?? getPlcClient() : getPlcClient()
 
     if (!client.isConnected) {
-      return res.status(503).json({ success: false, error: 'PLC not connected' })
+      return res.status(503).json({
+        success: false,
+        error: subsystemId
+          ? `PLC for MCM ${subsystemId} not connected`
+          : 'PLC not connected',
+      })
     }
 
     const bitValue: number | 'toggle' = action === 'toggle' ? 'toggle' : (action === 'start' ? 1 : 0)
@@ -58,7 +68,7 @@ export async function POST(req: Request, res: Response) {
     )
 
     if (!result.success) {
-      console.error(`[FireOutput] Failed to ${action} output:`, result.error)
+      console.error(`[FireOutput] MCM=${subsystemId ?? '?'} Failed to ${action} output:`, result.error)
       return res.status(500).json({ success: false, error: result.error || `Failed to ${action} output` })
     }
 
@@ -75,6 +85,7 @@ export async function POST(req: Request, res: Response) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'UpdateState',
+          subsystemId,
           id: ioId,
           state: newState
         })

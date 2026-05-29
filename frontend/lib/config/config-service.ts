@@ -22,6 +22,7 @@ import {
   ConfigChangeListener,
   DEFAULT_CONFIG,
   EMBEDDED_REMOTE_URL,
+  McmConnection,
 } from './types';
 import { resolveConfigFilePath } from '@/lib/storage-paths';
 
@@ -93,14 +94,45 @@ class ConfigurationService {
       const fileContent = await fs.readFile(CONFIG_FILE_PATH, 'utf-8');
       const parsed = JSON.parse(fileContent);
 
+      // Migration: if the new `mcms` array is missing but the legacy
+      // single-MCM fields are populated, synthesise mcms[0] from them so the
+      // central-tool flow has at least one entry to work with. If neither is
+      // populated, mcms stays empty and the landing page invites the user to
+      // add one.
+      const legacyIp: string = parsed.ip ?? DEFAULT_CONFIG.ip;
+      const legacyPath: string = parsed.path ?? DEFAULT_CONFIG.path;
+      const legacySubsystemId: string = parsed.subsystemId ?? DEFAULT_CONFIG.subsystemId;
+
+      let mcms: McmConnection[] = [];
+      if (Array.isArray(parsed.mcms)) {
+        mcms = parsed.mcms
+          .filter((m: any) => m && typeof m === 'object')
+          .map((m: any): McmConnection => ({
+            subsystemId: String(m.subsystemId ?? ''),
+            name: String(m.name ?? `MCM ${m.subsystemId ?? '?'}`),
+            ip: String(m.ip ?? ''),
+            path: String(m.path ?? '1,0'),
+            enabled: m.enabled !== false,
+          }))
+          .filter((m: McmConnection) => m.subsystemId.length > 0);
+      } else if (legacyIp && legacySubsystemId) {
+        mcms = [{
+          subsystemId: legacySubsystemId,
+          name: `MCM ${legacySubsystemId}`,
+          ip: legacyIp,
+          path: legacyPath,
+          enabled: true,
+        }];
+      }
+
       // Merge with defaults to ensure all fields exist
       this.config = {
-        ip: parsed.ip ?? DEFAULT_CONFIG.ip,
-        path: parsed.path ?? DEFAULT_CONFIG.path,
+        ip: legacyIp,
+        path: legacyPath,
         // remoteUrl is embedded — ignore stored value, always use the constant
         remoteUrl: EMBEDDED_REMOTE_URL,
         apiPassword: parsed.apiPassword ?? parsed.ApiPassword ?? DEFAULT_CONFIG.apiPassword,
-        subsystemId: parsed.subsystemId ?? DEFAULT_CONFIG.subsystemId,
+        subsystemId: legacySubsystemId,
         updateManifestUrl: parsed.updateManifestUrl ?? DEFAULT_CONFIG.updateManifestUrl,
         orderMode: String(parsed.orderMode ?? DEFAULT_CONFIG.orderMode),
         syncBatchSize: Number(parsed.syncBatchSize ?? DEFAULT_CONFIG.syncBatchSize),
@@ -146,6 +178,7 @@ class ConfigurationService {
               && typeof p.plcIp === 'string'
               && typeof p.plcPath === 'string')
           : [],
+        mcms,
       };
 
       console.log('[ConfigService] Configuration loaded:', {
@@ -230,6 +263,9 @@ class ConfigurationService {
       ...(Array.isArray(newConfig.plcProfiles) && newConfig.plcProfiles.length > 0
         ? { plcProfiles: newConfig.plcProfiles }
         : {}),
+      // central-tool multi-MCM config. Omitted from file when empty so
+      // existing single-MCM deployments stay textually unchanged.
+      ...(newConfig.mcms && newConfig.mcms.length > 0 ? { mcms: newConfig.mcms } : {}),
     };
 
     // Mark as internal write to prevent watcher from triggering
@@ -411,6 +447,113 @@ class ConfigurationService {
       return false;
     }
     return !!(this.config.ip && this.config.path && this.config.subsystemId);
+  }
+
+  // ── Multi-MCM helpers (central-tool) ────────────────────────────────────
+
+  /**
+   * Return the configured MCM list. Empty array if none configured yet.
+   * Always returns a fresh array; callers can safely mutate it.
+   */
+  public async getMcms(): Promise<McmConnection[]> {
+    const cfg = await this.getConfig();
+    return [...(cfg.mcms ?? [])];
+  }
+
+  /**
+   * Look up one MCM by subsystemId. Returns null when missing.
+   */
+  public async getMcm(subsystemId: string): Promise<McmConnection | null> {
+    const list = await this.getMcms();
+    return list.find((m) => m.subsystemId === subsystemId) ?? null;
+  }
+
+  /**
+   * Add a new MCM. Rejects duplicate subsystemIds. Persists immediately.
+   */
+  public async addMcm(mcm: McmConnection): Promise<McmConnection[]> {
+    const list = await this.getMcms();
+    if (list.some((m) => m.subsystemId === mcm.subsystemId)) {
+      throw new Error(`MCM ${mcm.subsystemId} already exists`);
+    }
+    const next = [...list, { ...mcm, enabled: mcm.enabled !== false }];
+    await this.saveConfig({});
+    // saveConfig() doesn't accept mcms in ConfigUpdateRequest — write directly
+    // to the in-memory config and re-save through the underlying mechanism.
+    if (this.config) {
+      this.config.mcms = next;
+    }
+    await this.persistMcms(next);
+    return next;
+  }
+
+  /**
+   * Update an existing MCM. Identified by its subsystemId.
+   */
+  public async updateMcm(subsystemId: string, patch: Partial<McmConnection>): Promise<McmConnection[]> {
+    const list = await this.getMcms();
+    const idx = list.findIndex((m) => m.subsystemId === subsystemId);
+    if (idx === -1) {
+      throw new Error(`MCM ${subsystemId} not found`);
+    }
+    const next = list.slice();
+    next[idx] = { ...next[idx], ...patch, subsystemId: next[idx].subsystemId };
+    if (this.config) {
+      this.config.mcms = next;
+    }
+    await this.persistMcms(next);
+    return next;
+  }
+
+  /**
+   * Remove an MCM from the configured list. No-op if not present.
+   */
+  public async removeMcm(subsystemId: string): Promise<McmConnection[]> {
+    const list = await this.getMcms();
+    const next = list.filter((m) => m.subsystemId !== subsystemId);
+    if (next.length === list.length) {
+      return list; // nothing changed
+    }
+    if (this.config) {
+      this.config.mcms = next;
+    }
+    await this.persistMcms(next);
+    return next;
+  }
+
+  /**
+   * Write a fresh mcms array to disk, preserving every other field. Used
+   * internally by add/update/remove so the file watcher doesn't trip.
+   */
+  private async persistMcms(mcms: McmConnection[]): Promise<void> {
+    const currentConfig = await this.getConfig();
+    const fileData: Record<string, unknown> = {
+      ip: currentConfig.ip,
+      path: currentConfig.path,
+      remoteUrl: currentConfig.remoteUrl,
+      ApiPassword: currentConfig.apiPassword,
+      subsystemId: currentConfig.subsystemId,
+      updateManifestUrl: currentConfig.updateManifestUrl,
+      orderMode: currentConfig.orderMode,
+      syncBatchSize: currentConfig.syncBatchSize,
+      syncBatchDelayMs: currentConfig.syncBatchDelayMs,
+      showStateColumn: currentConfig.showStateColumn,
+      showResultColumn: currentConfig.showResultColumn,
+      showTimestampColumn: currentConfig.showTimestampColumn,
+      showHistoryColumn: currentConfig.showHistoryColumn,
+    };
+    if (mcms.length > 0) {
+      fileData.mcms = mcms;
+    }
+    if (currentConfig.networkPollingDevices && currentConfig.networkPollingDevices.length > 0) {
+      fileData.networkPollingDevices = currentConfig.networkPollingDevices;
+    }
+    this.notifyInternalWrite();
+    await fs.mkdir(path.dirname(CONFIG_FILE_PATH), { recursive: true });
+    await fs.writeFile(CONFIG_FILE_PATH, JSON.stringify(fileData, null, 2), 'utf-8');
+    if (this.config) {
+      this.config.mcms = mcms;
+    }
   }
 
   /**

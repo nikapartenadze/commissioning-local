@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { useParams, useNavigate } from "react-router-dom"
+import { useParams, useNavigate, Link } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { useUser } from "@/lib/user-context"
 import { PlcToolbar } from "@/components/plc-toolbar"
@@ -29,7 +29,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { UserMenu } from "@/components/user-menu"
-import { Download, Settings, BarChart3, History, VolumeX } from "lucide-react"
+import { Download, Settings, BarChart3, History, VolumeX, ArrowLeft } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import {
   PlcConfig,
@@ -572,8 +572,16 @@ export default function CommissioningPage() {
     }
   }, [activeTab, plcConfig.subsystemId])
 
-  // SignalR connection for real-time updates
-  const signalR = useSignalR(getSignalRHubUrl())
+  // SignalR connection for real-time updates.
+  //
+  // Central-tool: when this tab is scoped to a specific MCM (paramId is the
+  // subsystemId), subscribe server-side so we only receive broadcasts for
+  // that MCM. Without this, a browser on /commissioning/37 was processing
+  // tag-state events from every other connected MCM (3000+ irrelevant tags
+  // worth of WS traffic) and the UI thread couldn't keep up. The "_" case
+  // (unconfigured landing) keeps the legacy receive-everything behavior.
+  const wsSubscribeTo = !isUnconfigured ? [String(projectId)] : undefined
+  const signalR = useSignalR(getSignalRHubUrl(), wsSubscribeTo)
 
   // Load PLC config function (defined before useEffect that uses it)
   const loadPlcConfig = useCallback(async (updateTestingState: boolean = true) => {
@@ -2009,6 +2017,15 @@ export default function CommissioningPage() {
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-visible md:overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo_autstand.svg" alt="Autstand" className="h-4 sm:h-5 shrink-0" />
+            {/* central-tool: back to the multi-MCM dashboard */}
+            <Link
+              to="/mcm"
+              title="Back to all MCMs"
+              className="font-mono text-[10px] sm:text-[11px] uppercase tracking-[0.15em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1 shrink-0"
+            >
+              <ArrowLeft className="w-3 h-3" />
+              <span className="hidden sm:inline">MCMs</span>
+            </Link>
             <div className="h-5 w-px bg-border shrink-0 hidden sm:block" />
             <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
               {projectName && subsystemLabel
