@@ -8,7 +8,7 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
@@ -107,6 +107,20 @@ function naturalCompare(a: string, b: string): number {
   return ax.length - bx.length
 }
 
+// Columns the user can click to sort by. Live PLC values (State, Net) are
+// intentionally excluded — they change continuously and would reshuffle rows
+// under the operator's fingers. Default is "ioPoint" ascending, which matches
+// the grid's historical always-natural-sort-by-name behaviour.
+type SortColumn = 'ioPoint' | 'description' | 'result' | 'timestamp' | 'comments' | 'installStatus' | 'reason'
+type SortDir = 'asc' | 'desc'
+
+// Install sort: complete sinks below in-progress so "what still needs work"
+// floats to the top in ascending order. Unknown percent counts as 0.
+function installRank(io: IoItem): number {
+  if ((io.installationStatus ?? '').toLowerCase() === 'complete') return 101
+  return io.installationPercent ?? 0
+}
+
 // Top-level lane = leading "UL<digits>" prefix. Everything else → "Other".
 function extractLane(name: string): string {
   const m = (name || '').match(/^(UL\d+)/i)
@@ -122,6 +136,51 @@ function compareLanes(a: string, b: string): number {
   const bn = parseInt(b.replace(/^UL/i, ''), 10)
   if (!isNaN(an) && !isNaN(bn)) return an - bn
   return a < b ? -1 : 1
+}
+
+// Sort direction indicator shown in clickable column headers.
+function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
+  if (!active) return <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-30" />
+  return dir === 'asc'
+    ? <ChevronUp className="h-3 w-3 shrink-0" />
+    : <ChevronDown className="h-3 w-3 shrink-0" />
+}
+
+// Clickable column header. The wrapper div keeps the column's width / sticky /
+// background styling; the inner <button> owns padding + click. Rendering the
+// hit target as a <button> also lets the grid's drag-to-scroll guard
+// (target.closest('button')) skip it, so clicking a header sorts instead of
+// starting a drag.
+function SortHeader({
+  column, label, active, dir, onSort, align = 'left', className, style, title,
+}: {
+  column: SortColumn
+  label: string
+  active: boolean
+  dir: SortDir
+  onSort: (c: SortColumn) => void
+  align?: 'left' | 'center'
+  className?: string
+  style?: React.CSSProperties
+  title?: string
+}) {
+  return (
+    <div className={cn("flex-shrink-0", className)} style={style} title={title}>
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className={cn(
+          "w-full h-full px-4 py-3 text-sm font-bold uppercase tracking-wide flex items-center gap-1 select-none transition-colors hover:text-[#C6941A]",
+          align === 'center' ? "justify-center" : "justify-start",
+          active ? "text-[#C6941A]" : "text-foreground"
+        )}
+        title={active ? `Sorted ${dir === 'asc' ? 'ascending' : 'descending'} — click to reverse` : `Sort by ${label}`}
+      >
+        <span className="truncate">{label}</span>
+        <SortArrow active={active} dir={dir} />
+      </button>
+    </div>
+  )
 }
 
 // Column widths — responsive via hook
@@ -270,6 +329,34 @@ export function EnhancedIoDataGrid({
   const [showResultColumn, setShowResultColumn] = useState(true)
   const [showTimestampColumn, setShowTimestampColumn] = useState(true)
   const [sortMode, setSortMode] = useState<'default' | 'failed-first' | 'not-tested-first'>('default')
+  // Click-to-sort column + direction. Persisted so the operator's choice
+  // survives reloads, matching the groupByLane pattern below. Defaults to
+  // name-ascending = the grid's historical natural sort.
+  const [sortColumn, setSortColumn] = useState<SortColumn>(() => {
+    if (typeof window === 'undefined') return 'ioPoint'
+    return (window.localStorage.getItem('io-grid-sort-column') as SortColumn) || 'ioPoint'
+  })
+  const [sortDir, setSortDir] = useState<SortDir>(() => {
+    if (typeof window === 'undefined') return 'asc'
+    return window.localStorage.getItem('io-grid-sort-dir') === 'desc' ? 'desc' : 'asc'
+  })
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('io-grid-sort-column', sortColumn)
+      window.localStorage.setItem('io-grid-sort-dir', sortDir)
+    } catch { /* ignore */ }
+  }, [sortColumn, sortDir])
+  // Click a header: same column toggles direction, new column resets to asc.
+  const toggleSort = (column: SortColumn) => {
+    setSortColumn(prev => {
+      if (prev === column) {
+        setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
+        return prev
+      }
+      setSortDir('asc')
+      return column
+    })
+  }
   const [groupByLane, setGroupByLane] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem('io-grid-group-by-lane') === 'true'
@@ -628,8 +715,43 @@ export function EnhancedIoDataGrid({
       })
     })
 
-    // Always natural-sort by IO name so X2 < X10 and UL26_19 < UL26_20.
-    const sorted = [...filtered].sort((a, b) => naturalCompare(a.name, b.name))
+    // Sort by the active column. Text columns use naturalCompare so X2 < X10
+    // and FIOM1 < FIOM10; timestamp sorts chronologically (untested rows last);
+    // install sorts by completion. IO name is always the stable tiebreak so the
+    // order is deterministic within equal keys (and within lane groups below).
+    const dir = sortDir === 'desc' ? -1 : 1
+    const byName = (a: IoItem, b: IoItem) => naturalCompare(a.name || '', b.name || '')
+    const sorted = [...filtered].sort((a, b) => {
+      let cmp = 0
+      if (sortColumn === 'timestamp') {
+        const ta = a.timestamp ? Date.parse(a.timestamp) : NaN
+        const tb = b.timestamp ? Date.parse(b.timestamp) : NaN
+        const na = Number.isNaN(ta)
+        const nb = Number.isNaN(tb)
+        // Untested rows sink to the bottom regardless of direction.
+        if (na && nb) return byName(a, b)
+        if (na) return 1
+        if (nb) return -1
+        cmp = (ta - tb) * dir
+      } else if (sortColumn === 'installStatus') {
+        cmp = (installRank(a) - installRank(b)) * dir
+      } else {
+        const av =
+          sortColumn === 'description' ? (a.description || '')
+          : sortColumn === 'result' ? (a.result || '')
+          : sortColumn === 'comments' ? (a.comments || '')
+          : sortColumn === 'reason' ? (getPartyResponsible(a.failureMode ?? null) || '')
+          : (a.name || '')
+        const bv =
+          sortColumn === 'description' ? (b.description || '')
+          : sortColumn === 'result' ? (b.result || '')
+          : sortColumn === 'comments' ? (b.comments || '')
+          : sortColumn === 'reason' ? (getPartyResponsible(b.failureMode ?? null) || '')
+          : (b.name || '')
+        cmp = naturalCompare(av, bv) * dir
+      }
+      return cmp !== 0 ? cmp : byName(a, b)
+    })
 
     if (sortMode === 'default') return sorted
 
@@ -647,7 +769,7 @@ export function EnhancedIoDataGrid({
 
     // Array.sort is stable since ES2019 — natural order is preserved within each bucket.
     return sorted.sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
-  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, punchlistIoSet])
+  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, sortColumn, sortDir, punchlistIoSet])
 
   useEffect(() => {
     if (onFilteredDataChange) {
@@ -981,18 +1103,24 @@ export function EnhancedIoDataGrid({
           {/* Header - Sticky, bold, industrial */}
           <div className="bg-muted sticky top-0 z-10 border-b-2 border-[#C6941A]/40">
           <div className="flex">
-            <div
-              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 sticky left-0 z-20 bg-muted"
+            <SortHeader
+              column="description"
+              label="Description"
+              active={sortColumn === 'description'}
+              dir={sortDir}
+              onSort={toggleSort}
+              className="sticky left-0 z-20 bg-muted"
               style={{ width: `${COLUMN_WIDTHS.description}px` }}
-            >
-              Description
-            </div>
-            <div
-              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 sticky z-20 bg-muted border-r border-border/50"
+            />
+            <SortHeader
+              column="ioPoint"
+              label="I/O Point"
+              active={sortColumn === 'ioPoint'}
+              dir={sortDir}
+              onSort={toggleSort}
+              className="sticky z-20 bg-muted border-r border-border/50"
               style={{ width: `${COLUMN_WIDTHS.ioPoint}px`, left: `${COLUMN_WIDTHS.description}px` }}
-            >
-              I/O Point
-            </div>
+            />
             {showStateColumn && (
               <div
                 className="px-4 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
@@ -1010,36 +1138,46 @@ export function EnhancedIoDataGrid({
             </div>
             )}
             {COLUMN_WIDTHS.installStatus > 0 && (
-            <div
-              className="px-2 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 truncate"
+            <SortHeader
+              column="installStatus"
+              label="Install"
+              align="center"
+              active={sortColumn === 'installStatus'}
+              dir={sortDir}
+              onSort={toggleSort}
               style={{ width: `${COLUMN_WIDTHS.installStatus}px` }}
-            >
-              Install
-            </div>
+            />
             )}
             {showResultColumn && (
-              <div
-                className="px-4 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
+              <SortHeader
+                column="result"
+                label="Result"
+                align="center"
+                active={sortColumn === 'result'}
+                dir={sortDir}
+                onSort={toggleSort}
                 style={{ width: `${COLUMN_WIDTHS.result}px` }}
-              >
-                Result
-              </div>
+              />
             )}
             {showTimestamp && (
-              <div
-                className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
+              <SortHeader
+                column="timestamp"
+                label="Tested"
+                active={sortColumn === 'timestamp'}
+                dir={sortDir}
+                onSort={toggleSort}
                 style={{ width: `${COLUMN_WIDTHS.timestamp}px` }}
-              >
-                Tested
-              </div>
+              />
             )}
             {showComments && (
-            <div
-              className="px-4 py-3 text-left text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
+            <SortHeader
+              column="comments"
+              label="Notes"
+              active={sortColumn === 'comments'}
+              dir={sortDir}
+              onSort={toggleSort}
               style={{ width: `${COLUMN_WIDTHS.comments}px` }}
-            >
-              Notes
-            </div>
+            />
             )}
             {/* Party Responsible — derived from io.failureMode via
                 lib/party-responsible. The tester picks a specific failure
@@ -1049,13 +1187,16 @@ export function EnhancedIoDataGrid({
                 tester picked "Other" the dropdown returns null and the column
                 stays blank — the required comment carries the detail. Mirrors
                 the cloud's Party Responsible column for consistency. */}
-            <div
-              className="px-2 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0"
+            <SortHeader
+              column="reason"
+              label="Party Responsible"
+              align="center"
+              active={sortColumn === 'reason'}
+              dir={sortDir}
+              onSort={toggleSort}
               style={{ width: `${COLUMN_WIDTHS.reason}px` }}
               title="Team responsible for resolving this failure — derived from the failure reason"
-            >
-              Party Responsible
-            </div>
+            />
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.history}px` }}>Hist</div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.help}px` }}>Help</div>
             <div className="px-2 py-3 text-center text-sm font-bold text-muted-foreground uppercase tracking-wide flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.failed}px` }}>Fail</div>
