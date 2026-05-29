@@ -40,8 +40,6 @@ import { API_ENDPOINTS, getSignalRHubUrl, authFetch, fetchWithRetry } from "@/li
 import { ErrorBoundary } from "@/components/error-boundary"
 import { GuidedTour } from "@/components/guided-tour"
 import { NamePrompt } from "@/components/name-prompt"
-import { ConnectionLostOverlay } from "@/components/connection-lost-overlay"
-import { ConnectionSlowBanner } from "@/components/connection-slow-banner"
 import { logger } from "@/lib/logger"
 import type { AppUpdateStatusResponse, CloudSyncStatusResponse } from "@/lib/cloud/types"
 

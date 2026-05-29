@@ -175,8 +175,8 @@ const WS_DEBUG = false // Set to true to enable WebSocket logging
 // or GC pause (typical: a few hundred ms; pathological: a few seconds)
 // never trips the lost state.
 const HEARTBEAT_INTERVAL_MS = 3000
-const HEARTBEAT_SLOW_MS = 10000   // 'slow' — transient banner
-const HEARTBEAT_LOST_MS = 25000   // 'lost' — full modal
+const HEARTBEAT_SLOW_MS = 7000    // 'slow' — transient banner (~2 missed beats)
+const HEARTBEAT_LOST_MS = 12000   // 'lost' — full-screen blocking overlay (~4 missed beats)
 
 function getDefaultWebSocketUrl(): string {
   if (typeof window === 'undefined') {
