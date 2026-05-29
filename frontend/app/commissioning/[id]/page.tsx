@@ -2304,6 +2304,11 @@ export default function CommissioningPage() {
           open={showConfigDialog}
           onOpenChange={setShowConfigDialog}
           config={plcConfig}
+          connectionState={{
+            isConnected: plcStatus.isConnected,
+            isReconnecting: plcStatus.isReconnecting,
+            hasEverConnected: plcStatus.hasEverConnected ?? false,
+          }}
           onCloudPull={handleCloudPull}
           onPlcConnect={handlePlcConnect}
           onTestConnection={handleTestConnection}
