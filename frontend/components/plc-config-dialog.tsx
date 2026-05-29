@@ -28,6 +28,17 @@ interface PlcConfigDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   config: PlcConfig
+  /**
+   * Live connection truth from the parent page (same source the toolbar
+   * uses: WebSocket NetworkStatusChanged + the 20s /api/plc/status
+   * reconcile). Lets this modal agree with the toolbar instead of showing
+   * a stale binary "Not connected" while a background reconnect is running.
+   */
+  connectionState?: {
+    isConnected: boolean
+    isReconnecting: boolean
+    hasEverConnected: boolean
+  }
   onCloudPull: (config: PlcConfig) => void
   onPlcConnect: (config: PlcConfig) => void
   onTestConnection: () => Promise<boolean>
@@ -37,11 +48,12 @@ export function PlcConfigDialog({
   open,
   onOpenChange,
   config,
+  connectionState,
   onCloudPull,
   onPlcConnect,
   onTestConnection
 }: PlcConfigDialogProps) {
-  const [activeTab, setActiveTab] = useState<'subsystem' | 'cloud' | 'plc'>('cloud')
+  const [activeTab, setActiveTab] = useState<'cloud' | 'plc'>('cloud')
   const [profiles, setProfiles] = useState<PlcProfile[]>([])
   const [isSwitching, setIsSwitching] = useState(false)
   const [switchStatus, setSwitchStatus] = useState<string | null>(null)
@@ -136,6 +148,44 @@ export function PlcConfigDialog({
       return () => clearTimeout(timer)
     }
   }, [open])
+
+  // Stream backend logs into the PLC tab while the dialog is open and no
+  // in-dialog connect/pull/disconnect is running (those manage the log cursor
+  // themselves). This surfaces background auto-reconnect activity — previously
+  // the panel stayed on "Waiting for connection..." even though the server was
+  // actively retrying and logging.
+  useEffect(() => {
+    if (!open || activeTab !== 'plc' || isConnecting || isPulling || isDisconnecting) return
+    let cancelled = false
+    let seq = 0
+    let seeded = false
+    const tick = async () => {
+      try {
+        const res = await authFetch(`${API_ENDPOINTS.configurationLogs}?afterId=${seeded ? seq : 0}`)
+        if (!res.ok || cancelled) return
+        const data = await res.json()
+        const entries = data.entries || []
+        if (!seeded) {
+          // First pass: show the last few lines so the panel isn't empty during
+          // a reconnect, then only stream genuinely new entries afterwards.
+          seq = entries.length > 0 ? entries[entries.length - 1].id : 0
+          const tail = entries.slice(-15).map((e: any) =>
+            `[${new Date(e.timestamp).toLocaleTimeString()}] ${e.level}: ${e.message}`)
+          if (tail.length > 0 && !cancelled) setPlcLog(tail)
+          seeded = true
+          return
+        }
+        for (const e of entries) {
+          if (cancelled) break
+          setPlcLog(prev => [...prev, `[${new Date(e.timestamp).toLocaleTimeString()}] ${e.level}: ${e.message}`])
+          seq = e.id
+        }
+      } catch { /* best-effort — log streaming must never throw */ }
+    }
+    void tick()
+    const id = setInterval(tick, 2000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [open, activeTab, isConnecting, isPulling, isDisconnecting])
 
   const loadActualConfig = async () => {
     if (isLoadingConfig) return
@@ -625,6 +675,21 @@ export function PlcConfigDialog({
 
   const busy = isPulling || isConnecting || isDisconnecting
 
+  // Coherent connection phase, shared in spirit with the toolbar. Prefer the
+  // parent's live status (WebSocket + 20s reconcile) over the snapshot we
+  // fetched on open, so the modal can never disagree with the toolbar.
+  const isConnected = connectionState?.isConnected ?? !!liveStatus?.plcConnected
+  const isReconnecting = connectionState?.isReconnecting ?? false
+  const hasEverConnected = connectionState?.hasEverConnected ?? false
+  const connPhase: 'connected' | 'reconnecting' | 'unreachable' | 'disconnected' =
+    isConnected
+      ? 'connected'
+      : isReconnecting && hasEverConnected
+        ? 'reconnecting'
+        : isReconnecting
+          ? 'unreachable'
+          : 'disconnected'
+
   return (
     <Dialog open={open} onOpenChange={(v) => {
       if (!busy) {
@@ -641,19 +706,6 @@ export function PlcConfigDialog({
         </VisuallyHidden.Root>
         {/* Tabs */}
         <div className="flex border-b">
-          {profiles.length > 0 && (
-            <button
-              onClick={() => setActiveTab('subsystem')}
-              className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
-                activeTab === 'subsystem'
-                  ? 'border-b-2 border-orange-500 text-orange-600 bg-orange-50/50 dark:bg-orange-950/20'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              }`}
-            >
-              <Zap className="w-4 h-4" />
-              Subsystem
-            </button>
-          )}
           <button
             onClick={() => setActiveTab('cloud')}
             className={`flex-1 px-4 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
@@ -687,114 +739,6 @@ export function PlcConfigDialog({
         {/* Tab Content */}
         <div className="flex-1 flex flex-col overflow-hidden">
 
-          {/* ═══ SUBSYSTEM TAB ═══ */}
-          {activeTab === 'subsystem' && (
-            <div className="flex-1 flex flex-col p-4 gap-4 overflow-auto">
-              <div>
-                <h3 className="text-sm font-semibold mb-1">Select Subsystem</h3>
-                <p className="text-xs text-muted-foreground">Choose a subsystem to auto-configure PLC connection and pull IOs.</p>
-              </div>
-
-              {switchStatus && (
-                <div className={`text-sm px-3 py-2 rounded-md ${switchStatus.includes('Error') || switchStatus.includes('Failed') ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400' : 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400'}`}>
-                  {switchStatus}
-                </div>
-              )}
-
-              <div className="grid gap-2">
-                {profiles.map((profile) => {
-                  const isActive = localConfig.subsystemId === profile.subsystemId && localConfig.ip === profile.plcIp
-                  return (
-                    <button
-                      key={profile.name}
-                      disabled={isSwitching}
-                      onClick={async () => {
-                        setIsSwitching(true)
-                        setSwitchStatus(null)
-                        try {
-                          // 1. Switch config
-                          setSwitchStatus(`Switching to ${profile.name}...`)
-                          const switchRes = await authFetch('/api/configuration/switch-subsystem', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              profileName: profile.name,
-                              subsystemId: profile.subsystemId,
-                              plcIp: profile.plcIp,
-                              plcPath: profile.plcPath,
-                            }),
-                          })
-                          if (!switchRes.ok) throw new Error('Failed to switch config')
-
-                          // 2. Pull IOs
-                          setSwitchStatus(`Pulling IOs for ${profile.name}...`)
-                          const pullRes = await authFetch(API_ENDPOINTS.cloudPull, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              remoteUrl: localConfig.remoteUrl,
-                              apiPassword: localConfig.apiPassword,
-                              subsystemId: profile.subsystemId,
-                            }),
-                          })
-                          const pullData = await pullRes.json()
-                          if (!pullRes.ok) throw new Error(pullData.error || 'Pull failed')
-
-                          // 3. Connect PLC
-                          setSwitchStatus(`Connecting to PLC at ${profile.plcIp}...`)
-                          const connectRes = await authFetch(API_ENDPOINTS.plcConnect, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              ip: profile.plcIp,
-                              path: profile.plcPath,
-                              subsystemId: profile.subsystemId,
-                            }),
-                          })
-                          if (!connectRes.ok) throw new Error('PLC connection failed')
-
-                          // Update local state
-                          setLocalConfig(prev => ({ ...prev, ip: profile.plcIp, path: profile.plcPath, subsystemId: profile.subsystemId }))
-                          setLiveStatus({ plcConnected: true, tagCount: pullData.count || 0, plcIp: profile.plcIp })
-                          setSwitchStatus(`${profile.name} ready — ${pullData.count || 0} IOs loaded, PLC connected`)
-
-                          // Notify parent
-                          onPlcConnect({ ...localConfig, ip: profile.plcIp, path: profile.plcPath, subsystemId: profile.subsystemId })
-                        } catch (error) {
-                          setSwitchStatus(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
-                        } finally {
-                          setIsSwitching(false)
-                        }
-                      }}
-                      className={`text-left p-4 rounded-lg border-2 transition-all ${
-                        isActive
-                          ? 'border-green-500 bg-green-50/50 dark:bg-green-950/20'
-                          : 'border-border hover:border-primary/50 hover:bg-muted/50'
-                      } ${isSwitching ? 'opacity-60' : ''}`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-semibold text-sm">{profile.name}</div>
-                          <div className="text-xs text-muted-foreground mt-0.5 font-mono">
-                            PLC: {profile.plcIp} · Path: {profile.plcPath} · Sub: {profile.subsystemId}
-                          </div>
-                        </div>
-                        {isActive && <span className="text-xs font-medium text-green-600 dark:text-green-400 flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" /> Active</span>}
-                        {isSwitching && localConfig.subsystemId !== profile.subsystemId && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-
-              {profiles.length === 0 && (
-                <div className="text-center text-sm text-muted-foreground py-8">
-                  No subsystem profiles configured. Add <code>plcProfiles</code> to <code>config.json</code>.
-                </div>
-              )}
-            </div>
-          )}
-
           {/* ═══ CLOUD TAB ═══ */}
           {activeTab === 'cloud' && (
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
@@ -823,9 +767,20 @@ export function PlcConfigDialog({
                   />
                 </div>
 
+                {liveStatus?.plcConnected && (
+                  <div className="text-sm px-3 py-2 rounded-md bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300 border border-amber-200 dark:border-amber-900/50">
+                    <div className="flex items-start gap-2">
+                      <WifiOff className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                      <div className="text-xs">
+                        PLC is connected. Disconnect from the <span className="font-semibold">PLC Connection</span> tab before pulling — the pull rewrites the IO table and a live PLC session can't safely span that change.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <Button
                   onClick={handlePullIos}
-                  disabled={busy || !localConfig.subsystemId}
+                  disabled={busy || !localConfig.subsystemId || !!liveStatus?.plcConnected}
                   className="w-full bg-primary hover:bg-primary/90 text-white h-10"
                 >
                   <CloudDownload className="w-4 h-4 mr-2" />
@@ -874,26 +829,40 @@ export function PlcConfigDialog({
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <div className="space-y-3">
                 {/* Current Connection Status Banner */}
-                {liveStatus && (
+                {(liveStatus || connectionState) && (
                   <div className={`px-3 py-2.5 rounded-lg border-2 ${
-                    liveStatus.plcConnected
+                    connPhase === 'connected'
                       ? 'bg-green-50 dark:bg-green-950/30 border-green-500/50'
-                      : 'bg-gray-50 dark:bg-gray-900/50 border-gray-300 dark:border-gray-700'
+                      : connPhase === 'reconnecting' || connPhase === 'unreachable'
+                        ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-500/50'
+                        : 'bg-gray-50 dark:bg-gray-900/50 border-gray-300 dark:border-gray-700'
                   }`}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className={`w-2.5 h-2.5 rounded-full ${
-                          liveStatus.plcConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
+                          connPhase === 'connected'
+                            ? 'bg-green-500 animate-pulse'
+                            : connPhase === 'reconnecting' || connPhase === 'unreachable'
+                              ? 'bg-amber-500 animate-pulse'
+                              : 'bg-gray-400'
                         }`} />
                         <span className={`text-sm font-medium ${
-                          liveStatus.plcConnected ? 'text-green-700 dark:text-green-400' : 'text-gray-600 dark:text-gray-400'
+                          connPhase === 'connected'
+                            ? 'text-green-700 dark:text-green-400'
+                            : connPhase === 'reconnecting' || connPhase === 'unreachable'
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-gray-600 dark:text-gray-400'
                         }`}>
-                          {liveStatus.plcConnected
-                            ? `Connected to ${liveStatus.plcIp}`
-                            : 'Not connected'}
+                          {connPhase === 'connected'
+                            ? `Connected to ${liveStatus?.plcIp || localConfig.ip}`
+                            : connPhase === 'reconnecting'
+                              ? 'Reconnecting — lost the PLC session, retrying…'
+                              : connPhase === 'unreachable'
+                                ? `Can't reach PLC${(liveStatus?.plcIp || localConfig.ip) ? ` at ${liveStatus?.plcIp || localConfig.ip}` : ''} — retrying…`
+                                : 'Not connected'}
                         </span>
                       </div>
-                      {liveStatus.plcConnected && (
+                      {connPhase === 'connected' && liveStatus && (
                         <span className="text-xs text-green-600 dark:text-green-500 font-mono">
                           {liveStatus.tagCount} tags
                         </span>
@@ -945,7 +914,7 @@ export function PlcConfigDialog({
                     onClick={handlePlcConnect}
                     disabled={busy || !localConfig.ip}
                     className={`flex-1 h-10 ${
-                      liveStatus?.plcConnected
+                      isConnected
                         ? 'bg-primary hover:bg-primary/90 text-white'
                         : 'bg-green-600 hover:bg-green-700 text-white'
                     }`}
@@ -953,18 +922,28 @@ export function PlcConfigDialog({
                     <Wifi className="w-4 h-4 mr-2" />
                     {isConnecting
                       ? `Connecting... (${plcElapsed}s)`
-                      : liveStatus?.plcConnected
+                      : isConnected
                         ? "Reconnect"
                         : "Connect to PLC"}
                   </Button>
                   <Button
                     variant="destructive"
                     onClick={isConnecting ? handleCancelConnect : handleDisconnect}
-                    disabled={isDisconnecting || isPulling || (!liveStatus?.plcConnected && !isConnecting)}
+                    // Enabled whenever there's an attempt to stop: a live
+                    // connection, an in-dialog connect (Cancel), OR a background
+                    // auto-reconnect (Stop Retrying → hits /api/plc/disconnect,
+                    // which cancels the server-side reconnect loop).
+                    disabled={isDisconnecting || isPulling || (!isConnected && !isReconnecting && !isConnecting)}
                     className="min-w-[120px] h-10"
                   >
                     <WifiOff className="w-4 h-4 mr-2" />
-                    {isDisconnecting ? "..." : isConnecting ? "Cancel" : "Disconnect"}
+                    {isDisconnecting
+                      ? "..."
+                      : isConnecting
+                        ? "Cancel"
+                        : isReconnecting && !isConnected
+                          ? "Stop Retrying"
+                          : "Disconnect"}
                   </Button>
                 </div>
 
