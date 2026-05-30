@@ -41,6 +41,7 @@ import { ErrorBoundary } from "@/components/error-boundary"
 import { GuidedTour } from "@/components/guided-tour"
 import { NamePrompt } from "@/components/name-prompt"
 import { logger } from "@/lib/logger"
+import { getPartyResponsible } from "@/lib/party-responsible"
 import type { AppUpdateStatusResponse, CloudSyncStatusResponse } from "@/lib/cloud/types"
 
 // Debug flags - set to true to enable specific logging
@@ -1952,13 +1953,20 @@ export default function CommissioningPage() {
   }
 
   const generateCsvContent = (ios: IoItem[]): string => {
-    const headers = ['Name', 'Description', 'Subsystem', 'State', 'Result', 'Timestamp', 'Comments']
+    // Party Responsible + Failure Reason are included so the exported CSV can
+    // drive electrician punchlists directly. Failure Reason is the raw dropdown
+    // pick (e.g. "Not installed"); Party Responsible is the derived bucket from
+    // lib/party-responsible (e.g. "Not installed" → Electrical). Both live on
+    // the IO row (io.failureMode); the grid already shows them on screen.
+    const headers = ['Name', 'Description', 'Subsystem', 'State', 'Result', 'Party Responsible', 'Failure Reason', 'Timestamp', 'Comments']
     const rows = ios.map(io => [
       io.name,
       io.description || '',
       io.subsystemName,
       io.state || '',
       io.result || '',
+      getPartyResponsible(io.failureMode ?? null) || '',
+      io.failureMode || '',
       io.timestamp || '',
       io.comments || ''
     ])
