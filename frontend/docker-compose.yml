@@ -1,0 +1,55 @@
+# Centralized Server — Phase 0 (single containerized process).
+# One Node process holds N live PLC connections (one per MCM); SQLite + config
+# live in the named volume so a code rollback never touches data.
+#
+#   Build : docker compose build
+#   Run   : docker compose up -d
+#   Logs  : docker compose logs -f
+#   Roll  : edit IMAGE_TAG in .env -> docker compose up -d   (seconds)
+#
+# Copy .env.example -> .env first (sets IMAGE_TAG + JWT_SECRET_KEY).
+
+services:
+  commissioning:
+    image: commissioning-central:${IMAGE_TAG:-2.39.16}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+
+    # ── Networking ──────────────────────────────────────────────────────────
+    # Phase B (Linux plant host): host networking so EtherNet/IP (CIP) to the
+    # PLCs has NO NAT in the path — the container uses the host NIC directly.
+    # Requires a Linux host. EXACTLY ONE of network_mode / ports may be active.
+    network_mode: host
+    #
+    # Phase A (Windows/Mac Docker Desktop, where host mode is unsupported):
+    # comment out network_mode above and use the published port instead. NOTE
+    # the WSL2 NAT layer can disturb CIP connected-messaging — validation only,
+    # not production (see CENTRAL-SERVER-DEPLOYMENT.md §2).
+    # ports:
+    #   - "3000:3000"
+
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: file:/data/database.db
+      # Stable across restarts so issued JWTs stay valid. Required.
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env (openssl rand -hex 32)}
+      # Self-reported in the heartbeat; keep aligned with the image tag.
+      APP_VERSION: ${IMAGE_TAG:-2.39.16}
+
+    volumes:
+      # database.db, config.json, logs/, backups/ — all derive from /data.
+      - commissioning-data:/data
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  commissioning-data:

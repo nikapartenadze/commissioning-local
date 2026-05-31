@@ -1,50 +1,55 @@
-# Dependencies
-node_modules
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
+# Keep the build context small and reproducible. Everything the image needs is
+# either source (compiled in the builder stage) or libplctag.so (kept below).
 
-# Build output
-.next
-out
-dist
-build
-
-# Environment files
-.env
-.env*.local
-.env.production
-
-# Editor directories
+# VCS / editors
+.git
+.gitignore
 .vscode
 .idea
 *.swp
 *.swo
 *~
 
-# OS files
-.DS_Store
-Thumbs.db
-
-# Git
-.git
-.gitignore
-
-# Testing
+# Installed / built artifacts — rebuilt inside the image
+node_modules
+dist
+dist-server
+.next
+out
+build
 coverage
-.nyc_output
+tsconfig.tsbuildinfo
 
-# Misc
+# Runtime data — must NEVER be baked into the image (lives in the /data volume)
+database.db
+database.db-shm
+database.db-wal
+config.json
+machine.id
+backups
+logs
+logs-*
+
+# Secrets / env — provided at runtime via compose, not the image
+.env
+.env.*
+!.env.example
+
+# Windows-only native lib (this image is Linux; libplctag.so is kept)
+plctag.dll
+*.exe
+
+# Tests / reports / scratch
+__tests__
+playwright-report
+test-results
 *.log
-.cache
+_*.js
+_*.txt
 
-# Docker
-Dockerfile
-docker-compose.yml
-.dockerignore
-
-# Documentation
-README.md
+# Docs (not needed to build)
 *.md
 
+# OS cruft
+.DS_Store
+Thumbs.db

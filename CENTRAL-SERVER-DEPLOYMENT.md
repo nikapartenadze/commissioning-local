@@ -1,7 +1,7 @@
 # Centralized Server — Deployment & Modularity Plan
 
-> Status: **investigation / plan only** (no Docker files or code yet).
-> Branch: `central-tool-latest` (multi-MCM `central-tool` work merged onto `main` @ v2.39.15).
+> Status: **Phase 0 implemented** (Dockerized monolith). Phase 1 (gateway/app split) still design-only.
+> Branch: `central-tool-latest` (multi-MCM `central-tool` work merged onto `main` @ v2.39.16).
 > Decisions taken: deploy target = **validate on Windows now, move to Linux later**; modular split = **design now, build later**.
 
 ## 1. What the centralized server is
@@ -63,7 +63,7 @@ Docker is strictly better than the current NSIS-installer model for rollback:
 - SQLite single-writer is *satisfied by design*: the gateway needs no DB, so `app` remains the sole writer.
 
 ### Phased path
-- **Phase 0 (do first):** Dockerize the existing single process. Versioned image, volume-mounted data, `--network host` on Linux. Delivers reproducible deploys + instant rollback now. Restarts still blip connections ~5 s, but contained and instantly reversible.
+- **Phase 0 (do first) — ✅ implemented, see §6.** Dockerize the existing single process. Versioned image, volume-mounted data, `--network host` on Linux. Delivers reproducible deploys + instant rollback now. Restarts still blip connections ~5 s, but contained and instantly reversible.
 - **Phase 1 (the modularity goal):** Extract `plc-gateway` from `app` across the 3102 seam; deploy `app` independently of PLC connections.
 
 ## 5. Open risks / to verify before building
@@ -73,6 +73,33 @@ Docker is strictly better than the current NSIS-installer model for rollback:
 4. **SQLite writer ownership** — lock in "app owns writes, gateway is DB-free" before any split.
 5. **Browser reconnect UX on `app` restart** — the app-wide `ConnectionGuard` overlay (fixed in v2.39.15) will show during an `app`-only restart; confirm it clears cleanly when `app` returns and the gateway never dropped.
 
-## 6. Not doing (yet)
-- No Docker files, compose, or code changes — this document is the agreed investigation deliverable.
+## 6. Phase 0 — implemented (Dockerized monolith)
+
+Files (in `frontend/`, the field tool's own codebase — build context is `frontend/`):
+
+| File | Role |
+|---|---|
+| `Dockerfile` | Multi-stage. Builder: `npm ci` (prisma copied first for the `postinstall` generate), `npm run build` (Vite → `dist`), `npm run build:server` (tsc → `dist-server`), `npm prune --omit=dev`. Runner: flattens `dist-server` to `/app`, copies `dist`, the hand-written `lib/startup-backup.js`, `libplctag.so`, and the pruned `node_modules`. |
+| `docker-compose.yml` | Pins `commissioning-central:${IMAGE_TAG}`, mounts the `commissioning-data` volume at `/data`, `network_mode: host` (Linux/Phase B) with a commented `ports:` fallback for Windows Docker Desktop (Phase A). |
+| `.env.example` | `IMAGE_TAG` + `JWT_SECRET_KEY` (copy to `.env`). |
+| `.dockerignore` | Keeps `libplctag.so` + source; drops `node_modules`, builds, runtime data, secrets, the Windows `plctag.dll`. |
+
+Layout decisions that make it work:
+- **Client-bundle path:** the server does `path.join(__dirname, 'dist')`. The image runs `node /app/server-express.js`, so `dist/` is copied to `/app/dist`.
+- **Native lib:** `lib/plc/libplctag.ts` searches `process.cwd()` and `__dirname` — both `/app` — so `libplctag.so` is copied to `/app`.
+- **Data path:** `DATABASE_URL=file:/data/database.db` (absolute) so the `/data` volume holds DB + `config.json` + `logs/` + `backups/` (all derived in `storage-paths.ts`) **without shadowing app code** under `/app`. SQLite + config never enter the image (§3).
+- **Versioning/rollback (§3):** one image tag per release; rollback = change `IMAGE_TAG` → `docker compose up -d`.
+
+### Runbook
+```bash
+cd frontend
+cp .env.example .env            # set JWT_SECRET_KEY (openssl rand -hex 32)
+docker compose build            # or: docker build -t commissioning-central:2.39.16 .
+docker compose up -d
+docker compose logs -f
+# rollback: edit IMAGE_TAG in .env, then: docker compose up -d
+```
+
+## 7. Not doing (yet)
+- No `plc-gateway`/`app` split — Phase 1 remains design-only (see §4); promote the `:3102` seam to a process boundary next.
 - No feature-sliced microservices (see §4).
