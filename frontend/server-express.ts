@@ -28,6 +28,12 @@ import { configService } from '@/lib/config';
 import { db } from '@/lib/db-sqlite';
 import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
 import { getAppVersion } from '@/lib/app-version';
+import { startRemotePolling, applyBroadcastToCache } from '@/lib/plc/remote-cache';
+
+// Split deployment: when PLC connections live in a separate plc-gateway process
+// (CENTRAL-SERVER-DEPLOYMENT.md §4, Phase 1) the app polls the gateway to back
+// its synchronous registry getters and never opens its own libplctag session.
+const PLC_REMOTE = process.env.PLC_MODE === 'remote';
 
 // Resolved once at startup. Rides every HeartbeatAck so the browser can detect
 // a server upgrade (version differs across a reconnect) and full-reload to pick
@@ -40,6 +46,9 @@ const SERVER_VERSION = process.env.NEXT_PUBLIC_BUILD_HASH || getAppVersion();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
 const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
+// Broadcast receiver bind host. Stays loopback-only for the monolith; in the
+// split deployment it must be reachable so the plc-gateway can POST events.
+const BROADCAST_HOST = process.env.BROADCAST_HOST || (PLC_REMOTE ? '0.0.0.0' : '127.0.0.1');
 
 // ============================================================================
 // Production Logging — clean console + detailed file logs
@@ -296,6 +305,10 @@ const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerRespo
       try {
         const message = JSON.parse(body);
         const data = JSON.stringify(message);
+        // Split deployment: keep the app's read cache fresh from the same event
+        // stream the gateway sends, so server-side route logic doesn't lag the
+        // live UI between gateway /state polls.
+        if (PLC_REMOTE) applyBroadcastToCache(message);
         let sent = 0;
         let filtered = 0;
         plcClients.forEach((ws) => {
@@ -336,13 +349,13 @@ const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerRespo
 broadcastHttpServer.on('error', (err: any) => {
   if (err.code === 'EADDRINUSE') {
     console.warn(`[WS] Broadcast port ${HTTP_PORT} in use, retrying in 2s...`);
-    setTimeout(() => broadcastHttpServer.listen(HTTP_PORT, '127.0.0.1'), 2000);
+    setTimeout(() => broadcastHttpServer.listen(HTTP_PORT, BROADCAST_HOST), 2000);
   } else {
     console.error('[WS] Broadcast server error:', err);
   }
 });
-broadcastHttpServer.listen(HTTP_PORT, '127.0.0.1', () => {
-  console.log(`[WS] Broadcast API on http://127.0.0.1:${HTTP_PORT}/broadcast`);
+broadcastHttpServer.listen(HTTP_PORT, BROADCAST_HOST, () => {
+  console.log(`[WS] Broadcast API on http://${BROADCAST_HOST}:${HTTP_PORT}/broadcast`);
 });
 
 // ============================================================================
@@ -524,6 +537,13 @@ httpServer.listen(PORT, HOSTNAME, () => {
   console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
   console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
 
+  // Split deployment: start polling the plc-gateway so the synchronous registry
+  // getters are backed by fresh state. No-op in the monolith.
+  if (PLC_REMOTE) {
+    startRemotePolling();
+    console.log(`[App] PLC_MODE=remote — polling plc-gateway at ${process.env.GATEWAY_URL || 'http://127.0.0.1:3200'}`);
+  }
+
   // Heal a poisoned update-status.json left behind by an interrupted update.
   // A successful self-update restarts us into the new build with a non-terminal
   // status still on disk; reconciliation stamps it success (running ≥ target)
@@ -579,6 +599,12 @@ setTimeout(async () => {
 //      same in-process scheduleReconnect that handles live disconnects.
 
 async function tryBootAutoConnect(): Promise<void> {
+  // In the split deployment the plc-gateway owns all PLC connections and runs
+  // its own reconnect loop — the app must never open its own libplctag session.
+  if (PLC_REMOTE) {
+    console.log('[Boot AutoConnect] Skipped: PLC_MODE=remote (plc-gateway owns connections)');
+    return;
+  }
   try {
     const cfg = await configService.getConfig();
     if (!cfg.ip || !cfg.path || !cfg.subsystemId) {

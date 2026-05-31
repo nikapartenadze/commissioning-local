@@ -1,6 +1,6 @@
 import { Request, Response } from 'express'
-import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
-import { getClientForIo, getMcmIdForIo, hasAnyMcm } from '@/lib/mcm-registry'
+import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { readOutputBitForIo, getMcmIdForIo } from '@/lib/mcm-registry'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 
@@ -21,12 +21,18 @@ export async function GET(req: Request, res: Response) {
       return res.status(404).json({ success: false, error: 'IO not found' })
     }
 
-    // Multi-MCM: read from the controller that owns this IO. Fallback to the
-    // legacy singleton when no MCM is registered.
+    // Multi-MCM: read from the controller that owns this IO. In the split
+    // deployment this RPCs the plc-gateway; embedded it reads the in-process
+    // client and falls back to the legacy singleton when no MCM is registered.
     const subsystemId = getMcmIdForIo(ioId)
-    const client = hasAnyMcm() ? getClientForIo(ioId) ?? getPlcClient() : getPlcClient()
 
-    if (!client.isConnected) {
+    const readResult = await readOutputBitForIo(ioId, {
+      id: io.id,
+      name: io.Name,
+      tagType: io.TagType ?? undefined
+    })
+
+    if (!readResult.connected) {
       return res.status(503).json({
         success: false,
         error: subsystemId
@@ -34,12 +40,6 @@ export async function GET(req: Request, res: Response) {
           : 'PLC not connected',
       })
     }
-
-    const readResult = client.readOutputBit({
-      id: io.id,
-      name: io.Name,
-      tagType: io.TagType ?? undefined
-    })
 
     if (!readResult.success) {
       return res.status(500).json({ success: false, error: readResult.error || 'Failed to read tag' })
