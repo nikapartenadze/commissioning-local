@@ -1,0 +1,82 @@
+# Centralized Server — Phase 1 (modular split: plc-gateway + app).
+#
+# Two containers from ONE image, differing only by `command`:
+#   - gateway : owns the live PLC connections, tag cache and network pollers.
+#               DB-free. Rarely redeployed.
+#   - app     : UI + API + SQLite + cloud sync. Redeploy freely WITHOUT dropping
+#               the gateway's PLC connections (PLC_MODE=remote).
+#
+# The seam: app -> gateway over the control API (:3200); gateway -> app over the
+# broadcast receiver (:3102), which fans events out to browsers on the WS.
+#
+#   Build : docker compose -f docker-compose.split.yml build
+#   Run   : docker compose -f docker-compose.split.yml up -d
+#   Hotfix the app WITHOUT dropping PLC connections:
+#           docker compose -f docker-compose.split.yml up -d --no-deps app
+#
+# Copy .env.example -> .env first (IMAGE_TAG + JWT_SECRET_KEY).
+
+services:
+  gateway:
+    image: commissioning-central:${IMAGE_TAG:-2.39.16}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "gateway-server.js"]
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      GATEWAY_PORT: "3200"
+      GATEWAY_HOST: 0.0.0.0
+      # Events flow gateway -> app's broadcast receiver -> browsers.
+      WS_BROADCAST_URL: http://app:3102/broadcast
+    # DB-free: NO volume. Connections are rebuilt by the gateway's own 5s
+    # auto-reconnect if the gateway itself is ever replaced.
+    #
+    # Phase B (Linux plant host) — for no-NAT EtherNet/IP to real PLCs, give the
+    # gateway the host NIC and point the app at the host. Uncomment:
+    #   network_mode: host
+    #   environment: { ..., WS_BROADCAST_URL: http://HOST_IP:3102/broadcast }
+    # and set the app's GATEWAY_URL to http://HOST_IP:3200 with app publishing 3102.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3200/health',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  app:
+    image: commissioning-central:${IMAGE_TAG:-2.39.16}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "server-express.js"]
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_started
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: file:/data/database.db
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env (openssl rand -hex 32)}
+      APP_VERSION: ${IMAGE_TAG:-2.39.16}
+      # The split switch: PLC ops RPC the gateway; getters read a polled cache.
+      PLC_MODE: remote
+      GATEWAY_URL: http://gateway:3200
+      # Expose the broadcast receiver to the gateway (cross-container).
+      BROADCAST_HOST: 0.0.0.0
+    volumes:
+      - commissioning-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  commissioning-data:

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express'
-import { getPlcClient, getWsBroadcastUrl } from '@/lib/plc-client-manager'
-import { getClientForIo, getMcmIdForIo, hasAnyMcm } from '@/lib/mcm-registry'
+import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { writeOutputBitForIo, getMcmIdForIo } from '@/lib/mcm-registry'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 
@@ -45,13 +45,21 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
-    // Multi-MCM: route the write to the controller that owns this IO. Falls
-    // back to the legacy singleton when no MCM is registered (field-laptop
-    // single-PLC deployments keep working unchanged).
+    // Multi-MCM: route the write to the controller that owns this IO. In the
+    // split deployment (PLC_MODE=remote) this RPCs the plc-gateway; embedded it
+    // drives the in-process client and falls back to the legacy singleton when
+    // no MCM is registered (field-laptop single-PLC deployments unchanged).
     const subsystemId = getMcmIdForIo(ioId)
-    const client = hasAnyMcm() ? getClientForIo(ioId) ?? getPlcClient() : getPlcClient()
 
-    if (!client.isConnected) {
+    const bitValue: number | 'toggle' = action === 'toggle' ? 'toggle' : (action === 'start' ? 1 : 0)
+
+    const result = await writeOutputBitForIo(
+      ioId,
+      { id: io.id, name: io.Name, tagType: io.TagType ?? undefined },
+      bitValue
+    )
+
+    if (!result.connected) {
       return res.status(503).json({
         success: false,
         error: subsystemId
@@ -59,13 +67,6 @@ export async function POST(req: Request, res: Response) {
           : 'PLC not connected',
       })
     }
-
-    const bitValue: number | 'toggle' = action === 'toggle' ? 'toggle' : (action === 'start' ? 1 : 0)
-
-    const result = client.writeOutputBit(
-      { id: io.id, name: io.Name, tagType: io.TagType ?? undefined },
-      bitValue
-    )
 
     if (!result.success) {
       console.error(`[FireOutput] MCM=${subsystemId ?? '?'} Failed to ${action} output:`, result.error)

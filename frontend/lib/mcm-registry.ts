@@ -9,6 +9,15 @@
  * in place for backwards compatibility while the new `/api/mcm/:subsystemId`
  * route namespace is proven out.
  *
+ * ── Deployment modes (CENTRAL-SERVER-DEPLOYMENT.md §4, Phase 1) ──────────────
+ * PLC_MODE=embedded (default): connections live in THIS process. Used by the
+ *   field monolith and by the plc-gateway service itself.
+ * PLC_MODE=remote: connections live in a separate plc-gateway process. The
+ *   async mutators (connect/disconnect/load-tags/IO writes) forward to the
+ *   gateway over HTTP; the synchronous getters read a locally-polled cache
+ *   (lib/plc/remote-cache.ts). This lets the app redeploy without dropping the
+ *   gateway's live PLC connections.
+ *
  * Library init is idempotent at the libplctag level — both this module and
  * the legacy plc-client-manager safely call ensureLibrary().
  */
@@ -23,6 +32,19 @@ import {
   type IoTag,
 } from './plc';
 import { NetworkPoller, type NetworkDeviceSnapshot } from './plc/network';
+import { gatewayClient } from './plc/gateway-client';
+import {
+  getCachedMcm,
+  getCachedMcms,
+  getCachedTagsForMcm,
+  getCachedAllTags,
+  getCachedNetworkSnapshots,
+  getCachedNetworkForMcm,
+  getCachedState,
+} from './plc/remote-cache';
+
+/** True when PLC connections live in a separate plc-gateway process. */
+const REMOTE = process.env.PLC_MODE === 'remote';
 
 // WebSocket broadcast HTTP endpoint — same as legacy manager, shared port.
 const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast';
@@ -43,6 +65,27 @@ function ensureLibrary(): void {
   if (!isLibraryLoaded()) {
     initLibrary();
   }
+}
+
+/**
+ * Result shape shared by connectMcm and the gateway connect endpoint.
+ */
+export interface McmConnectResult {
+  success: boolean;
+  status: ConnectionStatus;
+  error?: string;
+  plcReachable?: boolean;
+  tagsSuccessful?: number;
+  tagsFailed?: number;
+  failedTags?: Array<{ name: string; error: string }>;
+}
+
+/** Single-bit write/read result, decorated with the owning MCM's connectivity. */
+export interface IoBitResult {
+  connected: boolean;
+  success: boolean;
+  currentState?: boolean;
+  error?: string;
 }
 
 /** One live MCM connection — opaque outside this module. */
@@ -74,6 +117,14 @@ function reg(): McmRegistryState {
 }
 
 /**
+ * Pending tag sets queued by loadMcmTags() in REMOTE mode. The connect route
+ * calls loadMcmTags() (sync) then connectMcm() (async); in remote mode we can't
+ * fire two ordered HTTP calls from a sync function, so we stash the tags here
+ * and fold them into the single gateway connect request. Atomic, no race.
+ */
+const remotePendingTags = new Map<string, IoTag[]>();
+
+/**
  * Status descriptor for a single MCM, suitable for serializing to clients.
  */
 export interface McmDescriptor {
@@ -97,15 +148,13 @@ export async function connectMcm(
   subsystemId: string,
   name: string,
   config: PlcConnectionConfig
-): Promise<{
-  success: boolean;
-  status: ConnectionStatus;
-  error?: string;
-  plcReachable?: boolean;
-  tagsSuccessful?: number;
-  tagsFailed?: number;
-  failedTags?: Array<{ name: string; error: string }>;
-}> {
+): Promise<McmConnectResult> {
+  if (REMOTE) {
+    const tags = remotePendingTags.get(subsystemId);
+    remotePendingTags.delete(subsystemId);
+    return gatewayClient.connect(subsystemId, name, { ip: config.ip, path: config.path }, tags);
+  }
+
   try {
     ensureLibrary();
   } catch (err) {
@@ -163,6 +212,14 @@ export async function connectMcm(
  * replaces the previous set.
  */
 export function loadMcmTags(subsystemId: string, tags: IoTag[]): boolean {
+  if (REMOTE) {
+    // Stash for the next connectMcm() to send atomically; also push to the
+    // gateway eagerly so a status/tags read before connect still reflects them.
+    remotePendingTags.set(subsystemId, tags);
+    void gatewayClient.loadTags(subsystemId, tags);
+    return true;
+  }
+
   const entry = reg().mcms.get(subsystemId);
   if (!entry) {
     // No live client yet — create a bare client now so callers can load tags
@@ -195,6 +252,8 @@ export function loadMcmTags(subsystemId: string, tags: IoTag[]): boolean {
  * Disconnect an MCM and tear down its network poller. Safe on unknown ids.
  */
 export async function disconnectMcm(subsystemId: string): Promise<{ success: boolean }> {
+  if (REMOTE) return gatewayClient.disconnect(subsystemId);
+
   const entry = reg().mcms.get(subsystemId);
   if (!entry) return { success: true };
 
@@ -210,6 +269,8 @@ export async function disconnectMcm(subsystemId: string): Promise<{ success: boo
  * Snapshot of one MCM's current state. Returns null when the id is unknown.
  */
 export function getMcmStatus(subsystemId: string): McmDescriptor | null {
+  if (REMOTE) return getCachedMcm(subsystemId);
+
   const entry = reg().mcms.get(subsystemId);
   if (!entry) return null;
   return toDescriptor(entry);
@@ -220,6 +281,11 @@ export function getMcmStatus(subsystemId: string): McmDescriptor | null {
  * the id is unknown.
  */
 export function getMcmTags(subsystemId: string): { tags: IoTag[]; count: number } {
+  if (REMOTE) {
+    const tags = getCachedTagsForMcm(subsystemId);
+    return { tags, count: tags.length };
+  }
+
   const entry = reg().mcms.get(subsystemId);
   if (!entry) return { tags: [], count: 0 };
   const tags = entry.client.getIoTags();
@@ -231,10 +297,12 @@ export function getMcmTags(subsystemId: string): { tags: IoTag[]; count: number 
  * for the landing page status grid.
  */
 export function listMcms(): McmDescriptor[] {
+  if (REMOTE) return getCachedMcms();
   return Array.from(reg().mcms.values()).map(toDescriptor);
 }
 
 export function hasMcm(subsystemId: string): boolean {
+  if (REMOTE) return getCachedMcm(subsystemId) !== null;
   return reg().mcms.has(subsystemId);
 }
 
@@ -243,6 +311,7 @@ export function hasMcm(subsystemId: string): boolean {
  * if they should route through the registry vs the old singleton.
  */
 export function hasAnyConnectedMcm(): boolean {
+  if (REMOTE) return getCachedState().aggregate.anyConnected;
   for (const entry of reg().mcms.values()) {
     if (entry.client.isConnected) return true;
   }
@@ -253,6 +322,7 @@ export function hasAnyConnectedMcm(): boolean {
  * Whether the registry has any MCM entries at all (connected or not).
  */
 export function hasAnyMcm(): boolean {
+  if (REMOTE) return getCachedMcms().length > 0;
   return reg().mcms.size > 0;
 }
 
@@ -261,6 +331,7 @@ export function hasAnyMcm(): boolean {
  * poller is off or hasn't completed a cycle yet.
  */
 export function getMcmNetworkSnapshots(subsystemId: string): NetworkDeviceSnapshot[] {
+  if (REMOTE) return getCachedNetworkForMcm(subsystemId);
   const entry = reg().mcms.get(subsystemId);
   return entry?.networkPoller?.getLatestSnapshots() ?? [];
 }
@@ -271,6 +342,7 @@ export function getMcmNetworkSnapshots(subsystemId: string): NetworkDeviceSnapsh
  * data correctly.
  */
 export function getAllNetworkSnapshots(): Array<NetworkDeviceSnapshot & { subsystemId: string }> {
+  if (REMOTE) return getCachedNetworkSnapshots();
   const out: Array<NetworkDeviceSnapshot & { subsystemId: string }> = [];
   for (const entry of reg().mcms.values()) {
     const snaps = entry.networkPoller?.getLatestSnapshots() ?? [];
@@ -288,6 +360,9 @@ export function getAllNetworkSnapshots(): Array<NetworkDeviceSnapshot & { subsys
  * for an ioId and invalidated on disconnect/dispose. SQLite is fast enough
  * for ad-hoc lookups, but the test path can fire hundreds of reads per
  * second so we keep it in-memory.
+ *
+ * This stays DB-backed in BOTH modes — the app always owns SQLite, even when
+ * PLC connections are remote. The gateway never resolves ioId→subsystem.
  */
 const ioToSubsystemCache = new Map<number, string>();
 
@@ -331,8 +406,21 @@ export function getMcmIdForIo(ioId: number): string | null {
  *   - the IO is unknown
  *   - the IO's subsystem has no registry entry (registry empty / not configured)
  * Callers should fall back to their legacy path when this returns null.
+ *
+ * In REMOTE mode there is no in-process PlcClient. We return a read-only shim
+ * backed by the cache so callers that only inspect connectivity / tag state
+ * (e.g. the test route's `ownerClient.isConnected` guard) keep working. Write
+ * paths must use writeOutputBitForIo()/readOutputBitForIo(), which RPC the
+ * gateway — the shim's write methods throw to make a mistake loud.
  */
 export function getClientForIo(ioId: number): PlcClient | null {
+  if (REMOTE) {
+    const subsystemId = getMcmIdForIo(ioId);
+    if (!subsystemId) return null;
+    const mcm = getCachedMcm(subsystemId);
+    if (!mcm) return null;
+    return buildRemoteClientShim(subsystemId) as unknown as PlcClient;
+  }
   const subsystemId = getMcmIdForIo(ioId);
   if (!subsystemId) return null;
   const entry = reg().mcms.get(subsystemId);
@@ -346,6 +434,15 @@ export function getClientForIo(ioId: number): PlcClient | null {
  * read state on the client even after the connection drops.
  */
 export function getTagForIo(ioId: number): IoTag | null {
+  if (REMOTE) {
+    const subsystemId = getMcmIdForIo(ioId);
+    if (subsystemId) {
+      const tag = getCachedTagsForMcm(subsystemId).find((t) => t.id === ioId);
+      if (tag) return tag;
+    }
+    return getCachedAllTags().find((t) => t.id === ioId) ?? null;
+  }
+
   const subsystemId = getMcmIdForIo(ioId);
   if (subsystemId) {
     const entry = reg().mcms.get(subsystemId);
@@ -375,6 +472,10 @@ export function getAllTags(): {
   tags: Array<IoTag & { subsystemId: string }>;
   count: number;
 } {
+  if (REMOTE) {
+    const tags = getCachedAllTags();
+    return { tags, count: tags.length };
+  }
   const tags: Array<IoTag & { subsystemId: string }> = [];
   for (const entry of reg().mcms.values()) {
     for (const t of entry.client.getIoTags()) {
@@ -412,6 +513,10 @@ export function getAggregateStatus(): {
  * operator removes the MCM from the configured list.
  */
 export async function disposeMcm(subsystemId: string): Promise<void> {
+  if (REMOTE) {
+    await gatewayClient.dispose(subsystemId);
+    return;
+  }
   const entry = reg().mcms.get(subsystemId);
   if (!entry) return;
   if (entry.networkPoller) {
@@ -422,7 +527,124 @@ export async function disposeMcm(subsystemId: string): Promise<void> {
   reg().mcms.delete(subsystemId);
 }
 
+// ── IO write/read facades ──────────────────────────────────────────────────
+//
+// These unify the "resolve the owning controller, check it's connected, then
+// write/read a single output bit" flow used by /api/ios/:id/fire-output and
+// /api/ios/:id/state. Mode-aware: embedded drives the in-process client;
+// remote RPCs the gateway. Both return the same IoBitResult shape.
+
+type IoRef = Pick<IoTag, 'id' | 'name' | 'tagType'>;
+
+/** Lazy legacy singleton accessor — avoids a static import cycle. */
+function legacyPlcClient(): PlcClient | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mgr = require('@/lib/plc-client-manager') as typeof import('@/lib/plc-client-manager');
+    return mgr.getPlcClient();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write a single output bit for the controller that owns `ioId`.
+ * value: 1 (on) | 0 (off) | 'toggle'.
+ */
+export async function writeOutputBitForIo(
+  ioId: number,
+  io: IoRef,
+  value: number | 'toggle'
+): Promise<IoBitResult> {
+  if (REMOTE) {
+    const subsystemId = getMcmIdForIo(ioId);
+    if (!subsystemId) return { connected: false, success: false, error: 'IO has no subsystem mapping' };
+    return gatewayClient.writeIo(subsystemId, io, value);
+  }
+
+  // Embedded: route the write to the owning controller, falling back to the
+  // legacy singleton when no MCM is registered (field single-PLC laptops).
+  const client = hasAnyMcm() ? getClientForIo(ioId) ?? legacyPlcClient() : legacyPlcClient();
+  if (!client) return { connected: false, success: false, error: 'No PLC client' };
+  if (!client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
+  const r = client.writeOutputBit(io as IoTag, value);
+  return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
+}
+
+/** Read a single output bit for the controller that owns `ioId`. */
+export async function readOutputBitForIo(ioId: number, io: IoRef): Promise<IoBitResult> {
+  if (REMOTE) {
+    const subsystemId = getMcmIdForIo(ioId);
+    if (!subsystemId) return { connected: false, success: false, error: 'IO has no subsystem mapping' };
+    return gatewayClient.readIo(subsystemId, io);
+  }
+
+  const client = hasAnyMcm() ? getClientForIo(ioId) ?? legacyPlcClient() : legacyPlcClient();
+  if (!client) return { connected: false, success: false, error: 'No PLC client' };
+  if (!client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
+  const r = client.readOutputBit(io as IoTag);
+  return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
+}
+
+// ── In-process IO write/read by subsystem (gateway-side helpers) ────────────
+//
+// Used by the plc-gateway server to service /mcm/:id/io/write|read. These are
+// EMBEDDED-only (the gateway always runs embedded). They resolve the client by
+// subsystemId — the app passes the id, the gateway never touches SQLite.
+
+export function writeOutputBitForMcm(
+  subsystemId: string,
+  io: IoRef,
+  value: number | 'toggle'
+): IoBitResult {
+  const entry = reg().mcms.get(subsystemId);
+  if (!entry) return { connected: false, success: false, error: `MCM ${subsystemId} not registered` };
+  if (!entry.client.isConnected) return { connected: false, success: false, error: `MCM ${subsystemId} not connected` };
+  const r = entry.client.writeOutputBit(io as IoTag, value);
+  return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
+}
+
+export function readOutputBitForMcm(subsystemId: string, io: IoRef): IoBitResult {
+  const entry = reg().mcms.get(subsystemId);
+  if (!entry) return { connected: false, success: false, error: `MCM ${subsystemId} not registered` };
+  if (!entry.client.isConnected) return { connected: false, success: false, error: `MCM ${subsystemId} not connected` };
+  const r = entry.client.readOutputBit(io as IoTag);
+  return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
+}
+
 // ── internals ─────────────────────────────────────────────────────────────
+
+/**
+ * A read-only PlcClient stand-in for REMOTE mode, backed by the polled cache.
+ * Only connectivity/tag-state inspection is supported; write/read throw because
+ * those must go through the gateway RPC facades.
+ */
+function buildRemoteClientShim(subsystemId: string) {
+  const mcm = () => getCachedMcm(subsystemId);
+  const tags = () => getCachedTagsForMcm(subsystemId);
+  const blocked = () => {
+    throw new Error('PLC writes are not available on the remote client shim — use writeOutputBitForIo()');
+  };
+  return {
+    get isConnected() {
+      return mcm()?.connected ?? false;
+    },
+    getConnectionStatus(): ConnectionStatus {
+      return mcm()?.status ?? 'disconnected';
+    },
+    get tagCount() {
+      return mcm()?.tagCount ?? 0;
+    },
+    getIoTags(): IoTag[] {
+      return tags();
+    },
+    getIoTag(name: string): IoTag | undefined {
+      return tags().find((t) => t.name === name);
+    },
+    writeOutputBit: blocked,
+    readOutputBit: blocked,
+  };
+}
 
 function toDescriptor(entry: McmEntry): McmDescriptor {
   return {

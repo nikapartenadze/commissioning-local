@@ -16,6 +16,7 @@
   },
   "include": [
     "server-express.ts",
+    "gateway-server.ts",
     "routes/**/*.ts",
     "lib/**/*.ts",
     "app/api/**/*.ts"

@@ -17,7 +17,10 @@
 # ============================================================================
 
 # ---- Stage 1: builder — compile client + server, produce prod node_modules --
-FROM node:20-bookworm-slim AS builder
+# Debian 13 (trixie, glibc 2.41). The prebuilt libplctag.so requires GLIBC_2.38,
+# which bookworm (glibc 2.36) does NOT provide — using trixie satisfies it and
+# keeps the native better-sqlite3/ffi-rs ABI consistent with the runner stage.
+FROM node:20-trixie-slim AS builder
 WORKDIR /build
 
 # better-sqlite3 compiles from source; ffi-rs ships prebuilt napi binaries.
@@ -40,7 +43,9 @@ RUN npm run build \
 RUN npm prune --omit=dev
 
 # ---- Stage 2: runner — minimal runtime image --------------------------------
-FROM node:20-bookworm-slim AS runner
+# Must match the builder's glibc (trixie) for the copied native modules AND so
+# libplctag.so's GLIBC_2.38 requirement is satisfied at runtime.
+FROM node:20-trixie-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production \

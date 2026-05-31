@@ -1,8 +1,8 @@
 # Centralized Server — Deployment & Modularity Plan
 
-> Status: **Phase 0 implemented** (Dockerized monolith). Phase 1 (gateway/app split) still design-only.
+> Status: **Phase 0 + Phase 1 implemented** (Dockerized monolith AND the gateway/app split).
 > Branch: `central-tool-latest` (multi-MCM `central-tool` work merged onto `main` @ v2.39.16).
-> Decisions taken: deploy target = **validate on Windows now, move to Linux later**; modular split = **design now, build later**.
+> Decisions taken: deploy target = **validate on Windows now, move to Linux later**; modular split = **built** (§7).
 
 ## 1. What the centralized server is
 
@@ -64,14 +64,14 @@ Docker is strictly better than the current NSIS-installer model for rollback:
 
 ### Phased path
 - **Phase 0 (do first) — ✅ implemented, see §6.** Dockerize the existing single process. Versioned image, volume-mounted data, `--network host` on Linux. Delivers reproducible deploys + instant rollback now. Restarts still blip connections ~5 s, but contained and instantly reversible.
-- **Phase 1 (the modularity goal):** Extract `plc-gateway` from `app` across the 3102 seam; deploy `app` independently of PLC connections.
+- **Phase 1 (the modularity goal) — ✅ implemented, see §7.** Extract `plc-gateway` from `app` across the 3102 seam; deploy `app` independently of PLC connections.
 
-## 5. Open risks / to verify before building
-1. **libplctag on Linux** — confirm the exact release artifact and that `ffi-rs` binds it the same way as the Windows DLL. (Build script change required.)
-2. **CIP over `--network host`** — verify connected messaging to a real controller from a Linux container; confirm no NAT in the path.
-3. **PLC connection-slot budget** — N MCMs from one gateway must stay within each controller's connection limits (already true in the monolith; preserve in the gateway).
-4. **SQLite writer ownership** — lock in "app owns writes, gateway is DB-free" before any split.
-5. **Browser reconnect UX on `app` restart** — the app-wide `ConnectionGuard` overlay (fixed in v2.39.15) will show during an `app`-only restart; confirm it clears cleanly when `app` returns and the gateway never dropped.
+## 5. Open risks / status
+1. **libplctag on Linux** — ✅ **resolved.** The prebuilt `libplctag.so` requires `GLIBC_2.38`; `node:20-bookworm-slim` (glibc 2.36) cannot load it (`cannot open shared object file`). Fixed by basing the image on **`node:20-trixie-slim`** (Debian 13, glibc 2.41). `ffi-rs` binds it identically to the Windows DLL — confirmed loading in-container via `ldd`. *This bug also affected the Phase 0 image, which had never exercised a real connect.*
+2. **CIP over `--network host`** — ⚠️ **still hardware-gated.** The seam, connect flow and tag plumbing are validated end-to-end on Windows Docker Desktop with an unreachable test IP (connection attempt + retry loop confirmed). Connected-messaging against a real controller over `--network host` must be verified on the Linux plant host (Phase B).
+3. **PLC connection-slot budget** — unchanged from the monolith: one CIP session per controller, now owned solely by the gateway. Preserved by design.
+4. **SQLite writer ownership** — ✅ **locked in.** The gateway is DB-free; it never imports/opens SQLite. The app resolves `ioId → subsystemId` and passes it in the request body, remaining the sole writer.
+5. **Browser reconnect UX on `app` restart** — the app-wide `ConnectionGuard` overlay (fixed in v2.39.15) shows during an `app`-only restart and clears when the app returns; the gateway never drops. (Browser-level UX still to confirm with a real session.)
 
 ## 6. Phase 0 — implemented (Dockerized monolith)
 
@@ -100,6 +100,48 @@ docker compose logs -f
 # rollback: edit IMAGE_TAG in .env, then: docker compose up -d
 ```
 
-## 7. Not doing (yet)
-- No `plc-gateway`/`app` split — Phase 1 remains design-only (see §4); promote the `:3102` seam to a process boundary next.
+## 7. Phase 1 — implemented (plc-gateway / app split)
+
+Two containers from **one image**, differing only by `command`. The app redeploys
+without dropping the gateway's PLC connections.
+
+### Files
+| File | Role |
+|---|---|
+| `gateway-server.ts` | The **plc-gateway** entrypoint. Express service (default `:3200`) that owns the in-process `mcm-registry` — libplctag connections, tag cache, network pollers. DB-free. Exposes the control API and POSTs tag/connection events to the app's `:3102` receiver. |
+| `lib/plc/gateway-protocol.ts` | Shared request/response contract for the control API. |
+| `lib/plc/gateway-client.ts` | App-side HTTP client. Every call degrades gracefully (gateway down → "not connected", never a thrown handler). |
+| `lib/plc/remote-cache.ts` | App-side read model of gateway state: a `GET /state` poller (~750 ms) plus broadcast-stream patching, so the synchronous registry getters work without a network hop. |
+| `lib/mcm-registry.ts` | Made **mode-aware** (`PLC_MODE=remote`): async mutators (connect/disconnect/load-tags/IO writes) RPC the gateway; sync getters read the cache. Embedded (default) path byte-for-byte unchanged. |
+| `docker-compose.split.yml` | `gateway` + `app` services. `app` gets `PLC_MODE=remote`, `GATEWAY_URL`, the `/data` volume, and `BROADCAST_HOST=0.0.0.0`. |
+
+### The seam (both directions)
+- **Control (app → gateway, `:3200`):** the registry's mutators call the gateway; `getMcmIdForIo` stays app-side (SQLite), so the gateway never needs the DB.
+- **Events (gateway → app, `:3102`):** unchanged from the monolith — the registry POSTs `subsystemId`-tagged broadcasts to the app, which fans them out to browsers and patches its read cache. `server-express` now binds the broadcast receiver on `BROADCAST_HOST` (loopback for the monolith, `0.0.0.0` in the split).
+
+### Scope boundary (Phase 1 covers the central-server `/mcm` surface)
+- ✅ Covered in remote mode: `/api/mcm/*` (connect/disconnect/status/tags), IO testing (`/api/ios/:id/fire-output|state|test|reset`), `/api/plc/status` aggregate, the heartbeat rollup, and the WS snapshot.
+- ⚠️ **Embedded-only in Phase 1** (route through the gateway in 1.1): the legacy single-PLC `/api/plc/connect|disconnect`, and direct-write aux flows (`vfd-commissioning/*`, `safety/fire|bypass`, `guided/*`) that call `getClientForIo().writeOutputBit` directly. In remote mode `getClientForIo` returns a read-only cache shim whose write methods throw — these aux routes are not part of the central `/mcm` testing UI.
+
+### Validated (Windows Docker Desktop, Phase A)
+- Both directions of the seam work cross-container.
+- An MCM registered on the gateway is read by the app over the cache (`totalMcmCount` reflects it).
+- **App container fully recreated → gateway uptime kept climbing, `mcmCount` stayed 1, the restarted app re-read the live MCM.** The connection + autoreconnect loop + tag set survived the app redeploy.
+- Embedded monolith still boots clean on the trixie image (no regression).
+- Unit tests: `remote-cache` (broadcast patching) + `gateway-client` (protocol + graceful degradation).
+
+### Runbook
+```bash
+cd frontend
+cp .env.example .env                 # IMAGE_TAG, JWT_SECRET_KEY (+ APP_PORT to override the published port)
+docker compose -f docker-compose.split.yml build
+docker compose -f docker-compose.split.yml up -d
+# hotfix the app WITHOUT dropping PLC connections:
+docker compose -f docker-compose.split.yml up -d --no-deps app
+```
+Phase B (Linux): give the `gateway` `network_mode: host` for no-NAT CIP and point the
+app's `GATEWAY_URL` + the gateway's `WS_BROADCAST_URL` at the host (see the compose comments).
+
+## 8. Not doing (yet)
+- Phase 1.1: route the embedded-only aux flows (above) through the gateway.
 - No feature-sliced microservices (see §4).
