@@ -17,6 +17,7 @@ import {
   getPlcStateForIo,
 } from '@/lib/services/io-test-service'
 import { checkInstallGate } from '@/lib/services/install-gate'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * POST /api/ios/:id/test
@@ -162,6 +163,24 @@ export async function POST(req: Request, res: Response) {
       testHistoryId = histResult.lastInsertRowid
     })
     txn()
+
+    // Recovery audit — durable JSONL record of every result, independent of the
+    // SQLite row and the cloud push (see lib/logging/recovery-log).
+    auditLog({
+      type: 'io.test',
+      subsystemId,
+      ioId,
+      user: currentUser ?? null,
+      result: normalizedResult,
+      version: newVersion,
+      reason: newFailureMode ?? undefined,
+      detail: {
+        comments: combinedComment || undefined,
+        state: plcState ?? undefined,
+        isUnpass: isUnpass || undefined,
+        blockerResponsibleParty: newBlockerResponsibleParty ?? undefined,
+      },
+    })
 
     const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 

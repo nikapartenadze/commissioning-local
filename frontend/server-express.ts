@@ -29,6 +29,8 @@ import { db } from '@/lib/db-sqlite';
 import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
 import { getAppVersion } from '@/lib/app-version';
 import { startRemotePolling, applyBroadcastToCache } from '@/lib/plc/remote-cache';
+import { appendDailyLog } from '@/lib/logging/file-log';
+import { auditLog } from '@/lib/logging/recovery-log';
 
 // Split deployment: when PLC connections live in a separate plc-gateway process
 // (CENTRAL-SERVER-DEPLOYMENT.md §4, Phase 1) the app polls the gateway to back
@@ -54,41 +56,20 @@ const BROADCAST_HOST = process.env.BROADCAST_HOST || (PLC_REMOTE ? '0.0.0.0' : '
 // Production Logging — clean console + detailed file logs
 // ============================================================================
 
-// Keep logs beside the active database/config storage root.
+// Keep logs beside the active database/config storage root. Files rotate DAILY
+// (app-YYYY-MM-DD.log / errors-YYYY-MM-DD.log) and are kept for LOG_RETENTION_DAYS
+// (default 14) — see lib/logging/file-log. The old 30MB cap couldn't retain
+// "everything for 2 weeks" under multi-MCM load.
 const LOG_DIR = resolveLogsDirPath();
 const LOG_FILE = path.join(LOG_DIR, 'app.log');
 const ERROR_FILE = path.join(LOG_DIR, 'errors.log');
-const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 
 try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
-const MAX_LOG_FILES = 3; // Keep at most 3 rotated files per type (30MB total max)
-
 function logTimestamp(): string { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
 
-function cleanupOldLogs(baseName: string): void {
-  try {
-    const dir = path.dirname(baseName);
-    const ext = path.extname(baseName);
-    const name = path.basename(baseName, ext);
-    const rotated = fs.readdirSync(dir)
-      .filter(f => f.startsWith(name + '.') && f.endsWith(ext) && f !== path.basename(baseName))
-      .sort()
-      .reverse();
-    for (let i = MAX_LOG_FILES; i < rotated.length; i++) {
-      try { fs.unlinkSync(path.join(dir, rotated[i])); } catch {}
-    }
-  } catch {}
-}
-
 function appendLog(file: string, line: string): void {
-  try {
-    if (fs.existsSync(file) && fs.statSync(file).size > MAX_LOG_SIZE) {
-      fs.renameSync(file, file.replace('.log', `.${Date.now()}.log`));
-      cleanupOldLogs(file);
-    }
-    fs.appendFileSync(file, line + '\n');
-  } catch {}
+  appendDailyLog(file, line);
 }
 
 // Messages matching these patterns go to CONSOLE + file (user-facing)
@@ -551,14 +532,19 @@ httpServer.listen(PORT, HOSTNAME, () => {
   // channel isn't stuck on "Updating…". Cheap sync file op — safe inline.
   reconcileUpdateStateOnBoot();
 
-  // Deferred startup backup — runs after server is listening so it doesn't block startup
+  // Recovery marker — server (re)start is a boundary when reconstructing history.
+  auditLog({ type: 'server.start', detail: { version: SERVER_VERSION, plcMode: PLC_REMOTE ? 'remote' : 'embedded', pid: process.pid } });
+
+  // Deferred startup backup + periodic backups — runs after server is listening
+  // so it doesn't block startup.
   setTimeout(() => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createStartupBackup } = require('./lib/startup-backup');
-      createStartupBackup();
+      const backup = require('./lib/startup-backup');
+      backup.createStartupBackup();
+      backup.startPeriodicBackups(); // every BACKUP_INTERVAL_HOURS (default 6h), 14-day retention
     } catch (e: any) {
-      console.error('[Backup] Startup backup module failed:', e.message);
+      console.error('[Backup] Backup module failed:', e.message);
     }
   }, 0);
 });
