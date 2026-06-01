@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom'
 import {
   Activity,
   AlertTriangle,
-  ChevronRight,
   Plug,
   PlugZap,
   Plus,
@@ -15,6 +14,9 @@ import {
   CheckCircle2,
   XCircle,
   MinusCircle,
+  LayoutGrid,
+  List as ListIcon,
+  ArrowUpRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -78,6 +80,22 @@ export default function McmLandingPage() {
   const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [connectingAll, setConnectingAll] = useState(false)
   const [connectReport, setConnectReport] = useState<ConnectAllReport | null>(null)
+  const [view, setView] = useState<'cards' | 'list'>(() => {
+    try {
+      return localStorage.getItem('mcmView') === 'list' ? 'list' : 'cards'
+    } catch {
+      return 'cards'
+    }
+  })
+
+  const changeView = useCallback((v: 'cards' | 'list') => {
+    setView(v)
+    try {
+      localStorage.setItem('mcmView', v)
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -206,6 +224,34 @@ export default function McmLandingPage() {
         <div className="flex items-baseline justify-between mb-2">
           <SectionTitle label="MCM Stations" />
           <div className="flex items-center gap-5">
+            <div className="flex items-center border border-border rounded-sm overflow-hidden" role="group" aria-label="View mode">
+              <button
+                onClick={() => changeView('cards')}
+                aria-pressed={view === 'cards'}
+                title="Card view"
+                className={cn(
+                  'px-2.5 py-1.5 transition-colors',
+                  view === 'cards'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => changeView('list')}
+                aria-pressed={view === 'list'}
+                title="List view"
+                className={cn(
+                  'px-2.5 py-1.5 transition-colors border-l border-border',
+                  view === 'list'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                <ListIcon className="w-4 h-4" />
+              </button>
+            </div>
             <button
               onClick={connectAll}
               disabled={connectingAll || mcms.length === 0}
@@ -256,7 +302,7 @@ export default function McmLandingPage() {
         {!loading && !error && mcms.length === 0 && (
           <EmptyState onImport={importFromCloud} importing={importing} />
         )}
-        {!loading && !error && mcms.length > 0 && (
+        {!loading && !error && mcms.length > 0 && view === 'cards' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {mcms.map((mcm, idx) => (
               <McmCard
@@ -267,6 +313,9 @@ export default function McmLandingPage() {
               />
             ))}
           </div>
+        )}
+        {!loading && !error && mcms.length > 0 && view === 'list' && (
+          <McmList mcms={mcms} onChanged={refresh} />
         )}
       </main>
 
@@ -417,6 +466,43 @@ function ReportRow({
   )
 }
 
+// Connect/disconnect action shared by the card and list-row views.
+function useMcmAction(subsystemId: string, onChanged: () => void) {
+  const [busy, setBusy] = useState<'connect' | 'disconnect' | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  const action = useCallback(
+    async (kind: 'connect' | 'disconnect') => {
+      setBusy(kind)
+      setActionError(null)
+      try {
+        const r = await fetch(`/api/mcm/${subsystemId}/plc/${kind}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        const data = await r.json()
+        if (!data.success) setActionError(data.error || `${kind} failed`)
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setBusy(null)
+        onChanged()
+      }
+    },
+    [subsystemId, onChanged]
+  )
+
+  return { busy, actionError, action }
+}
+
+// A station with no IP yet is NOT a fault — show a calm 'Set IP' state instead
+// of an error/offline tone. Real PLC faults keep the red 'error' status.
+function effectiveStatus(mcm: McmRow): string {
+  if (!mcm.ip || !mcm.ip.trim()) return 'unconfigured'
+  return mcm.status
+}
+
 function McmCard({
   mcm,
   index,
@@ -426,31 +512,8 @@ function McmCard({
   index: number
   onChanged: () => void
 }) {
-  const [busy, setBusy] = useState<'connect' | 'disconnect' | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-
-  async function action(kind: 'connect' | 'disconnect') {
-    setBusy(kind)
-    setActionError(null)
-    try {
-      const r = await fetch(`/api/mcm/${mcm.subsystemId}/plc/${kind}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      const data = await r.json()
-      if (!data.success) {
-        setActionError(data.error || `${kind} failed`)
-      }
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
-      onChanged()
-    }
-  }
-
-  const tone = STATUS_TONES[mcm.status] ?? STATUS_TONES.disconnected
+  const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
+  const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
 
   return (
     <div
@@ -507,41 +570,161 @@ function McmCard({
         )}
 
         <div className="flex items-center gap-2 pt-3 border-t border-border/60">
-          {mcm.connected ? (
+          {!mcm.ip ? (
+            <Link
+              to="/settings/mcms"
+              className="font-mono text-[13px] uppercase tracking-[0.16em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary transition-colors inline-flex items-center gap-1.5 rounded-sm"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Set IP
+            </Link>
+          ) : mcm.connected ? (
             <button
               disabled={busy !== null}
               onClick={() => action('disconnect')}
-              className="font-mono text-[13px] uppercase tracking-[0.2em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-destructive/60 hover:text-destructive transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+              className="font-mono text-[13px] uppercase tracking-[0.16em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-destructive/60 hover:text-destructive transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
             >
-              <Plug className="w-3 h-3" />
+              <Plug className="w-3.5 h-3.5" />
               {busy === 'disconnect' ? 'Closing…' : 'Disconnect'}
             </button>
           ) : (
             <button
               disabled={busy !== null}
               onClick={() => action('connect')}
-              className="font-mono text-[13px] uppercase tracking-[0.2em] px-3 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+              className="font-mono text-[13px] uppercase tracking-[0.16em] px-3 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
             >
-              <PlugZap className="w-3 h-3" />
+              <PlugZap className="w-3.5 h-3.5" />
               {busy === 'connect' ? 'Connecting…' : 'Connect'}
             </button>
           )}
 
           <Link
             to={`/commissioning/${mcm.subsystemId}`}
-            className={cn(
-              'ml-auto font-mono text-[13px] uppercase tracking-[0.2em] inline-flex items-center gap-1 transition-all',
-              mcm.connected
-                ? 'text-foreground hover:text-primary group-hover:translate-x-0.5'
-                : 'text-muted-foreground/70 hover:text-foreground'
-            )}
+            title="Open this subsystem's commissioning screen"
+            className="ml-auto font-mono text-[13px] uppercase tracking-[0.16em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary transition-colors inline-flex items-center gap-1.5 rounded-sm"
           >
-            Enter
-            <ChevronRight className="w-3 h-3" />
+            Open
+            <ArrowUpRight className="w-3.5 h-3.5" />
           </Link>
         </div>
       </div>
     </div>
+  )
+}
+
+// ── List view ───────────────────────────────────────────────────────────────
+
+function McmList({
+  mcms,
+  onChanged,
+}: {
+  mcms: McmRow[]
+  onChanged: () => void
+}) {
+  return (
+    <div className="border border-border rounded-sm overflow-hidden">
+      <div className="hidden md:flex items-center gap-4 px-4 py-2.5 bg-card/60 border-b border-border/60 font-mono text-[12px] uppercase tracking-[0.14em] text-muted-foreground">
+        <span className="w-32 shrink-0">Status</span>
+        <span className="flex-1 min-w-0">Station</span>
+        <span className="w-40 shrink-0">IP</span>
+        <span className="w-14 shrink-0 text-right">Tags</span>
+        <span className="w-[15.5rem] shrink-0 text-right">Actions</span>
+      </div>
+      <ul className="divide-y divide-border/50">
+        {mcms.map((mcm) => (
+          <McmListRow key={mcm.subsystemId} mcm={mcm} onChanged={onChanged} />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) {
+  const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
+  const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
+
+  const btnBase =
+    'font-mono text-[12px] uppercase tracking-[0.12em] px-2.5 py-1.5 rounded-sm inline-flex items-center gap-1.5 transition-colors disabled:opacity-50'
+
+  return (
+    <li className="px-4 py-3 hover:bg-card/40 transition-colors">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-[13px]">
+        <div className="flex items-center gap-2 w-32 shrink-0">
+          <StatusDot tone={tone.dot} pulse={tone.pulse} />
+          <span className={cn('uppercase tracking-[0.12em] text-[12px]', tone.text)}>
+            {tone.label}
+          </span>
+        </div>
+
+        <div className="flex-1 min-w-[8rem]">
+          <span className="text-foreground font-medium">{mcm.name}</span>
+          <span className="text-muted-foreground ml-2">#{mcm.subsystemId}</span>
+        </div>
+
+        <span
+          className={cn(
+            'w-40 shrink-0 truncate',
+            mcm.ip ? 'text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          {mcm.ip || 'No IP'}
+        </span>
+
+        <span
+          className={cn(
+            'w-14 shrink-0 text-right',
+            mcm.connected ? 'text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          {mcm.tagCount > 0 ? mcm.tagCount : '—'}
+        </span>
+
+        <div className="flex items-center justify-end gap-2 w-[15.5rem] shrink-0">
+          {!mcm.ip ? (
+            <Link
+              to="/settings/mcms"
+              className={cn(btnBase, 'border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary')}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Set IP
+            </Link>
+          ) : mcm.connected ? (
+            <button
+              disabled={busy !== null}
+              onClick={() => action('disconnect')}
+              className={cn(btnBase, 'border border-border bg-background text-foreground hover:border-destructive/60 hover:text-destructive')}
+            >
+              <Plug className="w-3.5 h-3.5" />
+              {busy === 'disconnect' ? '…' : 'Disconnect'}
+            </button>
+          ) : (
+            <button
+              disabled={busy !== null}
+              onClick={() => action('connect')}
+              className={cn(btnBase, 'bg-primary text-primary-foreground hover:bg-primary/90')}
+            >
+              <PlugZap className="w-3.5 h-3.5" />
+              {busy === 'connect' ? '…' : 'Connect'}
+            </button>
+          )}
+
+          <Link
+            to={`/commissioning/${mcm.subsystemId}`}
+            title="Open this subsystem's commissioning screen"
+            className={cn(btnBase, 'border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary')}
+          >
+            Open
+            <ArrowUpRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      </div>
+
+      {actionError && (
+        <div className="mt-2 ml-32 font-mono text-[12px] text-destructive normal-case">
+          {actionError}
+        </div>
+      )}
+    </li>
   )
 }
 
@@ -632,6 +815,14 @@ const STATUS_TONES: Record<
   idle: {
     label: 'Idle',
     dot: 'bg-muted-foreground/70',
+    text: 'text-muted-foreground',
+    strip: 'bg-border',
+    pulse: false,
+  },
+  // No IP configured yet — a setup state, deliberately NOT an error tone.
+  unconfigured: {
+    label: 'Set IP',
+    dot: 'bg-muted-foreground/50',
     text: 'text-muted-foreground',
     strip: 'bg-border',
     pulse: false,
