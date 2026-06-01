@@ -10,6 +10,11 @@ import {
   Settings,
   Hexagon,
   DownloadCloud,
+  Zap,
+  X,
+  CheckCircle2,
+  XCircle,
+  MinusCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -42,6 +47,26 @@ type McmStatus =
   | 'error'
   | 'disconnected'
 
+interface ConnectResultRow {
+  subsystemId: string
+  name: string
+  success: boolean
+  skipped?: boolean
+  error?: string
+  totalTags?: number
+  tagsSuccessful?: number
+  tagsFailed?: number
+}
+
+interface ConnectAllReport {
+  total: number
+  connected: number
+  failed: number
+  skipped: number
+  results: ConnectResultRow[]
+  error?: string
+}
+
 const POLL_MS = 2000
 
 export default function McmLandingPage() {
@@ -51,6 +76,8 @@ export default function McmLandingPage() {
   const [now, setNow] = useState(new Date())
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [connectingAll, setConnectingAll] = useState(false)
+  const [connectReport, setConnectReport] = useState<ConnectAllReport | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -90,6 +117,31 @@ export default function McmLandingPage() {
       setImportMsg({ ok: false, text: e instanceof Error ? e.message : String(e) })
     } finally {
       setImporting(false)
+    }
+  }, [refresh])
+
+  const connectAll = useCallback(async () => {
+    setConnectingAll(true)
+    setConnectReport(null)
+    try {
+      const r = await fetch('/api/mcm/connect-all', { method: 'POST' })
+      const data = await r.json()
+      if (data && data.success) {
+        setConnectReport(data as ConnectAllReport)
+      } else {
+        setConnectReport({
+          total: 0, connected: 0, failed: 0, skipped: 0, results: [],
+          error: (data && data.error) || 'Connect All failed',
+        })
+      }
+      await refresh()
+    } catch (e) {
+      setConnectReport({
+        total: 0, connected: 0, failed: 0, skipped: 0, results: [],
+        error: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setConnectingAll(false)
     }
   }, [refresh])
 
@@ -155,6 +207,15 @@ export default function McmLandingPage() {
           <SectionTitle label="MCM Stations" />
           <div className="flex items-center gap-5">
             <button
+              onClick={connectAll}
+              disabled={connectingAll || mcms.length === 0}
+              title="Connect every configured MCM that has an IP set"
+              className="font-mono text-[11px] uppercase tracking-[0.2em] px-3 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+            >
+              <Zap className={cn('w-3.5 h-3.5', connectingAll && 'animate-pulse')} />
+              {connectingAll ? 'Connecting…' : 'Connect All'}
+            </button>
+            <button
               onClick={importFromCloud}
               disabled={importing}
               title="Pull this project's subsystems from the cloud into the station list"
@@ -173,7 +234,7 @@ export default function McmLandingPage() {
           </div>
         </div>
 
-        <div className="mb-8 h-4">
+        <div className={cn(!connectReport && 'mb-8 h-4')}>
           {importMsg && (
             <p
               className={cn(
@@ -185,6 +246,10 @@ export default function McmLandingPage() {
             </p>
           )}
         </div>
+
+        {connectReport && (
+          <ConnectReportPanel report={connectReport} onDismiss={() => setConnectReport(null)} />
+        )}
 
         {loading && <LoadingState />}
         {!loading && error && <ErrorState message={error} />}
@@ -241,6 +306,107 @@ function Stat({
       </p>
       <p className="text-lg font-mono">{value}</p>
     </div>
+  )
+}
+
+function ConnectReportPanel({
+  report,
+  onDismiss,
+}: {
+  report: ConnectAllReport
+  onDismiss: () => void
+}) {
+  const failures = report.results.filter((r) => !r.success && !r.skipped)
+  const skipped = report.results.filter((r) => r.skipped)
+  const ok = report.results.filter((r) => r.success)
+
+  return (
+    <div className="mb-8 border border-border bg-card rounded-sm overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/60 bg-card/60">
+        <div className="flex items-center gap-4 font-mono text-[11px] uppercase tracking-[0.2em]">
+          <span className="text-foreground">Connect All</span>
+          <span className="text-success inline-flex items-center gap-1">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            {report.connected} ok
+          </span>
+          {report.failed > 0 && (
+            <span className="text-destructive inline-flex items-center gap-1">
+              <XCircle className="w-3.5 h-3.5" />
+              {report.failed} failed
+            </span>
+          )}
+          {report.skipped > 0 && (
+            <span className="text-muted-foreground inline-flex items-center gap-1">
+              <MinusCircle className="w-3.5 h-3.5" />
+              {report.skipped} skipped
+            </span>
+          )}
+        </div>
+        <button
+          onClick={onDismiss}
+          className="text-muted-foreground hover:text-foreground transition-colors"
+          aria-label="Dismiss"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      {report.error && (
+        <div className="px-4 py-3 font-mono text-xs text-destructive">{report.error}</div>
+      )}
+
+      {(failures.length > 0 || skipped.length > 0) && (
+        <ul className="divide-y divide-border/50">
+          {failures.map((r) => (
+            <ReportRow
+              key={r.subsystemId}
+              tone="error"
+              name={r.name}
+              sub={r.subsystemId}
+              detail={r.error || 'Failed'}
+            />
+          ))}
+          {skipped.map((r) => (
+            <ReportRow
+              key={r.subsystemId}
+              tone="skip"
+              name={r.name}
+              sub={r.subsystemId}
+              detail={r.error || 'Skipped'}
+            />
+          ))}
+        </ul>
+      )}
+
+      {!report.error && failures.length === 0 && skipped.length === 0 && ok.length > 0 && (
+        <div className="px-4 py-3 font-mono text-[11px] text-success uppercase tracking-[0.2em]">
+          All {ok.length} station{ok.length === 1 ? '' : 's'} connected
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReportRow({
+  tone,
+  name,
+  sub,
+  detail,
+}: {
+  tone: 'error' | 'skip'
+  name: string
+  sub: string
+  detail: string
+}) {
+  const Icon = tone === 'error' ? XCircle : MinusCircle
+  const color = tone === 'error' ? 'text-destructive' : 'text-muted-foreground'
+  return (
+    <li className="px-4 py-2 flex items-center gap-3 font-mono text-[11px]">
+      <Icon className={cn('w-3.5 h-3.5 shrink-0', color)} />
+      <span className="text-foreground w-32 shrink-0 truncate">{name}</span>
+      <span className="text-muted-foreground/70 w-12 shrink-0">#{sub}</span>
+      <span className={cn('normal-case', color)}>{detail}</span>
+    </li>
   )
 }
 
