@@ -19,6 +19,7 @@ import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-reposi
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -235,6 +236,22 @@ class AutoSyncService {
               `comments=${JSON.stringify(p.Comments)} ` +
               `ts=${p.Timestamp} retries=${p.RetryCount} createdAt=${p.CreatedAt}`
             )
+            auditLog({
+              type: 'sync.push.drop',
+              ioId: p.IoId,
+              version: p.Version,
+              result: p.TestResult,
+              user: p.InspectorName,
+              reason: `retry-cap (${IO_PENDING_RETRY_CAP} retries exceeded)`,
+              detail: {
+                pendingId: p.id,
+                comments: p.Comments,
+                state: p.State,
+                timestamp: p.Timestamp,
+                retries: p.RetryCount,
+                createdAt: p.CreatedAt,
+              },
+            })
           }
         }
 

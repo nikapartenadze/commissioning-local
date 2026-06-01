@@ -10,6 +10,7 @@ import {
   TEST_CONSTANTS,
   getPlcStateForIo,
 } from '@/lib/services/io-test-service'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * POST /api/ios/:id/reset
@@ -90,6 +91,16 @@ export async function POST(req: Request, res: Response) {
       testHistoryId = histResult.lastInsertRowid
     })
     txn()
+
+    auditLog({
+      type: 'io.reset',
+      subsystemId,
+      ioId,
+      user: currentUser,
+      result: TEST_CONSTANTS.RESULT_CLEARED,
+      version: newVersion,
+      detail: { hadResult, hadComments },
+    })
 
     try {
       const info = db.prepare(
