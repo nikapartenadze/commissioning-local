@@ -522,6 +522,47 @@ class ConfigurationService {
   }
 
   /**
+   * Merge a cloud-provided subsystem list into config.mcms in one write.
+   * Adds any subsystem not already present (id + name prefilled, blank IP,
+   * default path, enabled), and refreshes the display name on existing ones.
+   * NEVER touches an existing MCM's ip/path/enabled — PLC IP is site-local and
+   * the operator owns it. Existing MCMs not in the cloud list are left intact.
+   */
+  public async upsertMcmsFromCloud(
+    incoming: Array<{ subsystemId: string; name: string }>
+  ): Promise<{ mcms: McmConnection[]; added: string[]; updated: string[] }> {
+    const list = await this.getMcms();
+    const known = new Set(list.map((m) => m.subsystemId));
+    const added: string[] = [];
+    const updated: string[] = [];
+
+    // Refresh names on existing entries (keep ip/path/enabled).
+    const next: McmConnection[] = list.map((m) => {
+      const inc = incoming.find((i) => String(i.subsystemId) === m.subsystemId);
+      if (inc && inc.name && inc.name !== m.name) {
+        updated.push(m.subsystemId);
+        return { ...m, name: inc.name };
+      }
+      return m;
+    });
+
+    // Append brand-new subsystems with a blank IP for the operator to fill.
+    for (const inc of incoming) {
+      const sid = String(inc.subsystemId ?? '').trim();
+      if (!sid || known.has(sid)) continue;
+      known.add(sid);
+      next.push({ subsystemId: sid, name: inc.name || `MCM ${sid}`, ip: '', path: '1,0', enabled: true });
+      added.push(sid);
+    }
+
+    if (this.config) {
+      this.config.mcms = next;
+    }
+    await this.persistMcms(next);
+    return { mcms: next, added, updated };
+  }
+
+  /**
    * Write a fresh mcms array to disk, preserving every other field. Used
    * internally by add/update/remove so the file watcher doesn't trip.
    */
