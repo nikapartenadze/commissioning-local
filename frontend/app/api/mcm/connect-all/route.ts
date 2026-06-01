@@ -13,8 +13,10 @@ export async function POST(_req: Request, res: Response) {
   try {
     const mcms = (await configService.getMcms()).filter((m) => m.enabled !== false);
 
+    // ensureIos: a station imported from the cloud has an IP but no IOs yet —
+    // pull them automatically so Connect All actually connects it.
     const results: ConnectMcmResult[] = await Promise.all(
-      mcms.map((m) => connectConfiguredMcm(m.subsystemId))
+      mcms.map((m) => connectConfiguredMcm(m.subsystemId, undefined, { ensureIos: true }))
     );
 
     const connected = results.filter((r) => r.success).length;

@@ -33,12 +33,39 @@ export interface ConnectMcmResult {
   totalTags?: number;
   tagsSuccessful?: number;
   tagsFailed?: number;
+  /** Number of IOs auto-pulled from the cloud before connecting (0 if none). */
+  pulledIos?: number;
   error?: string;
+}
+
+export interface ConnectMcmOptions {
+  /**
+   * When the subsystem has no IOs in SQLite yet, pull them from the cloud first
+   * (reusing POST /api/mcm/:id/pull) instead of failing. Used by Connect All so
+   * a freshly-imported station connects without a manual pull step.
+   */
+  ensureIos?: boolean;
+}
+
+/** Pull a subsystem's IOs by calling this server's own pull endpoint. */
+async function pullIosViaSelf(subsystemId: string): Promise<void> {
+  const port = process.env.PORT || '3000';
+  try {
+    await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(subsystemId)}/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(90_000),
+    });
+  } catch {
+    // Best-effort — the IO re-count below surfaces a still-empty result.
+  }
 }
 
 export async function connectConfiguredMcm(
   subsystemId: string,
-  overrides?: { ip?: string; path?: string }
+  overrides?: { ip?: string; path?: string },
+  opts?: ConnectMcmOptions
 ): Promise<ConnectMcmResult> {
   const cfg = await configService.getMcm(subsystemId);
   if (!cfg) {
@@ -57,15 +84,27 @@ export async function connectConfiguredMcm(
     return { subsystemId, name, success: false, error: 'subsystemId must be numeric' };
   }
 
-  const ios = db
-    .prepare('SELECT id, Name, Description, TagType FROM Ios WHERE SubsystemId = ?')
-    .all(subsystemIdNum) as IoRow[];
+  const ioQuery = db.prepare(
+    'SELECT id, Name, Description, TagType FROM Ios WHERE SubsystemId = ?'
+  );
+  let ios = ioQuery.all(subsystemIdNum) as IoRow[];
+  let pulledIos = 0;
+
+  // Auto-pull on first connect: a just-imported station has an IP but no IOs.
+  if (ios.length === 0 && opts?.ensureIos) {
+    await pullIosViaSelf(subsystemId);
+    ios = ioQuery.all(subsystemIdNum) as IoRow[];
+    pulledIos = ios.length;
+  }
+
   if (ios.length === 0) {
     return {
       subsystemId,
       name,
       success: false,
-      error: `No IOs for subsystem ${subsystemId} — pull IOs from cloud first`,
+      error: opts?.ensureIos
+        ? `No IOs for subsystem ${subsystemId} after cloud pull (cloud returned none for this subsystem)`
+        : `No IOs for subsystem ${subsystemId} — pull IOs from cloud first`,
     };
   }
 
@@ -116,6 +155,7 @@ export async function connectConfiguredMcm(
     totalTags: ios.length,
     tagsSuccessful: result.tagsSuccessful || 0,
     tagsFailed: failedTags.length,
+    pulledIos: pulledIos || undefined,
     error: result.success ? undefined : result.error || 'Failed to connect to PLC',
   };
 }
