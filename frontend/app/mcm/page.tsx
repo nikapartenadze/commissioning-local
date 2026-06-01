@@ -62,8 +62,9 @@ interface ConnectResultRow {
 }
 
 interface ConnectAllReport {
+  kind?: 'connect' | 'disconnect'
   total: number
-  connected: number
+  connected: number // for disconnect, this holds the disconnected count
   failed: number
   skipped: number
   results: ConnectResultRow[]
@@ -80,6 +81,7 @@ export default function McmLandingPage() {
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [connectingAll, setConnectingAll] = useState(false)
+  const [disconnectingAll, setDisconnectingAll] = useState(false)
   const [connectReport, setConnectReport] = useState<ConnectAllReport | null>(null)
   const [view, setView] = useState<'cards' | 'list'>(() => {
     try {
@@ -146,21 +148,53 @@ export default function McmLandingPage() {
       const r = await fetch('/api/mcm/connect-all', { method: 'POST' })
       const data = await r.json()
       if (data && data.success) {
-        setConnectReport(data as ConnectAllReport)
+        setConnectReport({ ...data, kind: 'connect' } as ConnectAllReport)
       } else {
         setConnectReport({
-          total: 0, connected: 0, failed: 0, skipped: 0, results: [],
+          kind: 'connect', total: 0, connected: 0, failed: 0, skipped: 0, results: [],
           error: (data && data.error) || 'Connect All failed',
         })
       }
       await refresh()
     } catch (e) {
       setConnectReport({
-        total: 0, connected: 0, failed: 0, skipped: 0, results: [],
+        kind: 'connect', total: 0, connected: 0, failed: 0, skipped: 0, results: [],
         error: e instanceof Error ? e.message : String(e),
       })
     } finally {
       setConnectingAll(false)
+    }
+  }, [refresh])
+
+  const disconnectAll = useCallback(async () => {
+    setDisconnectingAll(true)
+    setConnectReport(null)
+    try {
+      const r = await fetch('/api/mcm/disconnect-all', { method: 'POST' })
+      const data = await r.json()
+      if (data && data.success) {
+        setConnectReport({
+          kind: 'disconnect',
+          total: data.total,
+          connected: data.disconnected, // reuse the "ok" slot for the disconnected count
+          failed: data.failed,
+          skipped: data.skipped,
+          results: data.results || [],
+        })
+      } else {
+        setConnectReport({
+          kind: 'disconnect', total: 0, connected: 0, failed: 0, skipped: 0, results: [],
+          error: (data && data.error) || 'Disconnect All failed',
+        })
+      }
+      await refresh()
+    } catch (e) {
+      setConnectReport({
+        kind: 'disconnect', total: 0, connected: 0, failed: 0, skipped: 0, results: [],
+        error: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setDisconnectingAll(false)
     }
   }, [refresh])
 
@@ -261,6 +295,15 @@ export default function McmLandingPage() {
             >
               <Zap className={cn('w-3.5 h-3.5', connectingAll && 'animate-pulse')} />
               {connectingAll ? 'Connecting…' : 'Connect All'}
+            </button>
+            <button
+              onClick={disconnectAll}
+              disabled={disconnectingAll || mcms.length === 0}
+              title="Disconnect every connected MCM"
+              className="font-mono text-[13px] uppercase tracking-[0.14em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-destructive/60 hover:text-destructive transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+            >
+              <Plug className={cn('w-3.5 h-3.5', disconnectingAll && 'animate-pulse')} />
+              {disconnectingAll ? 'Disconnecting…' : 'Disconnect All'}
             </button>
             <button
               onClick={importFromCloud}
@@ -375,10 +418,10 @@ function ConnectReportPanel({
     <div className="mb-8 border border-border bg-card rounded-sm overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/60 bg-card/60">
         <div className="flex items-center gap-4 font-mono text-sm uppercase tracking-[0.2em]">
-          <span className="text-foreground">Connect All</span>
+          <span className="text-foreground">{report.kind === 'disconnect' ? 'Disconnect All' : 'Connect All'}</span>
           <span className="text-success inline-flex items-center gap-1">
             <CheckCircle2 className="w-3.5 h-3.5" />
-            {report.connected} ok
+            {report.connected} {report.kind === 'disconnect' ? 'disconnected' : 'ok'}
           </span>
           {report.failed > 0 && (
             <span className="text-destructive inline-flex items-center gap-1">
