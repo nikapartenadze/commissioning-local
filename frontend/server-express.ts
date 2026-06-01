@@ -582,6 +582,31 @@ setTimeout(async () => {
 }, 8000);
 
 // ============================================================================
+// First-run MCM seed — auto-populate the station list from the cloud
+// ============================================================================
+// When no MCMs are configured yet but the cloud API key is set, pull the
+// project's subsystems so the operator opens the app to a ready station list
+// (each needs only an IP + Connect). Existing MCMs are never touched. Runs in
+// both embedded and remote (split) modes — the app always owns config.mcms.
+setTimeout(async () => {
+  try {
+    const mcms = await configService.getMcms();
+    if (mcms.length > 0) return; // already configured — manual refresh only
+    const cfg = await configService.getConfig();
+    if (!cfg.apiPassword) return; // cloud not configured yet — nothing to pull
+    const { importSubsystemsFromCloud } = await import('@/lib/cloud/import-subsystems');
+    const r = await importSubsystemsFromCloud();
+    if (r.success) {
+      console.log(`[MCM Seed] Imported ${r.total ?? 0} subsystem(s) from cloud (${r.added?.length ?? 0} new) for project ${r.projectName ?? r.projectId ?? '?'}`);
+    } else {
+      console.warn('[MCM Seed] Cloud import skipped:', r.error);
+    }
+  } catch (e: any) {
+    console.warn('[MCM Seed] Failed:', e?.message ?? e);
+  }
+}, 6000);
+
+// ============================================================================
 // Boot-time PLC auto-connect
 // ============================================================================
 // On PC reboot / Windows service restart / crash recovery, the in-memory PLC

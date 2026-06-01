@@ -9,6 +9,7 @@ import {
   Plus,
   Settings,
   Hexagon,
+  DownloadCloud,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -48,6 +49,8 @@ export default function McmLandingPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(new Date())
+  const [importing, setImporting] = useState(false)
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -65,6 +68,30 @@ export default function McmLandingPage() {
       setLoading(false)
     }
   }, [])
+
+  const importFromCloud = useCallback(async () => {
+    setImporting(true)
+    setImportMsg(null)
+    try {
+      const r = await fetch('/api/mcm/import-from-cloud', { method: 'POST' })
+      const data = await r.json()
+      if (data.success) {
+        const added = data.added?.length ?? 0
+        const proj = data.projectName ? ` · ${data.projectName}` : ''
+        setImportMsg({
+          ok: true,
+          text: `Imported ${data.total ?? 0} station${(data.total ?? 0) === 1 ? '' : 's'}${added ? ` · ${added} new` : ' · already up to date'}${proj}`,
+        })
+        await refresh()
+      } else {
+        setImportMsg({ ok: false, text: data.error || 'Import failed' })
+      }
+    } catch (e) {
+      setImportMsg({ ok: false, text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setImporting(false)
+    }
+  }, [refresh])
 
   useEffect(() => {
     refresh()
@@ -124,20 +151,46 @@ export default function McmLandingPage() {
       </header>
 
       <main className="relative max-w-7xl mx-auto px-6 py-10 z-10">
-        <div className="flex items-baseline justify-between mb-8">
+        <div className="flex items-baseline justify-between mb-2">
           <SectionTitle label="MCM Stations" />
-          <Link
-            to="/settings/mcms"
-            className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5"
-          >
-            <Settings className="w-3.5 h-3.5" />
-            Configure
-          </Link>
+          <div className="flex items-center gap-5">
+            <button
+              onClick={importFromCloud}
+              disabled={importing}
+              title="Pull this project's subsystems from the cloud into the station list"
+              className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <DownloadCloud className={cn('w-3.5 h-3.5', importing && 'animate-pulse')} />
+              {importing ? 'Importing…' : 'Import from cloud'}
+            </button>
+            <Link
+              to="/settings/mcms"
+              className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Configure
+            </Link>
+          </div>
+        </div>
+
+        <div className="mb-8 h-4">
+          {importMsg && (
+            <p
+              className={cn(
+                'font-mono text-[10px] uppercase tracking-[0.2em]',
+                importMsg.ok ? 'text-success' : 'text-destructive'
+              )}
+            >
+              {importMsg.text}
+            </p>
+          )}
         </div>
 
         {loading && <LoadingState />}
         {!loading && error && <ErrorState message={error} />}
-        {!loading && !error && mcms.length === 0 && <EmptyState />}
+        {!loading && !error && mcms.length === 0 && (
+          <EmptyState onImport={importFromCloud} importing={importing} />
+        )}
         {!loading && !error && mcms.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {mcms.map((mcm, idx) => (
@@ -433,7 +486,13 @@ function ErrorState({ message }: { message: string }) {
   )
 }
 
-function EmptyState() {
+function EmptyState({
+  onImport,
+  importing,
+}: {
+  onImport: () => void
+  importing: boolean
+}) {
   return (
     <div className="border border-dashed border-border bg-card/30 rounded-sm p-16 text-center">
       <div className="inline-flex flex-col items-center gap-4">
@@ -443,12 +502,20 @@ function EmptyState() {
         <p className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
           No stations configured
         </p>
+        <button
+          onClick={onImport}
+          disabled={importing}
+          className="font-mono text-xs uppercase tracking-[0.25em] px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+        >
+          <DownloadCloud className={cn('w-3.5 h-3.5', importing && 'animate-pulse')} />
+          {importing ? 'Importing…' : 'Import stations from cloud'}
+        </button>
         <Link
           to="/settings/mcms"
-          className="font-mono text-xs uppercase tracking-[0.25em] text-primary hover:text-primary/80 inline-flex items-center gap-1.5"
+          className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground hover:text-primary inline-flex items-center gap-1.5"
         >
           <Plus className="w-3 h-3" />
-          Add the first MCM
+          or add one manually
         </Link>
       </div>
     </div>

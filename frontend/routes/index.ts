@@ -53,6 +53,7 @@ import * as guidedResetSubsystem from '@/app/api/guided/reset-subsystem/route'
 import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
 // ── central-tool: multi-MCM namespace ───────────────────────────
 import * as mcmList from '@/app/api/mcm/route'
+import * as mcmImportFromCloud from '@/app/api/mcm/import-from-cloud/route'
 import * as mcmEntry from '@/app/api/mcm/[subsystemId]/route'
 import * as mcmPlcStatus from '@/app/api/mcm/[subsystemId]/plc/status/route'
 import * as mcmPlcConnect from '@/app/api/mcm/[subsystemId]/plc/connect/route'
@@ -200,6 +201,8 @@ export function createApiRouter(): Router {
   // ── MCM Registry (central-tool multi-MCM) ─────────────────────
   router.get('/api/mcm', asyncHandler(mcmList.GET))
   router.post('/api/mcm', asyncHandler(mcmList.POST))
+  // Must precede the ':subsystemId' routes so the literal path isn't shadowed.
+  router.post('/api/mcm/import-from-cloud', asyncHandler(mcmImportFromCloud.POST))
   router.get('/api/mcm/:subsystemId', asyncHandler(mcmEntry.GET))
   router.put('/api/mcm/:subsystemId', asyncHandler(mcmEntry.PUT))
   router.delete('/api/mcm/:subsystemId', asyncHandler(mcmEntry.DELETE))
