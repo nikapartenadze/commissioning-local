@@ -42,7 +42,10 @@
     --secondary: 225 12% 14%;
     --secondary-foreground: 40 10% 90%;
     --muted: 225 12% 14%;
-    --muted-foreground: 40 6% 50%;
+    /* Bumped 50% -> 62% L: at 50% muted text on cards (L 9%) was ~4.2:1, below
+       WCAG AA (4.5:1) for small text. 62% lands ~6.4:1 and stays clearly muted
+       against foreground (L 90%). */
+    --muted-foreground: 40 6% 62%;
     --accent: 43 30% 15%;
     --accent-foreground: 43 79% 60%;
     --destructive: 0 72% 51%;
