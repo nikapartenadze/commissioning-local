@@ -2,6 +2,7 @@ import { db, PendingSync } from '@/lib/db-sqlite'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import type { IoUpdateDto } from '@/lib/cloud/types'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
   return {
@@ -60,6 +61,23 @@ export async function drainPendingSyncsForIo(
       // Permanent rejection — same payload will fail forever. Drop the row
       // now so the queue doesn't carry zombie work; the loud log was already
       // emitted inside tryRealtimeSync.
+      // Recovery-critical: record the full discarded payload so the result can
+      // be reconstructed/re-pushed by hand if the rejection was wrong.
+      auditLog({
+        type: 'sync.push.drop',
+        ioId,
+        version: pending.Version,
+        result: pending.TestResult,
+        user: pending.InspectorName,
+        reason: typeof result.reason === 'string' ? result.reason : JSON.stringify(result.reason ?? 'permanent'),
+        detail: {
+          pendingId: pending.id,
+          comments: pending.Comments,
+          state: pending.State,
+          failureMode: pending.FailureMode,
+          timestamp: pending.Timestamp,
+        },
+      })
       pendingSyncRepository.delete(pending.id)
       console.warn(
         `[${logPrefix}] DROPPED-PERMANENT pendingId=${pending.id} ioId=${ioId} ` +
