@@ -57,6 +57,9 @@ class AutoSyncService {
   private isPushingNetworkStatus = false
   private isPushingEstopStatus = false
   private isPushingNetworkDiagnostics = false
+  private mcmSafetyTimer: NodeJS.Timeout | null = null
+  private isPullingMcms = false
+  private _lastMcmCatchupAt = 0
   private lastPullVersion: string | null = null
   private _lastPushAt: Date | null = null
   private _lastPullAt: Date | null = null
@@ -112,6 +115,17 @@ class AutoSyncService {
     // launch, rather than waiting a full minute.
     setTimeout(() => this.pushNetworkDiagnostics(), 15_000)
 
+    // Periodic safety-net catch-up pull for ALL configured MCMs. The SSE stream
+    // delivers cloud changes in real time, but if events are missed during a
+    // disconnect this reconciles every MCM. Conservative interval; the pull
+    // self-guards (skips MCMs with unsynced local work, throttled).
+    const safetyMin = parseInt(process.env.SYNC_SAFETY_PULL_MINUTES || '', 10)
+    const safetyMinutes = Number.isFinite(safetyMin) && safetyMin > 0 ? safetyMin : 15
+    this.mcmSafetyTimer = setInterval(
+      () => void this.pullAllConfiguredMcms('periodic safety'),
+      safetyMinutes * 60_000
+    )
+
     // Start SSE client for real-time cloud updates (after 10s to let config load)
     setTimeout(async () => {
       try {
@@ -127,7 +141,10 @@ class AutoSyncService {
           this.sseUnsubscribe = sseClient.onConnect(() => {
             console.log('[AutoSync] Cloud SSE connected — pushing pending + pulling to catch up')
             this.pushToCloud()
-            this.pullFromCloud()
+            // Catch up EVERY configured MCM (central-server), not just the one
+            // in config.subsystemId — events missed during the disconnect could
+            // belong to any MCM.
+            void this.pullAllConfiguredMcms('SSE reconnect')
           })
         }
       } catch (err) {
@@ -168,10 +185,12 @@ class AutoSyncService {
     if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
     if (this.estopStatusTimer) clearInterval(this.estopStatusTimer)
     if (this.networkDiagnosticsTimer) clearInterval(this.networkDiagnosticsTimer)
+    if (this.mcmSafetyTimer) clearInterval(this.mcmSafetyTimer)
     this.pushTimer = null
     this.networkStatusTimer = null
     this.estopStatusTimer = null
     this.networkDiagnosticsTimer = null
+    this.mcmSafetyTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
@@ -572,6 +591,75 @@ class AutoSyncService {
   /** Call after a manual Pull IOs to prevent auto-sync from overwriting with stale data */
   markManualPull(): void {
     this._lastManualPullAt = Date.now()
+  }
+
+  /**
+   * Catch-up pull for EVERY configured MCM (central-server multi-MCM).
+   *
+   * The legacy pullFromCloud() reconciles only config.subsystemId; on a central
+   * server running N MCMs the other N-1 would never reconcile events missed
+   * during an SSE disconnect. This loops over the configured MCM list and reuses
+   * POST /api/mcm/:id/pull, which REFUSES (409) to pull over unsynced local
+   * changes — so it can never clobber a result that hasn't been pushed yet.
+   *
+   * Throttled to once per MIN_CATCHUP_GAP to avoid pull storms on flaky links.
+   * Falls back to the legacy single-subsystem pull when no MCMs are configured
+   * (field-tablet deployments are unchanged).
+   */
+  private async pullAllConfiguredMcms(trigger: string): Promise<void> {
+    if (this.isPullingMcms) return
+    const MIN_CATCHUP_GAP = 30_000
+    if (Date.now() - this._lastMcmCatchupAt < MIN_CATCHUP_GAP) return
+    if (Date.now() - this._lastManualPullAt < 30_000) return // a manual pull just ran
+
+    let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }>
+    try {
+      mcms = await configService.getMcms()
+    } catch {
+      void this.pullFromCloud()
+      return
+    }
+
+    // Only reconcile ACTIVE stations — those with an IP, i.e. connected/tested on
+    // this server. Blank-IP stations aren't in use here and get freshened on
+    // their first Connect (Connect All auto-pull), so re-pulling all 19 every
+    // reconnect would be pure waste.
+    const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
+    if (active.length === 0) {
+      void this.pullFromCloud() // legacy field-tablet mode / nothing active yet
+      return
+    }
+
+    this.isPullingMcms = true
+    this._lastMcmCatchupAt = Date.now()
+    const port = process.env.PORT || '3000'
+    console.log(`[AutoSync] ${trigger}: catch-up pull for ${active.length} active MCM(s)`)
+
+    try {
+      const outcomes = await Promise.all(
+        active.map(async (m) => {
+          try {
+            const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(m.subsystemId)}/pull`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}',
+              signal: AbortSignal.timeout(120_000),
+            })
+            if (r.status === 409) return `${m.subsystemId}:skip-pending` // unsynced local work — safe
+            const data = (await r.json().catch(() => ({}))) as { success?: boolean; iosCount?: number }
+            if (data && data.success) return `${m.subsystemId}:ok(${data.iosCount ?? '?'})`
+            return `${m.subsystemId}:err(${r.status})`
+          } catch (e) {
+            return `${m.subsystemId}:err(${e instanceof Error ? e.message : 'fetch'})`
+          }
+        })
+      )
+      this._lastPullAt = new Date()
+      this._lastPullResult = `mcm catch-up: ${outcomes.join(' ')}`
+      console.log(`[AutoSync] catch-up done: ${outcomes.join(' ')}`)
+    } finally {
+      this.isPullingMcms = false
+    }
   }
 
   private async pullFromCloud(): Promise<void> {
