@@ -189,8 +189,29 @@ What's in place:
 `RECOVERY_LOG_RETENTION_DAYS`, `LOG_RETENTION_DAYS`, `BACKUP_RETENTION_DAYS`,
 `BACKUP_INTERVAL_HOURS`, `SYNC_SAFETY_PULL_MINUTES`.
 
-## 9. Not doing (yet)
-- Phase 1.1: route the embedded-only aux flows (above) through the gateway.
+## 9. Phase 1.1 — aux flows MCM-aware (mostly done)
+
+Made the aux PLC flows target a specific MCM (they were legacy-singleton, so
+broken on the central server) and gateway-routable for split mode. The generic
+plumbing: `PlcClient.writeTypedTag/readTypedTag/hammerWriteTags` (VFD raw-FFI
+relocated verbatim), gateway batch RPCs (`/tags/write|read|hammer-write`), and
+`mcm-registry` mode-aware facades (`writeOutputBitBySubsystem`,
+`read/writeTypedTagsForMcm`, `hammerWriteTagsForMcm`).
+
+- ✅ **safety/fire, safety/bypass** — MCM-aware, validated against MCM02.
+- ✅ **vfd write-tag, read-tags, write-tags-batch** — MCM-aware; FFI relocated
+  verbatim into `PlcClient` (write correctness preserved; needs real-drive
+  sign-off — see CENTRAL-SERVER-VALIDATION.md §8).
+- ✅ **guided/test, guided/clear** — already split-safe (use cache-backed
+  `getPlcTags`, no direct PLC writes).
+- ⏳ **Remaining** (still singleton): `vfd/clear`, `safety/status` (small — fit
+  the typed facade); `vfd/wizard-open|close` (stateful live reader → must run in
+  the gateway for split); `vfd/test-write` (raw-byte diagnostic). See
+  CENTRAL-SERVER-VALIDATION.md "Known remaining".
+
+**All validation/verification steps: see [CENTRAL-SERVER-VALIDATION.md](CENTRAL-SERVER-VALIDATION.md)** — incl. the hard rule to **not push test data to the production cloud** while testing.
+
+## 10. Not doing (yet)
 - Delta sync (the catch-up pull is a full per-subsystem delete+reinsert; ~6–8s
   ×N on reconnect — correct and pending-guarded, but heavier than a since-version
   delta would be).
