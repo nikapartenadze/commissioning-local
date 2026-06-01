@@ -19,6 +19,15 @@ import {
   type IoTag,
   type McmDescriptor,
 } from './gateway-protocol';
+import type {
+  TypedTagWrite,
+  TypedTagRead,
+  TypedWriteResult,
+  TypedReadResult,
+  TypedBatchResult,
+  HammerWrite,
+  HammerResult,
+} from '@/lib/mcm-registry';
 
 const GATEWAY_URL =
   process.env.GATEWAY_URL || `http://127.0.0.1:${process.env.GATEWAY_PORT || DEFAULT_GATEWAY_PORT}`;
@@ -164,6 +173,46 @@ export const gatewayClient = {
       { io },
       DEFAULT_TIMEOUT_MS,
       { connected: false, success: false, error: 'plc-gateway unreachable' }
+    );
+  },
+
+  async writeTags(
+    subsystemId: string,
+    writes: TypedTagWrite[]
+  ): Promise<TypedBatchResult<TypedWriteResult>> {
+    return request<TypedBatchResult<TypedWriteResult>>(
+      'POST',
+      `/mcm/${encodeURIComponent(subsystemId)}/tags/write`,
+      { writes },
+      15_000,
+      { connected: false, results: writes.map((w) => ({ name: w.name, success: false, error: 'plc-gateway unreachable' })) }
+    );
+  },
+
+  async readTags(
+    subsystemId: string,
+    reads: TypedTagRead[]
+  ): Promise<TypedBatchResult<TypedReadResult>> {
+    return request<TypedBatchResult<TypedReadResult>>(
+      'POST',
+      `/mcm/${encodeURIComponent(subsystemId)}/tags/read`,
+      { reads },
+      15_000,
+      { connected: false, results: reads.map((r) => ({ name: r.name, success: false, error: 'plc-gateway unreachable' })) }
+    );
+  },
+
+  async hammerWrite(
+    subsystemId: string,
+    deviceName: string,
+    writes: HammerWrite[]
+  ): Promise<HammerResult> {
+    return request<HammerResult>(
+      'POST',
+      `/mcm/${encodeURIComponent(subsystemId)}/tags/hammer-write`,
+      { deviceName, writes },
+      8_000, // the hammer loop runs ~1s in the gateway
+      { connected: false, success: false, iterations: 0, writes: [], error: 'plc-gateway unreachable' }
     );
   },
 };

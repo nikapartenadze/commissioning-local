@@ -39,6 +39,9 @@ import {
   getAllNetworkSnapshots,
   writeOutputBitForMcm,
   readOutputBitForMcm,
+  writeTypedTagsForMcmLocal,
+  readTypedTagsForMcmLocal,
+  hammerWriteTagsForMcmLocal,
 } from '@/lib/mcm-registry';
 import { getAppVersion } from '@/lib/app-version';
 import { DEFAULT_GATEWAY_PORT, type GatewayState } from '@/lib/plc/gateway-protocol';
@@ -181,6 +184,28 @@ app.post('/mcm/:subsystemId/io/read', (req: Request, res: Response) => {
     return res.status(400).json({ connected: false, success: false, error: 'io.name is required' });
   }
   res.json(readOutputBitForMcm(subsystemId, io));
+});
+
+// ── Generic typed tag batch write/read (VFD commissioning, etc.) ──────────────
+app.post('/mcm/:subsystemId/tags/write', (req: Request, res: Response) => {
+  const subsystemId = String(req.params.subsystemId);
+  const writes = Array.isArray(req.body?.writes) ? req.body.writes : [];
+  res.json(writeTypedTagsForMcmLocal(subsystemId, writes));
+});
+
+app.post('/mcm/:subsystemId/tags/read', (req: Request, res: Response) => {
+  const subsystemId = String(req.params.subsystemId);
+  const reads = Array.isArray(req.body?.reads) ? req.body.reads : [];
+  res.json(readTypedTagsForMcmLocal(subsystemId, reads));
+});
+
+app.post('/mcm/:subsystemId/tags/hammer-write', (req: Request, res: Response) => {
+  const subsystemId = String(req.params.subsystemId);
+  const { deviceName, writes } = req.body ?? {};
+  if (!deviceName || !Array.isArray(writes)) {
+    return res.status(400).json({ connected: false, success: false, iterations: 0, writes: [], error: 'deviceName and writes[] required' });
+  }
+  res.json(hammerWriteTagsForMcmLocal(subsystemId, String(deviceName), writes));
 });
 
 // ── Startup ───────────────────────────────────────────────────────────────────

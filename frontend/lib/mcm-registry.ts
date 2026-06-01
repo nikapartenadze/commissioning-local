@@ -633,6 +633,108 @@ export async function readOutputBitBySubsystem(subsystemId: string, io: IoRef): 
   return readOutputBitForMcm(subsystemId, io);
 }
 
+// ── Generic typed tag write/read by name (VFD commissioning, etc.) ────────────
+
+export type TagDataType = 'BOOL' | 'REAL' | 'INT';
+export interface TypedTagWrite { name: string; value: number; dataType: TagDataType; }
+export interface TypedTagRead { name: string; dataType: TagDataType; }
+export interface TypedWriteResult { name: string; success: boolean; error?: string; }
+export interface TypedReadResult { name: string; success: boolean; value?: number | boolean; error?: string; }
+export interface TypedBatchResult<T> { connected: boolean; results: T[]; }
+
+/** Gateway-side (embedded) batch typed write against an MCM's client. */
+export function writeTypedTagsForMcmLocal(
+  subsystemId: string,
+  writes: TypedTagWrite[]
+): TypedBatchResult<TypedWriteResult> {
+  const entry = reg().mcms.get(subsystemId);
+  if (!entry || !entry.client.isConnected) {
+    return {
+      connected: false,
+      results: writes.map((w) => ({ name: w.name, success: false, error: `MCM ${subsystemId} not connected` })),
+    };
+  }
+  return {
+    connected: true,
+    results: writes.map((w) => {
+      const r = entry.client.writeTypedTag(w.name, w.value, w.dataType);
+      return { name: w.name, success: r.success, error: r.error };
+    }),
+  };
+}
+
+/** Gateway-side (embedded) batch typed read against an MCM's client. */
+export function readTypedTagsForMcmLocal(
+  subsystemId: string,
+  reads: TypedTagRead[]
+): TypedBatchResult<TypedReadResult> {
+  const entry = reg().mcms.get(subsystemId);
+  if (!entry || !entry.client.isConnected) {
+    return {
+      connected: false,
+      results: reads.map((rd) => ({ name: rd.name, success: false, error: `MCM ${subsystemId} not connected` })),
+    };
+  }
+  return {
+    connected: true,
+    results: reads.map((rd) => {
+      const r = entry.client.readTypedTag(rd.name, rd.dataType);
+      return { name: rd.name, success: r.success, value: r.value, error: r.error };
+    }),
+  };
+}
+
+/** Mode-aware: embedded in-process, remote → plc-gateway batch RPC. */
+export async function writeTypedTagsForMcm(
+  subsystemId: string,
+  writes: TypedTagWrite[]
+): Promise<TypedBatchResult<TypedWriteResult>> {
+  if (REMOTE) return gatewayClient.writeTags(subsystemId, writes);
+  return writeTypedTagsForMcmLocal(subsystemId, writes);
+}
+
+export async function readTypedTagsForMcm(
+  subsystemId: string,
+  reads: TypedTagRead[]
+): Promise<TypedBatchResult<TypedReadResult>> {
+  if (REMOTE) return gatewayClient.readTags(subsystemId, reads);
+  return readTypedTagsForMcmLocal(subsystemId, reads);
+}
+
+// ── Timing-critical hammer-write (VFD Override_RVS pairing) ───────────────────
+
+export interface HammerWrite { field: string; value: number; dataType: TagDataType; }
+export interface HammerResult {
+  connected: boolean;
+  success: boolean;
+  iterations: number;
+  writes: Array<{ tagPath: string; ok: boolean }>;
+  error?: string;
+}
+
+export function hammerWriteTagsForMcmLocal(
+  subsystemId: string,
+  deviceName: string,
+  writes: HammerWrite[],
+  durationMs?: number
+): HammerResult {
+  const entry = reg().mcms.get(subsystemId);
+  if (!entry || !entry.client.isConnected) {
+    return { connected: false, success: false, iterations: 0, writes: [], error: `MCM ${subsystemId} not connected` };
+  }
+  const r = entry.client.hammerWriteTags(deviceName, writes, durationMs);
+  return { connected: true, ...r };
+}
+
+export async function hammerWriteTagsForMcm(
+  subsystemId: string,
+  deviceName: string,
+  writes: HammerWrite[]
+): Promise<HammerResult> {
+  if (REMOTE) return gatewayClient.hammerWrite(subsystemId, deviceName, writes);
+  return hammerWriteTagsForMcmLocal(subsystemId, deviceName, writes);
+}
+
 // ── internals ─────────────────────────────────────────────────────────────
 
 /**

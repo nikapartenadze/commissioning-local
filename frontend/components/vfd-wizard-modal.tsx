@@ -49,6 +49,7 @@ interface VfdWizardModalProps {
 // ── Helpers ────────────────────────────────────────────────────────
 
 async function writeTag(
+  subsystemId: number,
   deviceName: string,
   field: string,
   value: number,
@@ -58,7 +59,7 @@ async function writeTag(
   const res = await fetch('/api/vfd-commissioning/write-tag', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deviceName, field, value, dataType, pathScope }),
+    body: JSON.stringify({ subsystemId, deviceName, field, value, dataType, pathScope }),
   })
   return res.json()
 }
@@ -360,8 +361,8 @@ function Step0Content({ sts, loading }: { sts: StsState; loading: boolean }) {
   )
 }
 
-function Step1Content({ sts, loading, deviceName, plcConnected, sheetName, userName }: {
-  sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
+function Step1Content({ sts, loading, deviceName, subsystemId, plcConnected, sheetName, userName }: {
+  sts: StsState; loading: boolean; deviceName: string; subsystemId: number; plcConnected: boolean
   sheetName?: string; userName?: string
 }) {
   const [sending, setSending] = useState(false)
@@ -383,7 +384,7 @@ function Step1Content({ sts, loading, deviceName, plcConnected, sheetName, userN
     setLastError(null)
     console.log(`[Step1] User confirmed F1 press — sending Valid_Map=1 to PLC...`)
     try {
-      const result = await writeTag(deviceName, 'Valid_Map', 1, 'BOOL')
+      const result = await writeTag(subsystemId, deviceName, 'Valid_Map', 1, 'BOOL')
       if (result?.success === false) {
         console.error(`[Step1] Valid_Map write failed:`, result?.error)
         setLastError(result?.error || 'Write failed')
@@ -566,7 +567,7 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
       setL2Status('Saved to spreadsheet')
 
       // 2. Send Valid_HP pulse to PLC — trips STS.Valid_HP so the user can advance.
-      const plcResult = await writeTag(deviceName, 'Valid_HP', 1, 'BOOL')
+      const plcResult = await writeTag(subsystemId, deviceName, 'Valid_HP', 1, 'BOOL')
       if (plcResult?.success === false || plcResult?.error) {
         throw new Error(plcResult?.error || 'PLC write reported failure')
       }
@@ -664,8 +665,8 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
   )
 }
 
-function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userName, initialPolarity, onPolaritySet }: {
-  sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
+function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, sheetName, userName, initialPolarity, onPolaritySet }: {
+  sts: StsState; loading: boolean; deviceName: string; subsystemId: number; plcConnected: boolean
   sheetName?: string; userName?: string
   initialPolarity: Polarity | null
   onPolaritySet: (polarity: Polarity) => void
@@ -685,13 +686,13 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
       // If CMD.Bump is already 1 from a previous session, writing 1 again is a
       // no-op: ONS doesn't pulse, Starting never latches, motor never jogs.
       // Force the edge by writing 0 first, brief settle, then 1.
-      const reset = await writeTag(deviceName, 'Bump', 0, 'BOOL')
+      const reset = await writeTag(subsystemId, deviceName, 'Bump', 0, 'BOOL')
       if (reset?.success === false) {
         setLastWriteError(`Bump (reset): ${reset?.error || 'write failed'}`)
         return
       }
       await new Promise(r => setTimeout(r, 120))
-      const result = await writeTag(deviceName, 'Bump', 1, 'BOOL')
+      const result = await writeTag(subsystemId, deviceName, 'Bump', 1, 'BOOL')
       if (result?.success === false) {
         setLastWriteError(`Bump: ${result?.error || 'write failed'}`)
       } else {
@@ -726,6 +727,7 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          subsystemId,
           deviceName,
           writes: [
             { field: 'Reverse_Polarity', value: reverse, dataType: 'BOOL' },
@@ -741,7 +743,7 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
       // Now confirm direction. The PLC's Valid_Direction is gated on Valid_HP,
       // not on polarity — but we write polarity first so the latched routing
       // matches the operator's choice before the cascade locks Valid_Direction.
-      const dirRes = await writeTag(deviceName, 'Valid_Direction', 1, 'BOOL')
+      const dirRes = await writeTag(subsystemId, deviceName, 'Valid_Direction', 1, 'BOOL')
       if (dirRes?.success === false) {
         throw new Error(`Valid_Direction: ${dirRes?.error || 'write failed'}`)
       }
@@ -1022,13 +1024,13 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
     setRunAt30Sending(true)
     setError(null)
     try {
-      const reset = await writeTag(deviceName, 'Run_At_30_RVS', 0, 'BOOL')
+      const reset = await writeTag(subsystemId, deviceName, 'Run_At_30_RVS', 0, 'BOOL')
       if (reset?.success === false) {
         setError(`Run_At_30_RVS (reset): ${reset?.error || 'write failed'}`)
         return
       }
       await new Promise(r => setTimeout(r, 120))
-      const result = await writeTag(deviceName, 'Run_At_30_RVS', 1, 'BOOL')
+      const result = await writeTag(subsystemId, deviceName, 'Run_At_30_RVS', 1, 'BOOL')
       if (result?.success === false) {
         setError(result?.error || 'Write failed')
       } else {
@@ -1073,7 +1075,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       let plcWarning: string | null = null
       const tagPath = `${deviceName}.HMI.Speed_At_30rev`
       try {
-        const plcResult = await writeTag(deviceName, 'Speed_At_30rev', capturedRvs, 'REAL', 'HMI')
+        const plcResult = await writeTag(subsystemId, deviceName, 'Speed_At_30rev', capturedRvs, 'REAL', 'HMI')
         if (plcResult?.success === false || plcResult?.error) {
           plcWarning = `Couldn't write ${tagPath} on the controller (${plcResult?.error || 'tag missing'}). The measurement was still saved to the spreadsheet — set the RVS in the AOI manually if this drive needs it.`
           console.warn(`[Step5] ${plcWarning}`)
@@ -1604,6 +1606,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          subsystemId,
           deviceName: device.deviceName,
           field: 'Speed_At_30rev',
           value: parsed.rvs,
@@ -1835,9 +1838,9 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
           {/* Step content */}
           <div className="flex-1 overflow-y-auto px-6 py-5">
             {activeStep === 0 && <Step0Content sts={sts} loading={stsLoading} />}
-            {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
+            {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onHpFilled={() => setHpFieldsFilled(true)} />}
-            {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} />}
+            {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} />}
             {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
               setCheck4Complete(true)
               // Persist to local DB so reopening the wizard remembers this
