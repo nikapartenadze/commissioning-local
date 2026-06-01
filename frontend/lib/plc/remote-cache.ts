@@ -56,17 +56,23 @@ async function pollOnce(): Promise<void> {
   rc().polling = true;
   try {
     const state = await gatewayClient.getState();
-    // gatewayClient returns EMPTY on failure; only treat a non-degenerate
-    // shape as authoritative so a transient gateway blip doesn't wipe the
-    // last-known MCM list mid-restart.
-    if (state.mcms.length > 0 || state.aggregate.totalCount > 0 || rc().lastPolledAt === 0) {
+    const isEmpty = state.mcms.length === 0 && state.aggregate.totalCount === 0;
+
+    // Non-empty, or the very first poll → authoritative, apply it.
+    if (!isEmpty || rc().lastPolledAt === 0) {
       setState(state);
+      return;
+    }
+
+    // An empty result is AMBIGUOUS: the gateway may truly have no MCMs, OR it's
+    // unreachable and getState() returned its empty fallback. Probe reachability
+    // so (a) a transient outage doesn't wipe the snapshot, and (b) a genuine
+    // empty CONVERGES instead of reporting stale MCMs as "fresh" indefinitely.
+    const health = await gatewayClient.health();
+    if (health) {
+      setState(state); // reachable & truly empty → apply (converge to empty)
     } else {
-      // Empty result: keep prior snapshot but mark the freshness timestamp so
-      // staleness can be observed. A genuinely empty gateway also lands here
-      // and correctly converges once mcms are added.
-      rc().state = state;
-      rc().lastPolledAt = Date.now();
+      rc().lastOk = false; // unreachable → keep prior snapshot, mark NOT fresh
     }
   } catch {
     rc().lastOk = false;
