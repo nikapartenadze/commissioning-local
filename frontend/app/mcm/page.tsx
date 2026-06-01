@@ -178,10 +178,10 @@ export default function McmLandingPage() {
               <Hexagon className="w-4 h-4 text-primary" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-[0.25em] text-foreground">
+              <h1 className="text-sm font-semibold tracking-[0.14em] text-foreground">
                 CENTRAL CONTROL
               </h1>
-              <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground font-mono">
+              <p className="text-[12px] uppercase tracking-[0.16em] text-muted-foreground font-mono">
                 Multi-MCM Station
               </p>
             </div>
@@ -210,7 +210,7 @@ export default function McmLandingPage() {
               onClick={connectAll}
               disabled={connectingAll || mcms.length === 0}
               title="Connect every configured MCM that has an IP set"
-              className="font-mono text-[11px] uppercase tracking-[0.2em] px-3 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+              className="font-mono text-[13px] uppercase tracking-[0.2em] px-3 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
             >
               <Zap className={cn('w-3.5 h-3.5', connectingAll && 'animate-pulse')} />
               {connectingAll ? 'Connecting…' : 'Connect All'}
@@ -219,14 +219,14 @@ export default function McmLandingPage() {
               onClick={importFromCloud}
               disabled={importing}
               title="Pull this project's subsystems from the cloud into the station list"
-              className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5 disabled:opacity-50"
+              className="font-mono text-[13px] uppercase tracking-[0.14em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5 disabled:opacity-50"
             >
               <DownloadCloud className={cn('w-3.5 h-3.5', importing && 'animate-pulse')} />
               {importing ? 'Importing…' : 'Import from cloud'}
             </button>
             <Link
               to="/settings/mcms"
-              className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5"
+              className="font-mono text-[13px] uppercase tracking-[0.14em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5"
             >
               <Settings className="w-3.5 h-3.5" />
               Configure
@@ -238,7 +238,7 @@ export default function McmLandingPage() {
           {importMsg && (
             <p
               className={cn(
-                'font-mono text-[10px] uppercase tracking-[0.2em]',
+                'font-mono text-[12px] uppercase tracking-[0.2em]',
                 importMsg.ok ? 'text-success' : 'text-destructive'
               )}
             >
@@ -270,7 +270,7 @@ export default function McmLandingPage() {
         )}
       </main>
 
-      <footer className="relative max-w-7xl mx-auto px-6 py-6 z-10 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground border-t border-border/60">
+      <footer className="relative max-w-7xl mx-auto px-6 py-6 z-10 flex items-center justify-between font-mono text-[12px] uppercase tracking-[0.16em] text-muted-foreground border-t border-border/60">
         <span>● Polling /api/mcm every {POLL_MS / 1000}s</span>
         <span>central-tool · poc</span>
       </footer>
@@ -284,7 +284,7 @@ function SectionTitle({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2">
       <span className="font-mono text-xs text-primary">[</span>
-      <h2 className="font-mono text-sm uppercase tracking-[0.35em] text-foreground">
+      <h2 className="font-mono text-sm uppercase tracking-[0.18em] text-foreground">
         {label}
       </h2>
       <span className="font-mono text-xs text-primary">]</span>
@@ -301,7 +301,7 @@ function Stat({
 }) {
   return (
     <div className="text-right leading-none">
-      <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground mb-1">
+      <p className="text-[12px] uppercase tracking-[0.16em] text-muted-foreground mb-1">
         {label}
       </p>
       <p className="text-lg font-mono">{value}</p>
@@ -323,7 +323,7 @@ function ConnectReportPanel({
   return (
     <div className="mb-8 border border-border bg-card rounded-sm overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/60 bg-card/60">
-        <div className="flex items-center gap-4 font-mono text-[11px] uppercase tracking-[0.2em]">
+        <div className="flex items-center gap-4 font-mono text-[13px] uppercase tracking-[0.2em]">
           <span className="text-foreground">Connect All</span>
           <span className="text-success inline-flex items-center gap-1">
             <CheckCircle2 className="w-3.5 h-3.5" />
@@ -379,7 +379,7 @@ function ConnectReportPanel({
       )}
 
       {!report.error && failures.length === 0 && skipped.length === 0 && ok.length > 0 && (
-        <div className="px-4 py-3 font-mono text-[11px] text-success uppercase tracking-[0.2em]">
+        <div className="px-4 py-3 font-mono text-[13px] text-success uppercase tracking-[0.2em]">
           All {ok.length} station{ok.length === 1 ? '' : 's'} connected
         </div>
       )}
@@ -401,11 +401,18 @@ function ReportRow({
   const Icon = tone === 'error' ? XCircle : MinusCircle
   const color = tone === 'error' ? 'text-destructive' : 'text-muted-foreground'
   return (
-    <li className="px-4 py-2 flex items-center gap-3 font-mono text-[11px]">
-      <Icon className={cn('w-3.5 h-3.5 shrink-0', color)} />
-      <span className="text-foreground w-32 shrink-0 truncate">{name}</span>
-      <span className="text-muted-foreground/70 w-12 shrink-0">#{sub}</span>
-      <span className={cn('normal-case', color)}>{detail}</span>
+    <li
+      className={cn(
+        'px-4 py-2.5 flex items-center gap-3 font-mono text-[13px]',
+        tone === 'error' && 'bg-destructive/5'
+      )}
+    >
+      <Icon className={cn('w-4 h-4 shrink-0', color)} />
+      <span className="text-foreground font-medium w-32 shrink-0 truncate">{name}</span>
+      <span className="text-muted-foreground w-12 shrink-0">#{sub}</span>
+      <span className={cn('normal-case', tone === 'error' ? 'text-destructive' : 'text-foreground/80')}>
+        {detail}
+      </span>
     </li>
   )
 }
@@ -461,14 +468,14 @@ function McmCard({
             <StatusDot tone={tone.dot} pulse={tone.pulse} />
             <span
               className={cn(
-                'font-mono text-[10px] uppercase tracking-[0.25em]',
+                'font-mono text-[12px] uppercase tracking-[0.14em]',
                 tone.text
               )}
             >
               {tone.label}
             </span>
           </div>
-          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+          <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-muted-foreground">
             #{mcm.subsystemId}
           </span>
         </div>
@@ -479,7 +486,7 @@ function McmCard({
           </h3>
         </div>
 
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-[11px] font-mono">
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-[13px] font-mono">
           <CardStat label="IP" value={mcm.ip || '—'} />
           <CardStat label="Path" value={mcm.path || '—'} />
           <CardStat
@@ -494,7 +501,7 @@ function McmCard({
         </dl>
 
         {actionError && (
-          <div className="font-mono text-[10px] text-destructive border border-destructive/30 bg-destructive/5 px-2 py-1.5 rounded-sm">
+          <div className="font-mono text-[12px] text-destructive border border-destructive/30 bg-destructive/5 px-2 py-1.5 rounded-sm">
             {actionError}
           </div>
         )}
@@ -504,7 +511,7 @@ function McmCard({
             <button
               disabled={busy !== null}
               onClick={() => action('disconnect')}
-              className="font-mono text-[11px] uppercase tracking-[0.2em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-destructive/60 hover:text-destructive transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+              className="font-mono text-[13px] uppercase tracking-[0.2em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-destructive/60 hover:text-destructive transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
             >
               <Plug className="w-3 h-3" />
               {busy === 'disconnect' ? 'Closing…' : 'Disconnect'}
@@ -513,7 +520,7 @@ function McmCard({
             <button
               disabled={busy !== null}
               onClick={() => action('connect')}
-              className="font-mono text-[11px] uppercase tracking-[0.2em] px-3 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+              className="font-mono text-[13px] uppercase tracking-[0.2em] px-3 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
             >
               <PlugZap className="w-3 h-3" />
               {busy === 'connect' ? 'Connecting…' : 'Connect'}
@@ -523,7 +530,7 @@ function McmCard({
           <Link
             to={`/commissioning/${mcm.subsystemId}`}
             className={cn(
-              'ml-auto font-mono text-[11px] uppercase tracking-[0.2em] inline-flex items-center gap-1 transition-all',
+              'ml-auto font-mono text-[13px] uppercase tracking-[0.2em] inline-flex items-center gap-1 transition-all',
               mcm.connected
                 ? 'text-foreground hover:text-primary group-hover:translate-x-0.5'
                 : 'text-muted-foreground/70 hover:text-foreground'
@@ -547,7 +554,7 @@ function CardStat({
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <dt className="text-[9px] uppercase tracking-[0.25em] text-muted-foreground">
+      <dt className="text-[12px] uppercase tracking-[0.14em] text-muted-foreground">
         {label}
       </dt>
       <dd>{value}</dd>
@@ -633,7 +640,7 @@ const STATUS_TONES: Record<
 
 function LoadingState() {
   return (
-    <div className="border border-border bg-card/40 rounded-sm p-16 text-center font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
+    <div className="border border-border bg-card/40 rounded-sm p-16 text-center font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground">
       <Activity className="w-4 h-4 inline-block mr-2 animate-pulse" />
       Reading station registry
     </div>
@@ -645,7 +652,7 @@ function ErrorState({ message }: { message: string }) {
     <div className="border border-destructive/40 bg-destructive/5 p-6 rounded-sm font-mono text-sm text-destructive flex items-start gap-3">
       <AlertTriangle className="w-4 h-4 mt-0.5" />
       <div>
-        <p className="uppercase tracking-[0.25em] text-xs mb-1">Registry error</p>
+        <p className="uppercase tracking-[0.14em] text-xs mb-1">Registry error</p>
         <p className="font-normal normal-case">{message}</p>
       </div>
     </div>
@@ -665,20 +672,20 @@ function EmptyState({
         <div className="w-12 h-12 border border-border rounded-sm flex items-center justify-center">
           <Hexagon className="w-5 h-5 text-muted-foreground" />
         </div>
-        <p className="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
+        <p className="font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground">
           No stations configured
         </p>
         <button
           onClick={onImport}
           disabled={importing}
-          className="font-mono text-xs uppercase tracking-[0.25em] px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+          className="font-mono text-xs uppercase tracking-[0.14em] px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
         >
           <DownloadCloud className={cn('w-3.5 h-3.5', importing && 'animate-pulse')} />
           {importing ? 'Importing…' : 'Import stations from cloud'}
         </button>
         <Link
           to="/settings/mcms"
-          className="font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground hover:text-primary inline-flex items-center gap-1.5"
+          className="font-mono text-[13px] uppercase tracking-[0.14em] text-muted-foreground hover:text-primary inline-flex items-center gap-1.5"
         >
           <Plus className="w-3 h-3" />
           or add one manually
