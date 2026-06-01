@@ -142,6 +142,56 @@ docker compose -f docker-compose.split.yml up -d --no-deps app
 Phase B (Linux): give the `gateway` `network_mode: host` for no-NAT CIP and point the
 app's `GATEWAY_URL` + the gateway's `WS_BROADCAST_URL` at the host (see the compose comments).
 
-## 8. Not doing (yet)
+## 8. Production hardening (no-data-loss / recovery / scale)
+
+The central server holds many testers' work, so "it connects" is not enough.
+What's in place:
+
+### Concurrency & no lost updates
+- `better-sqlite3` is **synchronous** and the app is a single Node process, so
+  every `/api/ios/:id/test` runs its `db.transaction()` (Ios + TestHistory +
+  PendingSync) **atomically to completion before the next request's handler
+  runs**. Two testers on the same IO serialize (A→v6, then B reads v6→v7) — no
+  read-modify-write race. WAL + `synchronous=FULL` + `busy_timeout=5000` back it.
+  (Holds because there is exactly one writer — the gateway is DB-free.)
+- The cloud push queue is **per-IO single-flight** (`sync-queue`): different
+  IOs/MCMs/testers push in parallel (no global bottleneck); rapid edits to the
+  *same* IO coalesce to the latest value. Nothing waits on anything else.
+
+### Sync correctness (multi-MCM)
+- **Push up:** per-IO, MCM-agnostic; the 30s background retry scans ALL
+  `PendingSyncs`. Results from every MCM reach the cloud.
+- **Real-time down:** the cloud SSE stream is global (it does not filter by
+  subsystem); the local client applies any event whose IO exists locally — so
+  all MCMs get live updates through the one connection.
+- **Catch-up down:** on SSE reconnect, `pullAllConfiguredMcms()` reconciles
+  EVERY active station (was single-subsystem), reusing `POST /api/mcm/:id/pull`
+  which 409s on unsynced local work so it can never clobber an un-pushed result.
+  Plus a periodic safety pull (`SYNC_SAFETY_PULL_MINUTES`, default 15).
+
+### Recovery & retention
+- **Recovery audit log** (`lib/logging/recovery-log`): append-only JSONL of
+  every recoverable event — `io.test`, `io.reset`, **`sync.push.drop`** (with
+  the full discarded payload, from both drop paths), `server.start`. Daily
+  files, `RECOVERY_LOG_RETENTION_DAYS` (default 14).
+- **App/error logs**: daily rotation, `LOG_RETENTION_DAYS` (default 14) — was a
+  30MB cap that couldn't retain two weeks under load.
+- **DB backups**: startup + every `BACKUP_INTERVAL_HOURS` (default 6),
+  `BACKUP_RETENTION_DAYS` (default 14, min 3 kept).
+
+### Tag reads at scale (validated)
+- 5 CDW5 emulators, **7,317 tags** live: RSS ~268MB, no leak, 0 read failures,
+  read batches ~150ms/100 tags. Fire-output / read-state use **direct CIP**
+  (immediate), so test actions are never poll-latency-bound even on the
+  3,650-tag controller.
+
+### Tuning knobs (env)
+`RECOVERY_LOG_RETENTION_DAYS`, `LOG_RETENTION_DAYS`, `BACKUP_RETENTION_DAYS`,
+`BACKUP_INTERVAL_HOURS`, `SYNC_SAFETY_PULL_MINUTES`.
+
+## 9. Not doing (yet)
 - Phase 1.1: route the embedded-only aux flows (above) through the gateway.
+- Delta sync (the catch-up pull is a full per-subsystem delete+reinsert; ~6–8s
+  ×N on reconnect — correct and pending-guarded, but heavier than a since-version
+  delta would be).
 - No feature-sliced microservices (see §4).
