@@ -612,6 +612,27 @@ export function readOutputBitForMcm(subsystemId: string, io: IoRef): IoBitResult
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
 }
 
+// ── Mode-aware bit write/read by subsystemId (for aux flows: safety, guided) ──
+//
+// Phase 1.1: the safety/guided routes write output bits BY TAG NAME against a
+// specific MCM (not resolved from an ioId via SQLite). Embedded drives the
+// in-process client; remote RPCs the gateway (reusing the /mcm/:id/io/write
+// endpoint from Phase 1). Same IoBitResult shape as writeOutputBitForIo.
+
+export async function writeOutputBitBySubsystem(
+  subsystemId: string,
+  io: IoRef,
+  value: number | 'toggle'
+): Promise<IoBitResult> {
+  if (REMOTE) return gatewayClient.writeIo(subsystemId, io, value);
+  return writeOutputBitForMcm(subsystemId, io, value);
+}
+
+export async function readOutputBitBySubsystem(subsystemId: string, io: IoRef): Promise<IoBitResult> {
+  if (REMOTE) return gatewayClient.readIo(subsystemId, io);
+  return readOutputBitForMcm(subsystemId, io);
+}
+
 // ── internals ─────────────────────────────────────────────────────────────
 
 /**
