@@ -58,6 +58,7 @@ interface ConnectResultRow {
   totalTags?: number
   tagsSuccessful?: number
   tagsFailed?: number
+  pulledIos?: number
 }
 
 interface ConnectAllReport {
@@ -368,6 +369,7 @@ function ConnectReportPanel({
   const failures = report.results.filter((r) => !r.success && !r.skipped)
   const skipped = report.results.filter((r) => r.skipped)
   const ok = report.results.filter((r) => r.success)
+  const pulledStations = report.results.filter((r) => (r.pulledIos ?? 0) > 0).length
 
   return (
     <div className="mb-8 border border-border bg-card rounded-sm overflow-hidden">
@@ -388,6 +390,12 @@ function ConnectReportPanel({
             <span className="text-muted-foreground inline-flex items-center gap-1">
               <MinusCircle className="w-3.5 h-3.5" />
               {report.skipped} skipped
+            </span>
+          )}
+          {pulledStations > 0 && (
+            <span className="text-muted-foreground inline-flex items-center gap-1">
+              <DownloadCloud className="w-3.5 h-3.5" />
+              pulled IOs for {pulledStations}
             </span>
           )}
         </div>
