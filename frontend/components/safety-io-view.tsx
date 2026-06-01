@@ -103,7 +103,7 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
         authFetch("/api/safety/bypass", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ bssTag: activeBypassRef.current.bssTag, action: "stop" }),
+          body: JSON.stringify({ bssTag: activeBypassRef.current.bssTag, action: "stop", subsystemId }),
         }).catch(() => {})
       }
     }
@@ -115,7 +115,7 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
       await authFetch("/api/safety/fire", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tag, action: "toggle" }),
+        body: JSON.stringify({ tag, action: "toggle", subsystemId }),
       })
     } catch {
       // ignore
@@ -130,7 +130,7 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
       await authFetch("/api/safety/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bssTag: zone.bssTag, action: "start" }),
+        body: JSON.stringify({ bssTag: zone.bssTag, action: "start", subsystemId }),
       })
       setBypassConfirmZone(null)
       setActiveBypass(zone)
