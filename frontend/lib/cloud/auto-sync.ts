@@ -425,6 +425,29 @@ class AutoSyncService {
         // pending row at the current version. With 30 s sync intervals, a
         // cap of 10 = ~5 minutes of trying before we give up on the row.
         const PENDING_RETRY_CAP = 10
+        // Capture the rows BEFORE deleting so each discarded L2 cell value lands
+        // in the recovery audit log (parallel to the IO drop above).
+        const l2ToDrop = db.prepare(
+          `SELECT id, CloudDeviceId, CloudColumnId, Value, Version, UpdatedBy, RetryCount, CreatedAt
+             FROM L2PendingSyncs WHERE RetryCount >= ?`
+        ).all(PENDING_RETRY_CAP) as any[]
+        for (const p of l2ToDrop) {
+          auditLog({
+            type: 'sync.push.drop',
+            version: p.Version,
+            user: p.UpdatedBy,
+            reason: `L2 retry-cap (${PENDING_RETRY_CAP} retries exceeded)`,
+            detail: {
+              kind: 'l2cell',
+              pendingId: p.id,
+              cloudDeviceId: p.CloudDeviceId,
+              cloudColumnId: p.CloudColumnId,
+              value: p.Value,
+              retries: p.RetryCount,
+              createdAt: p.CreatedAt,
+            },
+          })
+        }
         const dropped = db.prepare(
           `DELETE FROM L2PendingSyncs WHERE RetryCount >= ?`
         ).run(PENDING_RETRY_CAP)
