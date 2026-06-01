@@ -135,7 +135,24 @@ export async function POST(req: Request, res: Response) {
         "Order" = @Order
     `);
 
-    const result = db.transaction(() => {
+    let result: number;
+    try {
+      result = db.transaction(() => {
+      // TOCTOU guard: the pending check at the top of this handler ran BEFORE
+      // the cloud fetch (an await). A test recorded during that fetch would slip
+      // past it and then be clobbered by the DELETE below. Re-check pending here
+      // — synchronously, atomically with the delete — and abort if one appeared.
+      const pendingNow = (db
+        .prepare(
+          `SELECT COUNT(*) as cnt FROM PendingSyncs ps
+           JOIN Ios i ON i.id = ps.IoId
+           WHERE i.SubsystemId = ?`,
+        )
+        .get(subsystemId) as { cnt: number }).cnt;
+      if (pendingNow > 0) {
+        throw new Error('PENDING_APPEARED');
+      }
+
       // Ensure Projects/Subsystems rows exist (mirrors legacy behavior).
       const existingProject = db.prepare('SELECT id FROM Projects WHERE id = 1').get();
       if (!existingProject) {
@@ -244,7 +261,18 @@ export async function POST(req: Request, res: Response) {
       }
 
       return upserted;
-    })();
+      })();
+    } catch (txErr) {
+      if (txErr instanceof Error && txErr.message === 'PENDING_APPEARED') {
+        return res.status(409).json({
+          success: false,
+          error:
+            'Pull skipped — a test was recorded for this MCM during the pull. ' +
+            'Local data is preserved; the next safety pull will reconcile.',
+        });
+      }
+      throw txErr;
+    }
 
     // Invalidate the registry's IO→Subsystem lookup cache so per-IO routing
     // picks up the new rows immediately.
