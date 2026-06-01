@@ -42,6 +42,15 @@ interface PlcConfigDialogProps {
   onCloudPull: (config: PlcConfig) => void
   onPlcConnect: (config: PlcConfig) => void
   onTestConnection: () => Promise<boolean>
+  /**
+   * Central-tool: when set, this dialog is SCOPED to one MCM. Connect /
+   * disconnect / pull / IP-change go to the per-MCM `/api/mcm/:id/*` endpoints
+   * (which never touch the global `config.subsystemId`), and the Subsystem ID
+   * field is locked. Without it, the legacy single-MCM global flow is used
+   * (field tablets unchanged). Switching the active subsystem is a SEPARATE
+   * action (the parent's subsystem switcher), never a side effect of connect.
+   */
+  scopedSubsystemId?: number
 }
 
 export function PlcConfigDialog({
@@ -51,8 +60,11 @@ export function PlcConfigDialog({
   connectionState,
   onCloudPull,
   onPlcConnect,
-  onTestConnection
+  onTestConnection,
+  scopedSubsystemId,
 }: PlcConfigDialogProps) {
+  const scoped =
+    typeof scopedSubsystemId === 'number' && Number.isFinite(scopedSubsystemId) && scopedSubsystemId > 0
   const [activeTab, setActiveTab] = useState<'cloud' | 'plc'>('cloud')
   const [profiles, setProfiles] = useState<PlcProfile[]>([])
   const [isSwitching, setIsSwitching] = useState(false)
@@ -223,8 +235,59 @@ export function PlcConfigDialog({
     }
   }
 
+  // ── Scoped pull (central-tool) — pulls only THIS MCM, never touches the
+  // global active subsystem (POST /api/mcm/:id/pull). ──
+  const handleScopedPull = async () => {
+    try {
+      setIsPulling(true)
+      setPullLog([])
+      addPullLog(`Pull IOs for MCM ${scopedSubsystemId} (scoped — active subsystem unchanged)`)
+      setPullStatus({ type: 'loading', message: `Pulling IOs for subsystem ${scopedSubsystemId}...` })
+
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 180000)
+      const response = await authFetch(`/api/mcm/${scopedSubsystemId}/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      const result = await response.json().catch(() => ({} as any))
+
+      if (response.ok && result.success) {
+        if (result.networkPulled !== undefined) addPullLog(`Network: ${result.networkPulled} rings`)
+        if (result.estopPulled !== undefined) addPullLog(`E-Stop: ${result.estopPulled} zones`)
+        if (result.punchlistsPulled !== undefined) addPullLog(`Punchlists: ${result.punchlistsPulled}`)
+        const n = result.iosCount ?? 0
+        if (n === 0) {
+          addPullLog('No IOs found for this subsystem')
+          setPullStatus({ type: 'error', message: `No IOs for subsystem ${scopedSubsystemId}` })
+        } else {
+          addPullLog(`Pulled ${n} IOs`)
+          setPullStatus({ type: 'success', message: `Pulled ${n} IOs` })
+          onCloudPull(localConfig)
+        }
+      } else if (response.status === 409) {
+        const msg = result.error || 'Unsynced test results exist — sync first'
+        addPullLog(`BLOCKED: ${msg}`)
+        setPullStatus({ type: 'error', message: msg })
+      } else {
+        const msg = result.error || `HTTP ${response.status}`
+        addPullLog(`ERROR: ${msg}`)
+        setPullStatus({ type: 'error', message: msg })
+      }
+    } catch (err: any) {
+      addPullLog(`ERROR: ${err.message}`)
+      setPullStatus({ type: 'error', message: err.name === 'AbortError' ? 'Pull timed out' : err.message })
+    } finally {
+      setIsPulling(false)
+    }
+  }
+
   // ── Pull IOs from Cloud ──
   const handlePullIos = async () => {
+    if (scoped) return handleScopedPull()
     try {
       setIsPulling(true)
       setPullLog([])
@@ -443,23 +506,28 @@ export function PlcConfigDialog({
       }
       setPlcStatus({ type: 'loading', message: 'Saving configuration...' })
 
-      // Always use lightweight PLC-only connect endpoint
-      // The full configurationUpdate endpoint triggers cloud sync and full reinitialization
-      const endpoint = API_ENDPOINTS.configurationConnectPlc
+      // Scoped (central-tool): connect THIS MCM via /api/mcm/:id/plc/connect —
+      // it persists the IP/path on the MCM entry and NEVER changes the global
+      // active subsystem. Legacy: lightweight PLC-only singleton connect.
+      const endpoint = scoped
+        ? `/api/mcm/${scopedSubsystemId}/plc/connect`
+        : API_ENDPOINTS.configurationConnectPlc
 
       addPlcLog('Connecting to PLC...')
 
       const response = await authFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ip: localConfig.ip,
-          path: localConfig.path,
-          subsystemId: localConfig.subsystemId,
-          apiPassword: localConfig.apiPassword || "",
-          remoteUrl: localConfig.remoteUrl || "",
-          excludePatterns: excludePatterns.trim() || null
-        })
+        body: scoped
+          ? JSON.stringify({ ip: localConfig.ip, path: localConfig.path })
+          : JSON.stringify({
+              ip: localConfig.ip,
+              path: localConfig.path,
+              subsystemId: localConfig.subsystemId,
+              apiPassword: localConfig.apiPassword || "",
+              remoteUrl: localConfig.remoteUrl || "",
+              excludePatterns: excludePatterns.trim() || null
+            })
       })
 
       // Parse response — now always 200, check success field
@@ -651,10 +719,13 @@ export function PlcConfigDialog({
       addPlcLog('Disconnecting...')
       setPlcStatus({ type: 'loading', message: 'Disconnecting...' })
 
-      const response = await authFetch(API_ENDPOINTS.plcDisconnect, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      })
+      const response = await authFetch(
+        scoped ? `/api/mcm/${scopedSubsystemId}/plc/disconnect` : API_ENDPOINTS.plcDisconnect,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        }
+      )
 
       if (response.ok) {
         addPlcLog('PLC disconnected')
@@ -744,13 +815,16 @@ export function PlcConfigDialog({
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <div className="space-y-3">
                 <div className="space-y-1">
-                  <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
+                  <Label htmlFor="subsystemId" className="text-xs">
+                    Subsystem ID{scoped && <span className="ml-1 text-muted-foreground normal-case">(locked — switch from the station list)</span>}
+                  </Label>
                   <Input
                     id="subsystemId"
-                    value={localConfig.subsystemId}
+                    value={scoped ? String(scopedSubsystemId) : localConfig.subsystemId}
                     onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
                     placeholder="16"
-                    disabled={busy}
+                    disabled={busy || scoped}
+                    readOnly={scoped}
                     className="h-8 text-sm"
                   />
                 </div>

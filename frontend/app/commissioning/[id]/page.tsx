@@ -2337,6 +2337,11 @@ export default function CommissioningPage() {
           onCloudPull={handleCloudPull}
           onPlcConnect={handlePlcConnect}
           onTestConnection={handleTestConnection}
+          // Central-tool: scope connect/disconnect/pull/IP to THIS MCM (URL id)
+          // so they never switch the global active subsystem. Subsystem switching
+          // stays the separate station-list action. Omitted for the unconfigured
+          // entry point (legacy single-MCM global flow).
+          scopedSubsystemId={isUnconfigured ? undefined : projectId}
         />
 
         {/* All Test History Dialog */}
