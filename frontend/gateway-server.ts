@@ -245,7 +245,9 @@ process.on('uncaughtException', (err) => {
   console.error('[plc-gateway] FATAL uncaughtException:', err);
   process.exit(1);
 });
+// The gateway's whole purpose is to keep PLC connections alive across app
+// restarts — a benign unhandled rejection (e.g. a broadcast fetch that lost a
+// race) must NOT take it down. Log and keep running.
 process.on('unhandledRejection', (reason) => {
-  console.error('[plc-gateway] FATAL unhandledRejection:', reason);
-  process.exit(1);
+  console.error('[plc-gateway] unhandledRejection (continuing):', reason);
 });

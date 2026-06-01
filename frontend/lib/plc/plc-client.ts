@@ -33,7 +33,6 @@ import {
   plc_tag_set_int32,
   plc_tag_get_int16,
   plc_tag_get_float32,
-  plc_tag_set_float32,
   readTagAsync,
   writeTagAsync,
   buildAttributeString,
@@ -743,7 +742,11 @@ export class PlcClient extends EventEmitter {
       while (Date.now() - start < durationMs) {
         for (const h of handles) {
           if (h.dataType === 'BOOL') plc_tag_set_bit(h.handle, 0, h.value ? 1 : 0);
-          else if (h.dataType === 'REAL') plc_tag_set_float32(h.handle, 0, h.value);
+          // REAL via int32 bit-pattern — same path as writeTypedTag. The direct
+          // plc_tag_set_float32 (ffi-rs DataType.Float) is the one the codebase
+          // declares broken; both write paths must agree. (Behavior change vs
+          // the original write-tags-batch — re-verify REAL hammer on a drive.)
+          else if (h.dataType === 'REAL') plc_tag_set_int32(h.handle, 0, floatToInt32Bits(h.value));
           else plc_tag_set_int16(h.handle, 0, h.value);
         }
         let ok = true;

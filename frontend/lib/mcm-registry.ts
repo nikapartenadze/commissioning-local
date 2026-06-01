@@ -562,11 +562,21 @@ export async function writeOutputBitForIo(
     return gatewayClient.writeIo(subsystemId, io, value);
   }
 
-  // Embedded: route the write to the owning controller, falling back to the
-  // legacy singleton when no MCM is registered (field single-PLC laptops).
-  const client = hasAnyMcm() ? getClientForIo(ioId) ?? legacyPlcClient() : legacyPlcClient();
-  if (!client) return { connected: false, success: false, error: 'No PLC client' };
-  if (!client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
+  // Embedded. Multi-MCM: route ONLY to the IO's owning controller — never fall
+  // back to the legacy singleton, which may be connected to a DIFFERENT PLC
+  // (cross-MCM misroute; safety-relevant for output writes). Single-PLC field
+  // laptop (no MCMs registered): legacy singleton.
+  let client: PlcClient | null;
+  if (hasAnyMcm()) {
+    client = getClientForIo(ioId);
+    if (!client) {
+      const sid = getMcmIdForIo(ioId);
+      return { connected: false, success: false, error: sid ? `MCM ${sid} not connected` : 'IO has no MCM mapping' };
+    }
+  } else {
+    client = legacyPlcClient();
+  }
+  if (!client || !client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
   const r = client.writeOutputBit(io as IoTag, value);
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
 }
@@ -579,9 +589,19 @@ export async function readOutputBitForIo(ioId: number, io: IoRef): Promise<IoBit
     return gatewayClient.readIo(subsystemId, io);
   }
 
-  const client = hasAnyMcm() ? getClientForIo(ioId) ?? legacyPlcClient() : legacyPlcClient();
-  if (!client) return { connected: false, success: false, error: 'No PLC client' };
-  if (!client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
+  // Embedded. Multi-MCM: read ONLY from the IO's owning controller; never fall
+  // back to the legacy singleton (could be a different PLC). Single-PLC: legacy.
+  let client: PlcClient | null;
+  if (hasAnyMcm()) {
+    client = getClientForIo(ioId);
+    if (!client) {
+      const sid = getMcmIdForIo(ioId);
+      return { connected: false, success: false, error: sid ? `MCM ${sid} not connected` : 'IO has no MCM mapping' };
+    }
+  } else {
+    client = legacyPlcClient();
+  }
+  if (!client || !client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
   const r = client.readOutputBit(io as IoTag);
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
 }
