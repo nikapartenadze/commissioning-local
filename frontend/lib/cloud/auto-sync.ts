@@ -19,6 +19,7 @@ import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-reposi
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -235,6 +236,24 @@ class AutoSyncService {
               `comments=${JSON.stringify(p.Comments)} ` +
               `ts=${p.Timestamp} retries=${p.RetryCount} createdAt=${p.CreatedAt}`
             )
+            // Recovery-critical: the same payload in the durable 2-week audit
+            // log, so a wrongly-dropped result can be reconstructed/re-pushed.
+            auditLog({
+              type: 'sync.push.drop',
+              ioId: p.IoId,
+              version: p.Version,
+              result: p.TestResult,
+              user: p.InspectorName,
+              reason: `retry-cap (${IO_PENDING_RETRY_CAP} retries exceeded)`,
+              detail: {
+                pendingId: p.id,
+                comments: p.Comments,
+                state: p.State,
+                timestamp: p.Timestamp,
+                retries: p.RetryCount,
+                createdAt: p.CreatedAt,
+              },
+            })
           }
         }
 
@@ -389,6 +408,29 @@ class AutoSyncService {
         // pending row at the current version. With 30 s sync intervals, a
         // cap of 10 = ~5 minutes of trying before we give up on the row.
         const PENDING_RETRY_CAP = 10
+        // Capture the rows BEFORE deleting so each discarded L2 cell value lands
+        // in the recovery audit log (parallel to the IO drop above).
+        const l2ToDrop = db.prepare(
+          `SELECT id, CloudDeviceId, CloudColumnId, Value, Version, UpdatedBy, RetryCount, CreatedAt
+             FROM L2PendingSyncs WHERE RetryCount >= ?`
+        ).all(PENDING_RETRY_CAP) as any[]
+        for (const p of l2ToDrop) {
+          auditLog({
+            type: 'sync.push.drop',
+            version: p.Version,
+            user: p.UpdatedBy,
+            reason: `L2 retry-cap (${PENDING_RETRY_CAP} retries exceeded)`,
+            detail: {
+              kind: 'l2cell',
+              pendingId: p.id,
+              cloudDeviceId: p.CloudDeviceId,
+              cloudColumnId: p.CloudColumnId,
+              value: p.Value,
+              retries: p.RetryCount,
+              createdAt: p.CreatedAt,
+            },
+          })
+        }
         const dropped = db.prepare(
           `DELETE FROM L2PendingSyncs WHERE RetryCount >= ?`
         ).run(PENDING_RETRY_CAP)

@@ -28,6 +28,8 @@ import { configService } from '@/lib/config';
 import { db } from '@/lib/db-sqlite';
 import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
 import { getAppVersion } from '@/lib/app-version';
+import { appendDailyLog } from '@/lib/logging/file-log';
+import { auditLog } from '@/lib/logging/recovery-log';
 
 // Resolved once at startup. Rides every HeartbeatAck so the browser can detect
 // a server upgrade (version differs across a reconnect) and full-reload to pick
@@ -49,37 +51,16 @@ const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 const LOG_DIR = resolveLogsDirPath();
 const LOG_FILE = path.join(LOG_DIR, 'app.log');
 const ERROR_FILE = path.join(LOG_DIR, 'errors.log');
-const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 
 try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 
-const MAX_LOG_FILES = 3; // Keep at most 3 rotated files per type (30MB total max)
-
 function logTimestamp(): string { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
 
-function cleanupOldLogs(baseName: string): void {
-  try {
-    const dir = path.dirname(baseName);
-    const ext = path.extname(baseName);
-    const name = path.basename(baseName, ext);
-    const rotated = fs.readdirSync(dir)
-      .filter(f => f.startsWith(name + '.') && f.endsWith(ext) && f !== path.basename(baseName))
-      .sort()
-      .reverse();
-    for (let i = MAX_LOG_FILES; i < rotated.length; i++) {
-      try { fs.unlinkSync(path.join(dir, rotated[i])); } catch {}
-    }
-  } catch {}
-}
-
+// Daily-rotating logs with time-based retention (BACKUP/LOG retention default
+// 14 days) — see lib/logging/file-log. The old 30MB rolling cap couldn't
+// guarantee two weeks of history, which is required for data recovery.
 function appendLog(file: string, line: string): void {
-  try {
-    if (fs.existsSync(file) && fs.statSync(file).size > MAX_LOG_SIZE) {
-      fs.renameSync(file, file.replace('.log', `.${Date.now()}.log`));
-      cleanupOldLogs(file);
-    }
-    fs.appendFileSync(file, line + '\n');
-  } catch {}
+  appendDailyLog(file, line);
 }
 
 // Messages matching these patterns go to CONSOLE + file (user-facing)
@@ -473,6 +454,11 @@ httpServer.listen(PORT, HOSTNAME, () => {
   console.log(`[App] Ready on http://${HOSTNAME}:${PORT}`);
   console.log(`[WS] PLC WebSocket available at ws://${HOSTNAME}:${PORT}/ws`);
 
+  // Recovery marker — a durable boot record in the 2-week audit log lets us
+  // correlate "data looks off after a restart" with exactly when the process
+  // came up (see lib/logging/recovery-log).
+  auditLog({ type: 'server.start', detail: { version: SERVER_VERSION, plcMode: 'embedded', pid: process.pid } });
+
   // Heal a poisoned update-status.json left behind by an interrupted update.
   // A successful self-update restarts us into the new build with a non-terminal
   // status still on disk; reconciliation stamps it success (running ≥ target)
@@ -484,8 +470,9 @@ httpServer.listen(PORT, HOSTNAME, () => {
   setTimeout(() => {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { createStartupBackup } = require('./lib/startup-backup');
-      createStartupBackup();
+      const backup = require('./lib/startup-backup');
+      backup.createStartupBackup();
+      backup.startPeriodicBackups(); // every BACKUP_INTERVAL_HOURS (default 6h), day-based retention
     } catch (e: any) {
       console.error('[Backup] Startup backup module failed:', e.message);
     }
