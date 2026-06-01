@@ -70,12 +70,35 @@ if not exist "%PORTABLE_DIR%\app\dist-server\server-express.js" (
     echo   Portable build already exists, skipping. Delete portable\ to force rebuild.
 )
 
+REM ── Ensure VC++ redistributable is available to bundle (best-effort fallback) ──
+REM  The PRIMARY fix for the libplctag "os error 126" failures is the app-local
+REM  vcruntime140.dll that BUILD-PORTABLE.bat drops next to node.exe. This redist
+REM  is an EXTRA: the installer registers the VC++ runtime system-wide if it's
+REM  missing. If the download fails, the installer still builds and the app-local
+REM  DLL covers the load error on its own.
+set "VCREDIST=%DEPLOY_DIR%vc_redist.x64.exe"
+if not exist "%VCREDIST%" (
+    echo   Downloading vc_redist.x64.exe ^(VC++ 2015-2022 x64^)...
+    curl -sL -o "%VCREDIST%" "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+)
+set "VCREDIST_DEF="
+if exist "%VCREDIST%" (
+    set "VCREDIST_DEF=/DVCREDIST_PATH=%VCREDIST%"
+    echo   VC++ redist bundled as a system-wide fallback.
+) else (
+    echo   WARNING: vc_redist.x64.exe not bundled ^(download failed^); relying on app-local vcruntime140.dll.
+)
+
 REM ── Step 2: Compile NSIS installer ──
 echo.
 echo [2/2] Compiling installer...
 echo.
 
-"%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" "%DEPLOY_DIR%installer.nsi"
+if defined VCREDIST_DEF (
+    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" "!VCREDIST_DEF!" "%DEPLOY_DIR%installer.nsi"
+) else (
+    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" "%DEPLOY_DIR%installer.nsi"
+)
 
 if %errorlevel% neq 0 (
     echo.
