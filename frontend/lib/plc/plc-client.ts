@@ -29,10 +29,32 @@ import {
   plc_tag_set_int8,
   plc_tag_get_bit,
   plc_tag_set_bit,
+  plc_tag_set_int16,
+  plc_tag_set_int32,
+  plc_tag_get_int16,
+  plc_tag_get_float32,
+  plc_tag_set_float32,
   readTagAsync,
   writeTagAsync,
   buildAttributeString,
 } from './libplctag';
+
+/**
+ * Convert a JS float64 to its IEEE-754 float32 bit pattern as an int32.
+ * Mirrors the VFD writer — ffi-rs DataType.Float is broken, so REAL writes go
+ * through plc_tag_set_int32 with these bits.
+ */
+const _f32buf = new ArrayBuffer(4);
+const _f32view = new DataView(_f32buf);
+function floatToInt32Bits(value: number): number {
+  _f32view.setFloat32(0, value, true);
+  return _f32view.getInt32(0, true);
+}
+
+/** Element size in bytes per supported scalar PLC data type. */
+function elemSizeFor(dataType: 'BOOL' | 'REAL' | 'INT'): number {
+  return dataType === 'BOOL' ? 1 : dataType === 'INT' ? 2 : 4;
+}
 
 // IO tag definition (matches backend Io model)
 export interface IoTag {
@@ -590,6 +612,153 @@ export class PlcClient extends EventEmitter {
       return { success: true, currentState };
     } catch (error) {
       return { success: false, error: String(error) };
+    }
+  }
+
+  /**
+   * Write a single typed tag BY NAME on this client's connection (VFD parameter
+   * writes etc). Relocated verbatim from app/api/vfd-commissioning/write-tag so
+   * behavior is unchanged — only the connection source moves from the legacy
+   * singleton to this (per-MCM) client. Uses a temporary handle (no caching).
+   *
+   * dataType: BOOL → int8, INT → int16, REAL → int32 from float32 bits.
+   */
+  writeTypedTag(
+    tagName: string,
+    value: number,
+    dataType: 'BOOL' | 'REAL' | 'INT'
+  ): { success: boolean; error?: string } {
+    if (!this.connectionConfig) return { success: false, error: 'No connection config' };
+    if (dataType !== 'BOOL' && dataType !== 'REAL' && dataType !== 'INT') {
+      return { success: false, error: `Unsupported dataType: ${dataType}` };
+    }
+
+    const handle = createTag({
+      gateway: this.connectionConfig.ip,
+      path: this.connectionConfig.path,
+      name: tagName,
+      elemSize: elemSizeFor(dataType),
+      elemCount: 1,
+      timeout: this.config.timeout || 5000,
+    });
+    if (handle < 0) {
+      return { success: false, error: `Failed to create tag ${tagName}: ${getStatusMessage(handle)}` };
+    }
+    try {
+      // Read first to sync the tag buffer before writing (matches VFD writer).
+      const readStatus = plc_tag_read(handle, 5000);
+      if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        return { success: false, error: `Failed to read before write: ${getStatusMessage(readStatus)}` };
+      }
+      let setStatus: number;
+      if (dataType === 'BOOL') {
+        setStatus = plc_tag_set_int8(handle, 0, value ? 1 : 0);
+      } else if (dataType === 'REAL') {
+        setStatus = plc_tag_set_int32(handle, 0, floatToInt32Bits(value));
+      } else {
+        setStatus = plc_tag_set_int16(handle, 0, value);
+      }
+      if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        return { success: false, error: `Failed to set value: ${getStatusMessage(setStatus)}` };
+      }
+      const writeStatus = plc_tag_write(handle, 5000);
+      if (writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        return { success: false, error: `Failed to write tag: ${getStatusMessage(writeStatus)}` };
+      }
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      try { plc_tag_destroy(handle); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Read a single typed tag BY NAME on this client's connection. Relocated
+   * verbatim from app/api/vfd-commissioning/read-tags' readPlcValue.
+   */
+  readTypedTag(
+    tagName: string,
+    dataType: 'BOOL' | 'REAL' | 'INT'
+  ): { success: boolean; value?: number | boolean; error?: string } {
+    if (!this.connectionConfig) return { success: false, error: 'No connection config' };
+    const handle = createTag({
+      gateway: this.connectionConfig.ip,
+      path: this.connectionConfig.path,
+      name: tagName,
+      elemSize: elemSizeFor(dataType),
+      elemCount: 1,
+      timeout: this.config.timeout || 5000,
+    });
+    if (handle < 0) return { success: false, error: `Failed to create tag ${tagName}` };
+    try {
+      const readStatus = plc_tag_read(handle, 5000);
+      if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        return { success: false, error: getStatusMessage(readStatus) };
+      }
+      let value: number | boolean;
+      if (dataType === 'BOOL') value = plc_tag_get_bit(handle, 0) === 1;
+      else if (dataType === 'REAL') value = plc_tag_get_float32(handle, 0);
+      else value = plc_tag_get_int16(handle, 0);
+      return { success: true, value };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      try { plc_tag_destroy(handle); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Hammer-write a set of CMD tags continuously for durationMs, re-writing every
+   * loop so a value pair (e.g. Override_RVS + RVS) lands in the SAME PLC scan
+   * (rung 15 FLL-zeros the CMD every scan). Relocated verbatim from
+   * app/api/vfd-commissioning/write-tags-batch. Runs in-process (or in the
+   * gateway in split mode) so the tight loop stays close to the PLC.
+   */
+  hammerWriteTags(
+    deviceName: string,
+    writes: Array<{ field: string; value: number; dataType: 'BOOL' | 'REAL' | 'INT' }>,
+    durationMs = 1000
+  ): { success: boolean; iterations: number; writes: Array<{ tagPath: string; ok: boolean }>; error?: string } {
+    if (!this.connectionConfig) return { success: false, iterations: 0, writes: [], error: 'No connection config' };
+    const { ip, path } = this.connectionConfig;
+    const timeout = this.config.timeout || 5000;
+    const handles: { handle: number; field: string; dataType: string; value: number; tagPath: string }[] = [];
+    try {
+      for (const w of writes) {
+        const isStatus = w.field === 'Speed_FPM' && w.dataType !== 'BOOL';
+        const tagPath = isStatus ? `CBT_${deviceName}.CTRL.STS.${w.field}` : `CBT_${deviceName}.CTRL.CMD.${w.field}`;
+        const elemSize = w.dataType === 'BOOL' ? 1 : w.dataType === 'REAL' ? 4 : 2;
+        const handle = createTag({ gateway: ip, path, name: tagPath, elemSize, elemCount: 1, timeout });
+        if (handle < 0) throw new Error(`Failed to create tag ${tagPath}: ${getStatusMessage(handle)}`);
+        handles.push({ handle, field: w.field, dataType: w.dataType, value: w.value, tagPath });
+      }
+      for (const h of handles) {
+        const rs = plc_tag_read(h.handle, 5000);
+        if (rs !== PlcTagStatus.PLCTAG_STATUS_OK) throw new Error(`Read failed for ${h.tagPath}: ${getStatusMessage(rs)}`);
+      }
+      const start = Date.now();
+      let iterations = 0;
+      let lastError: string | null = null;
+      while (Date.now() - start < durationMs) {
+        for (const h of handles) {
+          if (h.dataType === 'BOOL') plc_tag_set_bit(h.handle, 0, h.value ? 1 : 0);
+          else if (h.dataType === 'REAL') plc_tag_set_float32(h.handle, 0, h.value);
+          else plc_tag_set_int16(h.handle, 0, h.value);
+        }
+        let ok = true;
+        for (const h of handles) {
+          const ws = plc_tag_write(h.handle, 500);
+          if (ws !== PlcTagStatus.PLCTAG_STATUS_OK) { ok = false; lastError = `${h.tagPath}: ${getStatusMessage(ws)}`; }
+        }
+        iterations++;
+        if (!ok) break;
+      }
+      return { success: !lastError, iterations, writes: handles.map((h) => ({ tagPath: h.tagPath, ok: !lastError })), error: lastError || undefined };
+    } catch (error) {
+      return { success: false, iterations: 0, writes: [], error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      for (const h of handles) { try { plc_tag_destroy(h.handle); } catch { /* ignore */ } }
     }
   }
 
