@@ -351,9 +351,25 @@ function Step0Content({ sts, loading }: { sts: StsState; loading: boolean }) {
         </div>
       )}
       {!loading && !allowed && (
-        <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm">
-          <AlertTriangle className="h-4 w-4" />
-          Waiting for the VFD to come online…
+        // "Check_Allowed" stays low when the drive's AOI isn't enabled — and the
+        // most common field cause is NOT the drive itself but an incomplete
+        // E-stop check: until the safety circuit for this zone is healthy
+        // (E-stops reset), the AOI holds the enable bit off, so the wizard can
+        // never leave step 0. The old message only said "waiting for the VFD",
+        // which sent techs hunting the drive instead of the E-stop check.
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm font-medium">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            Waiting for the VFD to come online…
+          </div>
+          <p className="text-xs text-amber-800/90 dark:text-amber-300/90 leading-relaxed pl-6">
+            If this stays off, the most likely cause is that the <strong>E-stop check
+            for this zone hasn’t been completed yet</strong>. The drive’s AOI only
+            enables once the safety circuit is healthy (all E-stops reset), so the
+            tool can’t take the VFD online until then. Complete the E-stop check for
+            this zone first, then come back to this step. (Also confirm the drive is
+            powered and not faulted.)
+          </p>
         </div>
       )}
     </div>
