@@ -23,6 +23,15 @@ const MANUAL_COMPLETE_TYPES = new Set<Task['type']>([
 
 type Popup = { kind: 'pass' | 'fail'; message: string } | null
 
+/**
+ * Guided Mode — Task-Pool flow rendered ON the live SCADA SVG map.
+ *
+ * The existing subsystem SVG is the persistent backdrop; the current task's
+ * device is focused (others dimmed) and the map auto-centers on it. Step
+ * instructions + actions float as overlay cards (the Guided Mode spec
+ * mockups). The main commissioning tool stays reachable via "Exit" and the
+ * classic device-walk guided view via "Classic view" — nothing is replaced.
+ */
 export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const navigate = useNavigate()
   const { currentUser } = useUser()
@@ -32,19 +41,18 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [steps, setSteps] = useState<Step[]>([])
   const [stepIndex, setStepIndex] = useState(0)
-  const [deviceIos, setDeviceIos] = useState<StepIo[]>([])
+  const [, setDeviceIos] = useState<StepIo[]>([])
   const [popup, setPopup] = useState<Popup>(null)
   const [skipOpen, setSkipOpen] = useState(false)
   const [skipReason, setSkipReason] = useState('')
   const [viewerOpen, setViewerOpen] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  // SVG + device list for the mini-map.
+  // SVG + device list for the map backdrop.
   const [svgMarkup, setSvgMarkup] = useState<string | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
   const mapRef = useRef<GuidedTestingMapHandle | null>(null)
 
-  // The effective task: a manual pick, else the pool's recommendation.
   const effectiveTask: Task | null = useMemo(() => {
     if (!pool) return null
     if (selectedTaskId) {
@@ -56,18 +64,22 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 
   const currentStep: Step | null = steps[stepIndex] ?? null
 
-  // ── load mini-map assets once ──────────────────────────────────────────
+  const reloadDevices = useCallback(() => {
+    fetch(`/api/guided/devices?subsystemId=${subsystemId}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => setDevices(d.devices ?? []))
+      .catch(() => {})
+  }, [subsystemId])
+
+  // ── load map assets once ───────────────────────────────────────────────
   useEffect(() => {
     if (!subsystemId) return
     fetch(`/api/maps/subsystem/${subsystemId}`)
       .then((r) => (r.ok ? r.text() : Promise.reject()))
-      .then((t) => setSvgMarkup(t))
+      .then(setSvgMarkup)
       .catch(() => setSvgMarkup(null))
-    fetch(`/api/guided/devices?subsystemId=${subsystemId}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => setDevices(d.devices ?? []))
-      .catch(() => setDevices([]))
-  }, [subsystemId])
+    reloadDevices()
+  }, [subsystemId, reloadDevices])
 
   // ── build steps when the task changes ──────────────────────────────────
   useEffect(() => {
@@ -80,9 +92,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     const isIoCheck =
       effectiveTask.type === 'io_check_safety' || effectiveTask.type === 'io_check_nonsafety'
     if (isIoCheck && effectiveTask.deviceName) {
-      fetch(
-        `/api/guided/devices/${encodeURIComponent(effectiveTask.deviceName)}?subsystemId=${subsystemId}`,
-      )
+      fetch(`/api/guided/devices/${encodeURIComponent(effectiveTask.deviceName)}?subsystemId=${subsystemId}`)
         .then((r) => (r.ok ? r.json() : Promise.reject()))
         .then((d) => {
           if (cancelled) return
@@ -127,22 +137,15 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       setSelectedTaskId(null)
       setStepIndex(0)
       await refresh()
-      // refresh devices so the map recolors
-      fetch(`/api/guided/devices?subsystemId=${subsystemId}`)
-        .then((r) => (r.ok ? r.json() : Promise.reject()))
-        .then((d) => setDevices(d.devices ?? []))
-        .catch(() => {})
+      reloadDevices()
     } finally {
       setBusy(false)
     }
-  }, [effectiveTask, subsystemId, currentUser, refresh])
+  }, [effectiveTask, subsystemId, currentUser, refresh, reloadDevices])
 
   const advanceStep = useCallback(() => {
-    if (stepIndex < steps.length - 1) {
-      setStepIndex(stepIndex + 1)
-    } else {
-      void completeAndNext()
-    }
+    if (stepIndex < steps.length - 1) setStepIndex(stepIndex + 1)
+    else void completeAndNext()
   }, [stepIndex, steps.length, completeAndNext])
 
   // ── io-check auto-detection ────────────────────────────────────────────
@@ -166,30 +169,30 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           }),
         })
       } catch {
-        /* best-effort; popup still shown so the tester can acknowledge */
+        /* best-effort; popup still lets the tester acknowledge */
       }
       setPopup({
         kind: result === 'Passed' ? 'pass' : 'fail',
-        message:
-          result === 'Passed' ? 'Device successfully checked' : 'Device failed, added to punchlist',
+        message: result === 'Passed' ? 'Device successfully checked' : 'Device failed, added to punchlist',
       })
     },
     [currentStep, currentUser],
   )
 
-  // reset resolved/baseline on step change + recenter map on navigate steps
+  // reset detection + center map on the step's device
   useEffect(() => {
     resolvedRef.current = false
     baselineRef.current = undefined
     setLiveState(null)
-    if (currentStep?.deviceName && (currentStep.kind === 'navigate')) {
-      // small delay so the map has mounted
-      const t = setTimeout(() => mapRef.current?.centerOnDevice(currentStep.deviceName!), 120)
+    const name = currentStep?.deviceName ?? effectiveTask?.deviceName
+    if (name) {
+      const t = setTimeout(() => mapRef.current?.centerOnDevice(name), 160)
       return () => clearTimeout(t)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentStep?.id])
 
-  // subscribe to live tag transitions for the current io_check step
+  // live tag transitions for the current io_check step
   useEffect(() => {
     if (!currentStep || currentStep.kind !== 'io_check' || !currentStep.ioId) return
     const ioId = currentStep.ioId
@@ -201,16 +204,14 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         baselineRef.current = u.State
         return
       }
-      if (u.State !== baselineRef.current && !resolvedRef.current) {
-        void recordIo('Passed')
-      }
+      if (u.State !== baselineRef.current && !resolvedRef.current) void recordIo('Passed')
     }
     ws.onIOUpdate(cb)
     return () => ws.offIOUpdate(cb)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentStep?.id, recordIo])
 
-  // ── skip ───────────────────────────────────────────────────────────────
+  // ── skip / unskip ──────────────────────────────────────────────────────
   const submitSkip = useCallback(async () => {
     const reason = skipReason.trim()
     if (!effectiveTask || !reason) return
@@ -243,16 +244,19 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     [subsystemId, refresh],
   )
 
-  const activeDevice = useMemo(() => {
-    const name = currentStep?.deviceName ?? effectiveTask?.deviceName
-    if (!name) return null
-    return devices.find((d) => d.deviceName === name) ?? null
-  }, [currentStep, effectiveTask, devices])
+  const focusName = currentStep?.deviceName ?? effectiveTask?.deviceName ?? null
+  const activeDevice = useMemo(
+    () => (focusName ? devices.find((d) => d.deviceName === focusName) ?? null : null),
+    [focusName, devices],
+  )
+  // Focus the current device: lock (dim) everything else.
+  const lockedDevices = useMemo(
+    () => (focusName ? new Set<string>([focusName]) : null),
+    [focusName],
+  )
 
   // ── render ───────────────────────────────────────────────────────────────
-  if (isLoading) {
-    return <div className="gt-root gt-center">Loading guided tasks…</div>
-  }
+  if (isLoading) return <div className="gt-root gt-center">Loading guided tasks…</div>
   if (error) {
     return (
       <div className="gt-root gt-center">
@@ -267,8 +271,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   }
 
   const s = pool?.summary
-  const overallPct =
-    s && s.total > 0 ? Math.round(((s.completed + s.skipped) / s.total) * 100) : 0
+  const overallPct = s && s.total > 0 ? Math.round(((s.completed + s.skipped) / s.total) * 100) : 0
 
   return (
     <div className="gt-root">
@@ -276,8 +279,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       <header className="gt-header">
         <button
           className="gt-btn gt-btn-ghost gt-back"
-          onClick={() => navigate(`/commissioning/${subsystemId}/guided`)}
-          aria-label="Exit guided tasks"
+          onClick={() => navigate(`/commissioning/${subsystemId}`)}
         >
           ← Exit
         </button>
@@ -296,106 +298,132 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           )}
         </div>
         <div className="gt-header-right">
-          <div className="gt-progress" title={`${overallPct}% of tasks done/handled`}>
+          <div className="gt-progress" title={`${overallPct}% of tasks handled`}>
             <div className="gt-progress-bar">
               <div className="gt-progress-fill" style={{ width: `${overallPct}%` }} />
             </div>
-            <span className="gt-progress-label">
-              {s ? `${s.completed}/${s.total} done` : ''}
-            </span>
+            <span className="gt-progress-label">{s ? `${s.completed}/${s.total} done` : ''}</span>
           </div>
-          <button className="gt-btn gt-btn-ghost" onClick={() => setViewerOpen(true)}>
+          <Link className="gt-btn gt-btn-ghost gt-chip" to={`/commissioning/${subsystemId}/guided?classic=1`}>
+            Classic view
+          </Link>
+          <button className="gt-btn gt-btn-ghost gt-chip" onClick={() => setViewerOpen(true)}>
             Task Viewer
           </button>
         </div>
       </header>
 
-      {/* Body */}
-      {!effectiveTask ? (
-        <AllDoneScreen
-          summary={s}
-          onOpenViewer={() => setViewerOpen(true)}
-          onBack={() => navigate(`/commissioning/${subsystemId}`)}
-        />
-      ) : !currentStep ? (
-        <div className="gt-stage gt-center">Preparing steps…</div>
-      ) : (
-        <main className="gt-stage">
-          <h1 className="gt-step-title">{currentStep.title}</h1>
+      {/* Body: live SVG map backdrop + floating step HUD */}
+      <div className="gt-body">
+        <div className="gt-map-layer">
+          {svgMarkup ? (
+            <GuidedTestingMap
+              ref={mapRef}
+              svgMarkup={svgMarkup}
+              devices={devices}
+              activeDevice={activeDevice}
+              onDeviceClick={(name) => {
+                // Jump to that device's IO-check task if it's workable.
+                const t = pool?.tasks.find(
+                  (x) =>
+                    x.deviceName === name &&
+                    (x.state === 'available' || x.state === 'in_progress'),
+                )
+                if (t) {
+                  setSelectedTaskId(t.id)
+                  setStepIndex(0)
+                }
+              }}
+              lockedDevices={lockedDevices}
+            />
+          ) : (
+            <div className="gt-map-fallback">&lt;map unavailable&gt;</div>
+          )}
+        </div>
 
-          {/* navigate step: mini-map */}
-          {currentStep.kind === 'navigate' && (
-            <>
-              <div className="gt-map-box">
-                {svgMarkup ? (
-                  <GuidedTestingMap
-                    ref={mapRef}
-                    svgMarkup={svgMarkup}
-                    devices={devices}
-                    activeDevice={activeDevice}
-                    onDeviceClick={() => {}}
-                  />
-                ) : (
-                  <div className="gt-map-fallback">&lt;minimap unavailable&gt;</div>
-                )}
-              </div>
-              <p className="gt-instruction">{currentStep.instruction}</p>
+        {/* Floating step HUD */}
+        {effectiveTask && currentStep && (
+          <div className={`gt-hud gt-hud-${currentStep.kind}`}>
+            <div className="gt-hud-step">{currentStep.title}</div>
+            {currentStep.instruction && <p className="gt-hud-instruction">{currentStep.instruction}</p>}
+
+            {currentStep.kind === 'navigate' && (
               <div className="gt-actions-center">
                 <button className="gt-btn gt-btn-primary gt-btn-xl" onClick={advanceStep}>
                   I'M THERE
                 </button>
               </div>
-            </>
-          )}
+            )}
 
-          {/* io_check step: auto-detect + Nothing Happened */}
-          {currentStep.kind === 'io_check' && (
-            <div className="gt-iocheck">
-              <p className="gt-instruction">{currentStep.instruction}</p>
-              <div className="gt-livestate">
-                <span className={`gt-dot ${liveState === 'TRUE' ? 'gt-dot-on' : liveState === 'FALSE' ? 'gt-dot-off' : 'gt-dot-unknown'}`} />
-                <span>
-                  Live PLC signal:{' '}
-                  {liveState === 'TRUE' ? 'ON' : liveState === 'FALSE' ? 'OFF' : 'waiting…'}
-                </span>
+            {currentStep.kind === 'io_check' && (
+              <>
+                <div className="gt-livestate">
+                  <span
+                    className={`gt-dot ${liveState === 'TRUE' ? 'gt-dot-on' : liveState === 'FALSE' ? 'gt-dot-off' : 'gt-dot-unknown'}`}
+                  />
+                  <span>
+                    Live PLC signal: {liveState === 'TRUE' ? 'ON' : liveState === 'FALSE' ? 'OFF' : 'waiting…'}
+                  </span>
+                </div>
+                <p className="gt-hint">If you checked the IO and nothing happened, click below:</p>
+                <div className="gt-actions-center">
+                  <button className="gt-btn gt-btn-warn gt-btn-lg" disabled={busy} onClick={() => recordIo('Failed', 'No Response')}>
+                    NOTHING HAPPENED
+                  </button>
+                </div>
+              </>
+            )}
+
+            {(currentStep.kind === 'manual_confirm' ||
+              currentStep.kind === 'auto_detect' ||
+              currentStep.kind === 'info') && (
+              <div className="gt-actions-center gt-actions-stack">
+                <Link className="gt-link" to={`/commissioning/${subsystemId}`}>
+                  Open full commissioning view ↗
+                </Link>
+                {stepIndex >= steps.length - 1 ? (
+                  <button className="gt-btn gt-btn-primary gt-btn-lg" disabled={busy} onClick={completeAndNext}>
+                    MARK TASK DONE
+                  </button>
+                ) : (
+                  <button className="gt-btn gt-btn-primary gt-btn-lg" disabled={busy} onClick={advanceStep}>
+                    CONTINUE
+                  </button>
+                )}
               </div>
-              <p className="gt-hint">If you checked the IO and nothing happened, click below:</p>
-              <div className="gt-actions-center">
-                <button
-                  className="gt-btn gt-btn-warn gt-btn-lg"
-                  disabled={busy}
-                  onClick={() => recordIo('Failed', 'No Response')}
-                >
-                  NOTHING HAPPENED
-                </button>
-              </div>
+            )}
+          </div>
+        )}
+
+        {/* All-done overlay */}
+        {!effectiveTask && (
+          <div className="gt-hud gt-hud-done">
+            <div className="gt-empty-icon">✓</div>
+            <div className="gt-hud-step">No tasks available right now</div>
+            {s && (
+              <p className="gt-hud-instruction">
+                {s.completed} completed · {s.skipped} skipped
+                {s.blocked > 0 ? ` · ${s.blocked} blocked by dependencies` : ''}
+              </p>
+            )}
+            <div className="gt-actions-center">
+              <button className="gt-btn gt-btn-ghost" onClick={() => navigate(`/commissioning/${subsystemId}`)}>
+                Back to commissioning
+              </button>
+              <button className="gt-btn gt-btn-primary" onClick={() => setViewerOpen(true)}>
+                Open Task Viewer
+              </button>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* manual_confirm + auto_detect + info */}
-          {(currentStep.kind === 'manual_confirm' ||
-            currentStep.kind === 'auto_detect' ||
-            currentStep.kind === 'info') && (
-            <ManualStep
-              step={currentStep}
-              subsystemId={subsystemId}
-              isLastStep={stepIndex >= steps.length - 1}
-              busy={busy}
-              onContinue={advanceStep}
-              onComplete={completeAndNext}
-            />
-          )}
-
-          {/* Skip Task — always available (spec: bottom-right) */}
-          <button
-            className="gt-btn gt-btn-ghost gt-skip"
-            onClick={() => setSkipOpen(true)}
-            disabled={busy}
-          >
+        {/* Skip Task — pinned bottom-right (spec mockup) */}
+        {effectiveTask && (
+          <button className="gt-btn gt-skip" onClick={() => setSkipOpen(true)} disabled={busy}>
             SKIP TASK
           </button>
-        </main>
-      )}
+        )}
+      </div>
 
       {/* Pass/Fail acknowledgment popup */}
       {popup && (
@@ -439,11 +467,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               <button className="gt-btn gt-btn-ghost" onClick={() => setSkipOpen(false)} disabled={busy}>
                 Cancel
               </button>
-              <button
-                className="gt-btn gt-btn-warn"
-                onClick={submitSkip}
-                disabled={busy || !skipReason.trim()}
-              >
+              <button className="gt-btn gt-btn-warn" onClick={submitSkip} disabled={busy || !skipReason.trim()}>
                 Skip Task
               </button>
             </div>
@@ -464,86 +488,6 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           onUnskip={(t) => void unskip(t)}
         />
       )}
-    </div>
-  )
-}
-
-function ManualStep({
-  step,
-  subsystemId,
-  isLastStep,
-  busy,
-  onContinue,
-  onComplete,
-}: {
-  step: Step
-  subsystemId: number
-  isLastStep: boolean
-  busy: boolean
-  onContinue: () => void
-  onComplete: () => void
-}) {
-  return (
-    <div className="gt-manual">
-      <p className="gt-instruction">{step.instruction}</p>
-      {step.kind === 'auto_detect' && (
-        <p className="gt-hint">
-          Use the dedicated view for live verdicts, then mark this task done.
-        </p>
-      )}
-      <div className="gt-actions-center gt-actions-stack">
-        <Link className="gt-link" to={`/commissioning/${subsystemId}`}>
-          Open full commissioning view ↗
-        </Link>
-        {isLastStep ? (
-          <button className="gt-btn gt-btn-primary gt-btn-lg" disabled={busy} onClick={onComplete}>
-            MARK TASK DONE
-          </button>
-        ) : (
-          <button className="gt-btn gt-btn-primary gt-btn-lg" disabled={busy} onClick={onContinue}>
-            CONTINUE
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function AllDoneScreen({
-  summary,
-  onOpenViewer,
-  onBack,
-}: {
-  summary: { total: number; completed: number; skipped: number; blocked: number } | undefined
-  onOpenViewer: () => void
-  onBack: () => void
-}) {
-  const blocked = summary?.blocked ?? 0
-  return (
-    <div className="gt-stage gt-center">
-      <div className="gt-empty">
-        <div className="gt-empty-icon">✓</div>
-        <h2>No tasks available right now</h2>
-        {summary && (
-          <p>
-            {summary.completed} completed · {summary.skipped} skipped
-            {blocked > 0 ? ` · ${blocked} blocked by dependencies` : ''}
-          </p>
-        )}
-        {blocked > 0 && (
-          <p className="gt-hint">
-            Blocked tasks open up automatically as their dependencies are satisfied.
-          </p>
-        )}
-        <div className="gt-dialog-actions">
-          <button className="gt-btn gt-btn-ghost" onClick={onBack}>
-            Back to commissioning
-          </button>
-          <button className="gt-btn gt-btn-primary" onClick={onOpenViewer}>
-            Open Task Viewer
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
