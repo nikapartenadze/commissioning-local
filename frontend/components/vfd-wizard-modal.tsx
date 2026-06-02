@@ -1263,6 +1263,16 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // on actual data being recorded, not just on the PLC bit being latched (which
   // can be true on test data without anyone ever clicking Confirm HP).
   const [hpFieldsFilled, setHpFieldsFilled] = useState(false)
+  // Step 1 (Identity) / Step 3 (Direction) durable completion, restored from the
+  // L2 "Verify Identity" / "Check Direction" cells. These steps used to derive
+  // "done" *purely* from the live STS.Valid_Map / STS.Valid_Direction PLC reads,
+  // so on a saturated/unreachable controller a single read timeout (or a PLC
+  // power-cycle that dropped the latch) made an already-commissioned VFD demand
+  // re-verification — "sometimes it asks, sometimes not". The spreadsheet stamp
+  // is the durable record of "a human did this step once"; trusting it makes the
+  // step survive read blips, exactly like HP/Controls/Speed already do.
+  const [identityDone, setIdentityDone] = useState(false)
+  const [directionDone, setDirectionDone] = useState(false)
   // Belt Tracked is now a manual entry (filled by mechanical team, not from PLC).
   // Step 6 (Calibrate Speed) is locked until the Belt Tracked L2 cell is filled.
   const [beltTrackedDone, setBeltTrackedDone] = useState(false)
@@ -1284,6 +1294,11 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
         controlsVerified: cells?.controlsVerified ?? null,
         speedSetUp: cells?.speedSetUp ?? null,
       })
+      // Step 1 "Verify Identity" / Step 3 "Check Direction" — durable proof the
+      // step was completed once. Lets the cascade keep them done even when the
+      // live STS read times out on a busy controller.
+      if (cells?.verifyIdentity?.trim()) setIdentityDone(true)
+      if (cells?.checkDirection?.trim()) setDirectionDone(true)
       // Step 4 "Polarity" — restore from L2 cell. Tolerates legacy stamps.
       const parsedPolarity = parsePolarityStamp(cells?.polarity)
       if (parsedPolarity) setPolaritySetDone(parsedPolarity)
@@ -1460,11 +1475,17 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   //                   Bump Test with no way forward. Polarity is now optional.
   const stepDoneOwn: Array<boolean | null> = [
     sts.Check_Allowed,
-    sts.Valid_Map,
+    // Identity: durable L2 stamp wins. Once "Verify Identity" is recorded the
+    // step stays done regardless of a transient STS.Valid_Map read timeout or a
+    // PLC power-cycle (the validation writer re-asserts the bit separately).
+    identityDone || sts.Valid_Map === true ? true
+      : sts.Valid_Map === false ? false
+      : null,
     sts.Valid_HP === true && hpFieldsFilled ? true
       : sts.Valid_HP === false ? false
       : null,
-    sts.Valid_Direction === true ? true
+    // Direction: same durable-L2-wins treatment as Identity.
+    directionDone || sts.Valid_Direction === true ? true
       : sts.Valid_Direction === false ? false
       : null,
     check4Complete ? true : null,
@@ -1531,6 +1552,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setSpeedSetUpDone(false)
       setBeltTrackedDone(false)
       setHpFieldsFilled(false)
+      setIdentityDone(false)
+      setDirectionDone(false)
       // Re-arm the auto-backfill so it can run again if STS is still high.
       backfilledRef.current = false
       // Same for the HMI.Speed_At_30rev backfill — the L2 stamp it reads
@@ -1543,6 +1566,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       readL2CellsForDevice(device.deviceName).then(cells => {
         const parsedPolarity = parsePolarityStamp(cells?.polarity)
         if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+        if (cells?.verifyIdentity?.trim()) setIdentityDone(true)
+        if (cells?.checkDirection?.trim()) setDirectionDone(true)
         setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
         if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
         const inferredStepFiveDone =
