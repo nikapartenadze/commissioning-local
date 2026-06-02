@@ -48,6 +48,14 @@ export interface SnapshotEpc {
 export interface SnapshotEstopZone {
   zoneName: string
   epcs: SnapshotEpc[]
+  /**
+   * Device names (matching SVG ids / io-check task devices) that belong to
+   * this zone — derived from the zone's EPC VFD/IO/related tags. The zone's
+   * E-Stop Verification gates on THESE devices' safety IO checks being done.
+   * Empty when no device could be mapped (then the builder falls back to the
+   * global "all safety IO done" rule).
+   */
+  safetyDeviceNames: string[]
 }
 
 export interface SnapshotVfdStep {

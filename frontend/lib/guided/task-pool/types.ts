@@ -96,6 +96,30 @@ export interface Step {
    */
   verdictSource?: string
   verdictKey?: string
+
+  // ── data-entry steps (VFD setup + functional checks) ──────────────
+  /** L2 column being recorded (by name) — VFD wizard / functional. */
+  l2Column?: string
+  /** L2 device + column ids for a direct cell write (functional checks). */
+  l2DeviceId?: number
+  l2ColumnId?: number
+  /** How the tester records this step. */
+  inputType?: 'pass_fail' | 'number' | 'text'
+  /** Current recorded value (so re-entering shows progress). */
+  currentValue?: string | null
+  /** This step records the VFD "Controls Verified" flag. */
+  vfdControls?: boolean
+
+  // ── e-stop per-EPC steps ──────────────────────────────────────────
+  estopZone?: string
+  estopCheckTag?: string
+  estopEpcName?: string
+
+  /**
+   * IO ids whose live PLC transitions should be watched on this step. A
+   * detected actuation auto-passes (io_check) or assists (functional).
+   */
+  watchIoIds?: number[]
 }
 
 export interface Task {
