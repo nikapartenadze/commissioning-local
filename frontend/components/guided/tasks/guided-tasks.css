@@ -344,8 +344,54 @@ html:not(.dark) .gt-btn-primary { color: #fff; }
 }
 html:not(.dark) .gt-btn-warn { color: #fff; }
 
+/* pass = green action (IO/functional/e-stop pass) */
+.gt-btn-pass {
+  background: var(--gm-green);
+  border-color: var(--gm-green);
+  color: #062014;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.4) inset;
+}
+.gt-btn-pass:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 0 18px rgba(34, 197, 94, 0.4), 0 0 0 1px rgba(34, 197, 94, 0.6) inset;
+}
+html:not(.dark) .gt-btn-pass { color: #fff; }
+
 .gt-btn-ghost { background: transparent; border-color: transparent; color: var(--gm-text-dim); }
 .gt-btn-ghost:hover { background: var(--gm-bg-elevated); color: var(--gm-text); border-color: var(--gm-border); }
+
+/* data-entry input (VFD HP / functional numeric/text) */
+.gt-input {
+  width: min(320px, 80vw);
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--gm-border-strong);
+  background: var(--gm-bg-surface);
+  color: var(--gm-text);
+  font: 16px var(--gm-mono);
+  text-align: center;
+}
+.gt-input:focus { outline: 2px solid var(--gm-orange); outline-offset: 0; border-color: var(--gm-orange); }
+
+/* e-stop live auto-verdict pill */
+.gt-verdict {
+  display: inline-block;
+  margin: 4px auto 14px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-family: var(--gm-mono);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--gm-border-strong);
+  background: var(--gm-bg-surface);
+  color: var(--gm-text-dim);
+}
+.gt-verdict strong { font-size: 15px; }
+.gt-verdict-pass { color: var(--gm-green); border-color: var(--gm-green); }
+.gt-verdict-fail { color: var(--gm-red); border-color: var(--gm-red); }
+.gt-verdict-ready { color: var(--gm-amber); border-color: var(--gm-amber); }
+.gt-verdict-unknown { color: var(--gm-text-faint); }
 
 .gt-btn-lg { min-height: 48px; padding: 0 28px; font-size: 16px; }
 .gt-btn-xl { min-height: 60px; padding: 0 52px; font-size: 20px; letter-spacing: 0.02em; }

@@ -102,6 +102,7 @@ import * as guidedTest from '@/app/api/guided/test/route'
 import * as guidedClear from '@/app/api/guided/clear/route'
 import * as guidedDeviceByName from '@/app/api/guided/devices/[name]/route'
 import * as guidedTasks from '@/app/api/guided/tasks/route'
+import * as guidedTasksSteps from '@/app/api/guided/tasks/steps/route'
 import * as guidedTasksSkip from '@/app/api/guided/tasks/skip/route'
 import * as guidedTasksComplete from '@/app/api/guided/tasks/complete/route'
 import * as roadmap from '@/app/api/roadmap/route'
@@ -281,6 +282,7 @@ export function createApiRouter(): Router {
   router.post('/api/guided/clear', asyncHandler(guidedClear.POST))
   // Guided-Mode Task Pool (Phase→Segment→Task→Step priority engine)
   router.get('/api/guided/tasks', asyncHandler(guidedTasks.GET))
+  router.get('/api/guided/tasks/steps', asyncHandler(guidedTasksSteps.GET))
   router.post('/api/guided/tasks/skip', asyncHandler(guidedTasksSkip.POST))
   router.post('/api/guided/tasks/complete', asyncHandler(guidedTasksComplete.POST))
   router.get('/api/roadmap', asyncHandler(roadmap.GET))

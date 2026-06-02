@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildTaskPool, taskId } from '@/lib/guided/task-pool/task-builder'
 import { pickNextTask, TASK_PRIORITY } from '@/lib/guided/task-pool/priority'
-import { buildSteps } from '@/lib/guided/task-pool/steps'
+import { buildSteps, buildVfdSteps, buildFunctionalSteps, buildEstopSteps } from '@/lib/guided/task-pool/steps'
 import type {
   DataSnapshot,
   SnapshotDevice,
@@ -252,7 +252,7 @@ describe('buildTaskPool — e-stop verification', () => {
   it('blocks e-stop verification until all safety IO checks are done', () => {
     const snap = emptySnapshot({
       devices: [device('SAFE1', 0, [io(1, null, true)], { isSafety: true })],
-      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }] }],
+      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }], safetyDeviceNames: [] }],
     })
     const t = byId(buildTaskPool(snap).tasks, taskId('estop_verification', 'Zone 1'))
     expect(t?.state).toBe('blocked')
@@ -262,10 +262,31 @@ describe('buildTaskPool — e-stop verification', () => {
   it('makes e-stop verification available once safety IO checks complete', () => {
     const snap = emptySnapshot({
       devices: [device('SAFE1', 0, [io(1, 'Passed', true)], { isSafety: true })],
-      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }] }],
+      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }], safetyDeviceNames: [] }],
     })
     const t = byId(buildTaskPool(snap).tasks, taskId('estop_verification', 'Zone 1'))
     expect(t?.state).toBe('available')
+  })
+
+  it('gates a zone on ONLY its own devices when mapped (per-zone dependency)', () => {
+    // Zone A maps to SAFE_A (passed); Zone B maps to SAFE_B (untested).
+    const snap = emptySnapshot({
+      devices: [
+        device('SAFE_A', 0, [io(1, 'Passed', true)], { isSafety: true }),
+        device('SAFE_B', 1, [io(2, null, true)], { isSafety: true }),
+      ],
+      estopZones: [
+        { zoneName: 'Zone A', epcs: [{ name: 'EPC_A', checkTag: 'TA', result: null }], safetyDeviceNames: ['SAFE_A'] },
+        { zoneName: 'Zone B', epcs: [{ name: 'EPC_B', checkTag: 'TB', result: null }], safetyDeviceNames: ['SAFE_B'] },
+      ],
+    })
+    const pool = buildTaskPool(snap)
+    // Zone A is available even though SAFE_B (a different zone's device) is untested.
+    expect(byId(pool.tasks, taskId('estop_verification', 'Zone A'))?.state).toBe('available')
+    // Zone B is blocked because its own device SAFE_B isn't checked.
+    const zb = byId(pool.tasks, taskId('estop_verification', 'Zone B'))
+    expect(zb?.state).toBe('blocked')
+    expect(zb?.unmetDependencies.join(' ')).toContain('SAFE_B')
   })
 
   it('completes an e-stop zone when every EPC has a result', () => {
@@ -277,6 +298,7 @@ describe('buildTaskPool — e-stop verification', () => {
             { name: 'EPC1', checkTag: 'T1', result: 'pass' },
             { name: 'EPC2', checkTag: 'T2', result: 'fail' },
           ],
+          safetyDeviceNames: [],
         },
       ],
     })
@@ -442,5 +464,102 @@ describe('buildSteps', () => {
     expect(steps[0].kind).toBe('manual_confirm')
     expect(steps[1].kind).toBe('auto_detect')
     expect(steps[1].verdictSource).toBe('/api/estop/status')
+  })
+
+  it('io_check steps carry watchIoIds for auto-detection', () => {
+    const steps = buildSteps(ioTask, [{ id: 7, name: 'PE1:I.x', description: 'x', result: null }])
+    const check = steps.find((s) => s.kind === 'io_check')
+    expect(check?.watchIoIds).toEqual([7])
+  })
+})
+
+describe('buildVfdSteps', () => {
+  const vfd: Task = {
+    id: taskId('vfd_setup', 'VFD1'),
+    type: 'vfd_setup',
+    phase: 'Commissioning',
+    segment: 'VFD Commissioning',
+    priority: 2,
+    title: 'VFD Setup: VFD1',
+    deviceName: 'VFD1',
+    state: 'available',
+    steps: [],
+    unmetDependencies: [],
+    progress: 0,
+  }
+
+  it('navigates, records each column, then controls-verified', () => {
+    const steps = buildVfdSteps(vfd, [
+      { name: 'Verify Identity', inputType: 'pass_fail', value: null },
+      { name: 'Motor HP (Field)', inputType: 'number', value: null },
+    ])
+    expect(steps[0].kind).toBe('navigate')
+    expect(steps[1].l2Column).toBe('Verify Identity')
+    expect(steps[1].inputType).toBe('pass_fail')
+    expect(steps[2].l2Column).toBe('Motor HP (Field)')
+    expect(steps[2].inputType).toBe('number')
+    expect(steps[steps.length - 1].vfdControls).toBe(true)
+  })
+})
+
+describe('buildFunctionalSteps', () => {
+  const fn: Task = {
+    id: taskId('functional_check', 'SS:SS1'),
+    type: 'functional_check',
+    phase: 'Commissioning',
+    segment: 'Functional Validation',
+    priority: 6,
+    title: 'Start/Stop Check: SS1',
+    deviceName: 'SS1',
+    state: 'available',
+    steps: [],
+    unmetDependencies: [],
+    progress: 0,
+  }
+
+  it('navigates then one io_check-rendered column step per column with cell ids + watch', () => {
+    const steps = buildFunctionalSteps(
+      fn,
+      42,
+      [
+        { columnId: 10, name: 'Motor Runs', inputType: 'pass_fail', value: null },
+        { columnId: 11, name: 'Motor Stops', inputType: 'pass_fail', value: null },
+      ],
+      [5, 6],
+    )
+    expect(steps[0].kind).toBe('navigate')
+    expect(steps[1].kind).toBe('manual_confirm')
+    expect(steps[1].l2DeviceId).toBe(42)
+    expect(steps[1].l2ColumnId).toBe(10)
+    expect(steps[1].watchIoIds).toEqual([5, 6])
+    expect(steps).toHaveLength(3)
+  })
+})
+
+describe('buildEstopSteps', () => {
+  const estop: Task = {
+    id: taskId('estop_verification', 'Zone 1'),
+    type: 'estop_verification',
+    phase: 'Commissioning',
+    segment: 'Safety Verification',
+    priority: 4,
+    title: 'E-Stop Verification: Zone 1',
+    state: 'available',
+    steps: [],
+    unmetDependencies: [],
+    progress: 0,
+  }
+
+  it('makes the zone nominal then one auto-detect step per pending EPC', () => {
+    const steps = buildEstopSteps(estop, 'Zone 1', [
+      { name: 'EPC1', checkTag: 'T1', result: null },
+      { name: 'EPC2', checkTag: 'T2', result: 'pass' },
+    ])
+    expect(steps[0].kind).toBe('manual_confirm')
+    // only the pending EPC (EPC1) gets a step
+    const epcSteps = steps.filter((s) => s.kind === 'auto_detect')
+    expect(epcSteps).toHaveLength(1)
+    expect(epcSteps[0].estopCheckTag).toBe('T1')
+    expect(epcSteps[0].estopZone).toBe('Zone 1')
   })
 })

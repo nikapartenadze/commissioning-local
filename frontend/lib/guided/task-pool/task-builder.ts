@@ -159,14 +159,29 @@ function buildIoCheckTasks(
     })
 }
 
-function buildEstopTasks(snapshot: DataSnapshot, allSafetyIoDone: boolean): RawTask[] {
+function buildEstopTasks(
+  snapshot: DataSnapshot,
+  allSafetyIoDone: boolean,
+  safetyDoneByDevice: Map<string, boolean>,
+): RawTask[] {
   return snapshot.estopZones
     .filter((z) => z.epcs.length > 0)
     .map((z: SnapshotEstopZone) => {
       const total = z.epcs.length
       const done = z.epcs.filter((e) => e.result === 'pass' || e.result === 'fail').length
       const unmet: string[] = []
-      if (!allSafetyIoDone) {
+      // Prefer per-zone gating: only the safety devices in THIS zone must be
+      // checked. Fall back to the global rule when no device could be mapped.
+      const mapped = z.safetyDeviceNames.filter((d) => safetyDoneByDevice.has(d))
+      if (mapped.length > 0) {
+        const pending = mapped.filter((d) => !safetyDoneByDevice.get(d))
+        if (pending.length > 0) {
+          const shown = pending.slice(0, 3).join(', ')
+          unmet.push(
+            `Safety I/O Check must be done for ${shown}${pending.length > 3 ? ` +${pending.length - 3} more` : ''}`,
+          )
+        }
+      } else if (!allSafetyIoDone) {
         unmet.push('All Safety I/O Check tasks must be done first')
       }
       return {
@@ -222,9 +237,16 @@ export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
   tasks.push(...safetyTasks)
   const allSafetyIoDone =
     safetyTasks.length === 0 || safetyTasks.every(isComplete)
+  // device → is its safety IO check complete (for per-zone e-stop gating)
+  const safetyDoneByDevice = new Map<string, boolean>()
+  for (const t of safetyTasks) {
+    if (t.deviceName) safetyDoneByDevice.set(t.deviceName, isComplete(t))
+  }
 
   // 4) E-Stop Verification (priority 4)
-  const estopTasks = buildEstopTasks(snapshot, allSafetyIoDone).map((r) => finalize(r, snapshot))
+  const estopTasks = buildEstopTasks(snapshot, allSafetyIoDone, safetyDoneByDevice).map((r) =>
+    finalize(r, snapshot),
+  )
   tasks.push(...estopTasks)
 
   // 5) IO Check — Non-Safety (priority 5)

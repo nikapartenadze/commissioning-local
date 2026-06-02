@@ -191,10 +191,45 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
       if (m?.Result === 'fail') return 'fail'
       return null
     }
+    const deviceNameSet = new Set(devices.map((d) => d.deviceName))
+    // Map a PLC tag to one of THIS subsystem's SVG device names, if possible.
+    // Tags look like "UL17_19_VFD:SI.In0Data" or "PE1:I.Pulled"; the device
+    // prefix is everything before the first ':' / '.'. We only keep matches
+    // that are real devices in this subsystem so gating stays accurate.
+    const deviceOf = (tag: string | null): string | null => {
+      if (!tag) return null
+      const base = tag.split(/[:.]/)[0]
+      if (deviceNameSet.has(base)) return base
+      if (deviceNameSet.has(base + '_PD')) return base + '_PD'
+      return null
+    }
     for (const z of zones) {
       const epcs = db
-        .prepare('SELECT Name, CheckTag FROM EStopEpcs WHERE ZoneId = ? ORDER BY id')
-        .all(z.id) as { Name: string; CheckTag: string }[]
+        .prepare('SELECT id, Name, CheckTag FROM EStopEpcs WHERE ZoneId = ? ORDER BY id')
+        .all(z.id) as { id: number; Name: string; CheckTag: string }[]
+      const zoneDevices = new Set<string>()
+      for (const e of epcs) {
+        const tags: (string | null)[] = []
+        try {
+          for (const r of db.prepare('SELECT Tag, StoTag FROM EStopVfds WHERE EpcId = ?').all(e.id) as {
+            Tag: string | null
+            StoTag: string | null
+          }[]) {
+            tags.push(r.Tag, r.StoTag)
+          }
+          for (const r of db.prepare('SELECT Tag FROM EStopIoPoints WHERE EpcId = ?').all(e.id) as {
+            Tag: string | null
+          }[]) {
+            tags.push(r.Tag)
+          }
+        } catch {
+          /* ignore */
+        }
+        for (const t of tags) {
+          const dn = deviceOf(t)
+          if (dn) zoneDevices.add(dn)
+        }
+      }
       estopZones.push({
         zoneName: z.Name,
         epcs: epcs.map((e) => ({
@@ -202,6 +237,7 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
           checkTag: e.CheckTag,
           result: resultFor(z.Name, e.CheckTag),
         })),
+        safetyDeviceNames: [...zoneDevices],
       })
     }
   } catch {
@@ -217,7 +253,9 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
     const sheets = db
       .prepare('SELECT id, Name, DisplayName FROM L2Sheets ORDER BY DisplayOrder')
       .all() as SheetRow[]
-    const isVfdSheet = (s: SheetRow) => /vfd/i.test(s.Name) || /vfd/i.test(s.DisplayName ?? '')
+    // The VFD sheet ships as name "APF" with display "Variable Frequency Drive".
+    const isVfdSheet = (s: SheetRow) =>
+      /vfd|apf/i.test(s.Name) || /vfd|variable frequency/i.test(s.DisplayName ?? '')
 
     // Belt tracking: any "Belt Tracked" column value across all sheets.
     const beltCells = db
