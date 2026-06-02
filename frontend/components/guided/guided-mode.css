@@ -1904,3 +1904,32 @@ html:not(.dark) .gm-io-comment-add:hover {
 }
 .gm-roadmap-path-overlay { pointer-events: none; }
 @keyframes gm-spin { to { transform: rotate(360deg); } }
+
+/* ── Guided Tasks CTA (entry into the Task-Pool flow) ─────────────────── */
+.gm-tasks-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 14px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  border: 1px solid #1d4ed8;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+  transition: filter 0.15s, transform 0.05s;
+}
+.gm-tasks-cta:hover { filter: brightness(1.08); }
+.gm-tasks-cta:active { transform: translateY(1px); }
+.gm-tasks-cta-badge {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  background: #f59e0b;
+  color: #1f2937;
+  padding: 1px 5px;
+  border-radius: 4px;
+}

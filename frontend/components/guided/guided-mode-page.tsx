@@ -255,6 +255,12 @@ export function GuidedModePage() {
             <div className="gm-title">Subsystem {subsystemId}</div>
             <div className="gm-title-meta">Guided Commissioning</div>
           </div>
+          {/* Entry into the Task-Pool guided flow (Phase→Segment→Task→Step,
+              priority-driven). Coexists with the SCADA/Roadmap device flow. */}
+          <Link to={`/commissioning/${subsystemId}/guided/tasks`} className="gm-tasks-cta">
+            ▶ Guided Tasks
+            <span className="gm-tasks-cta-badge">NEW</span>
+          </Link>
         </div>
 
         <div className="gm-progress-wrap">
