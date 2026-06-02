@@ -255,11 +255,10 @@ export function GuidedModePage() {
             <div className="gm-title">Subsystem {subsystemId}</div>
             <div className="gm-title-meta">Guided Commissioning</div>
           </div>
-          {/* Entry into the Task-Pool guided flow (Phase→Segment→Task→Step,
-              priority-driven). Coexists with the SCADA/Roadmap device flow. */}
-          <Link to={`/commissioning/${subsystemId}/guided/tasks`} className="gm-tasks-cta">
+          {/* Return to the default Task-Pool guided flow (this classic
+              device-walk view is reached via ?classic=1). */}
+          <Link to={`/commissioning/${subsystemId}/guided`} className="gm-tasks-cta">
             ▶ Guided Tasks
-            <span className="gm-tasks-cta-badge">NEW</span>
           </Link>
         </div>
 
