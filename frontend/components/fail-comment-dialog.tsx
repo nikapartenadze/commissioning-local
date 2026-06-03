@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AlertCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
+import { BLOCKER_PARTIES, BLOCKER_VOCAB, type BlockerParty } from "@/lib/blockers"
 
 // Minimal shape the dialog needs. Callers may pass any object extending it —
 // the IO grid passes IoItem; the EPC view passes an EPC-shaped object.
@@ -74,18 +75,11 @@ const FAILURE_REASONS = [
   'Other',
 ]
 
-// Blocker assignment vocabulary — only shown in unpass mode. These map
-// directly to the two install-tracker columns on Devices, which is why the
-// party list excludes Mechanical (the same exclusion rule as Failure Reason).
-type BlockerParty = 'Electrical' | 'Controls' | '3rd Party'
-
-const BLOCKER_PARTIES: BlockerParty[] = ['Electrical', 'Controls', '3rd Party']
-
-const BLOCKER_DESCRIPTIONS: Record<BlockerParty, string[]> = {
-  Electrical: ['Not installed', 'Not powered', 'Not aligned', 'Wrong wiring', 'Damaged', 'Temp install', 'Other'],
-  Controls: ['Not programmed', 'Missing drawings', 'Config error', 'Wrong tag', 'Other'],
-  '3rd Party': ['Vendor blocked', 'Awaiting vendor', 'Other'],
-}
+// Blocker assignment vocabulary — only shown in unpass mode. These map directly
+// to the two install-tracker columns on Devices. The list now INCLUDES Mechanical
+// (re-added per Kevin 2026-06-03) and is the shared cascade vocabulary, hand-synced
+// with commissioning-cloud/lib/blockers.ts and installation-tracker.
+const BLOCKER_DESCRIPTIONS = BLOCKER_VOCAB
 
 export function FailCommentDialog<T extends FailCommentDialogIo>({
   open,
@@ -250,9 +244,6 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-[11px] text-muted-foreground">
-                  Mechanical isn&apos;t listed here — those are reassigned in the installation tracker.
-                </p>
               </div>
 
               <div className="space-y-2">

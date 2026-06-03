@@ -26,6 +26,11 @@ export function getPartyResponsible(failureMode?: string | null): PartyResponsib
     case '3rd Party': return '3rd Party'
     case 'Mech': return 'Mechanical'
     case 'Mechanical': return 'Mechanical'
+    // Mechanical descriptive vocabulary (re-added v2.39.19 / 2026-06-03).
+    case 'Guard rail missing':
+    case 'Side guard not installed':
+    case 'Not aligned (mechanical)':
+      return 'Mechanical'
     case 'Electrical': return 'Electrical'
     case 'Controls': return 'Controls'
 
