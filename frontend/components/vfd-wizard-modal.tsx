@@ -762,19 +762,38 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         throw new Error(`Valid_Direction: ${dirRes?.error || 'write failed'}`)
       }
 
-      // Stamp both L2 cells. Best-effort — if the cloud hasn't deployed the
-      // Polarity column yet the per-cell write returns ok=false but the
-      // envelope is still success; log but don't block. The PLC writes were
-      // the operational action; cells are the audit record.
+      // Stamp both L2 cells. The Polarity stamp is NOT optional bookkeeping:
+      // it is the ONLY durable record of the operator's choice. The PLC bits
+      // live in volatile controller memory and every program download wipes
+      // them to 0/0 — the background writer can only restore drives whose
+      // stamp saved. Silent-swallowing this failure cost CDW5 three weeks of
+      // verification work (May 2026) and sent belts backwards. Fail LOUDLY.
       const initials = buildInitialsStamp(userName)
       const polStamp = buildPolarityStamp(userName, polarity)
-      writeL2Cells(deviceName, sheetName, userName, [
-        { columnName: 'Check Direction', value: initials },
-        { columnName: 'Polarity',        value: polStamp },
-      ]).then((l2) => {
+      try {
+        const l2 = await writeL2Cells(deviceName, sheetName, userName, [
+          { columnName: 'Check Direction', value: initials },
+          { columnName: 'Polarity',        value: polStamp },
+        ])
         const failed = (l2?.written || []).filter((w: any) => !w.ok)
-        if (failed.length > 0) console.warn('[Step3] L2 partial write:', failed)
-      }).catch(() => { /* best-effort */ })
+        if (failed.length > 0) {
+          console.warn('[Step3] L2 stamp write FAILED:', failed)
+          const names = failed.map((w: any) => `"${w.columnName}" (${w.error || 'write failed'})`).join(', ')
+          setLastWriteError(
+            `Direction was set on the PLC, but the ${names} record did NOT save. ` +
+            `Without the saved Polarity record this drive reverts to default direction ` +
+            `after any PLC program download. Pull the latest data from cloud (Pull IOs) ` +
+            `and press the direction button again.`,
+          )
+        }
+      } catch (err) {
+        console.warn('[Step3] L2 stamp write error:', err)
+        setLastWriteError(
+          `Direction was set on the PLC, but saving the Polarity record failed ` +
+          `(${err instanceof Error ? err.message : String(err)}). ` +
+          `It will not survive a PLC program download — re-confirm once the tool can save.`,
+        )
+      }
 
       setChosen(polarity)
       onPolaritySet(polarity)

@@ -110,6 +110,15 @@ export async function POST(req: Request, res: Response) {
         } | undefined
 
         if (!col) {
+          // Loud server-side trace: a dropped commissioning cell (esp. "Polarity")
+          // means the durable record of an operator action is being discarded —
+          // exactly what silently lost three weeks of CDW5 polarity work when the
+          // column hadn't been deployed yet (May 2026).
+          console.warn(
+            `[VFD WriteL2Cells] DROPPED cell write — column "${cell.columnName}" does not exist ` +
+            `in sheet "${target.sheetName}" (device ${deviceName}, value ${JSON.stringify(cell.value)}). ` +
+            `Pull the latest L2 data from cloud to receive missing columns.`,
+          )
           written.push({ columnName: cell.columnName, ok: false, error: `Column not found in sheet "${target.sheetName}"` })
           continue
         }
@@ -224,9 +233,10 @@ export async function POST(req: Request, res: Response) {
     }
 
     // If any commissioning check cell was written, trigger background sync of
-    // VFD validation flags to the PLC (Valid_Map, Valid_HP, Valid_Direction).
+    // VFD validation flags to the PLC (Valid_Map, Valid_HP, Valid_Direction,
+    // and the Normal/Reverse_Polarity pair derived from "Polarity").
     const checkCellWritten = written.some(w => w.ok && [
-      'Verify Identity', 'Check Direction', 'Motor HP (Field)', 'VFD HP (Field)',
+      'Verify Identity', 'Check Direction', 'Motor HP (Field)', 'VFD HP (Field)', 'Polarity',
     ].includes(w.columnName))
     if (checkCellWritten) {
       import('@/lib/vfd-validation-writer')

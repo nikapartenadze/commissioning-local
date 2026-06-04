@@ -31,7 +31,7 @@ import {
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
-import { deviceFlagWrites } from '@/lib/vfd-polarity'
+import { deviceFlagWrites, isDirectionCheckValid, parsePolarity } from '@/lib/vfd-polarity'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -60,10 +60,26 @@ const MIN_SYNC_INTERVAL_MS = 5_000 // at most once per 5 s
 
 // Tags that returned a definitive PLCTAG_ERR_NOT_FOUND, keyed `${gateway}::${tagPath}`.
 // Once a CMD flag tag is known absent on a given PLC we stop re-creating it every
-// sync. Cleared only by a tool restart (or naturally by switching to a gateway
-// whose program does have the tag). Prevents the 10 s safety-net from spamming
-// tens of thousands of failing createTag calls at the controller's CIP queue.
+// sync. Cleared on every PLC (re)connect via clearKnownMissingTags() — a reconnect
+// often follows a program download, after which the tag inventory may have changed
+// (and a NOT_FOUND answered mid-download is not durable truth). Between connects it
+// prevents the 10 s safety-net from spamming tens of thousands of failing createTag
+// calls at the controller's CIP queue.
 const knownMissingTags = new Set<string>()
+
+/**
+ * Forget every cached "tag not in program" verdict. MUST be called whenever
+ * the PLC client (re)initializes: program downloads drop the connection, and
+ * a download can add tags that were previously absent — or have answered
+ * NOT_FOUND for tags that exist, while the transfer was in flight. Without
+ * this, the writer permanently skipped those CMD flags until a tool restart,
+ * leaving polarity/validation bits unrestored after a download (CDW5, June 2026).
+ */
+export function clearKnownMissingTags(reason: string): void {
+  if (knownMissingTags.size === 0) return
+  console.log(`[VfdValidationWriter] Cleared ${knownMissingTags.size} known-missing tag(s): ${reason}`)
+  knownMissingTags.clear()
+}
 
 // ── Mass-failure circuit breaker ────────────────────────────────────
 // When the PLC's EtherNet/IP ring breaks (e.g. the 2026-05-28 16:30 UTC
@@ -122,15 +138,18 @@ function buildFaultedDeviceSet(
 // ── L2 query ───────────────────────────────────────────────────────
 
 /**
- * Return every VFD device whose "Check Direction" L2 cell is non-empty.
- * "Check Direction" is the last wizard step (Step 3).  Because the wizard is
- * sequential, a non-empty value here means Steps 1 (Verify Identity),
- * 2 (Motor HP / VFD HP), and 3 (Check Direction) are all complete.
+ * Return every VFD device whose "Check Direction" L2 cell holds a usable
+ * (non-empty, non-"fail") value. "Check Direction" is the last wizard step
+ * (Step 3). Because the wizard is sequential, a usable value here means
+ * Steps 1 (Verify Identity), 2 (Motor HP / VFD HP), and 3 (Check Direction)
+ * are all complete. A literal "fail" is excluded — a drive whose direction
+ * check FAILED must not have Valid_Direction force-set every cycle.
  */
 function getValidatedDevices(): ValidatedDevice[] {
   try {
     const rows = db.prepare(`
-      SELECT d.DeviceName AS deviceName, s.Name AS sheetName, pcv.Value AS polarityRaw
+      SELECT d.DeviceName AS deviceName, s.Name AS sheetName,
+             cv.Value AS checkDirRaw, pcv.Value AS polarityRaw
       FROM L2Devices d
       JOIN L2Sheets   s  ON s.id = d.SheetId
       JOIN L2Columns  c  ON c.SheetId = d.SheetId
@@ -140,13 +159,20 @@ function getValidatedDevices(): ValidatedDevice[] {
       WHERE c.Name = 'Check Direction'
         AND cv.Value IS NOT NULL AND cv.Value != ''
         AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
-    `).all() as ValidatedDevice[]
-    return rows
+    `).all() as Array<ValidatedDevice & { checkDirRaw: string | null }>
+    return rows.filter(r => isDirectionCheckValid(r.checkDirRaw))
   } catch (err) {
     console.error('[VfdValidationWriter] DB query failed:', err)
     return []
   }
 }
+
+// Devices last reported as "validated but no polarity stamp" — used to log the
+// list only when it CHANGES, not every 10 s cycle. These drives get
+// Valid_Direction force-set while their Normal/Reverse_Polarity bits are left
+// at whatever the last program download carried (typically 0/0) — i.e. they
+// silently revert to default direction and the tool cannot restore them.
+let lastNoPolarityKey = ''
 
 // ── Batch write ────────────────────────────────────────────────────
 
@@ -364,11 +390,33 @@ export async function syncValidationFlags(): Promise<void> {
     const abortNote = abortedAt != null
       ? `, ABORTED at device ${abortedAt + 1}/${devices.length} after ${MAX_CONSECUTIVE_CREATE_FAILURES} consecutive createTag failures (CIP queue likely saturated; will retry next cycle)`
       : ''
+    // Direction-checked drives with no parseable Polarity stamp: their
+    // Normal/Reverse_Polarity bits CANNOT be restored after a program
+    // download — the recorded fact doesn't exist. Surface them loudly so
+    // field logs / cloud heartbeat show exactly which belts are exposed.
+    const noPolarity = devices
+      .filter(d => parsePolarity(d.polarityRaw) === null)
+      .map(d => d.deviceName)
+      .sort()
     console.log(
       `[VfdValidationWriter] Sync done: ${devices.length} device(s), ` +
       `${ok} ok, ${fail} failed, ${skipped} skipped (known-missing), ` +
-      `${skippedFaulted} skipped-faulted, ${elapsed} ms${abortNote}`,
+      `${skippedFaulted} skipped-faulted, ${noPolarity.length} without-polarity-stamp, ` +
+      `${elapsed} ms${abortNote}`,
     )
+    const noPolarityKey = noPolarity.join(',')
+    if (noPolarityKey !== lastNoPolarityKey) {
+      lastNoPolarityKey = noPolarityKey
+      if (noPolarity.length > 0) {
+        console.warn(
+          `[VfdValidationWriter] ${noPolarity.length} direction-checked drive(s) have NO polarity stamp — ` +
+          `their direction reverts to program-download default and cannot be auto-restored. ` +
+          `Re-run the wizard bump test on: ${noPolarity.join(', ')}`,
+        )
+      } else {
+        console.log('[VfdValidationWriter] All direction-checked drives now have a polarity stamp.')
+      }
+    }
   } catch (err) {
     console.error('[VfdValidationWriter] Sync error:', err)
   } finally {

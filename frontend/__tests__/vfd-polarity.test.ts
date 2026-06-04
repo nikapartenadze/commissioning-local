@@ -3,6 +3,7 @@ import {
   parsePolarity,
   polarityFlagWrites,
   deviceFlagWrites,
+  isDirectionCheckValid,
 } from '@/lib/vfd-polarity'
 
 describe('parsePolarity', () => {
@@ -11,11 +12,38 @@ describe('parsePolarity', () => {
     expect(parsePolarity('ASH 9/5 · Inverter')).toBe('Inverter')
     expect(parsePolarity('jp 12/1 · inverter')).toBe('Inverter')
   })
+  it('accepts undotted recovery stamps (CDW5 "ACD Recovery" backfill format)', () => {
+    expect(parsePolarity('ACD 5/29 Inverter')).toBe('Inverter')
+    expect(parsePolarity('ACD 5/29 Normal')).toBe('Normal')
+  })
+  it('accepts "Inverted" as Inverter (legacy/manual wording)', () => {
+    expect(parsePolarity('ASH 9/5 · Inverted')).toBe('Inverter')
+    expect(parsePolarity('Inverted')).toBe('Inverter')
+    expect(parsePolarity('inverted')).toBe('Inverter')
+  })
   it('returns null for empty / unrecognized / legacy values', () => {
     expect(parsePolarity(null)).toBeNull()
     expect(parsePolarity(undefined)).toBeNull()
     expect(parsePolarity('')).toBeNull()
     expect(parsePolarity('ASH 9/5')).toBeNull() // direction stamped, polarity not
+  })
+})
+
+describe('isDirectionCheckValid', () => {
+  it('accepts initials stamps and pass', () => {
+    expect(isDirectionCheckValid('CR 5/21')).toBe(true)
+    expect(isDirectionCheckValid('pass')).toBe(true)
+  })
+  it('rejects fail — a failed direction check must NOT be force-validated', () => {
+    expect(isDirectionCheckValid('fail')).toBe(false)
+    expect(isDirectionCheckValid('FAIL')).toBe(false)
+    expect(isDirectionCheckValid('  fail  ')).toBe(false)
+  })
+  it('rejects empty / null', () => {
+    expect(isDirectionCheckValid('')).toBe(false)
+    expect(isDirectionCheckValid('   ')).toBe(false)
+    expect(isDirectionCheckValid(null)).toBe(false)
+    expect(isDirectionCheckValid(undefined)).toBe(false)
   })
 })
 
