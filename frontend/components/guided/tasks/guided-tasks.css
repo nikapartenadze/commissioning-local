@@ -1,0 +1,609 @@
+/* =================================================================
+ * Guided Tasks — Task-Pool runner
+ *
+ * Inherits the Guided Commissioning "industrial control surface"
+ * design system (see guided-mode.css): dark cockpit chrome, signal-
+ * orange for the "do this now" action, JetBrains Mono for IO codes,
+ * Manrope for display. Warm cream/gold light theme. Tablet-first,
+ * touch targets >= 44px.
+ * ================================================================= */
+
+.gt-root {
+  --gm-bg-deep:        #0a0c10;
+  --gm-bg-surface:     #14171d;
+  --gm-bg-elevated:    #1c1f26;
+  --gm-bg-canvas:      #0d1016;
+  --gm-border:         #262b34;
+  --gm-border-strong:  #3a4150;
+  --gm-text:           #e8ebf0;
+  --gm-text-dim:       #a8aeba;
+  --gm-text-faint:     #7e8492;
+
+  --gm-orange:         #ff7a00;
+  --gm-orange-dim:     #4a2300;
+  --gm-orange-glow:    rgba(255, 122, 0, 0.45);
+  --gm-green:          #22c55e;
+  --gm-green-deep:     #0e3d22;
+  --gm-red:            #ef4444;
+  --gm-red-deep:       #4a1818;
+  --gm-amber:          #fbbf24;
+  --gm-amber-deep:     #3d2c0c;
+  --gm-grey:           #94a3b8;
+
+  --gm-mono:    'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', monospace;
+  --gm-display: 'Manrope', system-ui, -apple-system, sans-serif;
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: var(--gm-display);
+  background: var(--gm-bg-deep);
+  color: var(--gm-text);
+  letter-spacing: -0.005em;
+}
+
+/* Light theme — mirror guided-mode.css warm cream/gold tones. */
+html:not(.dark) .gt-root {
+  --gm-bg-deep:        #ebe7da;
+  --gm-bg-surface:     #f1eee4;
+  --gm-bg-elevated:    #f7f4ec;
+  --gm-bg-canvas:      #fafaf5;
+  --gm-border:         #c8c2af;
+  --gm-border-strong:  #a8a18a;
+  --gm-text:           #1a1f2a;
+  --gm-text-dim:       #4a5260;
+  --gm-text-faint:     #7e8492;
+
+  --gm-orange:         #d96400;
+  --gm-orange-dim:     #ffe0c2;
+  --gm-orange-glow:    rgba(217, 100, 0, 0.30);
+  --gm-green:          #16a34a;
+  --gm-green-deep:     #d3f2dc;
+  --gm-red:            #c81e1e;
+  --gm-red-deep:       #fcd9d9;
+  --gm-amber:          #b8780a;
+  --gm-amber-deep:     #fdedc4;
+  --gm-grey:           #6b7280;
+}
+
+.gt-center { align-items: center; justify-content: center; }
+
+/* ──────────────────────── HEADER STRIP ──────────────────────── */
+.gt-header {
+  min-height: 56px;
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: 1fr minmax(280px, 560px) 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--gm-border);
+  background: var(--gm-bg-surface);
+}
+.gt-header > * { min-width: 0; }
+
+.gt-back {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: var(--gm-text-dim);
+  font-size: 13px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+.gt-back:hover {
+  background: var(--gm-bg-elevated);
+  color: var(--gm-text);
+  border-color: var(--gm-border);
+}
+
+.gt-context { text-align: center; }
+.gt-context-title {
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gm-text-faint);
+  margin-bottom: 2px;
+}
+.gt-context-lines {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--gm-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  color: var(--gm-text-dim);
+}
+.gt-context-lines span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gt-context-lines span:last-child { color: var(--gm-orange); font-weight: 600; }
+
+.gt-header-right {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.gt-progress { display: flex; align-items: center; gap: 8px; }
+.gt-progress-bar {
+  width: 110px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--gm-bg-elevated);
+  overflow: hidden;
+}
+.gt-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--gm-green) 0%, var(--gm-amber) 60%, var(--gm-orange) 100%);
+  box-shadow: 0 0 8px rgba(255, 122, 0, 0.35);
+  transition: width 400ms cubic-bezier(.4, 0, .2, 1);
+}
+.gt-progress-label {
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--gm-text-faint);
+  white-space: nowrap;
+}
+
+/* chips in the header (Classic view / Task Viewer) */
+.gt-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--gm-border-strong);
+  background: var(--gm-bg-elevated);
+  color: var(--gm-text-dim);
+}
+.gt-chip:hover { color: var(--gm-orange); border-color: var(--gm-orange); background: var(--gm-bg-elevated); }
+
+/* ──────────────────── BODY: live map + step HUD ──────────────────── */
+.gt-body {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: var(--gm-bg-deep);
+}
+.gt-map-layer {
+  position: absolute;
+  inset: 0;
+}
+.gt-map-layer > * { width: 100%; height: 100%; }
+.gt-map-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-family: var(--gm-mono);
+  font-size: 12px;
+  color: var(--gm-text-faint);
+}
+
+/* floating step card over the map — the "modal/information" from the spec */
+.gt-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  width: min(660px, 94vw);
+  z-index: 5;
+  padding: 18px 22px 20px;
+  border-radius: 10px;
+  text-align: center;
+  background:
+    linear-gradient(180deg, rgba(255, 122, 0, 0.08) 0%, transparent 64%),
+    var(--gm-bg-elevated);
+  border: 1px solid rgba(255, 122, 0, 0.32);
+  box-shadow: 0 18px 50px -12px rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.gt-hud::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--gm-orange);
+  box-shadow: 0 0 12px var(--gm-orange-glow);
+  border-radius: 10px 10px 0 0;
+}
+.gt-hud-step {
+  font-family: var(--gm-display);
+  font-size: clamp(22px, 2.6vw, 30px);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--gm-text);
+  margin-bottom: 6px;
+}
+.gt-hud-instruction {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--gm-text-dim);
+  max-width: 560px;
+  margin: 0 auto 14px;
+}
+.gt-hud .gt-actions-center { margin-top: 4px; }
+.gt-hud .gt-livestate { margin: 4px auto 12px; }
+
+/* all-done card sits centered, not anchored to the bottom */
+.gt-hud-done {
+  bottom: auto;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.gt-hud-done .gt-empty-icon { margin-bottom: 10px; }
+
+.gt-instruction {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--gm-text-dim);
+  text-align: center;
+  margin: 0 0 12px;
+}
+.gt-hint {
+  font-family: var(--gm-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gm-text-faint);
+  text-align: center;
+  margin: 6px 0;
+}
+
+/* io-check live signal readout */
+.gt-iocheck { display: flex; flex-direction: column; align-items: center; }
+.gt-livestate {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--gm-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--gm-text-dim);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--gm-border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  margin: 6px 0 22px;
+}
+html:not(.dark) .gt-livestate { background: rgba(0, 0, 0, 0.04); }
+.gt-dot {
+  width: 12px; height: 12px; border-radius: 999px; display: inline-block;
+}
+.gt-dot-on { background: var(--gm-green); box-shadow: 0 0 12px var(--gm-green); }
+.gt-dot-off { background: var(--gm-grey); }
+.gt-dot-unknown { background: transparent; border: 1px solid var(--gm-border-strong); }
+
+/* ──────────────────────── BUTTONS ──────────────────────── */
+.gt-actions-center { display: flex; gap: 14px; justify-content: center; margin-top: 4px; }
+.gt-actions-stack { flex-direction: column; align-items: center; gap: 12px; }
+
+.gt-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: 6px;
+  border: 1px solid var(--gm-border-strong);
+  background: var(--gm-bg-elevated);
+  color: var(--gm-text);
+  font-family: var(--gm-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: all 140ms;
+}
+.gt-btn:hover { border-color: var(--gm-text-dim); }
+.gt-btn:focus-visible { outline: 2px solid var(--gm-orange); outline-offset: 1px; }
+.gt-btn:active { transform: translateY(1px); }
+.gt-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+/* primary = signal orange ("do this now" — I'm There / OK / Continue / Mark Done) */
+.gt-btn-primary {
+  background: var(--gm-orange);
+  border-color: var(--gm-orange);
+  color: #1c0d00;
+  box-shadow: 0 0 0 1px rgba(255, 122, 0, 0.4) inset;
+}
+.gt-btn-primary:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 0 18px var(--gm-orange-glow), 0 0 0 1px rgba(255, 122, 0, 0.6) inset;
+}
+html:not(.dark) .gt-btn-primary { color: #fff; }
+
+/* warn = fail/destructive (Nothing Happened / Skip confirm) */
+.gt-btn-warn {
+  background: var(--gm-red);
+  border-color: var(--gm-red);
+  color: #1c0606;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.4) inset;
+}
+.gt-btn-warn:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 0 18px rgba(239, 68, 68, 0.4), 0 0 0 1px rgba(239, 68, 68, 0.6) inset;
+}
+html:not(.dark) .gt-btn-warn { color: #fff; }
+
+/* pass = green action (IO/functional/e-stop pass) */
+.gt-btn-pass {
+  background: var(--gm-green);
+  border-color: var(--gm-green);
+  color: #062014;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.4) inset;
+}
+.gt-btn-pass:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 0 18px rgba(34, 197, 94, 0.4), 0 0 0 1px rgba(34, 197, 94, 0.6) inset;
+}
+html:not(.dark) .gt-btn-pass { color: #fff; }
+
+.gt-btn-ghost { background: transparent; border-color: transparent; color: var(--gm-text-dim); }
+.gt-btn-ghost:hover { background: var(--gm-bg-elevated); color: var(--gm-text); border-color: var(--gm-border); }
+
+/* data-entry input (VFD HP / functional numeric/text) */
+.gt-input {
+  width: min(320px, 80vw);
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--gm-border-strong);
+  background: var(--gm-bg-surface);
+  color: var(--gm-text);
+  font: 16px var(--gm-mono);
+  text-align: center;
+}
+.gt-input:focus { outline: 2px solid var(--gm-orange); outline-offset: 0; border-color: var(--gm-orange); }
+
+/* e-stop live auto-verdict pill */
+.gt-verdict {
+  display: inline-block;
+  margin: 4px auto 14px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-family: var(--gm-mono);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--gm-border-strong);
+  background: var(--gm-bg-surface);
+  color: var(--gm-text-dim);
+}
+.gt-verdict strong { font-size: 15px; }
+.gt-verdict-pass { color: var(--gm-green); border-color: var(--gm-green); }
+.gt-verdict-fail { color: var(--gm-red); border-color: var(--gm-red); }
+.gt-verdict-ready { color: var(--gm-amber); border-color: var(--gm-amber); }
+.gt-verdict-unknown { color: var(--gm-text-faint); }
+
+.gt-btn-lg { min-height: 48px; padding: 0 28px; font-size: 16px; }
+.gt-btn-xl { min-height: 60px; padding: 0 52px; font-size: 20px; letter-spacing: 0.02em; }
+.gt-btn-sm { min-height: 30px; padding: 0 12px; font-size: 12px; }
+
+.gt-link {
+  font-family: var(--gm-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--gm-orange);
+  text-decoration: none;
+}
+.gt-link:hover { text-decoration: underline; }
+
+.gt-manual { display: flex; flex-direction: column; align-items: center; width: 100%; }
+
+/* Skip Task — pinned bottom-right (spec mockup) */
+.gt-skip {
+  position: absolute;
+  right: 22px;
+  bottom: 20px;
+  z-index: 6;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 6px;
+  background: var(--gm-bg-elevated);
+  border: 1px solid var(--gm-border-strong);
+  color: var(--gm-text-dim);
+  font-family: var(--gm-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.gt-skip:hover { color: var(--gm-red); border-color: var(--gm-red); }
+
+/* ──────────────────────── POPUPS ──────────────────────── */
+.gt-popup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(5, 7, 10, 0.62);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.gt-popup {
+  width: min(440px, 92vw);
+  padding: 28px 30px;
+  border-radius: 10px;
+  background: var(--gm-bg-elevated);
+  border: 1px solid var(--gm-border-strong);
+  box-shadow: 0 24px 70px -12px rgba(0, 0, 0, 0.7);
+  text-align: center;
+}
+.gt-popup-pass { border-color: rgba(34, 197, 94, 0.5); }
+.gt-popup-fail { border-color: rgba(239, 68, 68, 0.5); }
+.gt-popup-icon {
+  width: 56px; height: 56px; margin: 0 auto 14px;
+  border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; font-weight: 800; color: #07140c;
+}
+.gt-popup-pass .gt-popup-icon { background: var(--gm-green); box-shadow: 0 0 24px rgba(34, 197, 94, 0.4); }
+.gt-popup-fail .gt-popup-icon { background: var(--gm-red); color: #1c0606; box-shadow: 0 0 24px rgba(239, 68, 68, 0.4); }
+.gt-popup-msg { font-size: 17px; font-weight: 600; color: var(--gm-text); margin: 0 0 20px; }
+
+.gt-skip-dialog { text-align: left; }
+.gt-skip-dialog h3 { margin: 0 0 6px; font-size: 18px; font-weight: 700; color: var(--gm-text); }
+.gt-field-label {
+  display: block;
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gm-text-faint);
+  margin: 14px 0 6px;
+}
+.gt-textarea {
+  width: 100%;
+  border: 1px solid var(--gm-border-strong);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: 14px/1.5 var(--gm-display);
+  resize: vertical;
+  background: var(--gm-bg-surface);
+  color: var(--gm-text);
+}
+.gt-textarea:focus { outline: 2px solid var(--gm-orange); outline-offset: 0; border-color: var(--gm-orange); }
+.gt-dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+
+/* ──────────────────────── EMPTY / DONE ──────────────────────── */
+.gt-empty { text-align: center; max-width: 520px; }
+.gt-empty-icon {
+  width: 72px; height: 72px; margin: 0 auto 16px;
+  border-radius: 999px;
+  background: var(--gm-green);
+  color: #07140c;
+  display: flex; align-items: center; justify-content: center; font-size: 38px;
+  box-shadow: 0 0 28px rgba(34, 197, 94, 0.35);
+}
+.gt-empty h2 { font-size: 22px; font-weight: 700; margin: 0 0 8px; color: var(--gm-text); }
+.gt-empty p { color: var(--gm-text-dim); margin: 4px 0; }
+
+/* ──────────────────────── TASK VIEWER ──────────────────────── */
+.gt-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(5, 7, 10, 0.62);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.gt-viewer {
+  width: min(900px, 96vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--gm-bg-surface);
+  border: 1px solid var(--gm-border-strong);
+  box-shadow: 0 24px 70px -12px rgba(0, 0, 0, 0.7);
+}
+.gt-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--gm-border);
+}
+.gt-viewer-head h2 { margin: 0; font-size: 18px; font-weight: 700; color: var(--gm-text); }
+
+.gt-viewer-summary {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--gm-border);
+}
+.gt-stat {
+  flex: 1;
+  min-width: 88px;
+  text-align: center;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--gm-bg-elevated);
+  border: 1px solid var(--gm-border);
+}
+.gt-stat-value { font-family: var(--gm-mono); font-size: 22px; font-weight: 700; color: var(--gm-text); }
+.gt-stat-label {
+  font-family: var(--gm-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gm-text-faint);
+}
+.gt-stat-completed .gt-stat-value { color: var(--gm-green); }
+.gt-stat-in_progress .gt-stat-value { color: var(--gm-amber); }
+.gt-stat-available .gt-stat-value { color: var(--gm-orange); }
+.gt-stat-blocked .gt-stat-value { color: var(--gm-grey); }
+.gt-stat-skipped .gt-stat-value { color: var(--gm-text-faint); }
+
+.gt-viewer-body { overflow: auto; padding: 8px 20px 20px; }
+.gt-viewer-segment h3 {
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gm-text-faint);
+  margin: 18px 0 8px;
+}
+.gt-viewer-segment ul { list-style: none; margin: 0; padding: 0; }
+.gt-viewer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+.gt-viewer-row:hover { background: var(--gm-bg-elevated); border-color: var(--gm-border); }
+.gt-viewer-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; color: var(--gm-text); }
+.gt-viewer-progress { font-family: var(--gm-mono); font-size: 12px; color: var(--gm-amber); }
+.gt-viewer-reason {
+  font-family: var(--gm-mono);
+  font-size: 11px;
+  color: var(--gm-text-faint);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gt-viewer-actions { margin-left: auto; }
+
+.gt-badge {
+  font-family: var(--gm-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.gt-badge-completed { background: var(--gm-green-deep); color: var(--gm-green); }
+.gt-badge-in_progress { background: var(--gm-amber-deep); color: var(--gm-amber); }
+.gt-badge-available { background: var(--gm-orange-dim); color: var(--gm-orange); }
+.gt-badge-blocked { background: var(--gm-bg-elevated); color: var(--gm-grey); border: 1px solid var(--gm-border); }
+.gt-badge-skipped { background: var(--gm-bg-elevated); color: var(--gm-text-faint); }

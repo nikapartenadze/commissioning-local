@@ -168,6 +168,7 @@ export async function POST(req: Request, res: Response) {
     // SQLite row and the cloud push (see lib/logging/recovery-log).
     auditLog({
       type: 'io.test',
+      // MCM-aware id (getMcmIdForIo fallback to SubsystemId).
       subsystemId,
       ioId,
       user: currentUser ?? null,

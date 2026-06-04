@@ -29,6 +29,22 @@ Copy-Item $nodeExe (Join-Path $outputDir "node.exe")
 $nodeVer = & node --version
 Write-Host "  Node.js $nodeVer"
 
+# Visual C++ runtime — plctag.dll imports vcruntime140.dll, which a clean
+# Windows 11 laptop does NOT ship. Missing it => LoadLibrary(plctag.dll) fails
+# with os error 126 ("module could not be found") even though plctag.dll is
+# present. Bundling the runtime next to node.exe (application dir, first in the
+# DLL search order) makes auto-updated tablets self-contained. Permitted by MS.
+$vcrtSrc = Join-Path $env:SystemRoot "System32"
+$vcrt = Join-Path $vcrtSrc "vcruntime140.dll"
+if (!(Test-Path $vcrt)) {
+    Write-Error "vcruntime140.dll not found in $vcrtSrc. Install the VC++ 2015-2022 Redistributable (x64) on this build machine and re-run."
+    exit 1
+}
+Copy-Item $vcrt (Join-Path $outputDir "vcruntime140.dll") -Force
+$vcrt1 = Join-Path $vcrtSrc "vcruntime140_1.dll"
+if (Test-Path $vcrt1) { Copy-Item $vcrt1 (Join-Path $outputDir "vcruntime140_1.dll") -Force }
+Write-Host "  vcruntime140.dll bundled"
+
 # Step 3: Copy compiled app
 Write-Host "[3/6] Copying compiled app..."
 $dsDir = Join-Path $outputDir "app\dist-server"
@@ -54,6 +70,15 @@ if (Test-Path $dllSrc) {
     Copy-Item $dllSrc (Join-Path $outputDir "app\")
     Copy-Item $dllSrc $dsDir
     Write-Host "  plctag.dll copied"
+    # VC++ runtime alongside each plctag.dll too (belt-and-suspenders: covers
+    # the case where the DLL is loaded with an altered search path, and ensures
+    # an app-only auto-update payload still carries the dependency).
+    Copy-Item $vcrt (Join-Path $outputDir "app\") -Force
+    Copy-Item $vcrt $dsDir -Force
+    if (Test-Path $vcrt1) {
+        Copy-Item $vcrt1 (Join-Path $outputDir "app\") -Force
+        Copy-Item $vcrt1 $dsDir -Force
+    }
 } else {
     Write-Host "  WARNING: plctag.dll not found at $dllSrc"
 }

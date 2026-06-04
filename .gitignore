@@ -54,6 +54,9 @@ temp_build/
 frontend/plctag.dll
 frontend/libplctag.so
 
+# Bundled VC++ redistributable (downloaded at installer-build time, ~25MB)
+deploy/vc_redist.x64.exe
+
 # Vercel
 .vercel
 io-checkout-*.zip

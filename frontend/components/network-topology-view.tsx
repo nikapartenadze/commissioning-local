@@ -1029,6 +1029,46 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
     )
   )
 
+  // ── Not-communicating roll-up ────────────────────────────────────
+  // Every monitored entity (MCM controller, DPM node, device port) whose
+  // status tag reports faulted (red). This is the quick-glance "what's down"
+  // list shown beside the ring. Each entry carries the DPM nodeId so a click
+  // can expand that DPM's star diagram and filter its device table.
+  interface FaultedEntry {
+    kind: 'MCM' | 'DPM' | 'Device'
+    name: string
+    ip: string | null
+    ringName: string
+    dpmName: string | null
+    nodeId: number | null
+    statusTag: string | null
+  }
+  const notCommunicating: FaultedEntry[] = []
+  for (const ring of rings) {
+    if (getStatusColor(ring.mcmTag, tagStates) === 'red') {
+      notCommunicating.push({
+        kind: 'MCM', name: ring.mcmName, ip: ring.mcmIp,
+        ringName: ring.name, dpmName: null, nodeId: null, statusTag: ring.mcmTag,
+      })
+    }
+    for (const node of ring.nodes) {
+      if (getStatusColor(node.statusTag, tagStates) === 'red') {
+        notCommunicating.push({
+          kind: 'DPM', name: node.name, ip: node.ipAddress,
+          ringName: ring.name, dpmName: node.name, nodeId: node.id, statusTag: node.statusTag,
+        })
+      }
+      for (const port of node.ports) {
+        if (port.deviceName && getStatusColor(port.statusTag, tagStates) === 'red') {
+          notCommunicating.push({
+            kind: 'Device', name: port.deviceName, ip: port.deviceIp,
+            ringName: ring.name, dpmName: node.name, nodeId: node.id, statusTag: port.statusTag,
+          })
+        }
+      }
+    }
+  }
+
   const filteredDevices = tableSearch
     ? allDevices.filter(d =>
         d.deviceName.toLowerCase().includes(tableSearch.toLowerCase()) ||
@@ -1109,8 +1149,10 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         </div>
       </div>
 
-      {/* Ring diagrams — full width */}
-      {rings.map((ring) => (
+      {/* Ring diagrams (left) + Not-Communicating roll-up (right) */}
+      <div className="flex gap-4 items-start">
+       <div className="flex-1 min-w-0 flex flex-col gap-4">
+       {rings.map((ring) => (
         <Card key={ring.id} className="bg-card border flex-shrink-0 overflow-hidden">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-lg text-foreground">
@@ -1184,7 +1226,67 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
             </p>
           </CardContent>
         </Card>
-      ))}
+       ))}
+       </div>
+
+       {/* Right: Not-Communicating roll-up — quick "what's down" list across
+           all rings. Sticky so it stays in view while scrolling long rings. */}
+       <Card className="w-72 flex-shrink-0 bg-card border overflow-hidden sticky top-2 self-start">
+         <CardHeader className="pb-2">
+           <CardTitle className="flex items-center gap-2 text-sm text-foreground">
+             {notCommunicating.length === 0 ? (
+               <span className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" />
+             ) : (
+               <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
+                 <span className="absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75 animate-ping" />
+                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+               </span>
+             )}
+             Not Communicating
+             <Badge variant="outline" className={cn("ml-auto text-xs border-border",
+               notCommunicating.length > 0 ? "text-red-500 border-red-500/40" : "text-muted-foreground"
+             )}>
+               {notCommunicating.length}
+             </Badge>
+           </CardTitle>
+         </CardHeader>
+         <CardContent className="px-2 pb-2">
+           {notCommunicating.length === 0 ? (
+             <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+               All monitored devices are communicating.
+             </p>
+           ) : (
+             <div className="max-h-[60vh] overflow-y-auto flex flex-col gap-1">
+               {notCommunicating.map((d, i) => (
+                 <button
+                   key={`${d.kind}-${d.name}-${i}`}
+                   onClick={() => {
+                     if (d.nodeId != null) setExpandedNodeId(d.nodeId)
+                     setTableSearch(d.name)
+                   }}
+                   className="w-full text-left rounded-md border border-red-500/30 bg-red-500/5 hover:bg-red-500/10 px-2.5 py-1.5 transition-colors"
+                   title={`${d.name}\nRing: ${d.ringName}${d.dpmName && d.kind === 'Device' ? `\nDPM: ${d.dpmName}` : ''}\nStatus tag: ${d.statusTag ?? '—'}`}
+                 >
+                   <div className="flex items-center gap-1.5">
+                     <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" />
+                     <span className="font-medium text-xs text-foreground truncate flex-1" title={d.name}>
+                       {d.name}
+                     </span>
+                     <Badge variant="outline" className="text-[9px] px-1 py-0 border-border text-muted-foreground flex-shrink-0">
+                       {d.kind}
+                     </Badge>
+                   </div>
+                   <div className="mt-0.5 pl-3.5 text-[10px] text-muted-foreground truncate">
+                     {d.ip ? <span className="font-mono">{d.ip}</span> : null}
+                     {d.kind === 'Device' && d.dpmName ? <span>{d.ip ? ' · ' : ''}{d.dpmName}</span> : null}
+                   </div>
+                 </button>
+               ))}
+             </div>
+           )}
+         </CardContent>
+       </Card>
+      </div>
 
       {/* Expanded DPM: Star diagram (left half) + Device table (right half) */}
       {expandedNode && (
