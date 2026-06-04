@@ -241,10 +241,10 @@ function getValidatedDevices(): ValidatedDevice[] {
   try {
     const rows = db.prepare(`
       SELECT d.DeviceName AS deviceName, s.Name AS sheetName,
-             MAX(CASE WHEN c.Name = 'Verify Identity'  AND cv.Value <> '' THEN 1 ELSE 0 END) AS hasIdentity,
-             MAX(CASE WHEN c.Name = 'Motor HP (Field)' AND cv.Value <> '' THEN 1 ELSE 0 END) AS hasMotorHp,
-             MAX(CASE WHEN c.Name = 'VFD HP (Field)'   AND cv.Value <> '' THEN 1 ELSE 0 END) AS hasVfdHp,
-             MAX(CASE WHEN c.Name = 'Check Direction'  AND cv.Value <> '' AND LOWER(TRIM(cv.Value)) <> 'fail' THEN 1 ELSE 0 END) AS hasDirection,
+             MAX(CASE WHEN c.Name = 'Verify Identity'  AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasIdentity,
+             MAX(CASE WHEN c.Name = 'Motor HP (Field)' AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasMotorHp,
+             MAX(CASE WHEN c.Name = 'VFD HP (Field)'   AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasVfdHp,
+             MAX(CASE WHEN c.Name = 'Check Direction'  AND TRIM(cv.Value) <> '' AND LOWER(TRIM(cv.Value)) <> 'fail' THEN 1 ELSE 0 END) AS hasDirection,
              MAX(CASE WHEN c.Name = 'Polarity' THEN cv.Value END) AS polarityRaw
       FROM L2Devices d
       JOIN L2Sheets s   ON s.id = d.SheetId
