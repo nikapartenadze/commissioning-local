@@ -76,9 +76,26 @@ const knownMissingTags = new Set<string>()
  * leaving polarity/validation bits unrestored after a download (CDW5, June 2026).
  */
 export function clearKnownMissingTags(reason: string): void {
+  lastKnownMissingClearMs = Date.now()
   if (knownMissingTags.size === 0) return
   console.log(`[VfdValidationWriter] Cleared ${knownMissingTags.size} known-missing tag(s): ${reason}`)
   knownMissingTags.clear()
+}
+
+// Belt-and-suspenders TTL: even if a program download completes WITHOUT the
+// client ever formally dropping the connection (CIP session heals in place →
+// no 'initialized' event → no reconnect-triggered cache clear), no NOT_FOUND
+// verdict may outlive this window. Worst case a genuinely-missing tag costs
+// one extra createTag attempt per TTL — negligible vs. a drive whose
+// validation/polarity flags are silently never written again.
+const KNOWN_MISSING_TTL_MS = 10 * 60_000
+let lastKnownMissingClearMs = Date.now()
+
+function expireKnownMissingTags(): void {
+  const now = Date.now()
+  if (now - lastKnownMissingClearMs < KNOWN_MISSING_TTL_MS) return
+  lastKnownMissingClearMs = now
+  clearKnownMissingTags('periodic TTL expiry — re-probing tags previously reported missing')
 }
 
 // ── Mass-failure circuit breaker ────────────────────────────────────
@@ -337,6 +354,11 @@ export async function syncValidationFlags(): Promise<void> {
   syncRunning = true
   lastSyncMs = now
   pendingSync = false
+
+  // TTL-expire stale "tag not in program" verdicts before each cycle —
+  // guarantees a download that never tripped a reconnect still gets every
+  // tag re-attempted within KNOWN_MISSING_TTL_MS.
+  expireKnownMissingTags()
 
   try {
     // Lazy import to break circular dep (plc-client-manager → us is fine,
