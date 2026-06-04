@@ -352,9 +352,25 @@ function Step0Content({ sts, loading }: { sts: StsState; loading: boolean }) {
         </div>
       )}
       {!loading && !allowed && (
-        <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm">
-          <AlertTriangle className="h-4 w-4" />
-          Waiting for the VFD to come online…
+        // "Check_Allowed" stays low when the drive's AOI isn't enabled — and the
+        // most common field cause is NOT the drive itself but an incomplete
+        // E-stop check: until the safety circuit for this zone is healthy
+        // (E-stops reset), the AOI holds the enable bit off, so the wizard can
+        // never leave step 0. The old message only said "waiting for the VFD",
+        // which sent techs hunting the drive instead of the E-stop check.
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm font-medium">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            Waiting for the VFD to come online…
+          </div>
+          <p className="text-xs text-amber-800/90 dark:text-amber-300/90 leading-relaxed pl-6">
+            If this stays off, the most likely cause is that the <strong>E-stop check
+            for this zone hasn’t been completed yet</strong>. The drive’s AOI only
+            enables once the safety circuit is healthy (all E-stops reset), so the
+            tool can’t take the VFD online until then. Complete the E-stop check for
+            this zone first, then come back to this step. (Also confirm the drive is
+            powered and not faulted.)
+          </p>
         </div>
       )}
     </div>
@@ -1265,6 +1281,16 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // on actual data being recorded, not just on the PLC bit being latched (which
   // can be true on test data without anyone ever clicking Confirm HP).
   const [hpFieldsFilled, setHpFieldsFilled] = useState(false)
+  // Step 1 (Identity) / Step 3 (Direction) durable completion, restored from the
+  // L2 "Verify Identity" / "Check Direction" cells. These steps used to derive
+  // "done" *purely* from the live STS.Valid_Map / STS.Valid_Direction PLC reads,
+  // so on a saturated/unreachable controller a single read timeout (or a PLC
+  // power-cycle that dropped the latch) made an already-commissioned VFD demand
+  // re-verification — "sometimes it asks, sometimes not". The spreadsheet stamp
+  // is the durable record of "a human did this step once"; trusting it makes the
+  // step survive read blips, exactly like HP/Controls/Speed already do.
+  const [identityDone, setIdentityDone] = useState(false)
+  const [directionDone, setDirectionDone] = useState(false)
   // Belt Tracked is now a manual entry (filled by mechanical team, not from PLC).
   // Step 6 (Calibrate Speed) is locked until the Belt Tracked L2 cell is filled.
   const [beltTrackedDone, setBeltTrackedDone] = useState(false)
@@ -1286,6 +1312,11 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
         controlsVerified: cells?.controlsVerified ?? null,
         speedSetUp: cells?.speedSetUp ?? null,
       })
+      // Step 1 "Verify Identity" / Step 3 "Check Direction" — durable proof the
+      // step was completed once. Lets the cascade keep them done even when the
+      // live STS read times out on a busy controller.
+      if (cells?.verifyIdentity?.trim()) setIdentityDone(true)
+      if (cells?.checkDirection?.trim()) setDirectionDone(true)
       // Step 4 "Polarity" — restore from L2 cell. Tolerates legacy stamps.
       const parsedPolarity = parsePolarityStamp(cells?.polarity)
       if (parsedPolarity) setPolaritySetDone(parsedPolarity)
@@ -1462,11 +1493,17 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   //                   Bump Test with no way forward. Polarity is now optional.
   const stepDoneOwn: Array<boolean | null> = [
     sts.Check_Allowed,
-    sts.Valid_Map,
+    // Identity: durable L2 stamp wins. Once "Verify Identity" is recorded the
+    // step stays done regardless of a transient STS.Valid_Map read timeout or a
+    // PLC power-cycle (the validation writer re-asserts the bit separately).
+    identityDone || sts.Valid_Map === true ? true
+      : sts.Valid_Map === false ? false
+      : null,
     sts.Valid_HP === true && hpFieldsFilled ? true
       : sts.Valid_HP === false ? false
       : null,
-    sts.Valid_Direction === true ? true
+    // Direction: same durable-L2-wins treatment as Identity.
+    directionDone || sts.Valid_Direction === true ? true
       : sts.Valid_Direction === false ? false
       : null,
     check4Complete ? true : null,
@@ -1533,6 +1570,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setSpeedSetUpDone(false)
       setBeltTrackedDone(false)
       setHpFieldsFilled(false)
+      setIdentityDone(false)
+      setDirectionDone(false)
       // Re-arm the auto-backfill so it can run again if STS is still high.
       backfilledRef.current = false
       // Same for the HMI.Speed_At_30rev backfill — the L2 stamp it reads
@@ -1545,6 +1584,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       readL2CellsForDevice(device.deviceName).then(cells => {
         const parsedPolarity = parsePolarityStamp(cells?.polarity)
         if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+        if (cells?.verifyIdentity?.trim()) setIdentityDone(true)
+        if (cells?.checkDirection?.trim()) setDirectionDone(true)
         setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
         if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
         const inferredStepFiveDone =

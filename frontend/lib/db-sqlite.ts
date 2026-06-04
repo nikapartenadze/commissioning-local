@@ -322,6 +322,27 @@ export function initializeSchema() {
     CREATE INDEX IF NOT EXISTS idx_roadmaps_mcm ON Roadmaps(Mcm);
   `)
 
+  // Guided-Mode Task Pool: manual status the tester applies to a Task that has
+  // no natural data backing (skip-with-reason, or manual "mark done" for
+  // network-loop / VFD / functional tasks whose detailed entry lives in the
+  // existing specialized views). Data-backed tasks (IO checks, e-stop, L2)
+  // derive completion from their underlying rows — this table only records the
+  // overrides. Keyed by (SubsystemId, TaskId); TaskId is the deterministic id
+  // from lib/guided/task-pool/task-builder.ts so status survives a rebuild.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS GuidedTaskState (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      TaskId      TEXT NOT NULL,
+      Status      TEXT NOT NULL,            -- 'skipped' | 'completed'
+      Reason      TEXT,
+      ActorName   TEXT,
+      UpdatedAt   TEXT DEFAULT (datetime('now')),
+      UNIQUE(SubsystemId, TaskId)
+    );
+    CREATE INDEX IF NOT EXISTS idx_guidedtaskstate_subsystem ON GuidedTaskState(SubsystemId);
+  `)
+
   db.exec(`
     -- Per-EPC pass/fail test results. Keyed by (SubsystemId, ZoneName, CheckTag)
     -- — NOT by EStopEpcs.id — because the cloud-pull route DELETEs and re-inserts

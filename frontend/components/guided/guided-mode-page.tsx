@@ -255,6 +255,11 @@ export function GuidedModePage() {
             <div className="gm-title">Subsystem {subsystemId}</div>
             <div className="gm-title-meta">Guided Commissioning</div>
           </div>
+          {/* Return to the default Task-Pool guided flow (this classic
+              device-walk view is reached via ?classic=1). */}
+          <Link to={`/commissioning/${subsystemId}/guided`} className="gm-tasks-cta">
+            ▶ Guided Tasks
+          </Link>
         </div>
 
         <div className="gm-progress-wrap">

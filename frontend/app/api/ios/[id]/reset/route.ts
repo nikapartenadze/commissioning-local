@@ -92,6 +92,8 @@ export async function POST(req: Request, res: Response) {
     })
     txn()
 
+    // Recovery audit — durable JSONL record of every clear (see recovery-log).
+    // subsystemId is the MCM-aware id (getMcmIdForIo fallback to SubsystemId).
     auditLog({
       type: 'io.reset',
       subsystemId,

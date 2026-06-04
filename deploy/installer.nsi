@@ -215,6 +215,16 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   SetOutPath "$INSTDIR"
   File "${PORTABLE_DIR}\node.exe"
 
+  ; Visual C++ runtime — sits next to node.exe (the application directory,
+  ; FIRST in Windows' DLL search order) so plctag.dll's dependency on
+  ; vcruntime140.dll resolves on clean laptops that have no VC++ redist
+  ; installed. This is the real fix for the "Failed to load libplctag …
+  ; os error 126 (module could not be found)" failures on new machines:
+  ; the file was present, its dependency was not. App-local VC++ runtime
+  ; deployment is permitted by Microsoft. (Copies also land inside \app
+  ; via the recursive copy below for belt-and-suspenders.)
+  File "${PORTABLE_DIR}\vcruntime140.dll"
+
   SetOutPath "$INSTDIR\app"
   File /r "${PORTABLE_DIR}\app\*.*"
 
@@ -251,6 +261,28 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; (Delete old one first in case it's a regular file from portable)
   Delete "$INSTDIR\app\config.json"
   CopyFiles /SILENT "$DATA_DIR\config.json" "$INSTDIR\app\config.json"
+
+  ; ── Ensure VC++ x64 runtime is registered system-wide (belt-and-suspenders) ──
+  ; plctag.dll imports vcruntime140.dll, which a clean Windows 11 laptop does
+  ; NOT ship — its absence is what produced "Failed to load libplctag … os
+  ; error 126 (module could not be found)" on new machines. The app already
+  ; works without this step because we drop an app-local vcruntime140.dll next
+  ; to node.exe (first in Windows' DLL search order), so this is NOT required
+  ; for the tool to run. But registering the runtime system-wide is cleaner and
+  ; covers any other native component. If the 2015-2022 x64 runtime isn't
+  ; registered AND the build bundled vc_redist, install it silently. Best-effort
+  ; and never fatal — VCREDIST_PATH is only defined when the redist was fetched.
+!ifdef VCREDIST_PATH
+  ClearErrors
+  ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
+  IntCmp $0 1 vcrt_done
+    DetailPrint "VC++ x64 runtime not registered — installing bundled vc_redist.x64.exe ..."
+    SetOutPath "$INSTDIR"
+    File "${VCREDIST_PATH}"
+    nsExec::ExecToLog '"$INSTDIR\vc_redist.x64.exe" /install /quiet /norestart'
+    Delete "$INSTDIR\vc_redist.x64.exe"
+  vcrt_done:
+!endif
 
   ; ── Install/Update Windows Service ──
   ; Service was already removed at the top of this section (before the
@@ -401,6 +433,8 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
 
   ; Remove app files (NOT data directory)
   Delete "$INSTDIR\node.exe"
+  Delete "$INSTDIR\vcruntime140.dll"
+  Delete "$INSTDIR\vcruntime140_1.dll"
   RMDir /r "$INSTDIR\app"
   Delete "$INSTDIR\nssm.exe"
   Delete "$INSTDIR\app.ico"

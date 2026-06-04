@@ -86,6 +86,27 @@ echo   Bundling node.exe %NODE_VER%...
 for /f "tokens=*" %%p in ('where node') do set "NODE_EXE=%%p"
 copy "!NODE_EXE!" "%OUTPUT_DIR%\node.exe" >nul
 
+REM  Bundle Visual C++ runtime (plctag.dll depends on vcruntime140.dll).
+REM  A clean Windows 11 laptop does NOT ship vcruntime140.dll. Without it,
+REM  LoadLibrary(plctag.dll) fails with os error 126 ("module could not be
+REM  found") even though plctag.dll is right there -- Windows reports the
+REM  MISSING DEPENDENCY as a failure on the parent DLL. Placing the runtime
+REM  next to node.exe (the application directory, FIRST in Windows' DLL
+REM  search order) makes the tool self-contained: no VC++ redist install
+REM  needed on target laptops. App-local deployment of the VC++ runtime is
+REM  explicitly permitted by Microsoft.
+echo   Bundling Visual C++ runtime (vcruntime140.dll)...
+set "VCRT_SRC=%WINDIR%\System32"
+if not exist "%VCRT_SRC%\vcruntime140.dll" (
+    echo   ERROR: vcruntime140.dll not found in %VCRT_SRC% on this build machine.
+    echo   Install the Visual C++ 2015-2022 Redistributable ^(x64^) from
+    echo   https://aka.ms/vs/17/release/vc_redist.x64.exe then re-run this script.
+    pause
+    exit /b 1
+)
+copy "%VCRT_SRC%\vcruntime140.dll" "%OUTPUT_DIR%\" >nul
+if exist "%VCRT_SRC%\vcruntime140_1.dll" copy "%VCRT_SRC%\vcruntime140_1.dll" "%OUTPUT_DIR%\" >nul
+
 REM ── Compiled server + Vite output ──
 echo   Copying compiled app...
 xcopy /E /I /Q /Y "%FRONTEND_DIR%\dist-server" "%OUTPUT_DIR%\app\dist-server"
@@ -100,6 +121,13 @@ copy "%FRONTEND_DIR%\tools\install-update.ps1" "%OUTPUT_DIR%\app\dist-server\too
 REM ── PLC native library ──
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\" >nul
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\dist-server\" >nul
+
+REM  VC++ runtime alongside each plctag.dll too (belt-and-suspenders: covers
+REM  the case where the DLL is loaded with an altered search path).
+copy "%VCRT_SRC%\vcruntime140.dll" "%OUTPUT_DIR%\app\" >nul
+copy "%VCRT_SRC%\vcruntime140.dll" "%OUTPUT_DIR%\app\dist-server\" >nul
+if exist "%VCRT_SRC%\vcruntime140_1.dll" copy "%VCRT_SRC%\vcruntime140_1.dll" "%OUTPUT_DIR%\app\" >nul
+if exist "%VCRT_SRC%\vcruntime140_1.dll" copy "%VCRT_SRC%\vcruntime140_1.dll" "%OUTPUT_DIR%\app\dist-server\" >nul
 
 REM ── Clean dev artifacts ──
 if exist "%OUTPUT_DIR%\app\dist-server\backups" rmdir /s /q "%OUTPUT_DIR%\app\dist-server\backups"

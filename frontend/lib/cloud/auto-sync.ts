@@ -255,6 +255,8 @@ class AutoSyncService {
               `comments=${JSON.stringify(p.Comments)} ` +
               `ts=${p.Timestamp} retries=${p.RetryCount} createdAt=${p.CreatedAt}`
             )
+            // Recovery-critical: the same payload in the durable 2-week audit
+            // log, so a wrongly-dropped result can be reconstructed/re-pushed.
             auditLog({
               type: 'sync.push.drop',
               ioId: p.IoId,

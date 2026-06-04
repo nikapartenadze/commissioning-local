@@ -68,6 +68,9 @@ try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); }
 
 function logTimestamp(): string { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
 
+// Daily-rotating logs with time-based retention (BACKUP/LOG retention default
+// 14 days) — see lib/logging/file-log. The old 30MB rolling cap couldn't
+// guarantee two weeks of history, which is required for data recovery.
 function appendLog(file: string, line: string): void {
   appendDailyLog(file, line);
 }
@@ -525,6 +528,11 @@ httpServer.listen(PORT, HOSTNAME, () => {
     console.log(`[App] PLC_MODE=remote — polling plc-gateway at ${process.env.GATEWAY_URL || 'http://127.0.0.1:3200'}`);
   }
 
+  // Recovery marker — a durable boot record in the 2-week audit log lets us
+  // correlate "data looks off after a restart" with exactly when the process
+  // came up (see lib/logging/recovery-log).
+  auditLog({ type: 'server.start', detail: { version: SERVER_VERSION, plcMode: PLC_REMOTE ? 'remote' : 'embedded', pid: process.pid } });
+
   // Heal a poisoned update-status.json left behind by an interrupted update.
   // A successful self-update restarts us into the new build with a non-terminal
   // status still on disk; reconciliation stamps it success (running ≥ target)
@@ -542,7 +550,7 @@ httpServer.listen(PORT, HOSTNAME, () => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const backup = require('./lib/startup-backup');
       backup.createStartupBackup();
-      backup.startPeriodicBackups(); // every BACKUP_INTERVAL_HOURS (default 6h), 14-day retention
+      backup.startPeriodicBackups(); // every BACKUP_INTERVAL_HOURS (default 6h), day-based retention (default 14 days)
     } catch (e: any) {
       console.error('[Backup] Backup module failed:', e.message);
     }
