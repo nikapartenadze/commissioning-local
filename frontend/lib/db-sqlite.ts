@@ -470,6 +470,31 @@ export function initializeSchema() {
       LastError TEXT
     );
 
+    -- Device-level blocker sync queue (VFD bump-test failures).
+    -- Unlike L2PendingSyncs (per IO-cell), this propagates a Party→Description
+    -- blocker to the SHARED Devices.Blocker* columns on cloud (resolved there
+    -- by ios(subsystem) ⨝ Devices on device_id WHERE Devices.Name = DeviceName).
+    -- 'set' writes both columns; 'clear' conditionally nulls them only if the
+    -- current cloud values still match the Expected* pair (so a blocker set by
+    -- the tracker/coordinator meanwhile is never wiped). See
+    -- frontend/specs/2026-06-04-vfd-bump-blocker-design.md.
+    CREATE TABLE IF NOT EXISTS DeviceBlockerPendingSyncs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      DeviceName TEXT NOT NULL,
+      Op TEXT NOT NULL,                  -- 'set' | 'clear'
+      BlockerResponsibleParty TEXT,
+      BlockerDescription TEXT,
+      ExpectedParty TEXT,
+      ExpectedDescription TEXT,
+      UpdatedBy TEXT,
+      Timestamp TEXT,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      RetryCount INTEGER DEFAULT 0,
+      LastError TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
+
   `)
 
   // VFD commissioning state is now stored entirely in L2CellValues

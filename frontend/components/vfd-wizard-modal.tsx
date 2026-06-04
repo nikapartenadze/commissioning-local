@@ -11,8 +11,11 @@ import { useSignalR, type VfdTagUpdate as VfdTagUpdatePayload } from '@/lib/sign
 import {
   X, Wifi, WifiOff, Loader2, CheckCircle2, XCircle, AlertTriangle,
   Zap, CircleDot, Send, Play, Square, ChevronRight, RotateCcw,
-  Signal, Fingerprint, Gauge, ArrowRight, Settings2, Lock, Repeat,
+  Signal, Fingerprint, Gauge, ArrowRight, Settings2, Lock, Repeat, Ban,
 } from 'lucide-react'
+import { VfdBumpFailDialog } from '@/components/vfd-bump-fail-dialog'
+import { type VfdBlockerParty } from '@/lib/blockers'
+import { formatBumpBlockerCell, parseBumpBlockerCell } from '@/lib/vfd-bump-blocker'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -133,6 +136,8 @@ interface L2CommissioningCells {
   beltTracked:         string | null
   speedSetUp:          string | null
   controlsVerified:    string | null
+  /** Step 3 "Bump didn't work?" blocker stamp: "<stamp> · <party> · <description>". */
+  bumpBlocker:         string | null
 }
 
 async function readL2CellsForDevice(deviceName: string): Promise<L2CommissioningCells | null> {
@@ -191,6 +196,40 @@ function parsePolarityStamp(stamp: string | null | undefined): Polarity | null {
   if (/\bInverter\b/i.test(stamp)) return 'Inverter'
   if (/\bNormal\b/i.test(stamp)) return 'Normal'
   return null
+}
+
+/**
+ * Active Bump Test blocker (Step 3). Persisted in the `Bump Blocker` L2 cell and
+ * mirrored to the shared Devices.Blocker* columns via the device-blocker sync op.
+ */
+interface BumpBlocker {
+  party: VfdBlockerParty
+  description: string
+}
+
+/**
+ * Fire the device-level bump-blocker sync op (set/clear). Fire-and-forget:
+ * enqueue is the success criterion, cloud push is async/best-effort with a
+ * background retry loop (same philosophy as IO result sync). On failure we only
+ * console.warn — a blocked sync must NEVER block the operator's wizard action.
+ */
+async function postBumpBlockerOp(
+  body:
+    | { subsystemId: number; deviceName: string; op: 'set'; blockerResponsibleParty: string; blockerDescription: string; updatedBy?: string }
+    | { subsystemId: number; deviceName: string; op: 'clear'; expectedParty: string; expectedDescription: string; updatedBy?: string },
+): Promise<void> {
+  try {
+    const res = await fetch('/api/vfd-commissioning/bump-blocker', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      console.warn(`[Step3] bump-blocker ${body.op} op returned HTTP ${res.status}`)
+    }
+  } catch (err) {
+    console.warn(`[Step3] bump-blocker ${body.op} op failed:`, err instanceof Error ? err.message : err)
+  }
 }
 
 // ── Sub-components ─────────────────────────────────────────────────
@@ -680,11 +719,15 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
   )
 }
 
-function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userName, initialPolarity, onPolaritySet }: {
-  sts: StsState; loading: boolean; deviceName: string; plcConnected: boolean
+function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, sheetName, userName, initialPolarity, onPolaritySet, initialBumpBlocker, onBumpBlockerChange }: {
+  sts: StsState; loading: boolean; deviceName: string; subsystemId: number; plcConnected: boolean
   sheetName?: string; userName?: string
   initialPolarity: Polarity | null
   onPolaritySet: (polarity: Polarity) => void
+  /** Restored from the `Bump Blocker` L2 cell on wizard open; null = not blocked. */
+  initialBumpBlocker: BumpBlocker | null
+  /** Notify the parent so the at-a-glance state survives step navigation. */
+  onBumpBlockerChange: (blocker: BumpBlocker | null) => void
 }) {
   const [bumpSending, setBumpSending] = useState(false)
   const [comment, setComment] = useState('')
@@ -692,6 +735,12 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
   const [chosen, setChosen] = useState<Polarity | null>(initialPolarity)
   const [confirming, setConfirming] = useState<Polarity | null>(null)
   const [lastWriteError, setLastWriteError] = useState<string | null>(null)
+  // Bump-fail blocker: dialog open state + the active blocker (red banner).
+  const [bumpFailOpen, setBumpFailOpen] = useState(false)
+  const [bumpBlocker, setBumpBlocker] = useState<BumpBlocker | null>(initialBumpBlocker)
+
+  // Keep local banner in sync if the parent re-seeds it after an async L2 restore.
+  useEffect(() => { setBumpBlocker(initialBumpBlocker) }, [initialBumpBlocker])
 
   const handleBump = async () => {
     setBumpSending(true)
@@ -718,6 +767,54 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
       setLastWriteError(`Bump: ${err instanceof Error ? err.message : String(err)}`)
     }
     setTimeout(() => setBumpSending(false), 1500)
+  }
+
+  /**
+   * Record a Bump Test blocker from the VfdBumpFailDialog. Two persistence
+   * paths, both best-effort and non-fatal:
+   *   1. Write the durable `Bump Blocker` L2 cell (same write path + initials
+   *      stamp Step 3 uses for "Check Direction"). If the sheet has no such
+   *      column the write path returns ok:false for that cell (it does NOT
+   *      throw) — we warn once and still fire the sync op.
+   *   2. POST the device-level 'set' op so the shared Devices.Blocker* columns
+   *      light up on the tracker + cloud dashboards.
+   * Then show the red banner.
+   */
+  const handleBumpFailSubmit = async (party: VfdBlockerParty, description: string) => {
+    const stamp = buildInitialsStamp(userName)
+    const cellValue = formatBumpBlockerCell(stamp, party, description)
+
+    // 1. Durable L2 cell — graceful skip when the column is absent.
+    try {
+      const l2 = await writeL2Cells(deviceName, sheetName, userName, [
+        { columnName: 'Bump Blocker', value: cellValue },
+      ])
+      const failed = (l2?.written || []).filter((w: any) => !w.ok)
+      if (failed.length > 0) {
+        console.warn(
+          `[Step3] "Bump Blocker" L2 cell not saved (${failed.map((w: any) => w.error || 'write failed').join(', ')}). ` +
+          `The blocker still propagates to the device row; only the durable red-state restore is lost. ` +
+          `Pull the latest L2 data from cloud to receive the missing column.`,
+        )
+      }
+    } catch (err) {
+      console.warn('[Step3] "Bump Blocker" L2 cell write error:', err instanceof Error ? err.message : err)
+    }
+
+    // 2. Device-level sync op (fire-and-forget).
+    void postBumpBlockerOp({
+      subsystemId,
+      deviceName,
+      op: 'set',
+      blockerResponsibleParty: party,
+      blockerDescription: description,
+      updatedBy: userName,
+    })
+
+    // 3. Surface the red banner.
+    const next: BumpBlocker = { party, description }
+    setBumpBlocker(next)
+    onBumpBlockerChange(next)
   }
 
   /**
@@ -797,6 +894,35 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
 
       setChosen(polarity)
       onPolaritySet(polarity)
+
+      // Auto-clear any active bump blocker — confirming direction means the
+      // motor moved correctly, so the recorded failure no longer applies.
+      // Both clears are best-effort and NEVER block the polarity commit: the
+      // PLC + Polarity stamp above are already done by the time we get here.
+      if (bumpBlocker) {
+        const active = bumpBlocker
+        // Clear local banner immediately for responsive UI.
+        setBumpBlocker(null)
+        onBumpBlockerChange(null)
+        // Empty the durable L2 cell (same write path; tolerant of missing column).
+        try {
+          await writeL2Cells(deviceName, sheetName, userName, [
+            { columnName: 'Bump Blocker', value: '' },
+          ])
+        } catch (err) {
+          console.warn('[Step3] clearing "Bump Blocker" L2 cell failed:', err instanceof Error ? err.message : err)
+        }
+        // Conditional clear of the shared Devices pair (cloud only nulls it if it
+        // still matches what we recorded — never wipes a tracker re-triage).
+        void postBumpBlockerOp({
+          subsystemId,
+          deviceName,
+          op: 'clear',
+          expectedParty: active.party,
+          expectedDescription: active.description,
+          updatedBy: userName,
+        })
+      }
     } catch (err) {
       setLastWriteError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -841,7 +967,30 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
         {bumpCount > 0 && (
           <span className="text-xs text-muted-foreground">Bumped {bumpCount} time{bumpCount !== 1 ? 's' : ''}</span>
         )}
+        <Button
+          variant="outline"
+          onClick={() => setBumpFailOpen(true)}
+          className="h-12 px-4 text-sm font-semibold gap-2 border-2 border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+        >
+          <Ban className="h-4 w-4" />
+          Bump didn&apos;t work?
+        </Button>
       </div>
+
+      {/* Active bump blocker — red banner, styled like the "Confirm failed" box. */}
+      {bumpBlocker && (
+        <div className="rounded-lg border border-red-300 bg-red-50/60 dark:bg-red-950/30 dark:border-red-800 p-3 flex items-start gap-2">
+          <Ban className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="text-xs font-semibold text-red-800 dark:text-red-300">
+              Blocked — assigned to {bumpBlocker.party}: {bumpBlocker.description}
+            </p>
+            <p className="text-xs text-red-700/80 dark:text-red-400/80">
+              Re-bump to retry. Confirming direction (Set Normal / Invert) clears this blocker.
+            </p>
+          </div>
+        </div>
+      )}
 
       <StatusPill
         label={
@@ -917,6 +1066,14 @@ function Step3Content({ sts, loading, deviceName, plcConnected, sheetName, userN
           Direction confirmed — polarity set to <strong>{chosen}</strong>. Continue to step 4.
         </div>
       )}
+
+      <VfdBumpFailDialog
+        open={bumpFailOpen}
+        onOpenChange={setBumpFailOpen}
+        deviceName={deviceName}
+        onSubmit={handleBumpFailSubmit}
+        onCancel={() => { /* nothing to undo — dialog just closes */ }}
+      />
     </div>
   )
 }
@@ -1293,6 +1450,10 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // Step 4 "Polarity Check" — derived from the L2 cell `Polarity` (Normal | Inverter).
   // Locked open after the operator commits a choice; gates entry to Step 5.
   const [polaritySetDone, setPolaritySetDone] = useState<Polarity | null>(null)
+  // Step 3 "Bump didn't work?" blocker — restored from the `Bump Blocker` L2 cell.
+  // Held at the parent so the red state survives step navigation and feeds the
+  // Step3Content banner the same way `initialPolarity` flows.
+  const [bumpBlocker, setBumpBlocker] = useState<BumpBlocker | null>(null)
   // Step 2 (HP) is "really done" only when both HP cells are filled in L2 *and*
   // the PLC has Valid_HP=true. Tracking the cells here so the cascade can gate
   // on actual data being recorded, not just on the PLC bit being latched (which
@@ -1337,6 +1498,10 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       // Step 4 "Polarity" — restore from L2 cell. Tolerates legacy stamps.
       const parsedPolarity = parsePolarityStamp(cells?.polarity)
       if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+      // Step 3 "Bump Blocker" — restore the active blocker (red banner). Tolerant
+      // of the column being absent (cells.bumpBlocker stays null → no banner).
+      const parsedBlocker = parseBumpBlockerCell(cells?.bumpBlocker)
+      setBumpBlocker(parsedBlocker ? { party: parsedBlocker.party as VfdBlockerParty, description: parsedBlocker.description } : null)
       // Step 2 HP cell completeness — both must be non-empty for the cascade
       // to consider the step done.
       setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
@@ -1583,6 +1748,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       // operator on whichever step is the first not-yet-reset.
       setActiveStep(0)
       setPolaritySetDone(null)
+      setBumpBlocker(null)
       setCheck4Complete(false)
       setSpeedSetUpDone(false)
       setBeltTrackedDone(false)
@@ -1601,6 +1767,8 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       readL2CellsForDevice(device.deviceName).then(cells => {
         const parsedPolarity = parsePolarityStamp(cells?.polarity)
         if (parsedPolarity) setPolaritySetDone(parsedPolarity)
+        const parsedBlocker = parseBumpBlockerCell(cells?.bumpBlocker)
+        setBumpBlocker(parsedBlocker ? { party: parsedBlocker.party as VfdBlockerParty, description: parsedBlocker.description } : null)
         if (cells?.verifyIdentity?.trim()) setIdentityDone(true)
         if (cells?.checkDirection?.trim()) setDirectionDone(true)
         setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
@@ -1897,7 +2065,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             {activeStep === 0 && <Step0Content sts={sts} loading={stsLoading} />}
             {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onHpFilled={() => setHpFieldsFilled(true)} />}
-            {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} />}
+            {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} initialBumpBlocker={bumpBlocker} onBumpBlockerChange={setBumpBlocker} />}
             {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
               setCheck4Complete(true)
               // Persist to local DB so reopening the wizard remembers this

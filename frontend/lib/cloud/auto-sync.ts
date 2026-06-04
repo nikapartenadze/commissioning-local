@@ -653,6 +653,15 @@ class AutoSyncService {
         console.warn('[AutoSync] L2 cell sync error:', err instanceof Error ? err.message : err)
       }
 
+      // Drain device-level blocker syncs (VFD bump-test failures) on the same
+      // periodic cycle. The service applies the same transient/permanent
+      // failure classification and retry-cap behaviour as the IO/L2 pushes.
+      try {
+        await getCloudSyncService().pushDeviceBlockerSyncs()
+      } catch (err) {
+        console.warn('[AutoSync] Device blocker sync error:', err instanceof Error ? err.message : err)
+      }
+
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       this._lastPushResult = `error: ${msg}`

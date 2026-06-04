@@ -1,13 +1,32 @@
 /**
  * VFD Validation Writer — background service that ensures PLC validation flags
- * (Valid_Map, Valid_HP, Valid_Direction) are always set for VFDs that have
- * completed their commissioning checks.
+ * (Valid_Map, Valid_HP, Valid_Direction) are set for VFDs as soon as each
+ * corresponding wizard step is complete — and keeps them set even after a PLC
+ * power cycle, controller restart, or program download.
  *
- * When a VFD passes through the wizard and completes identity, HP, and direction
- * checks, the L2 spreadsheet records "Check Direction" with an initials+date
- * stamp.  This service reads that L2 data and writes the corresponding CMD flags
- * to the PLC so the drives stay validated — even after a PLC power cycle or
- * controller restart.
+ * PER-FLAG ASSERTION (Kevin taskboard #2170, 2026-06-04)
+ * ------------------------------------------------------
+ * This writer used to wait until the wizard's LAST step ("Check Direction")
+ * was stamped, then assert all three flags at once. That coupled the keypad
+ * F0/F1/F2 unlock (gated AOI-side on the Valid_* flags) to a SUCCESSFUL bump
+ * test. But a failed bump means the VFD is "never ready for tracking" — so mech
+ * never got the controls needed to troubleshoot the very failure they were
+ * looking at.
+ *
+ * So we now assert each flag the moment its step is done, independently:
+ *   - Valid_Map        ⇐ "Verify Identity" stamped            (Step 1)
+ *   - Valid_HP         ⇐ "Motor HP (Field)" AND "VFD HP (Field)" filled (Step 2)
+ *   - Valid_Direction  ⇐ "Check Direction" stamped (+ polarity pair) (Step 3)
+ *
+ * This also makes identity/HP durable across mid-wizard PLC downloads, not just
+ * fully-commissioned drives. The AOI-side change — gating the keypad enable on
+ * Valid_Map ALONE so mech gets F0/F1/F2 right after identity — is a controls-team
+ * hand-off (Kevin), out of this tool's scope.
+ *
+ * ASSERT-ONLY semantics: this writer only ever writes 1s for EARNED flags. It
+ * never writes a 0 for an un-earned flag — un-validation happens exclusively via
+ * the explicit Invalidate clear pulses, never here. Polarity bits are written
+ * only when "Check Direction" is stamped (a polarity stamp alone is not enough).
  *
  * Performance: uses batch handle creation — all tags are created first, then a
  * tight read→set→write loop runs across all handles.  100 VFDs (300 tags) sync
@@ -31,15 +50,64 @@ import {
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
-import { deviceFlagWrites, isDirectionCheckValid, parsePolarity } from '@/lib/vfd-polarity'
+import { polarityFlagWrites, parsePolarity, type FlagWrite } from '@/lib/vfd-polarity'
 
 // ── Types ──────────────────────────────────────────────────────────
 
-interface ValidatedDevice {
+/**
+ * One row of the per-flag L2 query: a VFD device with ANY commissioning
+ * progress. The `has*` columns are SQLite 0/1 flags (one per wizard step);
+ * `polarityRaw` is the raw "Polarity" L2 cell.
+ */
+export interface ValidationRow {
   deviceName: string
   sheetName: string
+  /** "Verify Identity" stamped (Step 1). */
+  hasIdentity: number
+  /** "Motor HP (Field)" filled (Step 2). */
+  hasMotorHp: number
+  /** "VFD HP (Field)" filled (Step 2). */
+  hasVfdHp: number
+  /** "Check Direction" stamped (Step 3). */
+  hasDirection: number
   /** Raw "Polarity" L2 cell ("… · Normal|Inverter"), or null when unrecorded. */
   polarityRaw: string | null
+}
+
+interface ValidatedDevice {
+  deviceName: string
+  /** Pre-computed CMD writes (1s only) earned by this device's progress. */
+  writes: FlagWrite[]
+  /** Raw "Polarity" L2 cell — kept for the no-polarity-stamp diagnostic log. */
+  polarityRaw: string | null
+  /** Whether "Check Direction" is stamped — gates the no-polarity warning. */
+  hasDirection: boolean
+}
+
+/**
+ * Pure row→writes mapping. ASSERT-ONLY: emits only 1-valued Valid_* flags for
+ * steps that are complete, never a 0 for an un-earned flag.
+ *
+ *   - Valid_Map        when hasIdentity
+ *   - Valid_HP         when hasMotorHp AND hasVfdHp
+ *   - Valid_Direction  when hasDirection
+ *   - polarity pair    when hasDirection AND a polarity is recorded
+ *
+ * The polarity bits are taken verbatim from polarityFlagWrites() so they can
+ * never drift from the polarity helper's definition. (vfd-polarity's
+ * deviceFlagWrites() emits the same Valid_Map/Valid_HP/Valid_Direction + polarity
+ * set all-or-nothing; here each flag is instead earned independently per step.)
+ */
+export function flagsForDevice(row: ValidationRow): FlagWrite[] {
+  const writes: FlagWrite[] = []
+  if (row.hasIdentity) writes.push({ field: 'Valid_Map', value: 1 })
+  if (row.hasMotorHp && row.hasVfdHp) writes.push({ field: 'Valid_HP', value: 1 })
+  if (row.hasDirection) {
+    writes.push({ field: 'Valid_Direction', value: 1 })
+    // Polarity bits only ride along with a stamped direction check.
+    writes.push(...polarityFlagWrites(row.polarityRaw))
+  }
+  return writes
 }
 
 interface TagHandle {
@@ -155,29 +223,45 @@ function buildFaultedDeviceSet(
 // ── L2 query ───────────────────────────────────────────────────────
 
 /**
- * Return every VFD device whose "Check Direction" L2 cell holds a usable
- * (non-empty, non-"fail") value. "Check Direction" is the last wizard step
- * (Step 3). Because the wizard is sequential, a usable value here means
- * Steps 1 (Verify Identity), 2 (Motor HP / VFD HP), and 3 (Check Direction)
- * are all complete. A literal "fail" is excluded — a drive whose direction
- * check FAILED must not have Valid_Direction force-set every cycle.
+ * Return every VFD device that has ANY commissioning progress, with a per-flag
+ * breakdown (one row per device). A device qualifies if identity is stamped, OR
+ * both HP cells are filled, OR direction is stamped — so each Valid_* flag can
+ * be asserted as soon as its own step is complete (per-flag assertion, #2170),
+ * rather than waiting for the final "Check Direction" step.
+ *
+ * Note on "Check Direction": a literal "fail" is recorded as a non-empty cell,
+ * so `hasDirection` would be 1 for it. flagsForDevice() must therefore NOT
+ * treat a failed direction check as direction-valid. We keep the existing
+ * guard by excluding lowercase "fail" from counting toward hasDirection
+ * directly in the CASE expression (cv.Value <> '' already excludes empty).
+ *
+ * The polarity cell is folded in via a conditional MAX(... ) aggregate.
  */
 function getValidatedDevices(): ValidatedDevice[] {
   try {
     const rows = db.prepare(`
       SELECT d.DeviceName AS deviceName, s.Name AS sheetName,
-             cv.Value AS checkDirRaw, pcv.Value AS polarityRaw
+             MAX(CASE WHEN c.Name = 'Verify Identity'  AND cv.Value <> '' THEN 1 ELSE 0 END) AS hasIdentity,
+             MAX(CASE WHEN c.Name = 'Motor HP (Field)' AND cv.Value <> '' THEN 1 ELSE 0 END) AS hasMotorHp,
+             MAX(CASE WHEN c.Name = 'VFD HP (Field)'   AND cv.Value <> '' THEN 1 ELSE 0 END) AS hasVfdHp,
+             MAX(CASE WHEN c.Name = 'Check Direction'  AND cv.Value <> '' AND LOWER(TRIM(cv.Value)) <> 'fail' THEN 1 ELSE 0 END) AS hasDirection,
+             MAX(CASE WHEN c.Name = 'Polarity' THEN cv.Value END) AS polarityRaw
       FROM L2Devices d
-      JOIN L2Sheets   s  ON s.id = d.SheetId
-      JOIN L2Columns  c  ON c.SheetId = d.SheetId
+      JOIN L2Sheets s   ON s.id = d.SheetId
+      JOIN L2Columns c  ON c.SheetId = d.SheetId
       JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
-      LEFT JOIN L2Columns    pc  ON pc.SheetId = d.SheetId AND pc.Name = 'Polarity'
-      LEFT JOIN L2CellValues pcv ON pcv.DeviceId = d.id AND pcv.ColumnId = pc.id
-      WHERE c.Name = 'Check Direction'
-        AND cv.Value IS NOT NULL AND cv.Value != ''
+      WHERE cv.Value IS NOT NULL AND cv.Value <> ''
         AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
-    `).all() as Array<ValidatedDevice & { checkDirRaw: string | null }>
-    return rows.filter(r => isDirectionCheckValid(r.checkDirRaw))
+      GROUP BY d.DeviceName, s.Name
+      HAVING hasIdentity = 1 OR (hasMotorHp = 1 AND hasVfdHp = 1) OR hasDirection = 1
+    `).all() as ValidationRow[]
+
+    return rows.map(row => ({
+      deviceName: row.deviceName,
+      writes: flagsForDevice(row),
+      polarityRaw: row.polarityRaw,
+      hasDirection: row.hasDirection === 1,
+    }))
   } catch (err) {
     console.error('[VfdValidationWriter] DB query failed:', err)
     return []
@@ -245,9 +329,10 @@ function batchWriteFlags(
         continue
       }
 
-      // Validation flags (=1) + polarity bits (when the Polarity cell is set).
+      // Per-flag earned writes (=1 only) + polarity bits (only when direction
+      // is stamped and a polarity is recorded). Pre-computed by flagsForDevice.
       let deviceAborted = false
-      for (const { field, value } of deviceFlagWrites(device.polarityRaw)) {
+      for (const { field, value } of device.writes) {
         const tagPath = `CBT_${device.deviceName}.CTRL.CMD.${field}`
         // Skip tags already proven absent on THIS PLC — see knownMissingTags.
         const cacheKey = `${gateway}::${tagPath}`
@@ -379,7 +464,7 @@ export async function syncValidationFlags(): Promise<void> {
 
     const devices = getValidatedDevices()
     if (devices.length === 0) {
-      console.log('[VfdValidationWriter] Skipped: no validated VFDs found (no "Check Direction" cells in L2)')
+      console.log('[VfdValidationWriter] Skipped: no VFDs with commissioning progress found in L2')
       return
     }
 
@@ -416,12 +501,20 @@ export async function syncValidationFlags(): Promise<void> {
     // Normal/Reverse_Polarity bits CANNOT be restored after a program
     // download — the recorded fact doesn't exist. Surface them loudly so
     // field logs / cloud heartbeat show exactly which belts are exposed.
+    // Only direction-checked drives are flagged — identity/HP-only drives
+    // legitimately have no polarity yet and are not "exposed".
     const noPolarity = devices
-      .filter(d => parsePolarity(d.polarityRaw) === null)
+      .filter(d => d.hasDirection && parsePolarity(d.polarityRaw) === null)
       .map(d => d.deviceName)
       .sort()
+    // Per-flag device counts — with per-flag assertion a device may earn only
+    // some flags, so this shows how far the fleet has progressed at a glance.
+    const mapN = devices.filter(d => d.writes.some(w => w.field === 'Valid_Map')).length
+    const hpN = devices.filter(d => d.writes.some(w => w.field === 'Valid_HP')).length
+    const dirN = devices.filter(d => d.writes.some(w => w.field === 'Valid_Direction')).length
     console.log(
-      `[VfdValidationWriter] Sync done: ${devices.length} device(s), ` +
+      `[VfdValidationWriter] Sync done: ${devices.length} device(s) ` +
+      `(${mapN} map, ${hpN} hp, ${dirN} dir), ` +
       `${ok} ok, ${fail} failed, ${skipped} skipped (known-missing), ` +
       `${skippedFaulted} skipped-faulted, ${noPolarity.length} without-polarity-stamp, ` +
       `${elapsed} ms${abortNote}`,
