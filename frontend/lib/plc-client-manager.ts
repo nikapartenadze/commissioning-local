@@ -15,7 +15,7 @@ import {
   type ConnectionStatus,
   type IoTag,
 } from './plc';
-import { NetworkPoller, type NetworkDeviceSnapshot } from './plc/network';
+import { NetworkPoller, type NetworkDeviceSnapshot, type RingStatus } from './plc/network';
 import { configService } from './config';
 
 // WebSocket broadcast HTTP endpoint (WS port + 100 = HTTP broadcast port)
@@ -388,6 +388,16 @@ async function stopNetworkPoller(): Promise<void> {
 export function getLatestNetworkDeviceSnapshots(): NetworkDeviceSnapshot[] {
   const state = getState();
   return state.networkPoller?.getLatestSnapshots() ?? [];
+}
+
+/**
+ * Get the most recent DLR ring verdict from the network poller, or null when
+ * the poller is off / hasn't probed yet. Used by Guided Mode (committee D5:
+ * guided mode cannot function when the DPM ring is not nominal).
+ */
+export function getLatestRingStatus(): RingStatus | null {
+  const state = getState();
+  return state.networkPoller?.getLatestRingStatus() ?? null;
 }
 
 /**

@@ -11,15 +11,22 @@ import type { Task, TaskType } from '@/lib/guided/task-pool/types'
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-function io(id: number, result: SnapshotIo['result'], safety = false): SnapshotIo {
+function io(
+  id: number,
+  result: SnapshotIo['result'],
+  safety = false,
+  extra: Partial<Pick<SnapshotIo, 'name' | 'description' | 'circuit' | 'liveState'>> = {},
+): SnapshotIo {
   return {
     id,
-    name: `DEV:I.In_${id}`,
-    description: `IO ${id}`,
+    name: extra.name ?? `DEV:I.In_${id}`,
+    description: extra.description ?? `IO ${id}`,
     result,
     tagType: null,
     isOutput: false,
     isSafety: safety,
+    circuit: extra.circuit ?? 'NO',
+    liveState: extra.liveState ?? null,
   }
 }
 
@@ -50,6 +57,8 @@ function emptySnapshot(overrides: Partial<DataSnapshot> = {}): DataSnapshot {
     network: { hasRings: false, dpmsAllInstalled: null },
     beltsTracked: null,
     allNetworkedCommunicating: null,
+    systemRunning: null,
+    ringHealth: null,
     manualTaskStatus: {},
     ...overrides,
   }
@@ -517,22 +526,191 @@ describe('buildFunctionalSteps', () => {
     progress: 0,
   }
 
-  it('navigates then one io_check-rendered column step per column with cell ids + watch', () => {
-    const steps = buildFunctionalSteps(
-      fn,
-      42,
-      [
-        { columnId: 10, name: 'Motor Runs', inputType: 'pass_fail', value: null },
-        { columnId: 11, name: 'Motor Stops', inputType: 'pass_fail', value: null },
-      ],
-      [5, 6],
-    )
+  it('navigates then one pure prompt/response column step per column (D1: no watch)', () => {
+    const steps = buildFunctionalSteps(fn, 42, [
+      { columnId: 10, name: 'Motor Runs', inputType: 'pass_fail', value: null },
+      { columnId: 11, name: 'Motor Stops', inputType: 'pass_fail', value: null },
+    ])
     expect(steps[0].kind).toBe('navigate')
     expect(steps[1].kind).toBe('manual_confirm')
     expect(steps[1].l2DeviceId).toBe(42)
     expect(steps[1].l2ColumnId).toBe(10)
-    expect(steps[1].watchIoIds).toEqual([5, 6])
+    // D1 (committee Option D): functional checks are prompt & response only —
+    // no live-signal watch, no auto-assist.
+    expect(steps[1].watchIoIds).toBeUndefined()
+    expect(steps[1].instruction).not.toMatch(/auto/i)
     expect(steps).toHaveLength(3)
+  })
+})
+
+// ── committee decisions (2026-06) ────────────────────────────────────────────
+
+describe('D3 — associated-device gating for functional checks', () => {
+  // PS8_10_CH4_JPE1 functional check gates on the JPE + beacon + JR IOs that
+  // share the PS8_10_CH4 location prefix.
+  const mkDevices = (bcnResult: SnapshotIo['result'], jrResult: SnapshotIo['result']) => [
+    device('DPM1', 0, [
+      io(1, bcnResult, false, { name: 'PS8_10_CH4_BCN1', description: 'PS8_10_CH4_BCN1 GREEN BEACON' }),
+      io(2, jrResult, false, { name: 'PS8_10_CH4_JR1', description: 'PS8_10_CH4_JR1 JAM RESET PB' }),
+      io(3, 'Passed', false, { name: 'PS9_99_CH1_BCN1', description: 'unrelated' }),
+    ]),
+  ]
+  const functional = [
+    { sheetName: 'JPE', displayName: 'Jam PE', deviceName: 'PS8_10_CH4_JPE1', order: 0, completedChecks: 0, totalChecks: 2 },
+  ]
+  const fid = taskId('functional_check', 'JPE:PS8_10_CH4_JPE1')
+
+  it('blocks the functional task while associated IOs are unchecked', () => {
+    const pool = buildTaskPool(emptySnapshot({ devices: mkDevices(null, null), functional }))
+    const t = byId(pool.tasks, fid)
+    expect(t?.state).toBe('blocked')
+    expect(t?.unmetDependencies.join(' ')).toMatch(/Associated devices must pass IO check first/)
+    expect(t?.unmetDependencies.join(' ')).toContain('BCN1')
+  })
+
+  it('unblocks once every associated IO has a result', () => {
+    const pool = buildTaskPool(emptySnapshot({ devices: mkDevices('Passed', 'Failed'), functional }))
+    expect(byId(pool.tasks, fid)?.state).toBe('available')
+  })
+
+  it('falls back to global rules when no prefix can be derived', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        devices: mkDevices(null, null),
+        functional: [
+          { sheetName: 'SS', displayName: 'Start/Stop', deviceName: 'SS1', order: 0, completedChecks: 0, totalChecks: 2 },
+        ],
+      }),
+    )
+    expect(byId(pool.tasks, taskId('functional_check', 'SS:SS1'))?.state).toBe('available')
+  })
+})
+
+describe('D4 — system-running gate for functional checks', () => {
+  const functional = [
+    { sheetName: 'SS', displayName: 'Start/Stop', deviceName: 'SS1', order: 0, completedChecks: 0, totalChecks: 2 },
+  ]
+
+  it('blocks functional checks when the system is confirmed stopped', () => {
+    const t = byId(
+      buildTaskPool(emptySnapshot({ functional, systemRunning: false })).tasks,
+      taskId('functional_check', 'SS:SS1'),
+    )
+    expect(t?.state).toBe('blocked')
+    expect(t?.unmetDependencies).toContain('System must be started — all conveyors running')
+  })
+
+  it('does not block when running or unknown', () => {
+    for (const systemRunning of [true, null]) {
+      const t = byId(
+        buildTaskPool(emptySnapshot({ functional, systemRunning })).tasks,
+        taskId('functional_check', 'SS:SS1'),
+      )
+      expect(t?.state).toBe('available')
+    }
+  })
+})
+
+describe('D5 — degraded DPM ring gates everything downstream', () => {
+  it('blocks VFD / IO / e-stop / functional tasks on a confirmed-degraded ring', () => {
+    const snap = emptySnapshot({
+      ringHealth: 'degraded',
+      vfds: [{ deviceName: 'VFD1', order: 0, steps: [{ name: 'Verify Identity', value: null }], controlsVerified: false }],
+      devices: [
+        device('SAFE1', 0, [io(1, null, true)], { isSafety: true }),
+        device('PE1', 1, [io(2, null, false)], { isSafety: false }),
+      ],
+      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }], safetyDeviceNames: [] }],
+      functional: [
+        { sheetName: 'SS', displayName: 'Start/Stop', deviceName: 'SS1', order: 0, completedChecks: 0, totalChecks: 2 },
+      ],
+    })
+    const pool = buildTaskPool(snap)
+    const dep = 'DPM ring health must be nominal (ring is FAULTED)'
+    for (const id of [
+      taskId('vfd_setup', 'VFD1'),
+      taskId('io_check_safety', 'SAFE1'),
+      taskId('io_check_nonsafety', 'PE1'),
+      taskId('estop_verification', 'Zone 1'),
+      taskId('functional_check', 'SS:SS1'),
+    ]) {
+      const t = byId(pool.tasks, id)
+      expect(t?.state, id).toBe('blocked')
+      expect(t?.unmetDependencies, id).toContain(dep)
+    }
+    expect(pool.nextTaskId).toBeNull()
+  })
+
+  it('does not block on healthy or unknown ring', () => {
+    for (const ringHealth of ['healthy', 'unknown', null] as const) {
+      const snap = emptySnapshot({
+        ringHealth,
+        devices: [device('PE1', 0, [io(1, null)])],
+      })
+      expect(byId(buildTaskPool(snap).tasks, taskId('io_check_nonsafety', 'PE1'))?.state).toBe('available')
+    }
+  })
+})
+
+describe('D6 — NC pre-check gates the IO-check task', () => {
+  it('blocks the task while an untested NC point reads FALSE at rest', () => {
+    const snap = emptySnapshot({
+      devices: [
+        device('PE1', 0, [io(1, null, false, { name: 'PS8_10_CH4_PE1', circuit: 'NC', liveState: 'FALSE' })]),
+      ],
+    })
+    const t = byId(buildTaskPool(snap).tasks, taskId('io_check_nonsafety', 'PE1'))
+    expect(t?.state).toBe('blocked')
+    expect(t?.unmetDependencies.join(' ')).toMatch(/Pre-check failed/)
+    expect(t?.unmetDependencies.join(' ')).toMatch(/reads FALSE at rest/)
+  })
+
+  it('does not block when the NC point reads TRUE or live state is unknown', () => {
+    for (const liveState of ['TRUE', null] as const) {
+      const snap = emptySnapshot({
+        devices: [device('PE1', 0, [io(1, null, false, { circuit: 'NC', liveState })])],
+      })
+      expect(byId(buildTaskPool(snap).tasks, taskId('io_check_nonsafety', 'PE1'))?.state).toBe('available')
+    }
+  })
+
+  it('ignores the pre-check for NO points and for already-tested NC points', () => {
+    const snap = emptySnapshot({
+      devices: [
+        device('PB1', 0, [io(1, null, false, { circuit: 'NO', liveState: 'FALSE' })]),
+        device('PE2', 1, [io(2, 'Passed', false, { circuit: 'NC', liveState: 'FALSE' })]),
+      ],
+    })
+    const pool = buildTaskPool(snap)
+    expect(byId(pool.tasks, taskId('io_check_nonsafety', 'PB1'))?.state).toBe('available')
+    expect(byId(pool.tasks, taskId('io_check_nonsafety', 'PE2'))?.state).toBe('completed')
+  })
+})
+
+describe('D6 — io_check steps carry the circuit + round-trip instruction', () => {
+  const ioTask: Task = {
+    id: taskId('io_check_nonsafety', 'PE1'),
+    type: 'io_check_nonsafety',
+    phase: 'Commissioning',
+    segment: 'Non-Safety Device I/O Check',
+    priority: 5,
+    title: 'IO Check PE1',
+    deviceName: 'PE1',
+    state: 'available',
+    steps: [],
+    unmetDependencies: [],
+    progress: 0,
+  }
+
+  it('classifies a photoeye NC and a pushbutton NO', () => {
+    const steps = buildSteps(ioTask, [
+      { id: 1, name: 'PS8_10_CH4_PE1', description: 'PHOTOEYE', result: null },
+      { id: 2, name: 'PS8_10_CH4_JR1', description: 'JAM RESET PUSHBUTTON', result: null },
+    ])
+    const checks = steps.filter((s) => s.kind === 'io_check')
+    expect(checks[0].circuit).toBe('NC')
+    expect(checks[1].circuit).toBe('NO')
+    expect(checks[0].instruction).toMatch(/full sequence/i)
   })
 })
 

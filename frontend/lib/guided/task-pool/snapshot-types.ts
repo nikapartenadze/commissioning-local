@@ -16,6 +16,13 @@ export interface SnapshotIo {
   isOutput: boolean
   /** True for safety I/O (safety output, e-stop input, STO/BSD tag, …). */
   isSafety: boolean
+  /**
+   * Circuit type for the D6 pre-check / round-trip sequencing. NC devices
+   * (photoeyes, EPCs, pull cords) rest TRUE; NO devices rest FALSE.
+   */
+  circuit: 'NC' | 'NO'
+  /** Live PLC state from the tag cache, `null` when unknown / no PLC. */
+  liveState: 'TRUE' | 'FALSE' | null
 }
 
 export interface SnapshotDevice {
@@ -107,6 +114,17 @@ export interface DataSnapshot {
   beltsTracked: boolean | null
   /** All networked items communicating. `null` when unknown (no live PLC). */
   allNetworkedCommunicating: boolean | null
+  /**
+   * System started / conveyors running, derived from run-indicating PLC tags
+   * (committee D4). `null` when no run tag is visible — non-blocking.
+   */
+  systemRunning: boolean | null
+  /**
+   * DLR ring health from the network poller (committee D5: guided mode cannot
+   * function when the DPM ring is not nominal). 'unknown'/`null` never blocks
+   * — only a confirmed 'degraded' ring gates the pool.
+   */
+  ringHealth: 'healthy' | 'degraded' | 'unknown' | null
   /** Keyed by Task.id → manual status the tester applied. */
   manualTaskStatus: Record<string, ManualTaskStatus>
 }

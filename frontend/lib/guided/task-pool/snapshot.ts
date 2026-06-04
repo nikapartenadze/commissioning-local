@@ -2,6 +2,8 @@ import { db } from '@/lib/db-sqlite'
 import { parseDeviceIdsFromSvg } from '@/lib/guided/svg-parser'
 import { readBundledSvg } from '@/app/api/maps/subsystem/[id]/route'
 import { isSafetyOutput } from '@/lib/io-classification'
+import { classifyIoCircuit } from '@/lib/guided/io-check-sequence'
+import { deriveSystemRunning } from '@/lib/guided/system-running'
 import type {
   DataSnapshot,
   ManualTaskStatus,
@@ -38,6 +40,16 @@ function liveTags(): { name?: string; state?: string }[] {
     return getPlcTags().tags as { name?: string; state?: string }[]
   } catch {
     return []
+  }
+}
+
+/** DLR ring health — best-effort, 'unknown' when the poller is off (D5). */
+function ringHealthNow(): 'healthy' | 'degraded' | 'unknown' | null {
+  try {
+    const { getLatestRingStatus } = require('@/lib/plc-client-manager') as typeof import('@/lib/plc-client-manager')
+    return getLatestRingStatus()?.state ?? null
+  } catch {
+    return null
   }
 }
 
@@ -102,10 +114,15 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
   }
 
   // ── device assembly (mirror /api/guided/devices matching rules) ──────
+  const live = liveTags()
+  const liveStateByName = new Map<string, 'TRUE' | 'FALSE'>()
   const faultTrue = new Set<string>()
   const faultKnown = new Set<string>()
-  for (const t of liveTags()) {
+  for (const t of live) {
     const name = t.name ?? ''
+    if (name && (t.state === 'TRUE' || t.state === 'FALSE')) {
+      liveStateByName.set(name, t.state)
+    }
     const m = name.match(/^(.+):I\.ConnectionFaulted$/)
     if (m) {
       faultKnown.add(m[1])
@@ -148,6 +165,8 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
         tagType: r.TagType,
         isOutput: false,
         isSafety: safety,
+        circuit: classifyIoCircuit(r.Name, r.Description),
+        liveState: r.Name ? liveStateByName.get(r.Name) ?? null : null,
       })
       // install rollup
       const complete =
@@ -386,6 +405,8 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
     network: { hasRings, dpmsAllInstalled },
     beltsTracked,
     allNetworkedCommunicating,
+    systemRunning: deriveSystemRunning(live),
+    ringHealth: ringHealthNow(),
     manualTaskStatus,
   }
 }

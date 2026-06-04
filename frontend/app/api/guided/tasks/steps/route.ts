@@ -49,11 +49,10 @@ export async function GET(req: Request, res: Response) {
     } else if (task.type === 'vfd_setup') {
       steps = buildVfdSteps(task, vfdColumns(task.deviceName ?? ''))
     } else if (task.type === 'functional_check') {
+      // D1: pure prompt & response — no live-signal watch / auto-assist.
       const { deviceId, columns } = functionalColumns(task)
-      const dev = snapshot.devices.find((d) => d.deviceName === task.deviceName)
-      const watchIoIds = (dev?.ios ?? []).map((io) => io.id)
       steps = deviceId
-        ? buildFunctionalSteps(task, deviceId, columns, watchIoIds)
+        ? buildFunctionalSteps(task, deviceId, columns)
         : buildSteps(task)
     } else if (task.type === 'estop_verification') {
       const zone = snapshot.estopZones.find((z) => z.zoneName === task.id.split(':').slice(1).join(':'))
