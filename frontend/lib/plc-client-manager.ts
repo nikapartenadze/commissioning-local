@@ -231,7 +231,14 @@ function setupClientEventListeners(client: PlcClient): void {
   client.on('initialized', () => {
     setTimeout(async () => {
       try {
-        const { syncValidationFlags } = await import('@/lib/vfd-validation-writer');
+        const { syncValidationFlags, clearKnownMissingTags } = await import('@/lib/vfd-validation-writer');
+        // A (re)connect often follows a PLC program download. The download may
+        // have added CMD tags that previously answered NOT_FOUND — or NOT_FOUND
+        // verdicts were collected mid-transfer and are not durable truth. Drop
+        // the cache so every validation/polarity flag is re-attempted; genuine
+        // misses get re-cached within one cycle. Without this, drives could
+        // stay unrestored after a download until a tool restart (CDW5, June 2026).
+        clearKnownMissingTags('PLC (re)connected — possible program download, re-discovering CMD tags');
         await syncValidationFlags();
       } catch (err) {
         console.warn('[PlcClientManager] VFD validation sync failed:', err);
