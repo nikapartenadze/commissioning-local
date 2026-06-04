@@ -1456,7 +1456,11 @@ export function EnhancedIoDataGrid({
                      style={{ width: `${COLUMN_WIDTHS.description}px` }}
                      data-selectable
                    >
-                     <div className="line-clamp-2 leading-tight flex-1">
+                     {/* Full text, no clamp — many tags share a prefix, so the
+                         truncated tail is exactly the distinguishing part. The
+                         virtualizer measures rows (measureElement), so taller
+                         rows are fine. */}
+                     <div className="leading-tight flex-1 min-w-0 break-words">
                        {io.description || <span className="text-muted-foreground">—</span>}
                      </div>
                      {io.description && (
@@ -1478,7 +1482,7 @@ export function EnhancedIoDataGrid({
                      )}
                    </div>
                    <div
-                     className="px-4 py-2 text-xs font-mono font-medium flex-shrink-0 overflow-hidden text-ellipsis flex items-center gap-2 select-text sticky z-[5] bg-inherit border-r border-border/50"
+                     className="px-4 py-2 text-xs font-mono font-medium flex-shrink-0 flex items-center gap-2 select-text sticky z-[5] bg-inherit border-r border-border/50"
                      style={{ width: `${COLUMN_WIDTHS.ioPoint}px`, left: `${COLUMN_WIDTHS.description}px` }}
                      data-selectable
                    >
@@ -1499,7 +1503,9 @@ export function EnhancedIoDataGrid({
                          />
                        )
                      })()}
-                     <div className="truncate">{io.name}</div>
+                     {/* break-all: tag names have no natural break points, so
+                         force-wrap instead of truncating the unique suffix */}
+                     <div className="min-w-0 break-all">{io.name}</div>
                      <CopyButton text={io.name} title="Copy IO point" />
                      {io.assignedTo && (
                        <span
@@ -1578,7 +1584,7 @@ export function EnhancedIoDataGrid({
                   )}
                    {showComments && (
                    <div
-                     className="px-4 py-2 text-sm flex-shrink-0 overflow-hidden flex items-center"
+                     className="px-4 py-2 text-sm flex-shrink-0 flex items-center"
                      style={{ width: `${COLUMN_WIDTHS.comments}px` }}
                      onClick={(e) => e.stopPropagation()}
                    >
@@ -1608,7 +1614,7 @@ export function EnhancedIoDataGrid({
                        />
                      ) : (
                        <div
-                         className="truncate cursor-text hover:bg-muted px-2 py-1 rounded w-full min-h-[32px] flex items-center"
+                         className="break-words cursor-text hover:bg-muted px-2 py-1 rounded w-full min-w-0 min-h-[32px] flex items-center"
                          title={io.comments ? `${io.comments} (click to edit)` : 'Click to add note'}
                          onClick={() => {
                            setEditingCommentId(io.id)
