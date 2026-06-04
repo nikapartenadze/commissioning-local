@@ -53,10 +53,36 @@ export default function SetupPage() {
         }),
       })
 
-      const pullData = await pullRes.json()
+      let pullData = await pullRes.json()
 
-      if (!pullRes.ok || !pullData.success) {
-        throw new Error(pullData.message || "Failed to pull IOs from cloud")
+      // Result-loss guard: this machine already has test results the cloud
+      // lacks (setup re-run on a used tablet). Confirm before erasing them.
+      if (pullRes.status === 409 && pullData.requiresForce) {
+        const proceed = window.confirm(
+          `⚠️ This machine has ${pullData.wouldLoseResults} test result(s) that the cloud does NOT have ` +
+          `(likely unsynced field work).\n\nPulling now will ERASE them.\n\n` +
+          `Press Cancel to abort setup and keep the local results.\n` +
+          `Press OK only if you are sure this machine's data is disposable.`
+        )
+        if (!proceed) {
+          throw new Error(`Setup aborted — ${pullData.wouldLoseResults} unsynced local result(s) protected`)
+        }
+        const forceRes = await fetch("/api/cloud/pull", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            remoteUrl: EMBEDDED_REMOTE_URL,
+            subsystemId,
+            apiPassword,
+            force: true,
+          }),
+        })
+        pullData = await forceRes.json()
+        if (!forceRes.ok || !pullData.success) {
+          throw new Error(pullData.message || pullData.error || "Failed to pull IOs from cloud")
+        }
+      } else if (!pullRes.ok || !pullData.success) {
+        throw new Error(pullData.message || pullData.error || "Failed to pull IOs from cloud")
       }
 
       // Log FV pull result to console so it's visible in portable console window

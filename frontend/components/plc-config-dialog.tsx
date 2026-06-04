@@ -223,6 +223,61 @@ export function PlcConfigDialog({
     }
   }
 
+  // ── Result-loss guard: confirm + force-pull ──────────────────────────
+  // The server refuses a pull (409 requiresForce) when local IOs hold test
+  // results the cloud payload lacks — i.e. field work that never synced
+  // (2026-06-04 TPA8/MCM08 incident: 818 results wiped). Only proceed after
+  // the user explicitly confirms the overwrite.
+  const confirmAndForcePull = async (errorData: any): Promise<boolean> => {
+    const n = errorData.wouldLoseResults ?? '?'
+    const sample = (errorData.atRiskSample || [])
+      .slice(0, 5)
+      .map((s: any) => `  • ${s.name}: ${s.result}`)
+      .join('\n')
+    addPullLog(`GUARD: pull would erase ${n} local result(s) the cloud does not have`)
+    const proceed = window.confirm(
+      `⚠️ PULL WOULD ERASE LOCAL TEST RESULTS\n\n` +
+      `${n} IO result(s) exist on this machine that the cloud does NOT have.\n` +
+      `This is usually field work that never synced (bad internet).\n\n` +
+      `Examples:\n${sample}\n\n` +
+      `Pulling now will ERASE these results from the grid.\n` +
+      `(A backup is still made automatically.)\n\n` +
+      `Press Cancel to keep your local results (recommended — they will sync ` +
+      `to the cloud automatically when internet returns).\n` +
+      `Press OK only if you are sure the cloud state is correct.`
+    )
+    if (!proceed) {
+      addPullLog('Pull cancelled by user — local results kept')
+      setPullStatus({ type: 'error', message: `Pull cancelled — ${n} unsynced local result(s) protected` })
+      return false
+    }
+    addPullLog('User confirmed overwrite — retrying pull with force')
+    setPullStatus({ type: 'loading', message: 'Pulling (overwrite confirmed)...' })
+    const forceRes = await authFetch(API_ENDPOINTS.cloudPull, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        remoteUrl: localConfig.remoteUrl || "",
+        apiPassword: localConfig.apiPassword || "",
+        subsystemId: localConfig.subsystemId,
+        force: true,
+      }),
+    })
+    if (forceRes.ok) {
+      const result = await forceRes.json()
+      addPullLog(`Pulled ${result.ioCount} IOs (forced)`)
+      const l2Note = result.l2Pulled > 0 ? `, ${result.l2Pulled} FV devices` : ''
+      setPullStatus({ type: 'success', message: `Pulled ${result.ioCount} IOs${l2Note}` })
+      onCloudPull(localConfig)
+      return true
+    }
+    let msg = `HTTP ${forceRes.status}`
+    try { msg = (await forceRes.json()).error || msg } catch { /* keep status text */ }
+    addPullLog(`Forced pull failed: ${msg}`)
+    setPullStatus({ type: 'error', message: `Pull failed: ${msg}` })
+    return false
+  }
+
   // ── Pull IOs from Cloud ──
   const handlePullIos = async () => {
     try {
@@ -351,6 +406,15 @@ export function PlcConfigDialog({
         // Pending local queues block pull so cloud cannot overwrite unsynced site data.
         let errorData: any = {}
         try { errorData = await response.json() } catch {}
+
+        // Result-loss guard: local results exist that cloud lacks. Pending
+        // queues may be EMPTY here (that's the whole point of this guard) —
+        // syncing won't help, only an explicit user confirmation can proceed.
+        if (errorData.requiresForce) {
+          await confirmAndForcePull(errorData)
+          return
+        }
+
         const msg = errorData.error || 'Unsynced test results exist'
         addPullLog(`BLOCKED: ${msg}`)
         addPullLog('Attempting to sync pending results first...')
@@ -391,6 +455,17 @@ export function PlcConfigDialog({
               const l2Note = retryResult.l2Pulled > 0 ? `, ${retryResult.l2Pulled} FV devices` : ''
               setPullStatus({ type: 'success', message: `Synced & pulled ${retryResult.ioCount} IOs${l2Note}` })
               onCloudPull(localConfig)
+            } else if (retryRes.status === 409) {
+              // Queue synced but the result-loss guard still refuses: results
+              // exist locally that never made it to a queue (or sync dropped
+              // them). Ask the user before overwriting.
+              let retryErr: any = {}
+              try { retryErr = await retryRes.json() } catch {}
+              if (retryErr.requiresForce) {
+                await confirmAndForcePull(retryErr)
+              } else {
+                setPullStatus({ type: 'error', message: retryErr.error || 'Pull still blocked after sync' })
+              }
             } else {
               setPullStatus({ type: 'error', message: 'Pull failed after sync' })
             }

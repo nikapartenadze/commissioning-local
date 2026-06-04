@@ -76,13 +76,28 @@ export const pendingSyncRepository = {
   },
 
   /**
-   * Increment retry count and set last error
+   * Increment retry count and set last error.
+   *
+   * Only call this when the CLOUD gave a verdict on the row (e.g.
+   * updatedCount=0 / version mismatch). For network-level failures use
+   * recordTransientFailure — counting offline timeouts as strikes is what
+   * emptied the queue in the 2026-06-04 TPA8/MCM08 data-loss incident.
    */
   recordFailure(id: number, error: string): PendingSync {
     db.prepare(
       'UPDATE PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
     ).run(error, id)
     return db.prepare('SELECT * FROM PendingSyncs WHERE id = ?').get(id) as PendingSync
+  },
+
+  /**
+   * Record a network-level failure WITHOUT burning a retry-cap strike.
+   * The row is still good — it just couldn't reach the cloud (offline,
+   * timeout, proxy 5xx, auth misconfig). Keeps LastError fresh for
+   * diagnostics.
+   */
+  recordTransientFailure(id: number, error: string): void {
+    db.prepare('UPDATE PendingSyncs SET LastError = ? WHERE id = ?').run(error, id)
   },
 
   /**
