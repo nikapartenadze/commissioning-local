@@ -159,8 +159,11 @@ export async function POST(req: Request, res: Response) {
     // path uses, so the existing `L2CellUpdated` handler in the React side
     // picks it up without any client-side changes.
     const updatedAt = new Date().toISOString()
+    // Honour WS_BROADCAST_URL (dev runs the bridge on :3112) — a hardcoded
+    // port broadcasts into the void and the open grid never live-refreshes.
+    const broadcastUrl = process.env.WS_BROADCAST_URL || 'http://127.0.0.1:3102/broadcast'
     for (const b of localBroadcasts) {
-      fetch('http://127.0.0.1:3102/broadcast', {
+      fetch(broadcastUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
