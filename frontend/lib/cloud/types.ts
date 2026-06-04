@@ -108,6 +108,8 @@ export interface CloudPullRequest {
   remoteUrl: string
   subsystemId: number
   apiPassword: string
+  /** Acknowledge the result-loss guard and pull anyway (see CloudPullResponse.requiresForce). */
+  force?: boolean
 }
 
 export interface CloudPullResponse {
@@ -115,6 +117,16 @@ export interface CloudPullResponse {
   message?: string
   iosCount?: number
   error?: string
+  /**
+   * Result-loss guard (2026-06-04 TPA8/MCM08 incident): set when the pull
+   * was refused because local IOs have results that the cloud payload lacks.
+   * Re-send the pull with body.force === true to proceed anyway.
+   */
+  requiresForce?: boolean
+  /** Local results the pull would erase (cloud has no result for these IOs). */
+  wouldLoseResults?: number
+  /** Sample of at-risk IOs for display: id, name, local result. */
+  atRiskSample?: Array<{ id: number; name: string; result: string }>
 }
 
 export interface CloudSyncStatusResponse {

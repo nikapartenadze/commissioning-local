@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl, getPlcClient } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
+import { computeAtRiskResults } from '@/lib/cloud/pull-guard'
 import type { CloudPullResponse } from '@/lib/cloud/types'
 
 // ── Prepared statements (created once at module load) ──────────────────
@@ -256,6 +257,41 @@ export async function POST(req: Request, res: Response) {
     }
 
     console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
+
+    // ── Result-loss guard (2026-06-04 TPA8/MCM08 incident) ────────────────
+    // The pull below is destructive (DELETE FROM Ios + reinsert cloud state).
+    // The pending-queue check above is the first line of defense, but it
+    // failed catastrophically when the retry cap silently emptied the queue
+    // while the site was offline: the guard saw 0 pending and let the pull
+    // erase 818 unsynced results. This second guard doesn't trust the queue
+    // at all — it compares actual local results against the actual cloud
+    // payload, and refuses when the pull would erase results the cloud
+    // doesn't have. The user can override with body.force === true after an
+    // explicit confirmation in the UI.
+    const localWithResults = db.prepare(
+      `SELECT id, Name, Result FROM Ios WHERE Result IS NOT NULL AND Result != ''`
+    ).all() as Array<{ id: number; Name: string; Result: string }>
+    const atRisk = computeAtRiskResults(localWithResults, cloudIos)
+    if (atRisk.length > 0 && body.force !== true) {
+      console.warn(
+        `[CloudPull] REFUSED: pull would erase ${atRisk.length} local result(s) the cloud does not have ` +
+        `(e.g. ${atRisk.slice(0, 5).map(r => `${r.name}=${r.result}`).join(', ')}). ` +
+        `Resend with force=true to override.`
+      )
+      return res.status(409).json({
+        success: false,
+        requiresForce: true,
+        wouldLoseResults: atRisk.length,
+        atRiskSample: atRisk.slice(0, 10),
+        error:
+          `Pull refused: ${atRisk.length} local test result(s) exist that the cloud does not have — ` +
+          `pulling now would erase them. They are likely unsynced field work. ` +
+          `Sync first, or confirm the overwrite to proceed.`,
+      } as CloudPullResponse)
+    }
+    if (atRisk.length > 0) {
+      console.warn(`[CloudPull] FORCE override: erasing ${atRisk.length} local result(s) not present on cloud (user confirmed)`)
+    }
 
     const localCountRow = getPullStmts().ioCount.get() as { cnt: number }
     const localIoCount = localCountRow.cnt

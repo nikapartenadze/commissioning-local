@@ -20,6 +20,7 @@ import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -204,10 +205,16 @@ class AutoSyncService {
       // updatedCount=0 because the IO doesn't exist on the cloud side, or
       // cloud has already moved past us) would leave a row in PendingSyncs
       // permanently. The pull at line ~495 skips when ANY pending rows exist,
-      // so one stuck IO would block all IO catch-up pulls forever. Cap at 10
-      // strikes × 30 s = ~5 min of trying before we give up on the row; the
-      // user's next pass/fail/clear creates a fresh row at the current
-      // version. Cloud-side note in the log so operators know what to do.
+      // so one stuck IO would block all IO catch-up pulls forever.
+      //
+      // IMPORTANT (2026-06-04 TPA8/MCM08 incident): a strike is ONLY counted
+      // when the cloud actually processed the payload and said no (see
+      // isNetworkLevelFailure). Offline / timeout / 5xx / 401 failures keep
+      // the row alive indefinitely — a site with no internet must NEVER
+      // lose its queue, because the manual-pull guard relies on these rows
+      // to refuse a destructive pull. 10 strikes = 10 genuine cloud
+      // rejections; the user's next pass/fail/clear creates a fresh row at
+      // the current version.
       const IO_PENDING_RETRY_CAP = 10
       try {
         // Before deleting, log each row in detail. The 2026-05-21 incident
@@ -255,6 +262,35 @@ class AutoSyncService {
               },
             })
           }
+
+          // Scream in the UI, not just the logs. The 2026-06-04 TPA8/MCM08
+          // incident went unnoticed for a week because drops only ever hit
+          // app.log — the grid kept showing the (local) results, so the crew
+          // had no idea their work wasn't reaching the cloud. An ErrorEvent
+          // broadcast becomes a red toast + error-log entry on every
+          // connected browser.
+          try {
+            const ioSummaries = toDrop.slice(0, 3).map(p => {
+              const io = db.prepare('SELECT Name FROM Ios WHERE id = ?').get(p.IoId) as { Name: string } | undefined
+              return `${io?.Name ?? `IO ${p.IoId}`}=${p.TestResult ?? '?'}`
+            })
+            const more = toDrop.length > 3 ? ` (+${toDrop.length - 3} more)` : ''
+            const broadcastUrl = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
+            await fetch(broadcastUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                type: 'ErrorEvent',
+                severity: 'error',
+                source: 'system',
+                message:
+                  `SYNC DROPPED ${toDrop.length} result(s) after ${IO_PENDING_RETRY_CAP} cloud rejections: ` +
+                  `${ioSummaries.join(', ')}${more}. The grid still shows them locally, but the cloud refused ` +
+                  `them — re-pass/fail these IOs or tell support before pulling.`,
+                timestamp: new Date().toISOString(),
+              }),
+            })
+          } catch { /* WS server might not be running */ }
         }
 
         const dropped = db.prepare(
@@ -318,6 +354,17 @@ class AutoSyncService {
             )
             failedIoCount++
             blockedIoIds.add(pending.IoId)
+          } else if (r.network) {
+            // Network-level failure (offline / timeout / 5xx / 401): the
+            // cloud never ruled on this row. Do NOT burn a retry-cap strike
+            // — that's what silently emptied the queue during the
+            // 2026-06-04 TPA8/MCM08 outage and let the pull wipe 818
+            // results. Stop the batch: every later row would fail the same
+            // way, and each attempt costs up to a 15 s timeout.
+            pendingSyncRepository.recordTransientFailure(pending.id, r.reason ?? 'network failure')
+            failedIoCount++
+            console.log(`[AutoSync] Network-level push failure (${r.reason ?? 'unknown'}) — deferring remaining ${pendingSyncs.length} queued row(s) to next cycle, no retry strikes burned`)
+            break
           } else {
             blockedIoIds.add(pending.IoId)
             pendingSyncRepository.recordFailure(pending.id, r.reason ?? 'Background sync failed')
@@ -440,6 +487,23 @@ class AutoSyncService {
             `retry cap (${PENDING_RETRY_CAP}). Cloud likely already has the values — ` +
             `Pull L2 to verify; click Confirm again in the wizard if any cell is missing.`
           )
+          // Visible alert in every connected browser (see IO drop block above).
+          try {
+            const broadcastUrl = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
+            await fetch(broadcastUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                type: 'ErrorEvent',
+                severity: 'error',
+                source: 'system',
+                message:
+                  `SYNC DROPPED ${dropped.changes} FV/L2 cell value(s) after ${PENDING_RETRY_CAP} cloud ` +
+                  `rejections. Re-confirm the affected wizard checks or tell support before pulling.`,
+                timestamp: new Date().toISOString(),
+              }),
+            })
+          } catch { /* WS server might not be running */ }
         }
 
         const l2Pending = db.prepare(
@@ -571,6 +635,12 @@ class AutoSyncService {
               console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud (${conflictCount} conflicts, ${rebasedCount} rebased to cloud version — next loop should succeed)`)
             } else if (updatedCount > 0) {
               console.log(`[AutoSync] Pushed ${updatedCount} L2 cell updates to cloud`)
+            }
+          } else if (isNetworkLevelFailure({ httpStatus: l2Resp.status })) {
+            // 5xx / 401: cloud or proxy didn't rule on the rows — keep them
+            // alive, no retry-cap strikes (TPA8/MCM08 2026-06-04 lesson).
+            for (const p of dedupedPending) {
+              try { db.prepare('UPDATE L2PendingSyncs SET LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status} (network-level, no strike)`, p.id) } catch (e) { console.warn('[AutoSync] Failed to update L2 last error:', e) }
             }
           } else {
             for (const p of dedupedPending) {

@@ -27,6 +27,7 @@ import {
   BatchSyncResult,
 } from './types'
 import { configService } from '@/lib/config'
+import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 
 /**
  * Outcome of attempting to push a single IO update to cloud.
@@ -38,6 +39,14 @@ export interface SyncIoResult {
   ok: boolean
   /** True when retrying with the same payload will fail the same way. Caller MUST delete the PendingSync row. */
   permanent?: boolean
+  /**
+   * True when the failure is network-level / environmental (offline, fetch
+   * threw, 401 auth misconfig, 5xx) — the cloud never gave a verdict on the
+   * payload. Caller must NOT count it toward the PendingSync retry cap;
+   * burning the cap on network failures is what emptied the queue and
+   * enabled the 2026-06-04 TPA8/MCM08 pull-wipe data loss.
+   */
+  network?: boolean
   /** Human-readable reason for the failure / rejection. */
   reason?: string
 }
@@ -378,7 +387,7 @@ export class CloudSyncService {
     ) {
       await this.addToOfflineQueue(update)
       log.debug(`Queued IO ${update.id} for offline sync (connection unavailable)`)
-      return { ok: false, reason: 'offline' }
+      return { ok: false, network: true, reason: 'offline' }
     }
 
     // Try real-time sync
@@ -500,7 +509,7 @@ export class CloudSyncService {
       Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
     ) {
       log.debug(`Skipping sync for IO ${update.id} - offline`)
-      return { ok: false, reason: 'offline' }
+      return { ok: false, network: true, reason: 'offline' }
     }
 
     // Try HTTP sync
@@ -508,7 +517,7 @@ export class CloudSyncService {
       const { remoteUrl } = await this.getCloudConfig()
       if (!remoteUrl) {
         log.warn('Cloud URL not configured')
-        return { ok: false, reason: 'no remote URL' }
+        return { ok: false, network: true, reason: 'no remote URL' }
       }
 
       const headers = new Headers({ 'Content-Type': 'application/json' })
@@ -528,7 +537,9 @@ export class CloudSyncService {
 
       if (response.status === 401) {
         log.error('Authentication failed for IO sync')
-        return { ok: false, reason: 'HTTP 401 auth failed' }
+        // Config problem on the tool, not a cloud verdict on the row — must
+        // not burn the retry cap, or a wrong API password deletes the queue.
+        return { ok: false, network: true, reason: 'HTTP 401 auth failed' }
       }
 
       if (response.ok) {
@@ -583,14 +594,18 @@ export class CloudSyncService {
       )
       this.setConnectionState('error', 'Sync failed')
       // 4xx (other than 401) means the request was malformed — retrying won't
-      // help. 5xx is transient. Treat 4xx as permanent so the row is dropped.
+      // help. 5xx is transient (cloud/proxy down) and must not burn the
+      // retry cap: the row is fine, the infrastructure is not.
       const permanent = response.status >= 400 && response.status < 500
-      return { ok: false, permanent, reason: `HTTP ${response.status}` }
+      const network = isNetworkLevelFailure({ httpStatus: response.status })
+      return { ok: false, permanent, network, reason: `HTTP ${response.status}` }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       log.debug(`HTTP sync failed for IO ${update.id}: ${errorMessage}`)
       this.setConnectionState('error', 'Sync failed')
-      return { ok: false, reason: errorMessage }
+      // fetch threw — DNS / connect timeout / aborted. The payload never
+      // reached the cloud app, so this must not count toward the retry cap.
+      return { ok: false, network: true, reason: errorMessage }
     }
   }
 
