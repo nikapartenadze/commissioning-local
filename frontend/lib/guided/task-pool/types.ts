@@ -64,8 +64,9 @@ export type TaskState =
 /**
  * The kind of a Step controls how the guided UI renders + advances it.
  *  - navigate     : show the mini-map, "I'm There" advances
- *  - io_check     : watch a PLC tag; auto pass on actuation, "Nothing
- *                   Happened" fails. Acknowledged via a popup.
+ *  - io_check     : watch a PLC tag; auto pass on the full D6 round-trip
+ *                   (actuate AND release), "Nothing Happened" fails.
+ *                   Acknowledged via a popup.
  *  - auto_detect  : a programmatic verdict is polled (e.g. e-stop drop)
  *  - manual_confirm : tester confirms a procedure was done (pass/fail)
  *  - info         : informational, "Continue" advances
@@ -90,6 +91,11 @@ export interface Step {
   /** For io_check steps: the IO row being verified. */
   ioId?: number
   ioName?: string | null
+  /**
+   * For io_check steps: circuit type driving the D6 round-trip sequence.
+   * NC rests TRUE (block → clear), NO rests FALSE (press → release).
+   */
+  circuit?: 'NC' | 'NO'
   /**
    * For auto_detect steps: the endpoint the UI should poll for a verdict,
    * plus an opaque key the verdict is keyed on (e.g. an EPC check tag).
@@ -116,8 +122,9 @@ export interface Step {
   estopEpcName?: string
 
   /**
-   * IO ids whose live PLC transitions should be watched on this step. A
-   * detected actuation auto-passes (io_check) or assists (functional).
+   * IO ids whose live PLC transitions should be watched on this step
+   * (io_check only — functional checks are pure prompt/response per D1).
+   * The step auto-passes when the full D6 round-trip sequence is seen.
    */
   watchIoIds?: number[]
 }

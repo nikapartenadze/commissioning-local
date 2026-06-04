@@ -8,6 +8,13 @@ import type { GuidedTestingMapHandle } from '@/components/guided/guided-testing-
 import type { Device } from '@/lib/guided/types'
 import { useTaskPool } from '@/lib/guided/task-pool/use-task-pool'
 import type { Step, Task } from '@/lib/guided/task-pool/types'
+import {
+  advanceRoundTrip,
+  sequenceHint,
+  startRoundTrip,
+  type RoundTrip,
+} from '@/lib/guided/io-check-sequence'
+import { SKIP_REASONS, composeSkipReason, type SkipReason } from '@/lib/guided/task-pool/skip-reasons'
 import { TaskViewer } from './task-viewer'
 import './guided-tasks.css'
 
@@ -16,6 +23,12 @@ const MANUAL_COMPLETE_TYPES = new Set<Task['type']>(['network_loop'])
 
 type Popup = { kind: 'pass' | 'fail'; message: string } | null
 type EstopVerdict = { autoVerdict: string; checkTagValue: boolean | null } | null
+
+/** Live D4/D5 status polled from /api/guided/system-status. */
+interface SystemStatus {
+  ring: { state: string; reason?: string; lastActiveNode1?: string | null; lastActiveNode2?: string | null } | null
+  systemRunning: boolean | null
+}
 
 function initialsOf(name?: string | null): string {
   if (!name) return ''
@@ -39,11 +52,15 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const [stepIndex, setStepIndex] = useState(0)
   const [popup, setPopup] = useState<Popup>(null)
   const [skipOpen, setSkipOpen] = useState(false)
-  const [skipReason, setSkipReason] = useState('')
+  // D9: preset reason + optional note (free text only required for "Other").
+  const [skipPreset, setSkipPreset] = useState<SkipReason | null>(null)
+  const [skipNote, setSkipNote] = useState('')
   const [viewerOpen, setViewerOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [inputValue, setInputValue] = useState('')
   const [estopVerdict, setEstopVerdict] = useState<EstopVerdict>(null)
+  // D4/D5 live gates — polled every 5 s while the runner is open.
+  const [sysStatus, setSysStatus] = useState<SystemStatus>({ ring: null, systemRunning: null })
 
   const [svgMarkup, setSvgMarkup] = useState<string | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
@@ -75,6 +92,31 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       .catch(() => setSvgMarkup(null))
     reloadDevices()
   }, [subsystemId, reloadDevices])
+
+  // D4/D5 live status poll — ring health gates the whole runner (committee:
+  // "guided mode cannot function if DPM ring health is not nominal, and this
+  // should be made extremely obvious"); system-running gates functional steps.
+  useEffect(() => {
+    let active = true
+    const poll = async () => {
+      try {
+        const r = await fetch('/api/guided/system-status')
+        if (!r.ok || !active) return
+        const data = (await r.json()) as SystemStatus
+        if (active) setSysStatus(data)
+      } catch {
+        /* keep last status */
+      }
+    }
+    void poll()
+    const id = setInterval(poll, 5000)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
+  }, [])
+
+  const ringDegraded = sysStatus.ring?.state === 'degraded'
 
   // Steps are built server-side (full data per task type) → fetch on task change.
   useEffect(() => {
@@ -246,13 +288,17 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     [persistResult, advanceStep],
   )
 
-  // ── live PLC watch (auto-detect) ─────────────────────────────────────────
-  const baselineRef = useRef<Record<number, string | undefined>>({})
+  // ── live PLC watch (io_check round-trip — committee D6) ────────────────────
+  // The check passes only on the FULL sequence: NC TRUE→FALSE→TRUE,
+  // NO FALSE→TRUE→FALSE. Functional checks no longer watch anything (D1).
+  const roundTripRef = useRef<RoundTrip>(startRoundTrip(null))
   const [liveState, setLiveState] = useState<string | null>(null)
+  const [seqPhase, setSeqPhase] = useState<RoundTrip['phase']>('arming')
 
   useEffect(() => {
     resolvedRef.current = false
-    baselineRef.current = {}
+    roundTripRef.current = startRoundTrip(currentStep?.circuit ?? null)
+    setSeqPhase(roundTripRef.current.phase)
     setLiveState(null)
     setInputValue(currentStep?.currentValue ?? '')
     const name = currentStep?.deviceName ?? effectiveTask?.deviceName
@@ -263,24 +309,22 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentStep?.id])
 
-  // watch tag transitions for steps that carry watchIoIds (io_check + functional)
+  // Watch tag transitions for io_check steps only (D1 removed the functional
+  // auto-assist; D6 made the io_check verdict a full round trip).
   useEffect(() => {
     const ids = currentStep?.watchIoIds
-    if (!ids || ids.length === 0) return
+    if (!ids || ids.length === 0 || currentStep?.kind !== 'io_check') return
     const watch = new Set(ids)
-    const isAutoPassKind =
-      currentStep?.kind === 'io_check' ||
-      (currentStep?.kind === 'manual_confirm' && currentStep?.inputType === 'pass_fail')
     const cb = (u: IOUpdate) => {
       if (!watch.has(u.Id)) return
       if (u.State !== 'TRUE' && u.State !== 'FALSE') return
       setLiveState(u.State)
-      const base = baselineRef.current[u.Id]
-      if (base === undefined) {
-        baselineRef.current[u.Id] = u.State
-        return
+      const next = advanceRoundTrip(roundTripRef.current, u.State)
+      if (next !== roundTripRef.current) {
+        roundTripRef.current = next
+        setSeqPhase(next.phase)
       }
-      if (u.State !== base && !resolvedRef.current && isAutoPassKind) {
+      if (next.phase === 'complete' && !resolvedRef.current) {
         void recordWithPopup('Passed')
       }
     }
@@ -320,10 +364,12 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     }
   }, [currentStep?.id])
 
-  // ── skip ─────────────────────────────────────────────────────────────────
+  // ── skip (D9: preset reason + optional note) ───────────────────────────────
+  const skipReasonValid = skipPreset != null && (skipPreset !== 'Other' || skipNote.trim().length > 0)
   const submitSkip = useCallback(async () => {
-    const reason = skipReason.trim()
-    if (!effectiveTask || !reason) return
+    if (!effectiveTask || !skipPreset) return
+    const reason = composeSkipReason(skipPreset, skipNote)
+    if (!reason) return
     setBusy(true)
     try {
       await fetch('/api/guided/tasks/skip', {
@@ -332,14 +378,15 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         body: JSON.stringify({ subsystemId, taskId: effectiveTask.id, reason, currentUser: currentUser?.fullName }),
       })
       setSkipOpen(false)
-      setSkipReason('')
+      setSkipPreset(null)
+      setSkipNote('')
       setSelectedTaskId(null)
       setStepIndex(0)
       await refresh()
     } finally {
       setBusy(false)
     }
-  }, [skipReason, effectiveTask, subsystemId, currentUser, refresh])
+  }, [skipPreset, skipNote, effectiveTask, subsystemId, currentUser, refresh])
 
   const unskip = useCallback(
     async (task: Task) => {
@@ -399,6 +446,13 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           )}
         </div>
         <div className="gt-header-right">
+          {/* D5: always-visible ring health chip (the fault overlay is the hard gate) */}
+          <span
+            className={`gt-ring-chip gt-ring-chip-${sysStatus.ring?.state ?? 'unknown'}`}
+            title={sysStatus.ring?.reason ?? 'No ring reading yet'}
+          >
+            ● DPM RING {(sysStatus.ring?.state ?? 'unknown').toUpperCase()}
+          </span>
           <div className="gt-progress" title={`${overallPct}% handled`}>
             <div className="gt-progress-bar">
               <div className="gt-progress-fill" style={{ width: `${overallPct}%` }} />
@@ -442,23 +496,38 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           <div className={`gt-hud gt-hud-${currentStep.kind}`}>
             <div className="gt-hud-step">{currentStep.title}</div>
             {currentStep.instruction && <p className="gt-hud-instruction">{currentStep.instruction}</p>}
-            {renderStepBody({
-              step: currentStep,
-              isLast: stepIndex >= steps.length - 1,
-              busy,
-              liveState,
-              estopVerdict,
-              inputValue,
-              setInputValue,
-              subsystemId,
-              onAdvance: advanceStep,
-              onComplete: completeAndNext,
-              recordWithPopup,
-              recordVfdColumn,
-              recordVfdControls,
-              recordFunctionalValue,
-              userName: currentUser?.fullName,
-            })}
+            {effectiveTask.type === 'functional_check' &&
+            currentStep.kind !== 'navigate' &&
+            sysStatus.systemRunning === false ? (
+              // D4: functional checks are meaningless while the system is
+              // stopped — disable the step with a "Start the system" prompt.
+              <div className="gt-sysrun-block" role="alert">
+                <div className="gt-sysrun-title">⏸ SYSTEM STOPPED</div>
+                <p className="gt-hud-instruction">
+                  Start the system — all conveyors running — before performing functional checks.
+                  This step unlocks automatically once a run signal is seen.
+                </p>
+              </div>
+            ) : (
+              renderStepBody({
+                step: currentStep,
+                isLast: stepIndex >= steps.length - 1,
+                busy,
+                liveState,
+                seqPhase,
+                estopVerdict,
+                inputValue,
+                setInputValue,
+                subsystemId,
+                onAdvance: advanceStep,
+                onComplete: completeAndNext,
+                recordWithPopup,
+                recordVfdColumn,
+                recordVfdControls,
+                recordFunctionalValue,
+                userName: currentUser?.fullName,
+              })
+            )}
           </div>
         )}
 
@@ -484,11 +553,49 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         )}
 
         {effectiveTask && (
-          <button className="gt-btn gt-skip" onClick={() => setSkipOpen(true)} disabled={busy}>
+          <button
+            className="gt-btn gt-skip"
+            onClick={() => {
+              setSkipPreset(null)
+              setSkipNote('')
+              setSkipOpen(true)
+            }}
+            disabled={busy}
+          >
             SKIP TASK
           </button>
         )}
       </div>
+
+      {/* D5: the DPM ring is the backbone of every downstream check — a
+          confirmed ring fault halts guided mode with an unmissable overlay
+          ("this should be made extremely obvious to the tester"). */}
+      {ringDegraded && (
+        <div className="gt-ring-overlay" role="alertdialog" aria-label="DPM ring fault">
+          <div className="gt-ring-card">
+            <div className="gt-ring-icon">⚠</div>
+            <div className="gt-ring-title">DPM RING FAULT — GUIDED MODE PAUSED</div>
+            <p className="gt-ring-msg">
+              The DLR ring is not nominal{sysStatus.ring?.reason ? ` — ${sysStatus.ring.reason}` : ''}.
+              {sysStatus.ring?.lastActiveNode1 || sysStatus.ring?.lastActiveNode2
+                ? ` Break is between ${sysStatus.ring?.lastActiveNode1 ?? '?'} and ${sysStatus.ring?.lastActiveNode2 ?? '?'}.`
+                : ''}
+            </p>
+            <p className="gt-ring-msg gt-ring-msg-dim">
+              Guided mode cannot function until ring health is restored. Fix the ring (check the
+              break, reseat connections), then this banner clears automatically.
+            </p>
+            <div className="gt-actions-center">
+              <button className="gt-btn gt-btn-ghost" onClick={() => navigate(`/commissioning/${subsystemId}`)}>
+                Exit guided mode
+              </button>
+              <button className="gt-btn gt-btn-primary" onClick={() => setViewerOpen(true)}>
+                Open Task Viewer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {popup && (
         <div className="gt-popup-overlay" role="alertdialog">
@@ -514,23 +621,38 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           <div className="gt-popup gt-skip-dialog">
             <h3>Skip this task?</h3>
             <p className="gt-popup-msg">{effectiveTask?.title}</p>
-            <label className="gt-field-label" htmlFor="gt-skip-reason">
-              Reason (required)
+            {/* D9: preset reasons + optional note (free text only for Other) */}
+            <label className="gt-field-label">Reason (required)</label>
+            <div className="gt-skip-presets" role="radiogroup" aria-label="Skip reason">
+              {SKIP_REASONS.map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  role="radio"
+                  aria-checked={skipPreset === r}
+                  className={`gt-skip-preset${skipPreset === r ? ' gt-skip-preset-active' : ''}`}
+                  onClick={() => setSkipPreset(r)}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+            <label className="gt-field-label" htmlFor="gt-skip-note">
+              {skipPreset === 'Other' ? 'Describe the reason (required)' : 'Note (optional)'}
             </label>
             <textarea
-              id="gt-skip-reason"
+              id="gt-skip-note"
               className="gt-textarea"
-              rows={3}
-              value={skipReason}
-              onChange={(e) => setSkipReason(e.target.value)}
-              placeholder="Why are you skipping this task?"
-              autoFocus
+              rows={2}
+              value={skipNote}
+              onChange={(e) => setSkipNote(e.target.value)}
+              placeholder={skipPreset === 'Other' ? 'Why are you skipping this task?' : 'Anything worth recording?'}
             />
             <div className="gt-dialog-actions">
               <button className="gt-btn gt-btn-ghost" onClick={() => setSkipOpen(false)} disabled={busy}>
                 Cancel
               </button>
-              <button className="gt-btn gt-btn-warn" onClick={submitSkip} disabled={busy || !skipReason.trim()}>
+              <button className="gt-btn gt-btn-warn" onClick={submitSkip} disabled={busy || !skipReasonValid}>
                 Skip Task
               </button>
             </div>
@@ -561,6 +683,7 @@ interface BodyProps {
   isLast: boolean
   busy: boolean
   liveState: string | null
+  seqPhase: RoundTrip['phase']
   estopVerdict: EstopVerdict
   inputValue: string
   setInputValue: (v: string) => void
@@ -585,6 +708,48 @@ function LiveSignal({ liveState }: { liveState: string | null }) {
   )
 }
 
+/**
+ * D6 round-trip progress: two stages (actuate → release), each ticking as the
+ * PLC confirms the transition. NC: block/pull then clear/reset; NO: press then
+ * release. A warning shows when an NC point reads FALSE at rest.
+ */
+function SequenceProgress({
+  step,
+  seqPhase,
+  liveState,
+}: {
+  step: Step
+  seqPhase: RoundTrip['phase']
+  liveState: string | null
+}) {
+  const circuit = step.circuit ?? 'NO'
+  const hint = sequenceHint(circuit)
+  const actuated = seqPhase === 'await_return' || seqPhase === 'complete'
+  const returned = seqPhase === 'complete'
+  const idleMismatch =
+    circuit === 'NC' && seqPhase === 'arming' && liveState === 'FALSE'
+  return (
+    <div className="gt-seq">
+      <div className="gt-seq-row">
+        <span className={`gt-seq-stage${actuated ? ' gt-seq-done' : ''}`}>
+          {actuated ? '✓' : '1'} {hint.actuate}
+        </span>
+        <span className={`gt-seq-stage${returned ? ' gt-seq-done' : ''}`}>
+          {returned ? '✓' : '2'} {hint.release}
+        </span>
+      </div>
+      <div className="gt-seq-meta">
+        <span className="gt-seq-circuit">{circuit} · rests {circuit === 'NC' ? 'TRUE' : 'FALSE'}</span>
+      </div>
+      {idleMismatch && (
+        <div className="gt-seq-warn" role="alert">
+          ⚠ Expected TRUE at rest (NC) but reading FALSE — possible miswire/misconfiguration.
+        </div>
+      )}
+    </div>
+  )
+}
+
 function renderStepBody(p: BodyProps) {
   const { step } = p
 
@@ -599,11 +764,13 @@ function renderStepBody(p: BodyProps) {
     )
   }
 
-  // 2) Device IO check (auto-pass on actuation; manual Pass; Nothing Happened)
+  // 2) Device IO check — D6 round-trip auto-pass (actuate AND release);
+  //    manual PASS override; "Nothing Happened" = Fail + punchlist (D7).
   if (step.kind === 'io_check') {
     return (
       <>
         <LiveSignal liveState={p.liveState} />
+        <SequenceProgress step={step} seqPhase={p.seqPhase} liveState={p.liveState} />
         <div className="gt-actions-center">
           <button className="gt-btn gt-btn-pass gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Passed')}>
             PASS
@@ -654,7 +821,6 @@ function renderStepBody(p: BodyProps) {
     if (step.inputType === 'number' || step.inputType === 'text') {
       return (
         <div className="gt-actions-center gt-actions-stack">
-          {step.watchIoIds && step.watchIoIds.length > 0 && <LiveSignal liveState={p.liveState} />}
           <input
             className="gt-input"
             type={step.inputType === 'number' ? 'number' : 'text'}
@@ -674,10 +840,9 @@ function renderStepBody(p: BodyProps) {
         </div>
       )
     }
-    // pass_fail
+    // pass_fail — pure prompt & response (D1): the tester is the verdict.
     return (
       <>
-        {step.watchIoIds && step.watchIoIds.length > 0 && <LiveSignal liveState={p.liveState} />}
         <div className="gt-actions-center">
           <button
             className="gt-btn gt-btn-pass gt-btn-lg"

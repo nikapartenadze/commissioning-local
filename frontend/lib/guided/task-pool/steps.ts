@@ -1,4 +1,5 @@
 import type { Step, Task } from './types'
+import { classifyIoCircuit } from '@/lib/guided/io-check-sequence'
 
 /**
  * Minimal IO shape the step-builder needs. Matches the `IoSummary` returned by
@@ -43,14 +44,21 @@ export function buildSteps(task: Task, ios: StepIo[] = []): Step[] {
       const pending = ios.filter((io) => io.result == null)
       const list = pending.length > 0 ? pending : ios
       for (const io of list) {
+        // D6: the full round-trip is required — actuate AND return to rest.
+        const circuit = classifyIoCircuit(io.name, io.description)
+        const action =
+          circuit === 'NC'
+            ? 'block / pull it, then clear / reset it'
+            : 'press / actuate it, then release it'
         steps.push({
           id: `${task.id}:io:${io.id}`,
           kind: 'io_check',
           title: `STEP ${steps.length + 1}: CHECK ${shortLabel(io, dev)}`,
-          instruction: `Actuate ${shortLabel(io, dev)} (e.g. block the photoeye / press the button). The tool watches the PLC and flags pass automatically. If nothing happens, use "Nothing Happened".`,
+          instruction: `Actuate ${shortLabel(io, dev)} through its full sequence — ${action}. The tool watches the PLC and passes once both transitions are seen. If nothing happens, use "Nothing Happened".`,
           deviceName: dev,
           ioId: io.id,
           ioName: io.name,
+          circuit,
           watchIoIds: [io.id],
         })
       }
@@ -215,14 +223,19 @@ export interface FunctionalColumn {
 
 /**
  * Functional check (SS / TPE / JPE / FPE / ENC / EPC), one column at a time.
- * With the system running, the tester performs each check; the device's live
- * PLC input IOs are watched so a detected actuation can auto-assist a pass.
+ *
+ * Committee decision D1 (Option D): functional checks are PURE prompt &
+ * response — no automatic detection. The point of a functional check is a
+ * human holistically verifying the physical install (PE / beacon / JR placed
+ * sensibly) and catching upstream-process misses (miscolored buttons,
+ * unconfigured PEs); a PLC transition can't judge either. The tester performs
+ * the check and records the result; it writes to the same L2 cell as the
+ * main tool.
  */
 export function buildFunctionalSteps(
   task: Task,
   deviceId: number,
   columns: FunctionalColumn[],
-  watchIoIds: number[],
 ): Step[] {
   const steps: Step[] = []
   const dev = task.deviceName
@@ -238,16 +251,15 @@ export function buildFunctionalSteps(
   for (const c of columns) {
     steps.push({
       id: `${task.id}:fcol:${c.columnId}`,
-      kind: 'manual_confirm', // recorded as a cell; live-signal + auto-assist via watchIoIds
+      kind: 'manual_confirm', // pure prompt & response (D1) — recorded to the L2 cell
       title: `STEP ${steps.length + 1}: ${c.name.toUpperCase()}`,
-      instruction: `With the system started and running, perform: ${c.name}. The tool shows the live PLC signal; pass auto-records on a detected response, or record it manually.`,
+      instruction: `With the system started and running, perform: ${c.name}. Verify the response and the physical install yourself, then record the result.`,
       deviceName: dev,
       l2DeviceId: deviceId,
       l2ColumnId: c.columnId,
       l2Column: c.name,
       inputType: c.inputType,
       currentValue: c.value,
-      watchIoIds,
     })
   }
   return steps

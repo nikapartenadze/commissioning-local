@@ -7,6 +7,18 @@ import type {
 } from './snapshot-types'
 import type { Phase, Segment, Task, TaskPool, TaskPoolSummary, TaskState, TaskType } from './types'
 import { pickNextTask, priorityOf } from './priority'
+import { associatedIosFor, pendingAssociatedLabels } from './associations'
+import { precheckFailure } from '@/lib/guided/io-check-sequence'
+
+/**
+ * D5 (committee): guided mode cannot function when the DPM ring is not
+ * nominal. A confirmed-degraded ring gates every task downstream of the
+ * network loop; 'unknown'/null never blocks (no PLC / no DLR probe yet).
+ */
+export const RING_DEGRADED_DEP = 'DPM ring health must be nominal (ring is FAULTED)'
+
+/** D4 (committee): functional checks need the system started + running. */
+export const SYSTEM_STOPPED_DEP = 'System must be started — all conveyors running'
 
 /**
  * Pure task-pool builder. Turns a DataSnapshot into the full prioritised
@@ -107,12 +119,17 @@ function vfdComplete(v: SnapshotVfd): { done: number; total: number } {
   return { done, total }
 }
 
-function buildVfdTasks(snapshot: DataSnapshot, networkLoopDone: boolean): RawTask[] {
+function buildVfdTasks(
+  snapshot: DataSnapshot,
+  networkLoopDone: boolean,
+  ringDegraded: boolean,
+): RawTask[] {
   return [...snapshot.vfds]
     .sort((a, b) => a.order - b.order)
     .map((v) => {
       const { done, total } = vfdComplete(v)
       const unmet: string[] = []
+      if (ringDegraded) unmet.push(RING_DEGRADED_DEP)
       if (!networkLoopDone) unmet.push('All Network Loop tasks must be done')
       return {
         id: taskId('vfd_setup', v.deviceName),
@@ -136,6 +153,7 @@ function buildIoCheckTasks(
   snapshot: DataSnapshot,
   safety: boolean,
   networkLoopDone: boolean,
+  ringDegraded: boolean,
 ): RawTask[] {
   const type: TaskType = safety ? 'io_check_safety' : 'io_check_nonsafety'
   return [...snapshot.devices]
@@ -144,9 +162,22 @@ function buildIoCheckTasks(
     .map((d) => {
       const { done, total } = deviceTestable(d)
       const unmet: string[] = []
+      if (ringDegraded) unmet.push(RING_DEGRADED_DEP)
       if (!networkLoopDone) unmet.push('All Network Loop tasks must be done')
       if (d.installComplete === false) unmet.push(`${d.deviceName} must be 100% installed`)
       if (d.networked === false) unmet.push(`${d.deviceName} must be networked and communicating`)
+      // D6 pre-check: an IO-check item can't enter the queue while an NC point
+      // reads FALSE at rest — that's a misconfigured/miswired device, and the
+      // blocked reason surfaces it in the Task Viewer. Only applies to points
+      // that still need a result (a recorded result supersedes the pre-check).
+      for (const io of d.ios) {
+        if (io.result != null) continue
+        const fail = precheckFailure(io.circuit, io.liveState, io.name || io.description || 'IO')
+        if (fail) {
+          unmet.push(`Pre-check failed: ${fail}`)
+          break // one message per device is enough to block + explain
+        }
+      }
       return {
         id: taskId(type, d.deviceName),
         type,
@@ -163,6 +194,7 @@ function buildEstopTasks(
   snapshot: DataSnapshot,
   allSafetyIoDone: boolean,
   safetyDoneByDevice: Map<string, boolean>,
+  ringDegraded: boolean,
 ): RawTask[] {
   return snapshot.estopZones
     .filter((z) => z.epcs.length > 0)
@@ -170,6 +202,7 @@ function buildEstopTasks(
       const total = z.epcs.length
       const done = z.epcs.filter((e) => e.result === 'pass' || e.result === 'fail').length
       const unmet: string[] = []
+      if (ringDegraded) unmet.push(RING_DEGRADED_DEP)
       // Prefer per-zone gating: only the safety devices in THIS zone must be
       // checked. Fall back to the global rule when no device could be mapped.
       const mapped = z.safetyDeviceNames.filter((d) => safetyDoneByDevice.has(d))
@@ -202,21 +235,41 @@ function buildFunctionalTasks(
   return [...snapshot.functional]
     .filter((f) => f.totalChecks > 0)
     .sort((a, b) => a.order - b.order)
-    .map((f: SnapshotFunctional) => ({
-      id: taskId('functional_check', `${f.sheetName}:${f.deviceName}`),
-      type: 'functional_check' as TaskType,
-      title: `${f.displayName} Check: ${f.deviceName}`,
-      deviceName: f.deviceName,
-      done: f.completedChecks,
-      total: f.totalChecks,
-      unmet: [...globalUnmet],
-    }))
+    .map((f: SnapshotFunctional) => {
+      const unmet = [...globalUnmet]
+      // D3 (committee Option A): a functional check enters the pool only when
+      // its ASSOCIATED devices (the JPE + its beacon + its JR pushbutton, …)
+      // have been IO checked. Association is derived from the shared location
+      // prefix in the tag names; no prefix / no matches → global rules only.
+      const associated = associatedIosFor(f.deviceName, snapshot.devices)
+      const pending = pendingAssociatedLabels(associated)
+      if (pending.length > 0) {
+        const shown = pending.slice(0, 3).join(', ')
+        unmet.push(
+          `Associated devices must pass IO check first: ${shown}${pending.length > 3 ? ` +${pending.length - 3} more` : ''}`,
+        )
+      }
+      return {
+        id: taskId('functional_check', `${f.sheetName}:${f.deviceName}`),
+        type: 'functional_check' as TaskType,
+        title: `${f.displayName} Check: ${f.deviceName}`,
+        deviceName: f.deviceName,
+        done: f.completedChecks,
+        total: f.totalChecks,
+        unmet,
+      }
+    })
 }
 
 // ── Orchestration ────────────────────────────────────────────────────────
 
 export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
   const tasks: Task[] = []
+
+  // D5: a confirmed-degraded DPM ring gates EVERYTHING downstream of the
+  // network loop ("guided mode cannot function if DPM ring health is not
+  // nominal"). 'unknown'/null is non-blocking — no PLC or no DLR probe yet.
+  const ringDegraded = snapshot.ringHealth === 'degraded'
 
   // 1) Network loop (priority 1) — gates everything downstream.
   const rawNetwork = buildNetworkTask(snapshot)
@@ -227,11 +280,13 @@ export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
   const networkLoopDone = networkTask ? isComplete(networkTask) : true
 
   // 2) VFD setup (priority 2)
-  const vfdTasks = buildVfdTasks(snapshot, networkLoopDone).map((r) => finalize(r, snapshot))
+  const vfdTasks = buildVfdTasks(snapshot, networkLoopDone, ringDegraded).map((r) =>
+    finalize(r, snapshot),
+  )
   tasks.push(...vfdTasks)
 
   // 3) IO Check — Safety (priority 3)
-  const safetyTasks = buildIoCheckTasks(snapshot, true, networkLoopDone).map((r) =>
+  const safetyTasks = buildIoCheckTasks(snapshot, true, networkLoopDone, ringDegraded).map((r) =>
     finalize(r, snapshot),
   )
   tasks.push(...safetyTasks)
@@ -244,24 +299,30 @@ export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
   }
 
   // 4) E-Stop Verification (priority 4)
-  const estopTasks = buildEstopTasks(snapshot, allSafetyIoDone, safetyDoneByDevice).map((r) =>
-    finalize(r, snapshot),
+  const estopTasks = buildEstopTasks(snapshot, allSafetyIoDone, safetyDoneByDevice, ringDegraded).map(
+    (r) => finalize(r, snapshot),
   )
   tasks.push(...estopTasks)
 
   // 5) IO Check — Non-Safety (priority 5)
-  const nonSafetyTasks = buildIoCheckTasks(snapshot, false, networkLoopDone).map((r) =>
+  const nonSafetyTasks = buildIoCheckTasks(snapshot, false, networkLoopDone, ringDegraded).map((r) =>
     finalize(r, snapshot),
   )
   tasks.push(...nonSafetyTasks)
 
   // 6) Functional Checks (priority 6)
   const functionalGlobalUnmet: string[] = []
+  if (ringDegraded) functionalGlobalUnmet.push(RING_DEGRADED_DEP)
   if (snapshot.allNetworkedCommunicating === false) {
     functionalGlobalUnmet.push('All networked items must be communicating')
   }
   if (snapshot.beltsTracked === false) {
     functionalGlobalUnmet.push('All belts must be tracked')
+  }
+  // D4: functional checks are meaningless when the system is stopped. Gate
+  // only on a confirmed-stopped verdict; unknown (no run tag) never blocks.
+  if (snapshot.systemRunning === false) {
+    functionalGlobalUnmet.push(SYSTEM_STOPPED_DEP)
   }
   const functionalTasks = buildFunctionalTasks(snapshot, functionalGlobalUnmet).map((r) =>
     finalize(r, snapshot),

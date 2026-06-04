@@ -607,3 +607,138 @@ html:not(.dark) .gt-btn-pass { color: #fff; }
 .gt-badge-available { background: var(--gm-orange-dim); color: var(--gm-orange); }
 .gt-badge-blocked { background: var(--gm-bg-elevated); color: var(--gm-grey); border: 1px solid var(--gm-border); }
 .gt-badge-skipped { background: var(--gm-bg-elevated); color: var(--gm-text-faint); }
+
+/* ── D5: DPM ring health (chip + unmissable fault overlay) ─────────────── */
+.gt-ring-chip {
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--gm-border);
+  white-space: nowrap;
+}
+.gt-ring-chip-healthy { color: var(--gm-green); border-color: var(--gm-green); }
+.gt-ring-chip-degraded {
+  color: #fff;
+  background: var(--gm-red);
+  border-color: var(--gm-red);
+  animation: gt-ring-pulse 1.2s ease-in-out infinite;
+}
+.gt-ring-chip-unknown { color: var(--gm-text-faint); }
+
+.gt-ring-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60; /* above step popups — the ring gate outranks everything */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(74, 24, 24, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.gt-ring-card {
+  max-width: 560px;
+  width: 100%;
+  background: var(--gm-bg-elevated);
+  border: 2px solid var(--gm-red);
+  border-radius: 12px;
+  padding: 28px 32px;
+  text-align: center;
+  box-shadow: 0 0 48px rgba(239, 68, 68, 0.45);
+}
+.gt-ring-icon { font-size: 44px; line-height: 1; margin-bottom: 12px; }
+.gt-ring-title {
+  font-family: var(--gm-mono);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--gm-red);
+  margin-bottom: 12px;
+}
+.gt-ring-msg { font-size: 14px; color: var(--gm-text); margin: 0 0 10px; }
+.gt-ring-msg-dim { color: var(--gm-text-faint); font-size: 13px; }
+@keyframes gt-ring-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ── D4: system-stopped block on functional steps ──────────────────────── */
+.gt-sysrun-block {
+  margin-top: 10px;
+  padding: 14px 18px;
+  border: 1px dashed var(--gm-amber);
+  border-radius: 8px;
+  background: var(--gm-amber-deep);
+  text-align: center;
+}
+.gt-sysrun-title {
+  font-family: var(--gm-mono);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--gm-amber);
+  margin-bottom: 6px;
+}
+
+/* ── D6: round-trip sequence progress ──────────────────────────────────── */
+.gt-seq { margin: 8px 0 4px; }
+.gt-seq-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.gt-seq-stage {
+  font-family: var(--gm-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--gm-border);
+  color: var(--gm-text-faint);
+  background: var(--gm-bg-elevated);
+}
+.gt-seq-done {
+  color: var(--gm-green);
+  border-color: var(--gm-green);
+  background: var(--gm-green-deep);
+}
+.gt-seq-meta { text-align: center; margin-top: 6px; }
+.gt-seq-circuit {
+  font-family: var(--gm-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--gm-text-faint);
+}
+.gt-seq-warn {
+  margin-top: 8px;
+  font-family: var(--gm-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gm-red);
+  text-align: center;
+}
+
+/* ── D9: preset skip reasons ───────────────────────────────────────────── */
+.gt-skip-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.gt-skip-preset {
+  font-family: var(--gm-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--gm-border);
+  background: var(--gm-bg-elevated);
+  color: var(--gm-text);
+  cursor: pointer;
+}
+.gt-skip-preset:hover { border-color: var(--gm-amber); }
+.gt-skip-preset-active {
+  border-color: var(--gm-amber);
+  background: var(--gm-amber-deep);
+  color: var(--gm-amber);
+}
