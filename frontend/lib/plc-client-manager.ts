@@ -239,7 +239,7 @@ function setupClientEventListeners(client: PlcClient): void {
         // misses get re-cached within one cycle. Without this, drives could
         // stay unrestored after a download until a tool restart (CDW5, June 2026).
         clearKnownMissingTags('PLC (re)connected — possible program download, re-discovering CMD tags');
-        await syncValidationFlags();
+        await syncValidationFlags('plc-reconnect');
       } catch (err) {
         console.warn('[PlcClientManager] VFD validation sync failed:', err);
       }
