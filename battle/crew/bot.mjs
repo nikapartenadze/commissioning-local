@@ -1,0 +1,94 @@
+#!/usr/bin/env node
+/**
+ * Crew — N simulated technicians hammering the tool's API the way the real
+ * UI does. Node 20 built-ins only (fetch), no npm install.
+ *
+ * Each bot loops: fetch the IO list -> pick a random untested-or-any IO ->
+ * mark Passed/Failed (occasionally Cleared) with a comment -> journal the
+ * action to /runs/<RUN_ID>/journal-<bot>.jsonl (ground truth for the I4
+ * data-loss invariant in Phase 1).
+ *
+ * Env: TOOL_URL, BOTS (default 6), RUN_ID, RUNS_DIR,
+ *      THINK_MIN_MS/THINK_MAX_MS (default 2000/15000)
+ */
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+
+const TOOL_URL = process.env.TOOL_URL ?? 'http://tool:3000';
+const BOTS = parseInt(process.env.BOTS ?? '6', 10);
+const RUN_ID = process.env.RUN_ID ?? 'dev';
+const RUNS_DIR = process.env.RUNS_DIR ?? '/runs';
+const THINK_MIN = parseInt(process.env.THINK_MIN_MS ?? '2000', 10);
+const THINK_MAX = parseInt(process.env.THINK_MAX_MS ?? '15000', 10);
+
+const OUT = join(RUNS_DIR, RUN_ID);
+mkdirSync(OUT, { recursive: true });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+async function api(path, opts = {}, timeoutMs = 30_000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${TOOL_URL}${path}`, {
+      ...opts,
+      signal: ctl.signal,
+      headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+    });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, body };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function bot(n) {
+  const name = `Bot ${n}`;
+  const journal = join(OUT, `journal-bot${n}.jsonl`);
+  const log = (entry) =>
+    appendFileSync(journal, JSON.stringify({ ts: new Date().toISOString(), bot: n, ...entry }) + '\n');
+
+  // jitter start so bots don't move in lockstep
+  await sleep(rand(0, 5000));
+  console.log(`[crew] ${name} starting`);
+
+  for (;;) {
+    try {
+      const { status, body } = await api('/api/ios');
+      const ios = Array.isArray(body) ? body : (body?.ios ?? []);
+      if (status !== 200 || ios.length === 0) {
+        log({ action: 'list', status, count: ios.length ?? 0, error: status !== 200 });
+        await sleep(5000);
+        continue;
+      }
+
+      const io = pick(ios);
+      const roll = Math.random();
+      // Mirror field distribution: mostly passes, some fails, rare clears.
+      const result = roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared';
+      const comments =
+        result === 'Failed' ? `battle-bot${n}: simulated failure ${Date.now()}` : undefined;
+
+      const t0 = Date.now();
+      const r = await api(`/api/ios/${io.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ result, comments, currentUser: name }),
+      });
+      log({
+        action: 'mark', ioId: io.id, ioName: io.name, result,
+        status: r.status, latencyMs: Date.now() - t0,
+      });
+      if (r.status !== 200) {
+        console.log(`[crew] ${name}: PUT /api/ios/${io.id} -> ${r.status}`);
+      }
+    } catch (err) {
+      log({ action: 'error', message: String(err?.message ?? err) });
+    }
+    await sleep(rand(THINK_MIN, THINK_MAX));
+  }
+}
+
+console.log(`[crew] ${BOTS} bots -> ${TOOL_URL}`);
+for (let i = 1; i <= BOTS; i++) void bot(i);
