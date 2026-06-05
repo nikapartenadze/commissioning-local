@@ -1,17 +1,24 @@
 # ============================================================================
 # Battle-test stack — field-realistic overnight abuse for the commissioning
-# tool. See ../docs/BATTLE-TEST-PLAN.md.
+# tool. See ../docs/BATTLE-TEST-PLAN.md and README.md.
 #
-#   docker compose -f docker-compose.battle.yml -p battle up --build
+#   docker compose -f docker-compose.battle.yml -p battle up --build -d
 #
 # Profiles / knobs (env):
-#   RUN_ID            run identifier (artifacts land in ./runs/<RUN_ID>/)
+#   RUN_ID            run identifier (artifacts in the named `runs` volume,
+#                     retrieve with: docker cp battle-observer-1:/runs/<RUN_ID> .)
 #   SOAK_MINUTES      observer run length (default 480 = 8 h)
 #   GATEWAY_IP        PLC target. default plc-sim (172.28.0.10);
-#                     set to the Emulate box (e.g. 192.168.5.107) for
-#                     high-fidelity runs — plc-sim then idles.
+#                     set to the Emulate box for high-fidelity runs —
+#                     plc-sim then idles, the Windows server is only ever a
+#                     CONNECT-ONLY target (never modified by this stack).
 #   BOTS              simulated technicians (default 6)
 #   DOWNLOAD_STORM    "20,40" => S2: program download every 20-40 min
+#
+# DinD-safe: no host bind mounts — every service is a built image and shared
+# state lives in named volumes (gen, runs, tool-data). This is required for
+# the GitLab tracker-ci-dind runner, where bind-mount sources would resolve
+# inside the dind service container, not the checkout.
 #
 # NOTHING here touches production: no prod DB, no prod cloud, no dockerhost.
 # ============================================================================
@@ -27,18 +34,18 @@ networks:
 volumes:
   tool-data:
   gen:
+  runs:
 
 services:
   seeder:
-    image: python:3.12-slim
-    command: ["python", "/scripts/seed.py"]
+    build:
+      context: .
+      dockerfile: seeder/Dockerfile
     environment:
       GATEWAY_IP: ${GATEWAY_IP:-172.28.0.10}
       SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
       KEEP_DATA: ${KEEP_DATA:-0}
     volumes:
-      - ./seeder:/scripts:ro
-      - ./seed:/seed:ro
       - tool-data:/data
       - gen:/gen
     networks: [battle]
@@ -82,16 +89,14 @@ services:
     cpus: 2
 
   crew:
-    image: node:20-alpine
-    command: ["node", "/crew/bot.mjs"]
+    build: ./crew
     environment:
       TOOL_URL: http://tool:3000
       BOTS: ${BOTS:-6}
       RUN_ID: ${RUN_ID:-dev}
       RUNS_DIR: /runs
     volumes:
-      - ./crew:/crew:ro
-      - ./runs:/runs
+      - runs:/runs
     networks: [battle]
     depends_on:
       tool:
@@ -101,8 +106,7 @@ services:
     cpus: 0.5
 
   chaos:
-    image: python:3.12-slim
-    command: ["python", "/chaos/chaos_api.py"]
+    build: ./chaos
     environment:
       PLC_SIM_CONTAINER: battle-plc-sim-1
       TOOL_CONTAINER: battle-tool-1
@@ -110,8 +114,7 @@ services:
       RUNS_DIR: /runs
       DOWNLOAD_STORM: ${DOWNLOAD_STORM:-}
     volumes:
-      - ./chaos:/chaos:ro
-      - ./runs:/runs
+      - runs:/runs
       - gen:/gen
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [battle]
@@ -120,8 +123,7 @@ services:
     cpus: 0.25
 
   observer:
-    image: python:3.12-slim
-    command: ["python", "/observer/probe.py"]
+    build: ./observer
     environment:
       TOOL_URL: http://tool:3000
       SOAK_MINUTES: ${SOAK_MINUTES:-480}
@@ -130,8 +132,7 @@ services:
       DATA_DIR: /data
       FLAP_BUDGET: ${FLAP_BUDGET:-0}
     volumes:
-      - ./observer:/observer:ro
-      - ./runs:/runs
+      - runs:/runs
       - tool-data:/data:ro
     networks: [battle]
     depends_on:

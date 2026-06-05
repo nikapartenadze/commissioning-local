@@ -1,0 +1,71 @@
+# ============================================================================
+# commissioning-local CI — battle-test pipelines.
+#
+# This repo's primary remote is GitHub (releases live there); GitLab hosts it
+# for CI on the shared tracker-ci-dind runner. Push to BOTH remotes.
+#
+# Pipelines:
+#   - nightly schedule (00:30): full battle soak, scenario rotated by weekday
+#     (see battle/ci/run_scenario.sh). 6 h so the runner is free before
+#     work-hours builds (it is SHARED with installation-tracker and
+#     commissioning-cloud deploys).
+#   - manual "battle-smoke": 15 min storm run — release gate; run it on the
+#     release commit before cutting a GitHub release.
+#
+# The seed DB (real field data, git-ignored) comes from the project's generic
+# package registry: battle-seed/1/database.db. Refresh it with:
+#   curl --header "PRIVATE-TOKEN: <tok>" --upload-file battle/seed/database.db \
+#     https://gitlab.lci.ge/api/v4/projects/<id>/packages/generic/battle-seed/1/database.db
+# ============================================================================
+
+stages: [battle]
+
+.battle-base:
+  stage: battle
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  # tracker-ci-dind (runner 10) is untagged + project-scoped — it must be
+  # enabled for this project (done via API at setup; see battle/README.md).
+  before_script:
+    - docker info >/dev/null
+    - apk add --no-cache curl
+    # Seed DB (git-ignored field data) from the generic package registry.
+    - mkdir -p battle/seed
+    - >
+      curl --fail --silent --show-error
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --output battle/seed/database.db
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/battle-seed/1/database.db"
+    - test -s battle/seed/database.db
+  artifacts:
+    when: always
+    paths:
+      - battle-artifacts/
+    expire_in: 30 days
+
+nightly-battle:
+  extends: .battle-base
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  timeout: 8h
+  script:
+    - sh battle/ci/run_scenario.sh
+
+battle-smoke:
+  extends: .battle-base
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+      allow_failure: true
+  timeout: 90m
+  variables:
+    SCENARIO: s2
+    SOAK_MINUTES: "15"
+  script:
+    - sh battle/ci/run_scenario.sh
