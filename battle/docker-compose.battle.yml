@@ -1,0 +1,143 @@
+# ============================================================================
+# Battle-test stack — field-realistic overnight abuse for the commissioning
+# tool. See ../docs/BATTLE-TEST-PLAN.md.
+#
+#   docker compose -f docker-compose.battle.yml -p battle up --build
+#
+# Profiles / knobs (env):
+#   RUN_ID            run identifier (artifacts land in ./runs/<RUN_ID>/)
+#   SOAK_MINUTES      observer run length (default 480 = 8 h)
+#   GATEWAY_IP        PLC target. default plc-sim (172.28.0.10);
+#                     set to the Emulate box (e.g. 192.168.5.107) for
+#                     high-fidelity runs — plc-sim then idles.
+#   BOTS              simulated technicians (default 6)
+#   DOWNLOAD_STORM    "20,40" => S2: program download every 20-40 min
+#
+# NOTHING here touches production: no prod DB, no prod cloud, no dockerhost.
+# ============================================================================
+
+name: battle
+
+networks:
+  battle:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  tool-data:
+  gen:
+
+services:
+  seeder:
+    image: python:3.12-slim
+    command: ["python", "/scripts/seed.py"]
+    environment:
+      GATEWAY_IP: ${GATEWAY_IP:-172.28.0.10}
+      SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
+      KEEP_DATA: ${KEEP_DATA:-0}
+    volumes:
+      - ./seeder:/scripts:ro
+      - ./seed:/seed:ro
+      - tool-data:/data
+      - gen:/gen
+    networks: [battle]
+
+  plc-sim:
+    build: ./plc-sim
+    networks:
+      battle:
+        ipv4_address: 172.28.0.10
+    volumes:
+      - gen:/gen:ro
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  tool:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    environment:
+      # daily file logs, 14d retention — observer scrapes them
+      LOG_RETENTION_DAYS: "14"
+      # battle errors must NOT pollute the real GlitchTip (the tool ships an
+      # embedded DSN; observer judges stability from logs/audit instead)
+      SENTRY_DISABLED: "true"
+    volumes:
+      - tool-data:/data
+    networks: [battle]
+    ports:
+      - "13000:3000"   # peek at the UI from the host while a soak runs
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+      plc-sim:
+        condition: service_started
+    restart: always    # SIGKILL chaos relies on this (NSSM-equivalent recovery)
+    mem_limit: 1500m
+    cpus: 2
+
+  crew:
+    image: node:20-alpine
+    command: ["node", "/crew/bot.mjs"]
+    environment:
+      TOOL_URL: http://tool:3000
+      BOTS: ${BOTS:-6}
+      RUN_ID: ${RUN_ID:-dev}
+      RUNS_DIR: /runs
+    volumes:
+      - ./crew:/crew:ro
+      - ./runs:/runs
+    networks: [battle]
+    depends_on:
+      tool:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+
+  chaos:
+    image: python:3.12-slim
+    command: ["python", "/chaos/chaos_api.py"]
+    environment:
+      PLC_SIM_CONTAINER: battle-plc-sim-1
+      TOOL_CONTAINER: battle-tool-1
+      RUN_ID: ${RUN_ID:-dev}
+      RUNS_DIR: /runs
+      DOWNLOAD_STORM: ${DOWNLOAD_STORM:-}
+    volumes:
+      - ./chaos:/chaos:ro
+      - ./runs:/runs
+      - gen:/gen
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [battle]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+
+  observer:
+    image: python:3.12-slim
+    command: ["python", "/observer/probe.py"]
+    environment:
+      TOOL_URL: http://tool:3000
+      SOAK_MINUTES: ${SOAK_MINUTES:-480}
+      RUN_ID: ${RUN_ID:-dev}
+      RUNS_DIR: /runs
+      DATA_DIR: /data
+      FLAP_BUDGET: ${FLAP_BUDGET:-0}
+    volumes:
+      - ./observer:/observer:ro
+      - ./runs:/runs
+      - tool-data:/data:ro
+    networks: [battle]
+    depends_on:
+      tool:
+        condition: service_started
+    # NO restart policy — observer exiting carries the verdict exit code:
+    #   docker wait battle-observer-1
+    mem_limit: 256m
+    cpus: 0.5

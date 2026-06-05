@@ -1,0 +1,7 @@
+# Files consumed inside Linux containers must stay LF on Windows checkouts —
+# a CRLF shebang breaks /bin/sh in the plc-sim image.
+*.sh text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+*.yml text eol=lf
+Dockerfile text eol=lf
