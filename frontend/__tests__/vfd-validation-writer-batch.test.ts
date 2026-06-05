@@ -128,11 +128,30 @@ describe('batchWriteFlags — read-compare-write', () => {
       'CBT_UL2_2_VFD.CTRL.CMD.Reverse_Polarity': { current: -1 }, // stuck at 1, desired 0 → write 0
     })
 
-    const res = await batchWriteFlags(gw(), '1,0', [dev], new Set(), connected, ops)
+    // concurrency 1 → deterministic set ordering for the assertion below
+    const res = await batchWriteFlags(gw(), '1,0', [dev], new Set(), connected, ops, 1)
 
     expect(res).toMatchObject({ ok: 3, verified: 0, fail: 0 })
     const sets = calls.filter(c => c.op === 'set').map(c => c.args[1])
     expect(sets).toEqual([1, 1, 0])
+  })
+
+  it('concurrent pass (default pool) converges a post-download wipe correctly', async () => {
+    // 20 devices × 2 flags, half wiped half correct — counters must be exact
+    // regardless of worker interleaving.
+    const devices = Array.from({ length: 20 }, (_, i) =>
+      device(`UL10_${i}_VFD`, [{ field: 'Valid_Map', value: 1 }, { field: 'Valid_HP', value: 1 }]))
+    const plan: Record<string, { current?: number }> = {}
+    for (let i = 0; i < 20; i++) {
+      plan[`CBT_UL10_${i}_VFD.CTRL.CMD.Valid_Map`] = { current: i % 2 === 0 ? 0 : -1 }
+      plan[`CBT_UL10_${i}_VFD.CTRL.CMD.Valid_HP`] = { current: i % 2 === 0 ? 0 : -1 }
+    }
+    const { ops, destroyed } = fakeOps(plan)
+
+    const res = await batchWriteFlags(gw(), '1,0', devices, new Set(), connected, ops)
+
+    expect(res).toMatchObject({ ok: 20, verified: 20, fail: 0, abortedAt: null, disconnected: false })
+    expect(destroyed).toHaveLength(40) // every handle destroyed under concurrency
   })
 
   it('mixed pass: writes only the diverged subset', async () => {
@@ -208,7 +227,8 @@ describe('batchWriteFlags — failure guards', () => {
       [`CBT_${d.deviceName}.CTRL.CMD.Valid_Map`, { createStatus: TIMEOUT }]))
     const { ops, created, destroyed } = fakeOps(plan)
 
-    const res = await batchWriteFlags(gw(), '1,0', devices, new Set(), connected, ops)
+    // concurrency 1 → "consecutive" failures are strictly ordered
+    const res = await batchWriteFlags(gw(), '1,0', devices, new Set(), connected, ops, 1)
 
     expect(res.abortedAt).toBe(4) // aborted at the 5th device (index 4)
     expect(created).toHaveLength(5) // stopped creating after the breaker tripped
@@ -239,7 +259,8 @@ describe('batchWriteFlags — failure guards', () => {
     let callCount = 0
     const dropAfterFirst = () => ++callCount <= 1 // connected for device 1 only
 
-    const res = await batchWriteFlags(gw(), '1,0', devices, new Set(), dropAfterFirst, ops)
+    // concurrency 1 → deterministic per-job isConnected sequencing
+    const res = await batchWriteFlags(gw(), '1,0', devices, new Set(), dropAfterFirst, ops, 1)
 
     expect(res.disconnected).toBe(true)
     expect(res.verified).toBe(1)

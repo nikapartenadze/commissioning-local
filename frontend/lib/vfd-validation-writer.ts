@@ -50,6 +50,10 @@
  *      path: power outage (hours), controller restart, and program download
  *      all drop the connection; on reconnect every flag (incl. the polarity
  *      pair) is re-asserted. knownMissingTags is cleared first (see below).
+ *      LATENCY MATTERS here: mech may be standing at the drive waiting for
+ *      the Valid_Map keypad unlock. With WRITE_CONCURRENCY tags in flight a
+ *      full restore lands ~3-5 s after reconnect (3 s settle delay in
+ *      plc-client-manager + a 2-5 s pass) — NOT minutes.
  *   2. L2 cell write / cloud pull → debounced pass (newly-earned flags).
  *   3. Periodic safety-net → every VFD_VALIDATION_SAFETY_NET_MS (default
  *      5 min). Catches the rare program download that completes without the
@@ -157,6 +161,17 @@ const WRITER_DISABLED = process.env.VFD_VALIDATION_DISABLED === '1'
 const SAFETY_NET_MS = (() => {
   const n = parseInt(process.env.VFD_VALIDATION_SAFETY_NET_MS || '', 10)
   return Number.isFinite(n) && n >= 30_000 ? n : 5 * 60_000
+})()
+
+// Tags processed concurrently within a pass. The post-download restore must
+// be FAST — mech may be standing at a drive waiting for the keypad unlock
+// (Valid_Map gate), so a power-up/download restore should complete seconds
+// after reconnect, not tens of seconds. 8 outstanding CIP requests is mild
+// for a ControlLogix (the IO tag reader batch-creates 592 tags at connect);
+// the mass-failure circuit breaker still aborts a sick pass quickly.
+const WRITE_CONCURRENCY = (() => {
+  const n = parseInt(process.env.VFD_VALIDATION_CONCURRENCY || '', 10)
+  return Number.isFinite(n) && n >= 1 && n <= 32 ? n : 8
 })()
 
 // Tags that returned a definitive PLCTAG_ERR_NOT_FOUND, keyed `${gateway}::${tagPath}`.
@@ -356,17 +371,28 @@ function boolMismatch(rawCurrent: number, desired: number): boolean {
   return (rawCurrent !== 0) !== (desired !== 0)
 }
 
+/** One (device, flag) unit of work within a pass. */
+interface FlagJob {
+  deviceIdx: number
+  tagPath: string
+  cacheKey: string
+  value: number
+}
+
 /**
  * One full convergence pass: for every earned flag, read the PLC's current
  * value and write ONLY if it diverges from L2 truth.
  *
- * Event-loop safety: every PLC op is non-blocking (initiate + poll). Tags are
- * processed strictly sequentially — at most ONE outstanding CIP request at any
- * moment, which is the same instantaneous controller load as the old
- * synchronous loop but without parking Node. Wall-clock for a full pass over
- * ~340 flags is 10-20 s; that's fine, nothing waits on it.
+ * Event-loop safety: every PLC op is non-blocking (initiate + poll), so the
+ * server stays responsive regardless of pass duration.
  *
- * `isConnected` is polled between devices: a PLC that drops mid-pass aborts
+ * Speed: jobs run through a small worker pool (WRITE_CONCURRENCY outstanding
+ * tags). The post-download restore is the latency-critical path — mech waits
+ * at the drive for the Valid_Map keypad unlock — so a full 338-flag restore
+ * must land seconds after reconnect. At ~8 concurrent ops a healthy
+ * ControlLogix converges ~340 flags in roughly 2-5 s.
+ *
+ * `isConnected` is checked before each job: a PLC that drops mid-pass aborts
  * the pass instead of marching 300 tags into 2 s timeouts. The reconnect
  * trigger re-runs the whole pass anyway.
  */
@@ -377,6 +403,7 @@ export async function batchWriteFlags(
   faultedDevices: Set<string>,
   isConnected: () => boolean,
   ops: PlcWriteOps = realOps,
+  concurrency: number = WRITE_CONCURRENCY,
 ): Promise<BatchResult> {
   let ok = 0
   let verified = 0
@@ -392,21 +419,16 @@ export async function batchWriteFlags(
   // we stopped at so the log line is actionable.
   let abortedAt: number | null = null
   let disconnected = false
-  // Count of consecutive createTag failures across all devices in this
-  // pass. Resets on any success. When it hits MAX_CONSECUTIVE_CREATE_
-  // FAILURES the CIP queue is almost certainly saturated — stop hammering.
+  // Count of consecutive createTag failures across the pass (in completion
+  // order under concurrency — an approximation, but 5 transient failures
+  // back-to-back still unambiguously means "CIP queue is sick"). Resets on
+  // any success.
   let consecutiveCreateFailures = 0
 
-  outer:
+  // ── Build the job list (pure, no PLC traffic) ────────────────────
+  const jobs: FlagJob[] = []
   for (let deviceIdx = 0; deviceIdx < devices.length; deviceIdx++) {
     const device = devices[deviceIdx]
-
-    // PLC dropped mid-pass (power cut, download started) — stop. The
-    // 'initialized' trigger on reconnect redoes the full pass.
-    if (!isConnected()) {
-      disconnected = true
-      break
-    }
 
     // Skip devices currently in ConnectionFaulted/Communication_Faulted.
     // Their CTRL.CMD tags live on the controller but the controller is
@@ -426,77 +448,98 @@ export async function batchWriteFlags(
     // is stamped and a polarity is recorded). Pre-computed by flagsForDevice.
     for (const { field, value } of device.writes) {
       const tagPath = `CBT_${device.deviceName}.CTRL.CMD.${field}`
-      // Skip tags already proven absent on THIS PLC — see knownMissingTags.
       const cacheKey = `${gateway}::${tagPath}`
+      // Skip tags already proven absent on THIS PLC — see knownMissingTags.
       if (knownMissingTags.has(cacheKey)) {
         skipped++
         continue
       }
+      jobs.push({ deviceIdx, tagPath, cacheKey, value })
+    }
+  }
 
-      const { handle, status } = await ops.createTagAsync(
-        { gateway, path, name: tagPath, elemSize: 1, elemCount: 1 },
-        CREATE_TAG_TIMEOUT_MS,
-      )
-      try {
-        if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
-          fail++
-          consecutiveCreateFailures++
-          // Cache ONLY definitive "not in the program" results. Transient
-          // failures (timeout/busy/connection) must NOT be cached — the tag
-          // may exist and should be retried once the PLC is responsive again.
-          if (status === PlcTagStatus.PLCTAG_ERR_NOT_FOUND) {
-            knownMissingTags.add(cacheKey)
-            // PLCTAG_ERR_NOT_FOUND is a definitive answer from the
-            // controller — don't count it as a "CIP queue is sick" signal.
-            consecutiveCreateFailures = 0
-          }
-          if (fail <= 3) {
-            console.warn(`[VfdValidationWriter] createTag failed: ${tagPath}: ${getStatusMessage(status)}`)
-          }
-          // Mass-failure circuit breaker. N transient failures in a row →
-          // the CIP queue is saturated (or the controller is briefly
-          // unreachable). Stop hammering it; the next trigger retries.
-          if (consecutiveCreateFailures >= MAX_CONSECUTIVE_CREATE_FAILURES) {
-            abortedAt = deviceIdx
-            break outer
-          }
-          continue
-        }
-        consecutiveCreateFailures = 0
-
-        // Read-compare-write: only touch the PLC when its value actually
-        // diverged (post-download restore, manual clear). Steady state —
-        // everything already asserted — issues ZERO writes.
-        const readSt = await ops.readTagAsync(handle, 2000)
-        if (readSt !== PlcTagStatus.PLCTAG_STATUS_OK) {
-          // Don't write blind through a sick connection — count and move on;
-          // a later pass converges it.
-          fail++
-          continue
-        }
-        if (!boolMismatch(ops.getInt8(handle, 0), value)) {
-          verified++
-          continue
-        }
-
-        ops.setInt8(handle, 0, value)
-        const writeSt = await ops.writeTagAsync(handle, 2000)
-        if (writeSt === PlcTagStatus.PLCTAG_STATUS_OK) {
-          ok++
-        } else {
-          fail++
-        }
-      } catch {
+  // ── Run one job: create → read → compare → (write) → destroy ────
+  const runJob = async (job: FlagJob): Promise<void> => {
+    const { handle, status } = await ops.createTagAsync(
+      { gateway, path, name: job.tagPath, elemSize: 1, elemCount: 1 },
+      CREATE_TAG_TIMEOUT_MS,
+    )
+    try {
+      if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
         fail++
-      } finally {
-        // Unlike the old sync create, a FAILED async create can still hold a
-        // live handle — always destroy non-negative handles.
-        if (handle >= 0) {
-          try { ops.destroy(handle) } catch { /* ignore */ }
+        consecutiveCreateFailures++
+        // Cache ONLY definitive "not in the program" results. Transient
+        // failures (timeout/busy/connection) must NOT be cached — the tag
+        // may exist and should be retried once the PLC is responsive again.
+        if (status === PlcTagStatus.PLCTAG_ERR_NOT_FOUND) {
+          knownMissingTags.add(job.cacheKey)
+          // PLCTAG_ERR_NOT_FOUND is a definitive answer from the
+          // controller — don't count it as a "CIP queue is sick" signal.
+          consecutiveCreateFailures = 0
         }
+        if (fail <= 3) {
+          console.warn(`[VfdValidationWriter] createTag failed: ${job.tagPath}: ${getStatusMessage(status)}`)
+        }
+        // Mass-failure circuit breaker. N transient failures in a row →
+        // the CIP queue is saturated (or the controller is briefly
+        // unreachable). Stop hammering it; the next trigger retries.
+        if (consecutiveCreateFailures >= MAX_CONSECUTIVE_CREATE_FAILURES && abortedAt == null) {
+          abortedAt = job.deviceIdx
+        }
+        return
+      }
+      consecutiveCreateFailures = 0
+
+      // Read-compare-write: only touch the PLC when its value actually
+      // diverged (post-download restore, manual clear). Steady state —
+      // everything already asserted — issues ZERO writes.
+      const readSt = await ops.readTagAsync(handle, 2000)
+      if (readSt !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        // Don't write blind through a sick connection — count and move on;
+        // a later pass converges it.
+        fail++
+        return
+      }
+      if (!boolMismatch(ops.getInt8(handle, 0), job.value)) {
+        verified++
+        return
+      }
+
+      ops.setInt8(handle, 0, job.value)
+      const writeSt = await ops.writeTagAsync(handle, 2000)
+      if (writeSt === PlcTagStatus.PLCTAG_STATUS_OK) {
+        ok++
+      } else {
+        fail++
+      }
+    } catch {
+      fail++
+    } finally {
+      // Unlike the old sync create, a FAILED async create can still hold a
+      // live handle — always destroy non-negative handles.
+      if (handle >= 0) {
+        try { ops.destroy(handle) } catch { /* ignore */ }
       }
     }
   }
+
+  // ── Worker pool: shared cursor, N workers, stop-on-abort ────────
+  let cursor = 0
+  const worker = async (): Promise<void> => {
+    while (cursor < jobs.length) {
+      if (abortedAt != null) return // circuit breaker tripped — stop taking work
+      // PLC dropped mid-pass (power cut, download started) — stop. The
+      // 'initialized' trigger on reconnect redoes the full pass.
+      if (!isConnected()) {
+        disconnected = true
+        return
+      }
+      const job = jobs[cursor++]
+      await runJob(job)
+    }
+  }
+  const workerCount = Math.max(1, Math.min(concurrency, jobs.length || 1))
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
 
   return { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected }
 }
