@@ -77,7 +77,7 @@ import {
   readTagAsync,
   writeTagAsync,
   plc_tag_destroy,
-  plc_tag_get_int8,
+  plc_tag_get_bit,
   plc_tag_set_int8,
   PlcTagStatus,
   getStatusMessage,
@@ -335,7 +335,8 @@ export interface PlcWriteOps {
   createTagAsync: (config: PlcTagConfig, timeoutMs: number) => Promise<{ handle: number; status: number }>
   readTagAsync: (handle: number, timeoutMs: number) => Promise<number>
   writeTagAsync: (handle: number, timeoutMs: number) => Promise<number>
-  getInt8: (handle: number, offset: number) => number
+  /** Read bit 0 of the tag buffer: 0/1, or a NEGATIVE libplctag error code. */
+  getBit: (handle: number, offsetBit: number) => number
   setInt8: (handle: number, offset: number, value: number) => number
   destroy: (handle: number) => void
 }
@@ -344,7 +345,13 @@ const realOps: PlcWriteOps = {
   createTagAsync,
   readTagAsync,
   writeTagAsync,
-  getInt8: plc_tag_get_int8,
+  // plc_tag_get_bit, NOT plc_tag_get_int8: get_int8 is declared I32 over a C
+  // int8_t return, so the upper register bytes are ABI GARBAGE — truthiness
+  // checks on it are meaningless (caught by the battle env on 2026-06-05:
+  // every zeroed flag read "already-correct" and restore silently no-opped).
+  // get_bit returns a clean int 0/1 and is the convention everywhere else
+  // (tag-reader.ts, plc-client.ts, vfd-wizard-reader.ts).
+  getBit: plc_tag_get_bit,
   setInt8: plc_tag_set_int8,
   destroy: plc_tag_destroy,
 }
@@ -363,12 +370,12 @@ export interface BatchResult {
 }
 
 /**
- * BOOL tags read back as 0x00/0xFF — plc_tag_get_int8 returns -1 for a set
- * bit, while our desired values are 0/1. Compare truthiness, not raw bytes,
- * or every already-set flag would look like a mismatch and get rewritten.
+ * Compare a plc_tag_get_bit() result (clean 0/1) against the desired 0/1.
+ * Truthiness comparison keeps this robust if a controller ever reports a
+ * nonstandard nonzero for "set".
  */
-function boolMismatch(rawCurrent: number, desired: number): boolean {
-  return (rawCurrent !== 0) !== (desired !== 0)
+function boolMismatch(currentBit: number, desired: number): boolean {
+  return (currentBit !== 0) !== (desired !== 0)
 }
 
 /** One (device, flag) unit of work within a pass. */
@@ -500,7 +507,14 @@ export async function batchWriteFlags(
         fail++
         return
       }
-      if (!boolMismatch(ops.getInt8(handle, 0), job.value)) {
+      const currentBit = ops.getBit(handle, 0)
+      if (currentBit < 0) {
+        // get_bit error (negative status) — unknown current value; don't
+        // write blind, don't claim verified.
+        fail++
+        return
+      }
+      if (!boolMismatch(currentBit, job.value)) {
         verified++
         return
       }
