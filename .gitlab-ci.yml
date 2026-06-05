@@ -37,6 +37,7 @@ prebuild-images:
     CLOUD_SRC: registry.gitlab.lci.ge/commissioning/commissioning-cloud:c3e44ea1f11f866585cd2f4387d0833a80dbde60
   rules:
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$RUN_PREBUILD == "1"'        # API/scheduled trigger with this var
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: manual
       allow_failure: true
@@ -104,8 +105,7 @@ battle-smoke:
   extends: .battle-base
   rules:
     - if: '$CI_PIPELINE_SOURCE == "web"'
-    - if: '$CI_PIPELINE_SOURCE == "api"'
-    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+    - if: '$RUN_SMOKE == "1"'          # API/manual trigger with this var
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: manual
       allow_failure: true
