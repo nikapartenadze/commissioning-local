@@ -599,11 +599,15 @@ export class CloudSyncService {
         `tester=${JSON.stringify(update.testedBy)}, state=${JSON.stringify(update.state)}, ts=${update.timestamp}`,
       )
       this.setConnectionState('error', 'Sync failed')
-      // 4xx (other than 401) means the request was malformed — retrying won't
-      // help. 5xx is transient (cloud/proxy down) and must not burn the
-      // retry cap: the row is fine, the infrastructure is not.
-      const permanent = response.status >= 400 && response.status < 500
+      // 4xx (other than 401/429) means the request was malformed — retrying
+      // won't help. 401 (auth), 429 (rate limit) and 5xx (cloud/proxy down)
+      // are transient and must NOT burn the retry cap: the row is fine, the
+      // infrastructure is not. 429 specifically is bug B1 from the MCM11
+      // incident — it was being deleted on first throttle (silent loss).
+      // `permanent` MUST exclude 429 because the caller checks permanent
+      // BEFORE network and deletes the row on permanent=true.
       const network = isNetworkLevelFailure({ httpStatus: response.status })
+      const permanent = response.status >= 400 && response.status < 500 && !network
       return { ok: false, permanent, network, reason: `HTTP ${response.status}` }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)

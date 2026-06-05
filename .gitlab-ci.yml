@@ -18,7 +18,44 @@
 #     https://gitlab.lci.ge/api/v4/projects/<id>/packages/generic/battle-seed/1/database.db
 # ============================================================================
 
-stages: [battle]
+stages: [prebuild, battle]
+
+# ── prebuild-images ──────────────────────────────────────────────────────────
+# Stage the 3 heavy images into THIS project's GitLab registry so the nightly
+# job PULLS them (the ci-runner can't build them all — pipeline 622 ran out of
+# disk). Manual; re-run when frontend/Dockerfile, battle/plc-sim, or the cloud
+# SHA changes. Builds tool + plc-sim one at a time (prune between) and copies
+# the prod cloud image (already built by the commissioning-cloud pipeline).
+prebuild-images:
+  stage: prebuild
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    # Bump to a newer commissioning-cloud SHA to refresh cloud-stage.
+    CLOUD_SRC: registry.gitlab.lci.ge/commissioning/commissioning-cloud:c3e44ea1f11f866585cd2f4387d0833a80dbde60
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+      allow_failure: true
+  timeout: 60m
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    # tool (this repo)
+    - docker build -t "$CI_REGISTRY_IMAGE/tool:latest" -f frontend/Dockerfile frontend
+    - docker push "$CI_REGISTRY_IMAGE/tool:latest"
+    - docker image prune -af
+    # plc-sim (compiles ab_server — the disk hog; build isolated)
+    - docker build -t "$CI_REGISTRY_IMAGE/plc-sim:latest" battle/plc-sim
+    - docker push "$CI_REGISTRY_IMAGE/plc-sim:latest"
+    - docker image prune -af
+    # cloud (copy the already-built prod image into our registry)
+    - docker pull "$CLOUD_SRC"
+    - docker tag "$CLOUD_SRC" "$CI_REGISTRY_IMAGE/cloud:latest"
+    - docker push "$CI_REGISTRY_IMAGE/cloud:latest"
 
 .battle-base:
   stage: battle
@@ -27,11 +64,20 @@ stages: [battle]
     - docker:27-dind
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
+    # Pull the heavy pre-built images (staged by the prebuild-images job into
+    # THIS project's GitLab registry) instead of building them on the disk-
+    # constrained ci-runner — that's what blew up pipeline 622.
+    BATTLE_PULL: "1"
+    TOOL_IMAGE: $CI_REGISTRY_IMAGE/tool:latest
+    CLOUD_IMAGE: $CI_REGISTRY_IMAGE/cloud:latest
+    PLC_SIM_IMAGE: $CI_REGISTRY_IMAGE/plc-sim:latest
   # tracker-ci-dind (runner 10) is untagged + project-scoped — it must be
   # enabled for this project (done via API at setup; see battle/README.md).
   before_script:
     - docker info >/dev/null
     - apk add --no-cache curl
+    # Pull the staged battle images from this project's private registry.
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
     # Seed DB (git-ignored field data) from the generic package registry.
     - mkdir -p battle/seed
     - >

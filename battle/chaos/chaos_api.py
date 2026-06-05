@@ -31,6 +31,8 @@ from urllib.parse import parse_qs, urlparse
 DOCKER_SOCK = "/var/run/docker.sock"
 PLC_SIM = os.environ.get("PLC_SIM_CONTAINER", "battle-plc-sim-1")
 TOOL = os.environ.get("TOOL_CONTAINER", "battle-tool-1")
+CLOUD = os.environ.get("CLOUD_CONTAINER", "battle-cloud-1")
+NETWORK = os.environ.get("NETWORK_NAME", "battle_battle")
 RUN_ID = os.environ.get("RUN_ID", "dev")
 RUNS_DIR = os.environ.get("RUNS_DIR", "/runs")
 DELAY_FILE = os.environ.get("DELAY_FILE", "/gen/delay")
@@ -50,10 +52,15 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = s
 
 
-def docker(method: str, path: str) -> tuple[int, str]:
+def docker(method: str, path: str, body: dict | None = None) -> tuple[int, str]:
     conn = UnixHTTPConnection(DOCKER_SOCK)
     try:
-        conn.request(method, path)
+        headers = {}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers = {"Content-Type": "application/json"}
+        conn.request(method, path, body=data, headers=headers)
         r = conn.getresponse()
         return r.status, r.read().decode(errors="replace")
     finally:
@@ -111,6 +118,26 @@ def do_toolkill() -> tuple[int, str]:
     return status, body
 
 
+def do_cloudcut(sec: int) -> tuple[int, str]:
+    """Sever the tool↔cloud link by detaching cloud from the battle network for
+    `sec` seconds, then reattaching. The tool keeps testing the PLC and queues
+    results (PendingSyncs); on restore the offline queue must drain with NO
+    lost writes. This is the MCM08 'lost connectivity while pushing' class and
+    the VPN-down case. DNS-name based (tool reaches `cloud` by name), so the
+    reattached container's new IP is transparent."""
+    status, _ = docker("POST", f"/networks/{NETWORK}/disconnect",
+                        {"Container": CLOUD, "Force": True})
+    journal({"type": "cloudcut", "down_seconds": sec, "disconnect_status": status})
+
+    def restore():
+        time.sleep(sec)
+        s, _ = docker("POST", f"/networks/{NETWORK}/connect", {"Container": CLOUD})
+        journal({"type": "cloudcut-restored", "connect_status": s})
+
+    threading.Thread(target=restore, daemon=True).start()
+    return status, ""
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
@@ -150,6 +177,10 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/toolkill":
             s, _ = do_toolkill()
             return self._reply(200, {"ok": s < 400})
+        if url.path == "/cloudcut":
+            sec = int(q.get("sec", ["120"])[0])
+            do_cloudcut(sec)
+            return self._reply(200, {"ok": True, "down_seconds": sec})
         return self._reply(404, {"error": "unknown"})
 
 
@@ -161,9 +192,23 @@ def download_storm(spec: str) -> None:
         do_download()
 
 
+def cloud_flap(spec: str) -> None:
+    """VPN-flap profile: cut the cloud link for `down` min every `period` min.
+    spec = "down_min,period_min" e.g. "10,60" = down 10 of every 60 min."""
+    down_min, period_min = (float(x) for x in spec.split(","))
+    print(f"chaos: cloud-flap armed — down {down_min}min every {period_min}min", flush=True)
+    while True:
+        time.sleep(max(0.0, (period_min - down_min)) * 60)
+        do_cloudcut(int(down_min * 60))
+        time.sleep(down_min * 60)
+
+
 if __name__ == "__main__":
     storm = os.environ.get("DOWNLOAD_STORM")
     if storm:
         threading.Thread(target=download_storm, args=(storm,), daemon=True).start()
-    print(f"chaos: listening :8666 (plc-sim={PLC_SIM}, tool={TOOL})", flush=True)
+    flap = os.environ.get("CLOUD_FLAP")
+    if flap:
+        threading.Thread(target=cloud_flap, args=(flap,), daemon=True).start()
+    print(f"chaos: listening :8666 (plc-sim={PLC_SIM}, tool={TOOL}, cloud={CLOUD})", flush=True)
     ThreadingHTTPServer(("0.0.0.0", 8666), Handler).serve_forever()
