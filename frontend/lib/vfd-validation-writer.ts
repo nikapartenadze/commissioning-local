@@ -28,27 +28,56 @@
  * the explicit Invalidate clear pulses, never here. Polarity bits are written
  * only when "Check Direction" is stamped (a polarity stamp alone is not enough).
  *
- * Performance: uses batch handle creation — all tags are created first, then a
- * tight read→set→write loop runs across all handles.  100 VFDs (300 tags) sync
- * in ~2-5 seconds, not minutes.
+ * SCHEDULING + EVENT-LOOP SAFETY (2026-06-05 MCM02 freeze)
+ * ---------------------------------------------------------
+ * This writer used to re-write EVERY earned flag EVERY 10 seconds using
+ * synchronous FFI calls. On MCM02 (72 VFDs → 338 flags) each cycle blocked
+ * the Node event loop for ~9.5 s out of every 10 — every API call took ~10 s,
+ * the UI looked "stuck on loading" for all users, and the CIP hammering made
+ * the main tag reader time out (91 connection flaps in one day). Two rules
+ * now hold:
  *
- * Triggers:
- *   1. PLC 'initialized' event  → immediate sync of all validated VFDs
- *   2. L2 cell write / cloud pull → debounced re-sync
- *   3. Periodic safety-net      → every 10 s while PLC is connected
+ *   1. NEVER block the event loop: all PLC ops use the non-blocking
+ *      initiate + waitForStatus pattern (createTagAsync / readTagAsync /
+ *      writeTagAsync). A pass may take seconds of wall-clock; the server
+ *      stays fully responsive throughout.
+ *   2. NEVER write blindly on a timer: a pass runs only on a trigger that
+ *      gives reason to believe PLC state diverged from L2 truth, and it
+ *      reads each flag first, writing ONLY mismatches.
+ *
+ * Triggers (each → one full read-compare-write pass over all earned flags):
+ *   1. PLC 'initialized' event  → IMMEDIATE pass. This is the durability
+ *      path: power outage (hours), controller restart, and program download
+ *      all drop the connection; on reconnect every flag (incl. the polarity
+ *      pair) is re-asserted. knownMissingTags is cleared first (see below).
+ *   2. L2 cell write / cloud pull → debounced pass (newly-earned flags).
+ *   3. Periodic safety-net → every VFD_VALIDATION_SAFETY_NET_MS (default
+ *      5 min). Catches the rare program download that completes without the
+ *      CIP session ever formally dropping (same philosophy as
+ *      KNOWN_MISSING_TTL_MS). Steady-state cost: ~1 read per flag per
+ *      5 min, zero writes when nothing diverged.
+ *
+ * Between triggers: ZERO CIP traffic, zero event-loop usage.
+ *
+ * Escape hatches (field ops, no rebuild needed — NSSM AppEnvironmentExtra):
+ *   VFD_VALIDATION_DISABLED=1        → writer fully off (emergency only;
+ *                                      flags then NOT restored after downloads!)
+ *   VFD_VALIDATION_SAFETY_NET_MS=N   → safety-net cadence override
  *
  * Only writes "check" flags — never motor commands (Bump, Run_At_30_RVS, etc.).
  */
 
 import { db } from '@/lib/db-sqlite'
 import {
-  createTag,
-  plc_tag_read,
-  plc_tag_write,
+  createTagAsync,
+  readTagAsync,
+  writeTagAsync,
   plc_tag_destroy,
+  plc_tag_get_int8,
   plc_tag_set_int8,
   PlcTagStatus,
   getStatusMessage,
+  type PlcTagConfig,
 } from '@/lib/plc'
 import { polarityFlagWrites, parsePolarity, type FlagWrite } from '@/lib/vfd-polarity'
 
@@ -74,7 +103,7 @@ export interface ValidationRow {
   polarityRaw: string | null
 }
 
-interface ValidatedDevice {
+export interface ValidatedDevice {
   deviceName: string
   /** Pre-computed CMD writes (1s only) earned by this device's progress. */
   writes: FlagWrite[]
@@ -110,15 +139,6 @@ export function flagsForDevice(row: ValidationRow): FlagWrite[] {
   return writes
 }
 
-interface TagHandle {
-  deviceName: string
-  field: string
-  tagPath: string
-  handle: number
-  /** Value to assert on this CMD bit (0 or 1). */
-  value: number
-}
-
 // ── Throttle / state ───────────────────────────────────────────────
 
 let lastSyncMs = 0
@@ -126,13 +146,26 @@ let syncRunning = false
 let pendingSync = false
 const MIN_SYNC_INTERVAL_MS = 5_000 // at most once per 5 s
 
+// Emergency kill switch — see file header. When set, the writer never touches
+// the PLC; validation/polarity flags will NOT be restored after a download.
+const WRITER_DISABLED = process.env.VFD_VALIDATION_DISABLED === '1'
+
+// Safety-net cadence. 5 min default: the only scenario it exists for is a
+// program download that never drops the CIP session (rare); everything common
+// (power loss, controller restart, normal download) is handled IMMEDIATELY by
+// the PLC 'initialized' trigger.
+const SAFETY_NET_MS = (() => {
+  const n = parseInt(process.env.VFD_VALIDATION_SAFETY_NET_MS || '', 10)
+  return Number.isFinite(n) && n >= 30_000 ? n : 5 * 60_000
+})()
+
 // Tags that returned a definitive PLCTAG_ERR_NOT_FOUND, keyed `${gateway}::${tagPath}`.
 // Once a CMD flag tag is known absent on a given PLC we stop re-creating it every
 // sync. Cleared on every PLC (re)connect via clearKnownMissingTags() — a reconnect
 // often follows a program download, after which the tag inventory may have changed
 // (and a NOT_FOUND answered mid-download is not durable truth). Between connects it
-// prevents the 10 s safety-net from spamming tens of thousands of failing createTag
-// calls at the controller's CIP queue.
+// prevents recurring passes from re-spamming failing createTag calls at the
+// controller's CIP queue for tags the program genuinely doesn't define.
 const knownMissingTags = new Set<string>()
 
 /**
@@ -278,124 +311,176 @@ let lastNoPolarityKey = ''
 // ── Batch write ────────────────────────────────────────────────────
 
 /**
- * Batch-create all tag handles, then tight-loop read→set→write across them.
- *
- * Why batched?  libplctag reuses CIP sessions for tags on the same gateway+path.
- * Creating 300 handles takes ~1-2 s total (shared session setup).  The subsequent
- * read/write calls are ~5-15 ms each since the session is already open.
- * Total for 100 VFDs ≈ 2-5 seconds vs 60-90 s with per-tag create+destroy.
+ * PLC operations used by batchWriteFlags. Injectable so the pass logic
+ * (skip/verify/write/circuit-breaker/abort decisions) is unit-testable
+ * without a DLL or a controller. Production default: the real async
+ * libplctag wrappers.
  */
-function batchWriteFlags(
+export interface PlcWriteOps {
+  createTagAsync: (config: PlcTagConfig, timeoutMs: number) => Promise<{ handle: number; status: number }>
+  readTagAsync: (handle: number, timeoutMs: number) => Promise<number>
+  writeTagAsync: (handle: number, timeoutMs: number) => Promise<number>
+  getInt8: (handle: number, offset: number) => number
+  setInt8: (handle: number, offset: number, value: number) => number
+  destroy: (handle: number) => void
+}
+
+const realOps: PlcWriteOps = {
+  createTagAsync,
+  readTagAsync,
+  writeTagAsync,
+  getInt8: plc_tag_get_int8,
+  setInt8: plc_tag_set_int8,
+  destroy: plc_tag_destroy,
+}
+
+export interface BatchResult {
+  /** Flags actually written (PLC value diverged from L2 truth). */
+  ok: number
+  /** Flags read and already correct — no write issued. */
+  verified: number
+  fail: number
+  skipped: number
+  skippedFaulted: number
+  abortedAt: number | null
+  /** Pass stopped early because the PLC client reported disconnected. */
+  disconnected: boolean
+}
+
+/**
+ * BOOL tags read back as 0x00/0xFF — plc_tag_get_int8 returns -1 for a set
+ * bit, while our desired values are 0/1. Compare truthiness, not raw bytes,
+ * or every already-set flag would look like a mismatch and get rewritten.
+ */
+function boolMismatch(rawCurrent: number, desired: number): boolean {
+  return (rawCurrent !== 0) !== (desired !== 0)
+}
+
+/**
+ * One full convergence pass: for every earned flag, read the PLC's current
+ * value and write ONLY if it diverges from L2 truth.
+ *
+ * Event-loop safety: every PLC op is non-blocking (initiate + poll). Tags are
+ * processed strictly sequentially — at most ONE outstanding CIP request at any
+ * moment, which is the same instantaneous controller load as the old
+ * synchronous loop but without parking Node. Wall-clock for a full pass over
+ * ~340 flags is 10-20 s; that's fine, nothing waits on it.
+ *
+ * `isConnected` is polled between devices: a PLC that drops mid-pass aborts
+ * the pass instead of marching 300 tags into 2 s timeouts. The reconnect
+ * trigger re-runs the whole pass anyway.
+ */
+export async function batchWriteFlags(
   gateway: string,
   path: string,
   devices: ValidatedDevice[],
   faultedDevices: Set<string>,
-): { ok: number; fail: number; skipped: number; skippedFaulted: number; abortedAt: number | null } {
-  const handles: TagHandle[] = []
+  isConnected: () => boolean,
+  ops: PlcWriteOps = realOps,
+): Promise<BatchResult> {
   let ok = 0
+  let verified = 0
   let fail = 0
   let skipped = 0
   // Devices we deliberately did NOT touch because they're currently in
   // ConnectionFaulted state. Separate counter from `skipped` (which counts
-  // tags known absent from the PLC program) so the periodic log line lets
-  // operators see "we held back 50 devices because the ring is broken" vs
-  // "this PLC's program doesn't define these tags".
+  // tags known absent from the PLC program) so the log line lets operators
+  // see "we held back 50 devices because the ring is broken" vs "this PLC's
+  // program doesn't define these tags".
   let skippedFaulted = 0
   // If we trip the mass-failure circuit breaker, remember the device index
   // we stopped at so the log line is actionable.
   let abortedAt: number | null = null
+  let disconnected = false
   // Count of consecutive createTag failures across all devices in this
-  // cycle. Resets on any success. When it hits MAX_CONSECUTIVE_CREATE_
-  // FAILURES we stop creating new handles — Phase 2/3 still run for any
-  // handles already created so we don't waste the work or leak them.
+  // pass. Resets on any success. When it hits MAX_CONSECUTIVE_CREATE_
+  // FAILURES the CIP queue is almost certainly saturated — stop hammering.
   let consecutiveCreateFailures = 0
 
-  try {
-    // ── Phase 1: create all handles ────────────────────────────────
-    for (let deviceIdx = 0; deviceIdx < devices.length; deviceIdx++) {
-      const device = devices[deviceIdx]
+  outer:
+  for (let deviceIdx = 0; deviceIdx < devices.length; deviceIdx++) {
+    const device = devices[deviceIdx]
 
-      // Skip devices currently in ConnectionFaulted/Communication_Faulted.
-      // Their CTRL.CMD tags live on the controller but the controller is
-      // routing traffic to a dead endpoint when these get written, which
-      // is what saturated the CIP queue in the 2026-05-28 incident. The
-      // device will be re-tried automatically on the next cycle once
-      // ConnectionFaulted flips back to false (the IO reader updates the
-      // cache continuously).
-      if (faultedDevices.has(device.deviceName)) {
-        // Count once per device regardless of how many flag writes it
-        // would have produced — easier to read in the log line.
-        skippedFaulted++
+    // PLC dropped mid-pass (power cut, download started) — stop. The
+    // 'initialized' trigger on reconnect redoes the full pass.
+    if (!isConnected()) {
+      disconnected = true
+      break
+    }
+
+    // Skip devices currently in ConnectionFaulted/Communication_Faulted.
+    // Their CTRL.CMD tags live on the controller but the controller is
+    // routing traffic to a dead endpoint when these get written, which
+    // is what saturated the CIP queue in the 2026-05-28 incident. The
+    // device will be re-tried automatically on the next pass once
+    // ConnectionFaulted flips back to false (the IO reader updates the
+    // cache continuously).
+    if (faultedDevices.has(device.deviceName)) {
+      // Count once per device regardless of how many flag writes it
+      // would have produced — easier to read in the log line.
+      skippedFaulted++
+      continue
+    }
+
+    // Per-flag earned writes (=1 only) + polarity bits (only when direction
+    // is stamped and a polarity is recorded). Pre-computed by flagsForDevice.
+    for (const { field, value } of device.writes) {
+      const tagPath = `CBT_${device.deviceName}.CTRL.CMD.${field}`
+      // Skip tags already proven absent on THIS PLC — see knownMissingTags.
+      const cacheKey = `${gateway}::${tagPath}`
+      if (knownMissingTags.has(cacheKey)) {
+        skipped++
         continue
       }
 
-      // Per-flag earned writes (=1 only) + polarity bits (only when direction
-      // is stamped and a polarity is recorded). Pre-computed by flagsForDevice.
-      let deviceAborted = false
-      for (const { field, value } of device.writes) {
-        const tagPath = `CBT_${device.deviceName}.CTRL.CMD.${field}`
-        // Skip tags already proven absent on THIS PLC — see knownMissingTags.
-        const cacheKey = `${gateway}::${tagPath}`
-        if (knownMissingTags.has(cacheKey)) {
-          skipped++
-          continue
-        }
-        const handle = createTag({
-          gateway,
-          path,
-          name: tagPath,
-          elemSize: 1,
-          elemCount: 1,
-          timeout: CREATE_TAG_TIMEOUT_MS,
-        })
-        if (handle >= 0) {
-          handles.push({ deviceName: device.deviceName, field, tagPath, handle, value })
-          consecutiveCreateFailures = 0
-        } else {
+      const { handle, status } = await ops.createTagAsync(
+        { gateway, path, name: tagPath, elemSize: 1, elemCount: 1 },
+        CREATE_TAG_TIMEOUT_MS,
+      )
+      try {
+        if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
           fail++
           consecutiveCreateFailures++
           // Cache ONLY definitive "not in the program" results. Transient
-          // failures (timeout/busy/connection) must NOT be cached — the tag may
-          // exist and should be retried once the PLC is responsive again.
-          if (handle === PlcTagStatus.PLCTAG_ERR_NOT_FOUND) {
+          // failures (timeout/busy/connection) must NOT be cached — the tag
+          // may exist and should be retried once the PLC is responsive again.
+          if (status === PlcTagStatus.PLCTAG_ERR_NOT_FOUND) {
             knownMissingTags.add(cacheKey)
             // PLCTAG_ERR_NOT_FOUND is a definitive answer from the
             // controller — don't count it as a "CIP queue is sick" signal.
             consecutiveCreateFailures = 0
           }
           if (fail <= 3) {
-            console.warn(`[VfdValidationWriter] createTag failed: ${tagPath}: ${getStatusMessage(handle)}`)
+            console.warn(`[VfdValidationWriter] createTag failed: ${tagPath}: ${getStatusMessage(status)}`)
           }
-          // Mass-failure circuit breaker. When we hit N transient
-          // failures in a row across any devices, the CIP queue is
-          // almost certainly saturated (or the controller is briefly
-          // unreachable). Stop hammering it — Phase 2/3 will drain
-          // anything we already created, and the next 10 s cycle will
-          // retry with a hopefully recovered queue.
+          // Mass-failure circuit breaker. N transient failures in a row →
+          // the CIP queue is saturated (or the controller is briefly
+          // unreachable). Stop hammering it; the next trigger retries.
           if (consecutiveCreateFailures >= MAX_CONSECUTIVE_CREATE_FAILURES) {
             abortedAt = deviceIdx
-            deviceAborted = true
-            break
+            break outer
           }
+          continue
         }
-      }
-      if (deviceAborted) break
-    }
+        consecutiveCreateFailures = 0
 
-    if (handles.length === 0) return { ok: 0, fail, skipped, skippedFaulted, abortedAt }
-
-    // ── Phase 2: tight read → set → write loop ────────────────────
-    for (const h of handles) {
-      try {
-        const readSt = plc_tag_read(h.handle, 2000)
+        // Read-compare-write: only touch the PLC when its value actually
+        // diverged (post-download restore, manual clear). Steady state —
+        // everything already asserted — issues ZERO writes.
+        const readSt = await ops.readTagAsync(handle, 2000)
         if (readSt !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          // Don't write blind through a sick connection — count and move on;
+          // a later pass converges it.
           fail++
           continue
         }
+        if (!boolMismatch(ops.getInt8(handle, 0), value)) {
+          verified++
+          continue
+        }
 
-        plc_tag_set_int8(h.handle, 0, h.value)
-
-        const writeSt = plc_tag_write(h.handle, 2000)
+        ops.setInt8(handle, 0, value)
+        const writeSt = await ops.writeTagAsync(handle, 2000)
         if (writeSt === PlcTagStatus.PLCTAG_STATUS_OK) {
           ok++
         } else {
@@ -403,32 +488,39 @@ function batchWriteFlags(
         }
       } catch {
         fail++
+      } finally {
+        // Unlike the old sync create, a FAILED async create can still hold a
+        // live handle — always destroy non-negative handles.
+        if (handle >= 0) {
+          try { ops.destroy(handle) } catch { /* ignore */ }
+        }
       }
     }
-
-    return { ok, fail, skipped, skippedFaulted, abortedAt }
-  } finally {
-    // ── Phase 3: destroy all handles ───────────────────────────────
-    for (const h of handles) {
-      try { plc_tag_destroy(h.handle) } catch { /* ignore */ }
-    }
   }
+
+  return { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected }
 }
 
 // ── Main sync function ─────────────────────────────────────────────
 
 /**
- * Read L2 data and write CMD validation flags for every validated VFD.
+ * Read L2 data and converge CMD validation flags for every validated VFD.
  *
  * Requires the PLC client to be connected.  `getPlcStatus` and `getPlcClient`
  * are imported lazily to avoid circular-dependency issues with
  * plc-client-manager (which imports us).
+ *
+ * `reason` is purely diagnostic — it lands in the "Sync done" log line so
+ * field logs show WHY a pass ran (plc-reconnect / l2-change / safety-net).
  */
-export async function syncValidationFlags(): Promise<void> {
+export async function syncValidationFlags(reason: string = 'manual'): Promise<void> {
+  if (WRITER_DISABLED) return
+
   // Throttle: don't run more than once every MIN_SYNC_INTERVAL_MS
   const now = Date.now()
   if (now - lastSyncMs < MIN_SYNC_INTERVAL_MS) {
     pendingSync = true
+    scheduleDeferredSync(lastSyncMs + MIN_SYNC_INTERVAL_MS - now)
     return
   }
   if (syncRunning) {
@@ -481,11 +573,12 @@ export async function syncValidationFlags(): Promise<void> {
     )
 
     const t0 = Date.now()
-    const { ok, fail, skipped, skippedFaulted, abortedAt } = batchWriteFlags(
+    const { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected } = await batchWriteFlags(
       connectionConfig.ip,
       connectionConfig.path,
       devices,
       faultedDevices,
+      () => client.isConnected,
     )
     const elapsed = Date.now() - t0
 
@@ -495,7 +588,10 @@ export async function syncValidationFlags(): Promise<void> {
     // whether the system is healthy (all ok), partially degraded (some
     // skipped-faulted), or short-circuited (aborted-mass-failure).
     const abortNote = abortedAt != null
-      ? `, ABORTED at device ${abortedAt + 1}/${devices.length} after ${MAX_CONSECUTIVE_CREATE_FAILURES} consecutive createTag failures (CIP queue likely saturated; will retry next cycle)`
+      ? `, ABORTED at device ${abortedAt + 1}/${devices.length} after ${MAX_CONSECUTIVE_CREATE_FAILURES} consecutive createTag failures (CIP queue likely saturated; will retry next trigger)`
+      : ''
+    const disconnectNote = disconnected
+      ? ', STOPPED — PLC disconnected mid-pass (reconnect trigger will redo the full pass)'
       : ''
     // Direction-checked drives with no parseable Polarity stamp: their
     // Normal/Reverse_Polarity bits CANNOT be restored after a program
@@ -513,11 +609,12 @@ export async function syncValidationFlags(): Promise<void> {
     const hpN = devices.filter(d => d.writes.some(w => w.field === 'Valid_HP')).length
     const dirN = devices.filter(d => d.writes.some(w => w.field === 'Valid_Direction')).length
     console.log(
-      `[VfdValidationWriter] Sync done: ${devices.length} device(s) ` +
+      `[VfdValidationWriter] Sync done (${reason}): ${devices.length} device(s) ` +
       `(${mapN} map, ${hpN} hp, ${dirN} dir), ` +
-      `${ok} ok, ${fail} failed, ${skipped} skipped (known-missing), ` +
+      `${ok} written, ${verified} already-correct, ${fail} failed, ` +
+      `${skipped} skipped (known-missing), ` +
       `${skippedFaulted} skipped-faulted, ${noPolarity.length} without-polarity-stamp, ` +
-      `${elapsed} ms${abortNote}`,
+      `${elapsed} ms${abortNote}${disconnectNote}`,
     )
     const noPolarityKey = noPolarity.join(',')
     if (noPolarityKey !== lastNoPolarityKey) {
@@ -536,7 +633,35 @@ export async function syncValidationFlags(): Promise<void> {
     console.error('[VfdValidationWriter] Sync error:', err)
   } finally {
     syncRunning = false
+    // A trigger fired while this pass was running (throttle window or
+    // syncRunning guard) — honor it shortly after, don't make it wait for
+    // the safety net. With the old 10 s interval gone, THIS is the only
+    // path that flushes coalesced requests.
+    if (pendingSync) {
+      pendingSync = false
+      scheduleDeferredSync(MIN_SYNC_INTERVAL_MS)
+    }
   }
+}
+
+// ── Deferred re-run (coalesced triggers) ───────────────────────────
+
+let deferredTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Ensure a sync runs after `delayMs` — used to flush requests coalesced by
+ * the throttle / running-pass guards. Single timer; earlier wins.
+ */
+function scheduleDeferredSync(delayMs: number): void {
+  if (deferredTimer) return // one already pending — it will pick up the work
+  deferredTimer = setTimeout(() => {
+    deferredTimer = null
+    syncValidationFlags('deferred').catch(err => {
+      console.error('[VfdValidationWriter] Deferred sync error:', err)
+    })
+  }, Math.max(250, delayMs))
+  // Don't hold the process open for a deferred flag write.
+  ;(deferredTimer as any).unref?.()
 }
 
 // ── Public trigger (debounced) ─────────────────────────────────────
@@ -551,24 +676,27 @@ export function triggerValidationSync(): void {
   if (triggerTimer) return // already scheduled
   triggerTimer = setTimeout(() => {
     triggerTimer = null
-    syncValidationFlags().catch(err => {
+    syncValidationFlags('l2-change').catch(err => {
       console.error('[VfdValidationWriter] Triggered sync error:', err)
     })
   }, 2_000) // 2 s debounce — enough for the wizard to finish its burst of L2 writes
 }
 
 // ── Periodic safety-net ────────────────────────────────────────────
+// NOT the primary restore path — reconnects trigger an immediate pass. This
+// exists solely for divergence with NO connection event (e.g. a download
+// over a CIP session that healed in place). Default every 5 min; each pass
+// is read-mostly (writes only on actual divergence) and fully non-blocking.
 
-setInterval(() => {
-  syncValidationFlags().catch(err => {
-    console.error('[VfdValidationWriter] Periodic sync error:', err)
-  })
-
-  // Also flush any deferred syncs that were throttled
-  if (pendingSync) {
-    pendingSync = false
-    syncValidationFlags().catch(err => {
-      console.error('[VfdValidationWriter] Deferred sync error:', err)
+if (!WRITER_DISABLED) {
+  setInterval(() => {
+    syncValidationFlags('safety-net').catch(err => {
+      console.error('[VfdValidationWriter] Periodic sync error:', err)
     })
-  }
-}, 10_000).unref?.()
+  }, SAFETY_NET_MS).unref?.()
+} else {
+  console.warn(
+    '[VfdValidationWriter] DISABLED via VFD_VALIDATION_DISABLED=1 — ' +
+    'validation/polarity flags will NOT be restored after PLC downloads/restarts',
+  )
+}
