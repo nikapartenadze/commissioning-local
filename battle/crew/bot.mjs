@@ -20,6 +20,11 @@ const RUN_ID = process.env.RUN_ID ?? 'dev';
 const RUNS_DIR = process.env.RUNS_DIR ?? '/runs';
 const THINK_MIN = parseInt(process.env.THINK_MIN_MS ?? '2000', 10);
 const THINK_MAX = parseInt(process.env.THINK_MAX_MS ?? '15000', 10);
+// HOT_SET: how many IOs ALL bots converge on, forcing concurrent writes to the
+// same rows → version races (reproduces B7, the version-conflict retry-cap
+// drop). HOT_FRACTION: chance a write targets the hot set vs a random IO.
+const HOT_SET = parseInt(process.env.HOT_SET ?? '12', 10);
+const HOT_FRACTION = parseFloat(process.env.HOT_FRACTION ?? '0.35');
 
 const OUT = join(RUNS_DIR, RUN_ID);
 mkdirSync(OUT, { recursive: true });
@@ -64,10 +69,20 @@ async function bot(n) {
         continue;
       }
 
-      const io = pick(ios);
-      const roll = Math.random();
-      // Mirror field distribution: mostly passes, some fails, rare clears.
-      const result = roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared';
+      // Hot-set targeting: a shared slice of IOs that every bot hammers, so
+      // multiple bots write the same row near-simultaneously (version races).
+      // Hot writes use Failed/Cleared (legal on SPARE too) to avoid SPARE
+      // noise and keep the race signal clean.
+      let io, result, hot = false;
+      if (ios.length > HOT_SET && Math.random() < HOT_FRACTION) {
+        io = ios[Math.floor(Math.random() * HOT_SET)];
+        result = Math.random() < 0.5 ? 'Failed' : 'Cleared';
+        hot = true;
+      } else {
+        io = pick(ios);
+        const roll = Math.random();
+        result = roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared';
+      }
       const comments =
         result === 'Failed' ? `battle-bot${n}: simulated failure ${Date.now()}` : undefined;
 
@@ -76,8 +91,11 @@ async function bot(n) {
         method: 'PUT',
         body: JSON.stringify({ result, comments, currentUser: name }),
       });
+      // `hot` writes race on shared rows — their last-write-wins ordering is
+      // ambiguous, so the observer excludes them from journal-vs-store checks
+      // and relies on the log-based suspect-drop detector for B7.
       log({
-        action: 'mark', ioId: io.id, ioName: io.name, result,
+        action: 'mark', ioId: io.id, ioName: io.name, result, hot,
         status: r.status, latencyMs: Date.now() - t0,
       });
       if (r.status !== 200) {

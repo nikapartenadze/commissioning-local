@@ -40,8 +40,16 @@ describe('isNetworkLevelFailure (does NOT burn the retry cap)', () => {
     expect(isNetworkLevelFailure({ httpStatus: 200 })).toBe(false)
   })
 
-  it('HTTP 4xx other than 401 → cloud verdict (handled as permanent elsewhere)', () => {
+  it('HTTP 4xx other than 401/429 → cloud verdict (handled as permanent elsewhere)', () => {
     expect(isNetworkLevelFailure({ httpStatus: 400 })).toBe(false)
     expect(isNetworkLevelFailure({ httpStatus: 409 })).toBe(false)
+  })
+
+  it('HTTP 429 (rate limited) → transient, must NOT burn the retry cap (B1, MCM11)', () => {
+    // The cloud rate-limits push at 300/min/key; a flaky link's retry flood
+    // trips it. Before the fix, 429 was classed permanent and the result was
+    // DELETED on first throttle — silent field-data loss. Reproduced in the
+    // battle env (suspect_silent_drops, reason="HTTP 429").
+    expect(isNetworkLevelFailure({ httpStatus: 429 })).toBe(true)
   })
 })

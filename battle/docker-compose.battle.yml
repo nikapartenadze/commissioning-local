@@ -42,15 +42,114 @@ services:
       context: .
       dockerfile: seeder/Dockerfile
     environment:
+      PYTHONUNBUFFERED: "1"
       GATEWAY_IP: ${GATEWAY_IP:-172.28.0.10}
       SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
       KEEP_DATA: ${KEEP_DATA:-0}
+      # Tool↔cloud auth: this key is written into config.json (apiPassword) AND
+      # into the cloud-stage project's api_key, so pushes validate.
+      API_PASSWORD: ${CLOUD_API_KEY:-battle-key-mcm02}
+      # Tool talks to cloud-stage, never prod (also enforced by CLOUD_URL_OVERRIDE
+      # + the prod-domain blackhole on the tool service).
+      REMOTE_URL: http://cloud:3000
     volumes:
       - tool-data:/data
       - gen:/gen
     networks: [battle]
 
+  # ── cloud-stage: a throwaway commissioning-cloud + Postgres ───────────────
+  # NEVER prod: fresh empty Postgres, schema via `prisma db push`, seeded with
+  # the SAME IOs (matching ids) as the tool so sync validates. Image is built
+  # locally (battle/cloud:local) or pulled in CI (CLOUD_IMAGE=registry...).
+  cloud-db:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: battle
+      POSTGRES_PASSWORD: battle
+      POSTGRES_DB: commissioning
+    networks: [battle]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U battle -d commissioning"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+    cpus: 1
+
+  cloud-schema:
+    image: ${CLOUD_IMAGE:-battle/cloud:local}
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql://battle:battle@cloud-db:5432/commissioning
+    # Create the schema from prisma/schema.prisma (cloud uses db push, no
+    # migrations dir). One-shot; exits.
+    command: ["node_modules/.bin/prisma", "db", "push", "--skip-generate", "--accept-data-loss"]
+    depends_on:
+      cloud-db:
+        condition: service_healthy
+    networks: [battle]
+    restart: "no"
+
+  cloud-seed:
+    image: postgres:14-alpine
+    environment:
+      PGPASSWORD: battle
+    volumes:
+      - gen:/gen:ro
+    # Apply the generated seed (project+subsystems+ios with matching ids).
+    command: >
+      sh -c "psql -h cloud-db -U battle -d commissioning -v ON_ERROR_STOP=1 -f /gen/cloud_seed.sql"
+    depends_on:
+      cloud-schema:
+        condition: service_completed_successfully
+      seeder:
+        condition: service_completed_successfully
+    networks: [battle]
+    restart: "no"
+
+  cloud:
+    image: ${CLOUD_IMAGE:-battle/cloud:local}
+    environment:
+      DATABASE_URL: postgresql://battle:battle@cloud-db:5432/commissioning
+      NODE_ENV: production
+      NEXTAUTH_SECRET: battle-secret-not-prod
+      NEXTAUTH_URL: http://cloud:3000
+      NEXT_TELEMETRY_DISABLED: "1"
+      SENTRY_DSN: ""
+    depends_on:
+      cloud-seed:
+        condition: service_completed_successfully
+    networks: [battle]
+    ports:
+      - "13001:3000"   # peek at the cloud UI / API during a soak
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.5
+
+  # Cloud-side data changes (coordinator edits / other tablets / tracker).
+  # Only runs under the `mutate` profile (cloud-mutation scenario). The field
+  # picks these up on its next SSE-reconnect pull (driven by CLOUD_FLAP).
+  cloud-mutator:
+    build: ./cloud-mutator
+    profiles: ["mutate"]
+    environment:
+      RUN_ID: ${RUN_ID:-dev}
+      SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
+      MUTATE_PERIOD_SEC: ${MUTATE_PERIOD_SEC:-120}
+      MUTATE_ADD: ${MUTATE_ADD:-3}
+      MUTATE_EDIT: ${MUTATE_EDIT:-5}
+    volumes:
+      - runs:/runs
+    depends_on:
+      cloud-seed:
+        condition: service_completed_successfully
+    networks: [battle]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+
   plc-sim:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
     build: ./plc-sim
     networks:
       battle:
@@ -65,15 +164,21 @@ services:
     cpus: 1
 
   tool:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
+    image: ${TOOL_IMAGE:-battle/tool:local}
     environment:
       # daily file logs, 14d retention — observer scrapes them
       LOG_RETENTION_DAYS: "14"
       # battle errors must NOT pollute the real GlitchTip (the tool ships an
       # embedded DSN; observer judges stability from logs/audit instead)
       SENTRY_DISABLED: "true"
+      # Point sync at cloud-stage. Without this the tool would target the
+      # hardcoded production URL — see EMBEDDED_REMOTE_URL.
+      CLOUD_URL_OVERRIDE: http://cloud:3000
+    # Belt-and-suspenders: even if the override were ever dropped, the embedded
+    # production hostname resolves to a dead loopback here — a battle tool can
+    # NEVER reach production cloud.
+    extra_hosts:
+      - "commissioning.autstand.com:127.0.0.1"
     volumes:
       - tool-data:/data
     networks: [battle]
@@ -83,6 +188,8 @@ services:
       seeder:
         condition: service_completed_successfully
       plc-sim:
+        condition: service_started
+      cloud:
         condition: service_started
     restart: always    # SIGKILL chaos relies on this (NSSM-equivalent recovery)
     mem_limit: 1500m
@@ -95,6 +202,10 @@ services:
       BOTS: ${BOTS:-6}
       RUN_ID: ${RUN_ID:-dev}
       RUNS_DIR: /runs
+      THINK_MIN_MS: ${THINK_MIN_MS:-2000}
+      THINK_MAX_MS: ${THINK_MAX_MS:-15000}
+      HOT_SET: ${HOT_SET:-12}
+      HOT_FRACTION: ${HOT_FRACTION:-0.35}
     volumes:
       - runs:/runs
     networks: [battle]
@@ -112,7 +223,10 @@ services:
       TOOL_CONTAINER: battle-tool-1
       RUN_ID: ${RUN_ID:-dev}
       RUNS_DIR: /runs
+      PYTHONUNBUFFERED: "1"
       DOWNLOAD_STORM: ${DOWNLOAD_STORM:-}
+      CLOUD_FLAP: ${CLOUD_FLAP:-}
+      NETWORK_NAME: battle_battle
     volumes:
       - runs:/runs
       - gen:/gen
@@ -125,12 +239,16 @@ services:
   observer:
     build: ./observer
     environment:
+      PYTHONUNBUFFERED: "1"
       TOOL_URL: http://tool:3000
       SOAK_MINUTES: ${SOAK_MINUTES:-480}
       RUN_ID: ${RUN_ID:-dev}
       RUNS_DIR: /runs
       DATA_DIR: /data
       FLAP_BUDGET: ${FLAP_BUDGET:-0}
+      CLOUD_URL: http://cloud:3000
+      CLOUD_API_KEY: ${CLOUD_API_KEY:-battle-key-mcm02}
+      SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
     volumes:
       - runs:/runs
       - tool-data:/data:ro

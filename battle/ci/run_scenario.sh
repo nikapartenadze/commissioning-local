@@ -15,10 +15,13 @@ cd "$(dirname "$0")/.."   # battle/
 SCENARIO="${SCENARIO:-auto}"
 if [ "$SCENARIO" = "auto" ]; then
     case "$(date +%u)" in
-        1|3|5) SCENARIO=s2 ;;  # Mon/Wed/Fri: download storm
-        2|4)   SCENARIO=s1 ;;  # Tue/Thu:     clean scale soak
-        6)     SCENARIO=s6 ;;  # Sat:         CIP saturation
-        7)     SCENARIO=s2 ;;  # Sun:         storm again
+        1) SCENARIO=s2 ;;      # Mon: PLC download storm
+        2) SCENARIO=s3 ;;      # Tue: connectivity hell (cloud flap)
+        3) SCENARIO=mutate ;;  # Wed: cloud-mutation (propagation + no wipe)
+        4) SCENARIO=s1 ;;      # Thu: clean scale soak
+        5) SCENARIO=s3 ;;      # Fri: connectivity hell
+        6) SCENARIO=s6 ;;      # Sat: CIP saturation
+        7) SCENARIO=mutate ;;  # Sun: cloud-mutation
     esac
 fi
 
@@ -26,18 +29,32 @@ export RUN_ID="ci-${SCENARIO}-${CI_PIPELINE_ID:-local}"
 export SOAK_MINUTES="${SOAK_MINUTES:-360}"
 export BOTS="${BOTS:-6}"
 export DOWNLOAD_STORM=""
+export CLOUD_FLAP=""
 DELAY_MS=""
 
 case "$SCENARIO" in
-    s1) ;;
-    s2) export DOWNLOAD_STORM="20,40" ;;
-    s6) DELAY_MS=300 ;;
+    s1) ;;                                            # clean scale soak
+    s2) export DOWNLOAD_STORM="20,40" ;;              # PLC program downloads
+    s3) export CLOUD_FLAP="2,6"; export FLAP_BUDGET=60 ;;  # cloud connectivity hell
+    s6) DELAY_MS=300 ;;                               # CIP-saturated controller
+    mutate)                                           # cloud-side data changes
+        export CLOUD_FLAP="3,8"; export FLAP_BUDGET=60
+        export COMPOSE_PROFILES=mutate ;;
     *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;
 esac
 
 echo "=== battle: scenario=$SCENARIO run=$RUN_ID soak=${SOAK_MINUTES}min ==="
 
-docker compose -f docker-compose.battle.yml -p battle up --build -d
+if [ "${BATTLE_PULL:-0}" = "1" ]; then
+    # CI path: PULL the 3 heavy images (tool/cloud/plc-sim) from the registry,
+    # BUILD only the tiny python/node ones. Avoids the ci-runner disk blowout.
+    echo "battle: pull mode — heavy images from registry, building tiny ones"
+    docker compose -f docker-compose.battle.yml -p battle build seeder crew chaos observer
+    docker compose -f docker-compose.battle.yml -p battle up -d
+else
+    # Local path: build everything.
+    docker compose -f docker-compose.battle.yml -p battle up --build -d
+fi
 
 # CIP-saturation profile: write the delay file into the gen volume and bounce
 # the sim once so its entrypoint picks it up (counts as one injected event in
