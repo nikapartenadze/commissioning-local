@@ -17,6 +17,7 @@ docker compose -f docker-compose.battle.yml -p battle up --build -d
 
 # 3. verdict (blocks until the soak ends; exit code 0 = PASS)
 docker wait battle-observer-1
+docker cp battle-observer-1:/runs/$env:RUN_ID ./runs/   # artifacts from the named volume
 Get-Content runs/$env:RUN_ID/verdict.json
 ```
 
@@ -47,8 +48,24 @@ host use `docker exec battle-chaos-1 python -c ...` or publish the port ad hoc.
   `Sync done (plc-reconnect)` that wrote flags back. (Phase 1 upgrades this to
   reading actual tag values back through a CIP client.)
 
-Artifacts per run in `runs/<RUN_ID>/`: `health.csv`, `memory.csv`,
-`verdict.json`, `injected.jsonl`, `journal-bot*.jsonl`.
+Artifacts per run live in the named `runs` volume (`/runs/<RUN_ID>/`):
+`health.csv`, `memory.csv`, `verdict.json`, `injected.jsonl`,
+`journal-bot*.jsonl`. Retrieve with `docker cp battle-observer-1:/runs/<RUN_ID> .`
+(no host bind mounts — required for the GitLab DinD runner).
+
+## CI (GitLab — gitlab.lci.ge/commissioning/commissioning-local, project 24)
+
+- **Nightly schedule 00:30** on the `tracker-ci-dind` runner: 6 h soak, scenario
+  rotated by weekday (`battle/ci/run_scenario.sh`: Mon/Wed/Fri/Sun = S2 storm,
+  Tue/Thu = S1 clean, Sat = S6 CIP saturation). Verdict gates the pipeline;
+  artifacts (verdict, CSVs, tool logs) retained 30 days.
+- **battle-smoke** (15 min storm): run manually from the GitLab UI on the
+  release commit before cutting a GitHub release.
+- Seed DB comes from the project's **generic package registry**
+  (`battle-seed/1/database.db`) — refresh after `prepare_seed.py` with the
+  curl in `.gitlab-ci.yml`'s header comment.
+- **Push to BOTH remotes** (GitHub = primary/releases, GitLab = CI):
+  `git push origin main && git push gitlab main`.
 
 ## Components
 
