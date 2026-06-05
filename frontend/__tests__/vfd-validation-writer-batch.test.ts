@@ -1,14 +1,15 @@
-/**
+﻿/**
  * Tests: VFD validation writer convergence pass (batchWriteFlags).
  *
  * Background (2026-06-05 MCM02 freeze): the writer used to rewrite every
- * earned flag every 10 s with synchronous FFI — ~9.5 s of event-loop blocking
+ * earned flag every 10 s with synchronous FFI â€” ~9.5 s of event-loop blocking
  * per cycle. The rewrite made the pass async and READ-COMPARE-WRITE: it only
  * writes flags whose PLC value diverged from L2 truth. These tests pin the
  * pass logic via the injectable PlcWriteOps seam (no DLL, no controller):
  *
- *   - already-correct flags are verified, NOT rewritten (incl. BOOL 0xFF
- *     normalization — a set bit reads back as -1, not 1),
+ *   - already-correct flags are verified, NOT rewritten (current value comes
+ *     from plc_tag_get_bit — clean 0/1; plc_tag_get_int8 carries ABI garbage
+ *     in the upper register bytes and must never be truthiness-compared),
  *   - diverged flags are written (incl. polarity 0-values),
  *   - PLCTAG_ERR_NOT_FOUND is cached (knownMissingTags) and skipped on the
  *     next pass, and does NOT trip the circuit breaker,
@@ -81,7 +82,7 @@ function fakeOps(plan: Record<string, {
       calls.push({ op: 'write', args: [handle] })
       return forTag(handleToTag.get(handle)!).writeStatus ?? OK
     },
-    getInt8: (handle) => forTag(handleToTag.get(handle)!).current ?? 0,
+    getBit: (handle) => forTag(handleToTag.get(handle)!).current ?? 0,
     setInt8: (handle, _offset, value) => {
       calls.push({ op: 'set', args: [handle, value] })
       return 0
@@ -91,20 +92,20 @@ function fakeOps(plan: Record<string, {
   return { ops, calls, destroyed, created }
 }
 
-// Unique gateway per test — knownMissingTags is module state keyed by
+// Unique gateway per test â€” knownMissingTags is module state keyed by
 // `${gateway}::${tagPath}`, so distinct gateways keep tests independent.
 let gwCounter = 0
 function gw(): string { return `10.0.0.${++gwCounter}` }
 
 const connected = () => true
 
-describe('batchWriteFlags — read-compare-write', () => {
-  it('already-correct flags are verified, not rewritten (BOOL reads back as -1)', async () => {
+describe('batchWriteFlags â€” read-compare-write', () => {
+  it('already-correct flags are verified, not rewritten', async () => {
     const dev = device('UL1_1_VFD', [{ field: 'Valid_Map', value: 1 }, { field: 'Valid_HP', value: 1 }])
-    // PLC reports the bit set: plc_tag_get_int8 of 0xFF → -1. Desired is 1.
+    // PLC reports the bit set: plc_tag_get_bit → 1. Desired is 1.
     const { ops, calls, destroyed } = fakeOps({
-      'CBT_UL1_1_VFD.CTRL.CMD.Valid_Map': { current: -1 },
-      'CBT_UL1_1_VFD.CTRL.CMD.Valid_HP': { current: -1 },
+      'CBT_UL1_1_VFD.CTRL.CMD.Valid_Map': { current: 1 },
+      'CBT_UL1_1_VFD.CTRL.CMD.Valid_HP': { current: 1 },
     })
 
     const res = await batchWriteFlags(gw(), '1,0', [dev], new Set(), connected, ops)
@@ -115,7 +116,7 @@ describe('batchWriteFlags — read-compare-write', () => {
     expect(destroyed).toHaveLength(2) // every handle cleaned up
   })
 
-  it('diverged flags are written — including polarity 0-values', async () => {
+  it('diverged flags are written â€” including polarity 0-values', async () => {
     // Post-download state: everything wiped to 0; polarity pair desired 1/0.
     const dev = device('UL2_2_VFD', [
       { field: 'Valid_Direction', value: 1 },
@@ -123,12 +124,12 @@ describe('batchWriteFlags — read-compare-write', () => {
       { field: 'Reverse_Polarity', value: 0 },
     ])
     const { ops, calls } = fakeOps({
-      'CBT_UL2_2_VFD.CTRL.CMD.Valid_Direction': { current: 0 },  // wiped → write 1
-      'CBT_UL2_2_VFD.CTRL.CMD.Normal_Polarity': { current: 0 },  // wiped → write 1
-      'CBT_UL2_2_VFD.CTRL.CMD.Reverse_Polarity': { current: -1 }, // stuck at 1, desired 0 → write 0
+      'CBT_UL2_2_VFD.CTRL.CMD.Valid_Direction': { current: 0 },  // wiped â†’ write 1
+      'CBT_UL2_2_VFD.CTRL.CMD.Normal_Polarity': { current: 0 },  // wiped â†’ write 1
+      'CBT_UL2_2_VFD.CTRL.CMD.Reverse_Polarity': { current: 1 }, // stuck at 1, desired 0 â†’ write 0
     })
 
-    // concurrency 1 → deterministic set ordering for the assertion below
+    // concurrency 1 â†’ deterministic set ordering for the assertion below
     const res = await batchWriteFlags(gw(), '1,0', [dev], new Set(), connected, ops, 1)
 
     expect(res).toMatchObject({ ok: 3, verified: 0, fail: 0 })
@@ -137,14 +138,14 @@ describe('batchWriteFlags — read-compare-write', () => {
   })
 
   it('concurrent pass (default pool) converges a post-download wipe correctly', async () => {
-    // 20 devices × 2 flags, half wiped half correct — counters must be exact
+    // 20 devices Ã— 2 flags, half wiped half correct â€” counters must be exact
     // regardless of worker interleaving.
     const devices = Array.from({ length: 20 }, (_, i) =>
       device(`UL10_${i}_VFD`, [{ field: 'Valid_Map', value: 1 }, { field: 'Valid_HP', value: 1 }]))
     const plan: Record<string, { current?: number }> = {}
     for (let i = 0; i < 20; i++) {
-      plan[`CBT_UL10_${i}_VFD.CTRL.CMD.Valid_Map`] = { current: i % 2 === 0 ? 0 : -1 }
-      plan[`CBT_UL10_${i}_VFD.CTRL.CMD.Valid_HP`] = { current: i % 2 === 0 ? 0 : -1 }
+      plan[`CBT_UL10_${i}_VFD.CTRL.CMD.Valid_Map`] = { current: i % 2 === 0 ? 0 : 1 }
+      plan[`CBT_UL10_${i}_VFD.CTRL.CMD.Valid_HP`] = { current: i % 2 === 0 ? 0 : 1 }
     }
     const { ops, destroyed } = fakeOps(plan)
 
@@ -157,7 +158,7 @@ describe('batchWriteFlags — read-compare-write', () => {
   it('mixed pass: writes only the diverged subset', async () => {
     const dev = device('UL3_3_VFD', [{ field: 'Valid_Map', value: 1 }, { field: 'Valid_Direction', value: 1 }])
     const { ops } = fakeOps({
-      'CBT_UL3_3_VFD.CTRL.CMD.Valid_Map': { current: -1 },     // correct
+      'CBT_UL3_3_VFD.CTRL.CMD.Valid_Map': { current: 1 },     // correct
       'CBT_UL3_3_VFD.CTRL.CMD.Valid_Direction': { current: 0 }, // diverged
     })
 
@@ -165,7 +166,20 @@ describe('batchWriteFlags — read-compare-write', () => {
     expect(res).toMatchObject({ ok: 1, verified: 1, fail: 0 })
   })
 
-  it('read failure → counted as fail, no blind write', async () => {
+  it('getBit error (negative status) → fail, no blind write, not verified', async () => {
+    // Regression: battle env 2026-06-05 — current-value read must be trusted
+    // only when it is a clean 0/1. A negative value is a libplctag error.
+    const dev = device('UL11_1_VFD', [{ field: 'Valid_Map', value: 1 }])
+    const { ops, calls } = fakeOps({
+      'CBT_UL11_1_VFD.CTRL.CMD.Valid_Map': { current: -7 }, // PLCTAG_ERR_BAD_DATA-ish
+    })
+
+    const res = await batchWriteFlags(gw(), '1,0', [dev], new Set(), connected, ops)
+    expect(res).toMatchObject({ ok: 0, verified: 0, fail: 1 })
+    expect(calls.filter(c => c.op === 'write')).toHaveLength(0)
+  })
+
+  it('read failure â†’ counted as fail, no blind write', async () => {
     const dev = device('UL4_4_VFD', [{ field: 'Valid_Map', value: 1 }])
     const { ops, calls } = fakeOps({
       'CBT_UL4_4_VFD.CTRL.CMD.Valid_Map': { readStatus: TIMEOUT },
@@ -177,13 +191,13 @@ describe('batchWriteFlags — read-compare-write', () => {
   })
 })
 
-describe('batchWriteFlags — known-missing cache', () => {
+describe('batchWriteFlags â€” known-missing cache', () => {
   it('NOT_FOUND is cached: second pass skips the tag entirely', async () => {
     const gateway = gw()
     const dev = device('UL5_5_VFD', [{ field: 'Valid_Map', value: 1 }, { field: 'Valid_HP', value: 1 }])
     const plan = {
       'CBT_UL5_5_VFD.CTRL.CMD.Valid_Map': { createStatus: NOT_FOUND },
-      'CBT_UL5_5_VFD.CTRL.CMD.Valid_HP': { current: -1 },
+      'CBT_UL5_5_VFD.CTRL.CMD.Valid_HP': { current: 1 },
     }
 
     const first = fakeOps(plan)
@@ -219,7 +233,7 @@ describe('batchWriteFlags — known-missing cache', () => {
   })
 })
 
-describe('batchWriteFlags — failure guards', () => {
+describe('batchWriteFlags â€” failure guards', () => {
   it('circuit breaker: 5 consecutive transient create failures abort the pass', async () => {
     const devices = Array.from({ length: 10 }, (_, i) =>
       device(`UL7_${i}_VFD`, [{ field: 'Valid_Map', value: 1 }]))
@@ -227,7 +241,7 @@ describe('batchWriteFlags — failure guards', () => {
       [`CBT_${d.deviceName}.CTRL.CMD.Valid_Map`, { createStatus: TIMEOUT }]))
     const { ops, created, destroyed } = fakeOps(plan)
 
-    // concurrency 1 → "consecutive" failures are strictly ordered
+    // concurrency 1 â†’ "consecutive" failures are strictly ordered
     const res = await batchWriteFlags(gw(), '1,0', devices, new Set(), connected, ops, 1)
 
     expect(res.abortedAt).toBe(4) // aborted at the 5th device (index 4)
@@ -238,7 +252,7 @@ describe('batchWriteFlags — failure guards', () => {
   it('faulted devices are skipped with zero CIP traffic', async () => {
     const devA = device('UL8_OK_VFD', [{ field: 'Valid_Map', value: 1 }])
     const devB = device('UL8_DOWN_VFD', [{ field: 'Valid_Map', value: 1 }, { field: 'Valid_HP', value: 1 }])
-    const { ops, created } = fakeOps({ 'CBT_UL8_OK_VFD.CTRL.CMD.Valid_Map': { current: -1 } })
+    const { ops, created } = fakeOps({ 'CBT_UL8_OK_VFD.CTRL.CMD.Valid_Map': { current: 1 } })
 
     const res = await batchWriteFlags(
       gw(), '1,0', [devA, devB], new Set(['UL8_DOWN_VFD']), connected, ops)
@@ -253,13 +267,13 @@ describe('batchWriteFlags — failure guards', () => {
       device('UL9_2_VFD', [{ field: 'Valid_Map', value: 1 }]),
     ]
     const { ops, created } = fakeOps({
-      'CBT_UL9_1_VFD.CTRL.CMD.Valid_Map': { current: -1 },
-      'CBT_UL9_2_VFD.CTRL.CMD.Valid_Map': { current: -1 },
+      'CBT_UL9_1_VFD.CTRL.CMD.Valid_Map': { current: 1 },
+      'CBT_UL9_2_VFD.CTRL.CMD.Valid_Map': { current: 1 },
     })
     let callCount = 0
     const dropAfterFirst = () => ++callCount <= 1 // connected for device 1 only
 
-    // concurrency 1 → deterministic per-job isConnected sequencing
+    // concurrency 1 â†’ deterministic per-job isConnected sequencing
     const res = await batchWriteFlags(gw(), '1,0', devices, new Set(), dropAfterFirst, ops, 1)
 
     expect(res.disconnected).toBe(true)
