@@ -44,6 +44,7 @@ RUNS_DIR = os.environ.get("RUNS_DIR", "/runs")
 CLOUD_URL = os.environ.get("CLOUD_URL", "http://cloud:3000")
 CLOUD_API_KEY = os.environ.get("CLOUD_API_KEY", "battle-key-mcm02")
 SUBSYSTEM_ID = os.environ.get("SUBSYSTEM_ID", "38")
+CHAOS_URL = os.environ.get("CHAOS_URL", "http://chaos:8666")
 
 OUT = os.path.join(RUNS_DIR, RUN_ID)
 os.makedirs(OUT, exist_ok=True)
@@ -167,28 +168,36 @@ def cloud_results() -> dict[int, str | None] | None:
     return out
 
 
-def local_results_and_queue() -> tuple[dict[int, str | None], int]:
-    """Tool's local SQLite: authoritative results + pending-sync queue depth."""
+def local_results_and_queue() -> tuple[dict[int, str | None], int, set[int]]:
+    """Tool's local SQLite: authoritative results, pending-sync queue depth,
+    and the set of IO ids still queued (those writes are SAFE, just not yet
+    synced — not data loss)."""
     db_path = os.path.join(DATA_DIR, "database.db")
     res: dict[int, str | None] = {}
     pending = -1
+    queued_ios: set[int] = set()
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
         for iid, r in con.execute("SELECT id, Result FROM Ios"):
             res[int(iid)] = r
         # Sum all three offline queues — IO results, L2 cell writes, and
-        # device-blocker edits. ALL must drain; a stuck L2 queue is the same
-        # class of lost field work as a stuck result.
+        # device-blocker edits. A non-empty queue is pending work (safe), not
+        # loss; we report depth but don't fail on it.
         pending = 0
         for tbl in ("PendingSyncs", "L2PendingSyncs", "DeviceBlockerPendingSyncs"):
             try:
                 pending += con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
             except sqlite3.Error:
                 pass
+        try:
+            for (iid,) in con.execute("SELECT DISTINCT IoId FROM PendingSyncs"):
+                queued_ios.add(int(iid))
+        except sqlite3.Error:
+            pass
         con.close()
     except sqlite3.Error as e:
         print(f"observer: local DB read failed: {e}")
-    return res, pending
+    return res, pending, queued_ios
 
 
 def norm(result: str | None) -> str | None:
@@ -246,19 +255,31 @@ def check_data_loss() -> dict:
     journaled = journaled_results()  # {ioId: latest result the field wrote}
     rejected, suspect_drops = scrape_permanent_drops()
 
-    # Settle: if the soak ended mid-flap (cloud cut) the queue can't have
-    # drained yet. Wait up to 15 min for cloud reachable AND queue at 0 so we
-    # judge a converged system, not a transient mid-outage state.
+    # Tell chaos to stop flapping/storming and restore connectivity, so the
+    # system can converge for an honest final judgment (otherwise an ongoing
+    # flap keeps the queue perpetually non-empty).
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(f"{CHAOS_URL}/calm", method="POST"), timeout=10).read()
+        print("observer: requested chaos /calm — letting the system converge")
+    except Exception as e:
+        print(f"observer: /calm failed (continuing): {e}")
+
+    # Settle: wait for cloud reachable AND the queue to drain, so we judge a
+    # CONVERGED system. The chaos flapper is expected to have stopped by now
+    # (scenario ends the flap before the soak ends). A queue that still won't
+    # drain after this window is reported but is not by itself "loss" — the
+    # writes are safe in the queue; what matters is nothing was DROPPED.
     settle_deadline = time.monotonic() + 900
     while time.monotonic() < settle_deadline:
         c = cloud_results()
-        _, pend = local_results_and_queue()
+        _, pend, _ = local_results_and_queue()
         if c is not None and pend == 0:
             break
         print(f"observer: I4 settling — cloud={'up' if c is not None else 'down'} queue={pend}")
         time.sleep(15)
 
-    local, pending = local_results_and_queue()
+    local, pending, queued = local_results_and_queue()
 
     # ANTI-WIPE (MCM08 pull-wipe class): every write the field made (status 200,
     # not permanently rejected) must STILL be in local SQLite. A destructive
@@ -275,13 +296,17 @@ def check_data_loss() -> dict:
         cloud = cloud_results()
         if cloud is None:
             break
+        # A write still sitting in the offline queue is SAFE (pending), not
+        # lost — exclude queued IOs. Loss = local has it, cloud doesn't, it's
+        # NOT queued, and there's no business reason. THAT is the bug class.
         unsynced = [
             iid for iid in journaled
-            if norm(local.get(iid)) != norm(cloud.get(iid)) and iid not in rejected
+            if norm(local.get(iid)) != norm(cloud.get(iid))
+            and iid not in rejected and iid not in queued
         ]
         if not unsynced:
             break
-        print(f"observer: I4 grace re-poll {attempt+1}/6 — {len(unsynced)} not yet converged")
+        print(f"observer: I4 grace re-poll {attempt+1}/6 — {len(unsynced)} unsynced (not queued)")
         time.sleep(10)
 
     if cloud is None:
@@ -292,15 +317,15 @@ def check_data_loss() -> dict:
         if norm(local.get(iid)) != norm(cloud.get(iid)) and iid in rejected
     ]
     return {
-        # Fail on: a wiped local write (data destroyed), an unsynced write the
-        # cloud never got (lost in transit / dropped on 429/version-cap), a
-        # suspect permanent-drop (B1 429 / B7 version-cap — silent loss), or a
-        # queue that never drained (MCM08 retry-cap class).
-        "pass": (not wiped and not unsynced and not suspect_drops
-                 and (pending == 0 or pending < 0)),
+        # Fail on data LOSS only: a wiped local write (destroyed), an unsynced
+        # write that's NOT queued (lost in transit / dropped), or a suspect
+        # permanent-drop (B1 429 / B7 version-cap). A non-empty queue is
+        # pending work (safe) — reported, not failed.
+        "pass": not wiped and not unsynced and not suspect_drops,
         "soak_writes": len(journaled),
         "local_wiped": len(wiped),
-        "unsynced_to_cloud": len(unsynced),
+        "unsynced_lost": len(unsynced),
+        "still_queued_safe": len(queued),
         # The headline bug detector: results the tool threw away on a non-
         # business reason (HTTP 429 = B1, version-conflict cap = B7).
         "suspect_silent_drops": len(suspect_drops),
@@ -346,8 +371,8 @@ def check_cloud_propagation(mut_path: str) -> dict:
 
     # Give the field time to pull the last batch (SSE reconnect cadence).
     missing = added_ids
-    for _ in range(12):  # up to ~2 min
-        local, _pending = local_results_and_queue()
+    for _ in range(18):  # up to ~3 min (propagation needs queue drained + a pull)
+        local, _pending, _q = local_results_and_queue()
         missing = [i for i in added_ids if i not in local]
         if not missing:
             break

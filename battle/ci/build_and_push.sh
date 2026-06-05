@@ -1,36 +1,35 @@
 #!/bin/sh
-# Pre-build every battle image ONCE and push to the registry so the nightly
-# DinD job PULLS instead of building (the 2026-06-06 disk failure: building
-# ab_server + the Next cloud + the tool from scratch on the shared ci-runner
-# blew its /var/cache). Run this on a machine with registry push rights
-# (ci-runner / dh1 / a dev box on the LAN) whenever battle/ images change.
+# Build the heavy battle images and push them to the GitLab project registry,
+# so the nightly DinD job PULLS them. RUN THIS ON A MACHINE WITH DISK (a dev
+# box or dh1) — the ci-runner's DinD storage is too small to build them
+# (pipelines 622/624 failed on /var/cache/apt). The nightly only pulls.
 #
-#   REGISTRY=registry.lci.ge/battle sh battle/ci/build_and_push.sh
+# Auth: a PAT with read_registry+write_registry scope (NOT a plain api PAT).
+#   docker login registry.gitlab.lci.ge -u <user> -p <registry-PAT>
+# then:
+#   sh battle/ci/build_and_push.sh
+#
+# cloud:latest is normally refreshed by the CI `refresh-cloud-image` job
+# (it just copies the prod image — light enough for the runner). This script
+# can also push it if you pass BUILD_CLOUD=1 with the sibling repo present.
 set -eu
 
-REGISTRY="${REGISTRY:-registry.lci.ge/battle}"
+REG="${REG:-registry.gitlab.lci.ge/commissioning/commissioning-local}"
 cd "$(dirname "$0")/.."   # battle/
 ROOT="$(cd .. && pwd)"
 
-build_push() {
-  name="$1"; shift
-  tag="$REGISTRY/$name:latest"
-  echo "=== building $tag ==="
-  docker build -t "$tag" "$@"
-  docker push "$tag"
-}
+echo "=== tool ==="
+docker build -t "$REG/tool:latest" -f "$ROOT/frontend/Dockerfile" "$ROOT/frontend"
+docker push "$REG/tool:latest"
 
-# Only the THREE heavy images are pre-built (these caused the disk failure):
-#   tool    — full Vite+Express build
-#   cloud   — full Next.js build
-#   plc-sim — compiles ab_server from source (apt + cmake; the worst hog)
-# The tiny seeder/crew/chaos/observer (python/node base + a script) are cheap
-# enough to build in CI without disk pressure.
-build_push tool    -f "$ROOT/frontend/Dockerfile" "$ROOT/frontend"
-build_push cloud   "$ROOT/../commissioning-cloud"
-build_push plc-sim ./plc-sim
+echo "=== plc-sim ==="
+docker build -t "$REG/plc-sim:latest" ./plc-sim
+docker push "$REG/plc-sim:latest"
 
-echo "=== done. CI pulls these (set in .gitlab-ci.yml): ==="
-echo "  TOOL_IMAGE=$REGISTRY/tool:latest"
-echo "  CLOUD_IMAGE=$REGISTRY/cloud:latest"
-echo "  PLC_SIM_IMAGE=$REGISTRY/plc-sim:latest"
+if [ "${BUILD_CLOUD:-0}" = "1" ]; then
+  echo "=== cloud (from sibling repo) ==="
+  docker build -t "$REG/cloud:latest" "$ROOT/../commissioning-cloud"
+  docker push "$REG/cloud:latest"
+fi
+
+echo "=== done — nightly TOOL_IMAGE/PLC_SIM_IMAGE/CLOUD_IMAGE point at $REG/*:latest ==="

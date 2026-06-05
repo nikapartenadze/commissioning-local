@@ -40,6 +40,11 @@ DELAY_FILE = os.environ.get("DELAY_FILE", "/gen/delay")
 JOURNAL = os.path.join(RUNS_DIR, RUN_ID, "injected.jsonl")
 os.makedirs(os.path.dirname(JOURNAL), exist_ok=True)
 
+# When set, all background chaos loops (download storm, cloud flap) stop and no
+# new impairment is injected. The observer trips this before its final judgment
+# so the system can converge (queue drains, last cloud changes propagate).
+CALM = threading.Event()
+
 
 class UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, path: str):
@@ -131,7 +136,15 @@ def do_cloudcut(sec: int) -> tuple[int, str]:
 
     def restore():
         time.sleep(sec)
-        s, _ = docker("POST", f"/networks/{NETWORK}/connect", {"Container": CLOUD})
+        # CRITICAL: re-add the compose SERVICE alias ("cloud") and container
+        # name on reconnect. A bare `network connect` does NOT restore the
+        # service-name DNS alias compose set at creation, so the tool would
+        # forever fail to resolve `cloud` even though the container is up —
+        # a harness bug that falsely looked like "tool never recovers SSE".
+        s, _ = docker("POST", f"/networks/{NETWORK}/connect", {
+            "Container": CLOUD,
+            "EndpointConfig": {"Aliases": ["cloud", CLOUD]},
+        })
         journal({"type": "cloudcut-restored", "connect_status": s})
 
     threading.Thread(target=restore, daemon=True).start()
@@ -181,15 +194,27 @@ class Handler(BaseHTTPRequestHandler):
             sec = int(q.get("sec", ["120"])[0])
             do_cloudcut(sec)
             return self._reply(200, {"ok": True, "down_seconds": sec})
+        if url.path == "/calm":
+            # Stop all background chaos and make sure the cloud is attached, so
+            # the system can converge for the observer's final judgment.
+            CALM.set()
+            s, _ = docker("POST", f"/networks/{NETWORK}/connect", {
+                "Container": CLOUD, "EndpointConfig": {"Aliases": ["cloud", CLOUD]},
+            })
+            journal({"type": "calm", "reconnect_status": s})
+            return self._reply(200, {"ok": True})
         return self._reply(404, {"error": "unknown"})
 
 
 def download_storm(spec: str) -> None:
     lo, hi = (float(x) for x in spec.split(","))
     print(f"chaos: download storm armed — every {lo}-{hi} min", flush=True)
-    while True:
+    while not CALM.is_set():
         time.sleep(random.uniform(lo * 60, hi * 60))
+        if CALM.is_set():
+            break
         do_download()
+    print("chaos: download storm stopped (calm)", flush=True)
 
 
 def cloud_flap(spec: str) -> None:
@@ -197,10 +222,13 @@ def cloud_flap(spec: str) -> None:
     spec = "down_min,period_min" e.g. "10,60" = down 10 of every 60 min."""
     down_min, period_min = (float(x) for x in spec.split(","))
     print(f"chaos: cloud-flap armed — down {down_min}min every {period_min}min", flush=True)
-    while True:
+    while not CALM.is_set():
         time.sleep(max(0.0, (period_min - down_min)) * 60)
+        if CALM.is_set():
+            break
         do_cloudcut(int(down_min * 60))
         time.sleep(down_min * 60)
+    print("chaos: cloud-flap stopped (calm)", flush=True)
 
 
 if __name__ == "__main__":

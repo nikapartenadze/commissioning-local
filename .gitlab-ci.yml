@@ -20,13 +20,16 @@
 
 stages: [prebuild, battle]
 
-# ── prebuild-images ──────────────────────────────────────────────────────────
-# Stage the 3 heavy images into THIS project's GitLab registry so the nightly
-# job PULLS them (the ci-runner can't build them all — pipeline 622 ran out of
-# disk). Manual; re-run when frontend/Dockerfile, battle/plc-sim, or the cloud
-# SHA changes. Builds tool + plc-sim one at a time (prune between) and copies
-# the prod cloud image (already built by the commissioning-cloud pipeline).
-prebuild-images:
+# ── refresh-cloud-image ──────────────────────────────────────────────────────
+# Copies the current prod commissioning-cloud image into THIS project's
+# registry as cloud:latest so the nightly pulls a known tag. Light enough for
+# the disk-constrained ci-runner (pull + retag + push, no build).
+#
+# The heavy `tool` and `plc-sim` images CANNOT be built on this runner — its
+# DinD storage is too small (pipeline 622/624 failed on /var/cache/apt). They
+# are pushed from a machine with disk via `battle/ci/build_and_push.sh`
+# (a dev box or dh1). The nightly only PULLS, so it doesn't hit the limit.
+refresh-cloud-image:
   stage: prebuild
   image: docker:27
   services:
@@ -41,19 +44,10 @@ prebuild-images:
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: manual
       allow_failure: true
-  timeout: 60m
+  timeout: 30m
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
-    # tool (this repo)
-    - docker build -t "$CI_REGISTRY_IMAGE/tool:latest" -f frontend/Dockerfile frontend
-    - docker push "$CI_REGISTRY_IMAGE/tool:latest"
-    - docker image prune -af
-    # plc-sim (compiles ab_server — the disk hog; build isolated)
-    - docker build -t "$CI_REGISTRY_IMAGE/plc-sim:latest" battle/plc-sim
-    - docker push "$CI_REGISTRY_IMAGE/plc-sim:latest"
-    - docker image prune -af
-    # cloud (copy the already-built prod image into our registry)
     - docker pull "$CLOUD_SRC"
     - docker tag "$CLOUD_SRC" "$CI_REGISTRY_IMAGE/cloud:latest"
     - docker push "$CI_REGISTRY_IMAGE/cloud:latest"
