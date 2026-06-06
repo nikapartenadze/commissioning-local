@@ -91,7 +91,9 @@ nightly-battle:
   extends: .battle-base
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-  timeout: 8h
+  # 8 h soak (02:00→10:00) + /calm settle + verdict + artifact export needs
+  # headroom beyond the soak itself. Project build_timeout is 9 h.
+  timeout: 9h
   script:
     - sh battle/ci/run_scenario.sh
 
