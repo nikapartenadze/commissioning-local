@@ -118,6 +118,32 @@ local held valid results).
 
 ## Run log
 
+### v2.40.4 pre-release verification — 2026-06-06 — PASS (after env fixes)
+
+Verifying the B2–B8 sync-loss fixes + perf. Caught a **release-blocker** first:
+the new coalesce trigger referenced `DeadLettered` before the migration that
+adds it, so on a fresh DB the whole schema init threw and silently skipped
+every migration — the dead-letter feature was dead and sync errored each cycle.
+**This would have shipped** (280 unit tests passed; only a real fresh-DB boot
+exposed it). Fixed: column in CREATE TABLE + trigger after migrations.
+
+Two env-measurement bugs the run then exposed (not product issues), now fixed:
+- **F3 (again):** the seeder image wasn't rebuilt, so cloud was seeded NULL —
+  pre-existing local results read as "lost". Rebuilt → cloud mirrors local.
+- **I1 boot transient:** schema init + 592-tag creation briefly blocks the loop
+  at boot; on a short soak that one-time spike failed I1. Added a 120 s warmup
+  exclusion (like I2). Sustained p99 was 48 ms — healthy.
+- **I4 definition was wrong:** it flagged ANY local≠cloud as loss. But the
+  system is last-write-wins and a SPARE-Passed value the cloud legitimately
+  refuses stays local-only by design. Converged manual analysis (bots stopped,
+  queue drained to 0) proved the "298 losses" were **42 last-write-wins + 256
+  SPARE-Passed business rejections, 0 true wipes, 0 suspect drops** — zero real
+  loss. I4 now fails only on a TRUE wipe (local erased) or a suspect bug-drop.
+
+Verified for v2.40.4: migration clean (0 errors), coalesce ratio 1.00 (was
+60–99 rows/IO), parking + durable audit working, queue drains to 0 cleanly,
+I1/I2/I3/I5 PASS, **no data loss** (0 true wipes, 0 suspect drops).
+
 ### overnight-20260606-0236 — 7.5 h comprehensive soak — PASS ✅
 
 Config: real MCM02 dataset (1184 IOs / 72 VFDs), 3 realistic bots, all chaos at
