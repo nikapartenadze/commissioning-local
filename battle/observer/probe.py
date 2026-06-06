@@ -283,12 +283,37 @@ def mutator_edited_ids() -> set[int]:
     return edited
 
 
+def quiesce_crew() -> None:
+    """Signal every bot to stop (sentinel the crew polls each loop) and wait for
+    in-flight writes to land, so the journal stops growing before we snapshot.
+    Waits a touch longer than the bots' max think time + request timeout."""
+    run_dir = os.path.join(RUNS_DIR, RUN_ID)
+    try:
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, "STOP"), "w") as f:
+            f.write("stop\n")
+    except OSError as e:
+        print(f"observer: could not write crew STOP sentinel: {e}")
+        return
+    think_max_s = int(os.environ.get("THINK_MAX_MS", "15000")) / 1000.0
+    wait_s = min(60.0, think_max_s + 20.0)  # last loop's sleep + in-flight PUT
+    print(f"observer: crew STOP sent — waiting {wait_s:.0f}s for bots to go quiet")
+    time.sleep(wait_s)
+
+
 def check_data_loss() -> dict:
     """I4 — no silent data loss. Local SQLite is the authority. For every IO
     written DURING this soak (bot journals), cloud must mirror local. The only
     allowed divergence is an IO the tool logged as a PERMANENT rejection
     (cloud business rule). Anything else = a sync bug losing field work — the
     MCM08/MCM11 class. Re-polls cloud to absorb in-flight batch syncs."""
+    # Bring the crew to a STOP before snapshotting. The bots loop forever; if
+    # they keep writing, `journaled` (read now) and `local` (read after the
+    # settle) are incoherent — a write that lands during settle looks like a
+    # wipe — and the offline queue never drains so the I7 pull never fires. The
+    # sentinel makes the system QUIESCENT so the verdict judges a steady state.
+    quiesce_crew()
+
     journaled = journaled_results()  # {ioId: latest result the field wrote}
     # Drop IOs the cloud-mutator changed: those diverge by design (I7's job).
     mutated = mutator_edited_ids()

@@ -11,7 +11,7 @@
  * Env: TOOL_URL, BOTS (default 6), RUN_ID, RUNS_DIR,
  *      THINK_MIN_MS/THINK_MAX_MS (default 2000/15000)
  */
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const TOOL_URL = process.env.TOOL_URL ?? 'http://tool:3000';
@@ -28,6 +28,14 @@ const HOT_FRACTION = parseFloat(process.env.HOT_FRACTION ?? '0.35');
 
 const OUT = join(RUNS_DIR, RUN_ID);
 mkdirSync(OUT, { recursive: true });
+
+// The observer drops this sentinel when the soak ends so the crew goes QUIET
+// before the data-loss verdict. Without it bots write forever — the journal
+// keeps growing during the observer's settle window, so `journaled` (snapshot
+// at judgment start) and `local` (read ~minutes later) are incoherent and a
+// later write looks like a wipe; and the offline queue never drains, so the
+// cloud-pull (I7) never fires. A quiescent system is required to judge.
+const STOP_FILE = join(OUT, 'STOP');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
@@ -60,6 +68,10 @@ async function bot(n) {
   console.log(`[crew] ${name} starting`);
 
   for (;;) {
+    if (existsSync(STOP_FILE)) {
+      console.log(`[crew] ${name} stopping (soak ended)`);
+      return;
+    }
     try {
       const { status, body } = await api('/api/ios');
       const ios = Array.isArray(body) ? body : (body?.ios ?? []);
