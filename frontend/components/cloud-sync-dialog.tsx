@@ -56,6 +56,11 @@ export function CloudSyncDialog({
   const [pendingItems, setPendingItems] = useState<L2PendingItem[] | null>(null)
   const [itemsLoading, setItemsLoading] = useState(false)
   const [itemsError, setItemsError] = useState<string | null>(null)
+  // In-app confirm modal (replaces window.confirm). askConfirm() shows it and
+  // resolves with the user's choice.
+  const [confirmModal, setConfirmModal] = useState<{ title: string; body: string; resolve: (ok: boolean) => void } | null>(null)
+  const askConfirm = (title: string, body: string) =>
+    new Promise<boolean>(resolve => setConfirmModal({ title, body, resolve }))
 
   const loadStatus = async () => {
     try {
@@ -96,15 +101,14 @@ export function CloudSyncDialog({
   }
 
   const handleDropOne = async (id: number, label: string) => {
-    if (!window.confirm(
-      `Drop pending sync for ${label}?\n\n` +
+    const ok = await askConfirm(
+      `Drop pending sync for ${label}?`,
       `This removes the retry queue entry only. The cell value stays in local data; ` +
       `the cloud's current value becomes authoritative for this cell. Use this when ` +
       `you've confirmed cloud already has the right value or you don't want local's ` +
       `value to overwrite cloud.`
-    )) {
-      return
-    }
+    )
+    if (!ok) return
     try {
       setItemsLoading(true)
       const resp = await authFetch(`${API_ENDPOINTS.cloudSyncL2Items}?id=${id}`, { method: 'DELETE' })
@@ -119,16 +123,15 @@ export function CloudSyncDialog({
   const handleClearAll = async () => {
     const count = pendingItems?.length ?? 0
     if (count === 0) return
-    if (!window.confirm(
-      `Force-clear ALL ${count} pending FV sync row(s)?\n\n` +
+    const ok = await askConfirm(
+      `Force-clear ALL ${count} pending FV sync row(s)?`,
       `This removes the retry queue entries only. Local cell values stay put. ` +
       `For any cell where local and cloud values differ, cloud's value becomes ` +
       `authoritative from this point on. Use when you need to move on (switch ` +
       `subsystem, unblock cloud pull) and don't need local's queued edits to ` +
       `land on cloud.`
-    )) {
-      return
-    }
+    )
+    if (!ok) return
     try {
       setItemsLoading(true)
       const resp = await authFetch(API_ENDPOINTS.cloudSyncL2Items, { method: 'DELETE' })
@@ -227,6 +230,7 @@ export function CloudSyncDialog({
   const lastPull = operationalStatus?.lastPullAt ? new Date(operationalStatus.lastPullAt).toLocaleString() : 'Never'
 
   return (
+    <>
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
@@ -513,5 +517,20 @@ export function CloudSyncDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* In-app confirm modal — replaces window.confirm for drop/clear actions. */}
+    <Dialog open={confirmModal !== null} onOpenChange={(v) => { if (!v && confirmModal) { confirmModal.resolve(false); setConfirmModal(null) } }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{confirmModal?.title}</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground whitespace-pre-line">{confirmModal?.body}</p>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => { confirmModal?.resolve(false); setConfirmModal(null) }}>Cancel</Button>
+          <Button variant="destructive" onClick={() => { confirmModal?.resolve(true); setConfirmModal(null) }}>Drop</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }

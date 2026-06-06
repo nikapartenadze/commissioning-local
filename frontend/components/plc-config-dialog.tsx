@@ -12,7 +12,7 @@ import * as VisuallyHidden from "@radix-ui/react-visually-hidden"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check, Zap, Loader2 } from "lucide-react"
+import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check, Zap, Loader2, AlertTriangle } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { EMBEDDED_REMOTE_URL, type PlcProfile } from "@/lib/config/types"
 
@@ -66,6 +66,10 @@ export function PlcConfigDialog({
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
 
   const [pullStatus, setPullStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
+  // Promise-based pull-loss confirmation modal (replaces the old window.confirm).
+  // `resolve` is called with the user's choice; the awaiting confirmAndForcePull
+  // continues from there.
+  const [pullGuard, setPullGuard] = useState<{ data: any; resolve: (ok: boolean) => void } | null>(null)
   const [plcStatus, setPlcStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
   const [excludePatterns, setExcludePatterns] = useState('')
 
@@ -229,26 +233,16 @@ export function PlcConfigDialog({
   // (2026-06-04 TPA8/MCM08 incident: 818 results wiped). Only proceed after
   // the user explicitly confirms the overwrite.
   const confirmAndForcePull = async (errorData: any): Promise<boolean> => {
-    const n = errorData.wouldLoseResults ?? '?'
-    const sample = (errorData.atRiskSample || [])
-      .slice(0, 5)
-      .map((s: any) => `  • ${s.name}: ${s.result}`)
-      .join('\n')
-    addPullLog(`GUARD: pull would erase ${n} local result(s) the cloud does not have`)
-    const proceed = window.confirm(
-      `⚠️ PULL WOULD ERASE LOCAL TEST RESULTS\n\n` +
-      `${n} IO result(s) exist on this machine that the cloud does NOT have.\n` +
-      `This is usually field work that never synced (bad internet).\n\n` +
-      `Examples:\n${sample}\n\n` +
-      `Pulling now will ERASE these results from the grid.\n` +
-      `(A backup is still made automatically.)\n\n` +
-      `Press Cancel to keep your local results (recommended — they will sync ` +
-      `to the cloud automatically when internet returns).\n` +
-      `Press OK only if you are sure the cloud state is correct.`
-    )
+    const n = errorData.wouldLoseResults ?? 0
+    const c = errorData.wouldLoseComments ?? 0
+    addPullLog(`GUARD: pull would erase ${n} local result(s) + ${c} comment(s) the cloud does not have`)
+    // Show the in-app modal and wait for the user's explicit choice (replaces
+    // the old blocking window.confirm — see pull-guard modal in the JSX).
+    const proceed = await new Promise<boolean>(resolve => setPullGuard({ data: errorData, resolve }))
+    setPullGuard(null)
     if (!proceed) {
-      addPullLog('Pull cancelled by user — local results kept')
-      setPullStatus({ type: 'error', message: `Pull cancelled — ${n} unsynced local result(s) protected` })
+      addPullLog('Pull cancelled by user — local data kept')
+      setPullStatus({ type: 'error', message: `Pull cancelled — ${n} result(s) + ${c} comment(s) protected` })
       return false
     }
     addPullLog('User confirmed overwrite — retrying pull with force')
@@ -766,6 +760,7 @@ export function PlcConfigDialog({
           : 'disconnected'
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => {
       if (!busy) {
         if (!v && pendingConnectConfigRef.current) {
@@ -1096,5 +1091,48 @@ export function PlcConfigDialog({
         </div>
       </DialogContent>
     </Dialog>
+
+    {/* Pull-loss confirmation modal — replaces the old window.confirm. Shown
+        when the server refuses a destructive pull because local results/comments
+        the cloud lacks would be erased. */}
+    <Dialog open={pullGuard !== null} onOpenChange={(v) => { if (!v && pullGuard) { pullGuard.resolve(false) } }}>
+      <DialogContent className="max-w-lg border-2 border-red-500">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-red-600">
+            <AlertTriangle className="w-5 h-5" />
+            Pull would erase unsynced local work
+          </DialogTitle>
+          <DialogDescription className="text-foreground/80">
+            {(() => {
+              const d = pullGuard?.data ?? {}
+              const n = d.wouldLoseResults ?? 0
+              const c = d.wouldLoseComments ?? 0
+              const parts = [n > 0 ? `${n} test result${n === 1 ? '' : 's'}` : null, c > 0 ? `${c} comment${c === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')
+              return `${parts} exist on this machine that the cloud does NOT have — usually field work that never synced (bad internet). Pulling now will ERASE them from the grid.`
+            })()}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-48 overflow-auto rounded border border-border bg-muted/40 p-2 text-xs font-mono">
+          {((pullGuard?.data?.atRiskSample) || []).slice(0, 8).map((s: any) => (
+            <div key={`r-${s.id}`}>• {s.name}: <span className="text-red-600 font-semibold">{s.result}</span></div>
+          ))}
+          {((pullGuard?.data?.atRiskCommentSample) || []).slice(0, 6).map((s: any) => (
+            <div key={`c-${s.id}`}>• {s.name}: <span className="text-amber-600">comment</span></div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          A backup is taken automatically regardless. Keeping your local data is recommended — it will sync to the cloud when internet returns.
+        </p>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => pullGuard?.resolve(false)}>
+            Keep local data (recommended)
+          </Button>
+          <Button variant="destructive" onClick={() => pullGuard?.resolve(true)}>
+            Overwrite with cloud
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }
