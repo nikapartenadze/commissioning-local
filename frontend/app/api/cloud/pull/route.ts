@@ -2,7 +2,7 @@ import { Request, Response } from 'express'
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl, getPlcClient } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
-import { computeAtRiskResults } from '@/lib/cloud/pull-guard'
+import { computeAtRiskResults, computeAtRiskComments } from '@/lib/cloud/pull-guard'
 import type { CloudPullResponse } from '@/lib/cloud/types'
 
 // ── Prepared statements (created once at module load) ──────────────────
@@ -283,25 +283,39 @@ export async function POST(req: Request, res: Response) {
       `SELECT id, Name, Result FROM Ios WHERE Result IS NOT NULL AND Result != ''`
     ).all() as Array<{ id: number; Name: string; Result: string }>
     const atRisk = computeAtRiskResults(localWithResults, cloudIos)
-    if (atRisk.length > 0 && body.force !== true) {
+    // B2: also detect local COMMENTS the pull would erase (the wipe drops them
+    // too, and the old warning never mentioned them).
+    const localWithComments = db.prepare(
+      `SELECT id, Name, Comments FROM Ios WHERE Comments IS NOT NULL AND TRIM(Comments) != ''`
+    ).all() as Array<{ id: number; Name: string; Comments: string }>
+    const atRiskComments = computeAtRiskComments(localWithComments, cloudIos)
+
+    if ((atRisk.length > 0 || atRiskComments.length > 0) && body.force !== true) {
       console.warn(
-        `[CloudPull] REFUSED: pull would erase ${atRisk.length} local result(s) the cloud does not have ` +
+        `[CloudPull] REFUSED: pull would erase ${atRisk.length} local result(s) ` +
+        `and ${atRiskComments.length} local comment(s) the cloud does not have ` +
         `(e.g. ${atRisk.slice(0, 5).map(r => `${r.name}=${r.result}`).join(', ')}). ` +
         `Resend with force=true to override.`
       )
+      const parts = [
+        atRisk.length > 0 ? `${atRisk.length} test result(s)` : null,
+        atRiskComments.length > 0 ? `${atRiskComments.length} comment(s)` : null,
+      ].filter(Boolean).join(' and ')
       return res.status(409).json({
         success: false,
         requiresForce: true,
         wouldLoseResults: atRisk.length,
+        wouldLoseComments: atRiskComments.length,
         atRiskSample: atRisk.slice(0, 10),
+        atRiskCommentSample: atRiskComments.slice(0, 10),
         error:
-          `Pull refused: ${atRisk.length} local test result(s) exist that the cloud does not have — ` +
+          `Pull refused: ${parts} exist locally that the cloud does not have — ` +
           `pulling now would erase them. They are likely unsynced field work. ` +
-          `Sync first, or confirm the overwrite to proceed.`,
+          `Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)`,
       } as CloudPullResponse)
     }
-    if (atRisk.length > 0) {
-      console.warn(`[CloudPull] FORCE override: erasing ${atRisk.length} local result(s) not present on cloud (user confirmed)`)
+    if (atRisk.length > 0 || atRiskComments.length > 0) {
+      console.warn(`[CloudPull] FORCE override: erasing ${atRisk.length} result(s) + ${atRiskComments.length} comment(s) not present on cloud (user confirmed)`)
     }
 
     const localCountRow = getPullStmts().ioCount.get() as { cnt: number }

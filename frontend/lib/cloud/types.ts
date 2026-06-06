@@ -125,8 +125,12 @@ export interface CloudPullResponse {
   requiresForce?: boolean
   /** Local results the pull would erase (cloud has no result for these IOs). */
   wouldLoseResults?: number
+  /** Local comments the pull would erase (cloud has no comment for these IOs). */
+  wouldLoseComments?: number
   /** Sample of at-risk IOs for display: id, name, local result. */
   atRiskSample?: Array<{ id: number; name: string; result: string }>
+  /** Sample of at-risk comment IOs for display: id, name. */
+  atRiskCommentSample?: Array<{ id: number; name: string }>
 }
 
 export interface CloudSyncStatusResponse {
