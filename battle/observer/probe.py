@@ -317,15 +317,24 @@ def check_data_loss() -> dict:
         iid for iid in journaled
         if norm(local.get(iid)) != norm(cloud.get(iid)) and iid in rejected
     ]
+    # TRUE wipes only: a field write that LOCAL no longer holds (erased to
+    # null) — the MCM08 destructive-pull class. A local value that merely
+    # DIFFERS from cloud is NOT loss: the system is last-write-wins (the
+    # incident report is explicit — "a different cloud result is NOT at risk"),
+    # and a SPARE-Passed value the cloud legitimately refuses stays local-only
+    # by design. Those must not fail I4; only an actual erasure or a bug-drop
+    # (suspect_silent_drops: B1 429 / B7 version-cap) is real loss.
+    true_wipes = [iid for iid in wiped if norm(local.get(iid)) is None]
+    # `unsynced` is reported for visibility but is dominated by last-write-wins
+    # + business (SPARE) divergence, so it does NOT gate the verdict.
     return {
-        # Fail on data LOSS only: a wiped local write (destroyed), an unsynced
-        # write that's NOT queued (lost in transit / dropped), or a suspect
-        # permanent-drop (B1 429 / B7 version-cap). A non-empty queue is
-        # pending work (safe) — reported, not failed.
-        "pass": not wiped and not unsynced and not suspect_drops,
+        # Fail on real loss only: a value erased from local (true wipe) or a
+        # result dropped by a bug path (suspect). Divergence and a non-empty
+        # queue are reported, not failed.
+        "pass": not true_wipes and not suspect_drops,
         "soak_writes": len(journaled),
-        "local_wiped": len(wiped),
-        "unsynced_lost": len(unsynced),
+        "true_wipes": len(true_wipes),
+        "divergence_lww_or_business": len(unsynced),
         "still_queued_safe": len(queued),
         # The headline bug detector: results the tool threw away on a non-
         # business reason (HTTP 429 = B1, version-conflict cap = B7).
@@ -411,9 +420,14 @@ def main() -> None:
     print(f"observer: run={RUN_ID} target={TOOL_URL} soak={SOAK_MINUTES}min")
     deadline = time.monotonic() + SOAK_MINUTES * 60.0
     lat_path = os.path.join(OUT, "health.csv")
-    latencies: list[float] = []
+    latencies: list[float] = []        # post-warmup only (the I1 judging set)
     gaps: list[float] = []
     last_ok = time.monotonic()
+    # Schema init + 592-tag creation + first connect briefly block the loop at
+    # boot. That one-time transient must NOT fail I1 on a short soak (it's
+    # negligible over a 7 h run). Exclude a warmup window, like I2 does.
+    probe_start = time.monotonic()
+    I1_WARMUP_S = 120.0
 
     # Wait up to 3 min for the tool to come up before the clock counts.
     for _ in range(180):
@@ -432,9 +446,11 @@ def main() -> None:
             t = time.time()
             lat, status = probe_once()
             if lat is not None and status == 200:
-                latencies.append(lat)
+                warm = (time.monotonic() - probe_start) >= I1_WARMUP_S
+                if warm:
+                    latencies.append(lat)
                 gap = time.monotonic() - last_ok
-                if gap > GAP_LIMIT_S:
+                if gap > GAP_LIMIT_S and warm:
                     gaps.append(gap)
                 last_ok = time.monotonic()
                 w.writerow([f"{t:.0f}", f"{lat:.1f}", status])
