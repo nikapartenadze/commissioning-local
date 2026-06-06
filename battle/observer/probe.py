@@ -228,7 +228,8 @@ def scrape_permanent_drops() -> tuple[set[int], list[dict]]:
     cap; these are bug-class silent drops (B1/B7) and stay in the loss check."""
     business: set[int] = set()
     suspect: list[dict] = []
-    rx = re.compile(r"DROPPED-PERMANENT.*?ioId=(\d+).*?reason=\"([^\"]*)\"")
+    # v2.40.4 renamed the silent DROP to PARKED (kept, not deleted); match both.
+    rx = re.compile(r"(?:DROPPED|PARKED)-PERMANENT.*?ioId=(\d+).*?reason=\"([^\"]*)\"")
     for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "app-*.log"))):
         try:
             with open(path, errors="replace") as f:
