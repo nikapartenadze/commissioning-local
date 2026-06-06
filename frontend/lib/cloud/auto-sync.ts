@@ -293,12 +293,18 @@ class AutoSyncService {
           } catch { /* WS server might not be running */ }
         }
 
+        // B7: PARK rows that exhausted the retry cap — do NOT delete them.
+        // A capped row is one the cloud kept rejecting with a verdict (e.g. a
+        // version conflict the tool couldn't re-base); deleting it on the
+        // assumption "cloud already has it" silently loses genuinely-unsynced
+        // field work. Dead-lettering keeps the local result + reason and
+        // surfaces it as "needs attention" instead.
         const dropped = db.prepare(
-          `DELETE FROM PendingSyncs WHERE RetryCount >= ?`
+          `UPDATE PendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'retry cap exhausted') WHERE RetryCount >= ? AND DeadLettered = 0`
         ).run(IO_PENDING_RETRY_CAP)
-        if (dropped.changes > 0 && dropped.changes !== toDrop.length) {
+        if (dropped.changes > 0) {
           console.warn(
-            `[AutoSync] DROP count mismatch: expected ${toDrop.length}, deleted ${dropped.changes}`
+            `[AutoSync] PARKED ${dropped.changes} row(s) at the retry cap (kept for attention, not deleted)`
           )
         }
       } catch (e) {
@@ -306,7 +312,7 @@ class AutoSyncService {
       }
 
       const pendingSyncs = db.prepare(
-        'SELECT * FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+        'SELECT * FROM PendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT 50'
       ).all() as PendingSync[]
 
       const config = await configService.getConfig()
@@ -344,11 +350,14 @@ class AutoSyncService {
             )
             syncedIoCount++
           } else if (r.permanent) {
-            // Permanent reject — delete now so the row doesn't burn the retry
-            // cap. The full payload was already logged inside tryRealtimeSync.
-            pendingSyncRepository.delete(pending.id)
+            // Permanent reject (e.g. SPARE cannot be Passed): the cloud will
+            // never accept this value. PARK it (don't delete) so the local
+            // result + reason survive and the tester is told "cloud rejected
+            // N results" instead of the result silently vanishing while the
+            // queue count drops to 0 and the UI reads "synced" (B3/B5).
+            pendingSyncRepository.deadLetter(pending.id, r.reason ?? 'cloud permanently rejected')
             console.warn(
-              `[AutoSync] DROPPED-PERMANENT pendingId=${pending.id} ioId=${pending.IoId} ` +
+              `[AutoSync] PARKED-PERMANENT pendingId=${pending.id} ioId=${pending.IoId} ` +
               `reason=${JSON.stringify(r.reason ?? 'unknown')} ` +
               `result=${JSON.stringify(pending.TestResult)} version=${pending.Version}`,
             )

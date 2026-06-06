@@ -67,6 +67,13 @@ try {
     'ALTER TABLE PendingSyncs ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE Ios ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE TestHistories ADD COLUMN BlockerDescription TEXT',
+    // Dead-letter flag: a pending row that the cloud permanently rejected, or
+    // that exhausted the retry cap, is PARKED (DeadLettered=1) instead of
+    // DELETEd. Deleting it left zero trace — the queue count hit 0 and the UI
+    // read "synced" while the result never reached cloud (the MCM11 silent-
+    // loss class: B3/B5/B7). Parked rows keep the local result + reason, are
+    // excluded from the active push loop, and are surfaced as "needs attention".
+    'ALTER TABLE PendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
