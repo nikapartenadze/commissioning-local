@@ -78,6 +78,24 @@ try {
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
+  // PendingSyncs coalesce trigger + active-queue index — created AFTER the
+  // migrations so the DeadLettered column is guaranteed to exist (added above
+  // on a pre-existing DB, or present in CREATE TABLE on a fresh one). It must
+  // NOT live in initializeSchema(): that runs BEFORE the ALTER, so referencing
+  // DeadLettered there threw "no such column", aborting the whole schema init
+  // and silently skipping every migration (caught in battle pre-release).
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_pendingsyncs_active ON PendingSyncs(DeadLettered, IoId)')
+    // F2 coalesce: keep only the LATEST active pending row per IO so rapid
+    // repeated edits don't pile up thousands of version-conflicting rows.
+    // Parked (DeadLettered=1) rows are left alone (the attention surface).
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_pendingsyncs_coalesce
+      AFTER INSERT ON PendingSyncs
+      WHEN NEW.DeadLettered = 0
+      BEGIN
+        DELETE FROM PendingSyncs WHERE IoId = NEW.IoId AND DeadLettered = 0 AND id < NEW.id;
+      END`)
+  } catch (e) { console.warn('[DB] coalesce trigger/index setup failed:', e) }
   try {
     db.exec(`
       UPDATE L2Columns
@@ -182,27 +200,14 @@ export function initializeSchema() {
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT,
-      Version INTEGER DEFAULT 0
+      Version INTEGER DEFAULT 0,
+      -- Parked-sync flag (also added by ALTER for pre-existing DBs). Declared
+      -- here so a FRESH DB has it immediately and the coalesce trigger/index
+      -- below can reference it. See the dead-letter design in auto-sync.ts.
+      DeadLettered INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_ioid ON PendingSyncs(IoId);
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_createdat ON PendingSyncs(CreatedAt);
-    -- Fast active-queue scans + the coalesce trigger lookup (battle F2: rapid
-    -- same-IO writes used to scan a bloated table).
-    CREATE INDEX IF NOT EXISTS idx_pendingsyncs_active ON PendingSyncs(DeadLettered, IoId);
-    -- F2 coalesce: keep only the LATEST active pending row per IO. Rapid
-    -- repeated edits to one IO (e.g. the same point toggled several times)
-    -- otherwise pile up thousands of redundant rows that endlessly version-
-    -- conflict on push and never drain. The newest row carries the latest
-    -- result+version — the only state the cloud needs. Parked (DeadLettered=1)
-    -- rows are left alone (they're the attention surface). Centralised here so
-    -- every insert path (IO test, guided, dependencies, blocker) benefits.
-    CREATE TRIGGER IF NOT EXISTS trg_pendingsyncs_coalesce
-    AFTER INSERT ON PendingSyncs
-    WHEN NEW.DeadLettered = 0
-    BEGIN
-      DELETE FROM PendingSyncs
-      WHERE IoId = NEW.IoId AND DeadLettered = 0 AND id < NEW.id;
-    END;
 
     CREATE TABLE IF NOT EXISTS TagTypeDiagnostics (
       TagType TEXT NOT NULL,
