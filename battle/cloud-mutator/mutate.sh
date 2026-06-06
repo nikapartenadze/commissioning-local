@@ -19,6 +19,7 @@ SUBSYSTEM_ID="${SUBSYSTEM_ID:-38}"
 ADD_N="${MUTATE_ADD:-3}"
 EDIT_N="${MUTATE_EDIT:-5}"
 JOURNAL="/runs/${RUN_ID:-dev}/cloud-mutations.jsonl"
+STOP_FILE="/runs/${RUN_ID:-dev}/STOP"
 PSQL="psql -h cloud-db -U battle -d commissioning -tAq"
 export PGPASSWORD=battle
 
@@ -30,7 +31,15 @@ until $PSQL -c "SELECT 1 FROM ios LIMIT 1" >/dev/null 2>&1; do sleep 3; done
 
 seq=0
 while true; do
-    sleep "$PERIOD"
+    # Interruptible wait: the observer drops STOP when the soak ends so we add
+    # no new cloud rows during the verdict window (they'd have no time to
+    # propagate and would fail I7). Check every 5s so we exit promptly.
+    slept=0
+    while [ "$slept" -lt "$PERIOD" ]; do
+        [ -f "$STOP_FILE" ] && { echo "cloud-mutator: STOP — exiting"; exit 0; }
+        sleep 5; slept=$((slept + 5))
+    done
+    [ -f "$STOP_FILE" ] && { echo "cloud-mutator: STOP — exiting"; exit 0; }
     seq=$((seq + 1))
     stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
