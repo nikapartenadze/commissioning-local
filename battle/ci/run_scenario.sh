@@ -43,6 +43,14 @@ case "$SCENARIO" in
         # Hot-set OFF: it's a B7 stress knob that bloats the queue and blocks
         # the propagation (I7) this scenario verifies (see FINDINGS F2).
         export HOT_FRACTION=0 ;;
+    all)                                              # EVERYTHING at once (nightly)
+        # PLC program downloads + cloud connectivity flap + cloud-side data
+        # mutations + realistic tester load, all together — the harshest run.
+        export DOWNLOAD_STORM="25,45"
+        export CLOUD_FLAP="3,12"; export FLAP_BUDGET=120
+        export COMPOSE_PROFILES=mutate; export MUTATE_PERIOD_SEC=240
+        export BOTS="${BOTS:-5}"; export HOT_FRACTION=0.15
+        export THINK_MIN_MS=700; export THINK_MAX_MS=3000 ;;
     *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;
 esac
 
@@ -52,7 +60,9 @@ if [ "${BATTLE_PULL:-0}" = "1" ]; then
     # CI path: PULL the 3 heavy images (tool/cloud/plc-sim) from the registry,
     # BUILD only the tiny python/node ones. Avoids the ci-runner disk blowout.
     echo "battle: pull mode — heavy images from registry, building tiny ones"
-    docker compose -f docker-compose.battle.yml -p battle build seeder crew chaos observer
+    BUILD_SVCS="seeder crew chaos observer"
+    [ -n "$COMPOSE_PROFILES" ] && BUILD_SVCS="$BUILD_SVCS cloud-mutator"
+    docker compose -f docker-compose.battle.yml -p battle build $BUILD_SVCS
     docker compose -f docker-compose.battle.yml -p battle up -d
 else
     # Local path: build everything.
