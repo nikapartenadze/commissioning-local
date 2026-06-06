@@ -643,13 +643,18 @@ export default function CommissioningPage() {
       setIsCloudConnected(data.connected === true)
     } catch (error) {
       setIsCloudConnected(false)
+      // B8: a flaky status fetch must NOT make the badge read "0 / all synced".
+      // Keep the last-known counts and mark the status unknown; on first-load
+      // failure (no prior state) show unknown rather than asserting 0 pending.
       setCloudStatus(prev => prev ? {
         ...prev,
         connected: false,
+        statusUnknown: true,
         error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
       } : {
         connected: false,
         pendingSyncCount: 0,
+        statusUnknown: true,
         error: error instanceof Error ? error.message : 'Failed to refresh cloud status',
       })
     }
@@ -1981,6 +1986,10 @@ export default function CommissioningPage() {
   const pendingChangeRequestCount = cloudStatus?.pendingChangeRequestCount ?? 0
   const totalPendingSyncCount = cloudStatus?.totalPendingCount ?? (pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount)
   const hasDirtyLocalQueues = totalPendingSyncCount > 0
+  // Parked rows the cloud rejected / that exhausted retries — stuck, not on
+  // cloud (B3/B5). statusUnknown: the status read failed (B8).
+  const attentionCount = cloudStatus?.attentionCount ?? 0
+  const statusUnknown = cloudStatus?.statusUnknown ?? false
   const dirtyQueueSummary = [
     pendingIoSyncCount > 0 ? `${pendingIoSyncCount} IO` : null,
     pendingL2SyncCount > 0 ? `${pendingL2SyncCount} L2` : null,
@@ -2236,6 +2245,8 @@ export default function CommissioningPage() {
           pendingIoSyncCount={pendingIoSyncCount}
           pendingL2SyncCount={pendingL2SyncCount}
           pendingChangeRequestCount={pendingChangeRequestCount}
+          attentionCount={attentionCount}
+          statusUnknown={statusUnknown}
           pullBlocked={cloudStatus?.pullBlocked ?? hasDirtyLocalQueues}
         />
       </div>

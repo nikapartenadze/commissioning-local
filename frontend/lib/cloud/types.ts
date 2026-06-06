@@ -136,6 +136,12 @@ export interface CloudSyncStatusResponse {
   pendingL2SyncCount?: number
   pendingChangeRequestCount?: number
   totalPendingCount?: number
+  /** Rows the cloud REJECTED or that exhausted retries — left the active queue
+   *  but are NOT on cloud. The "needs attention" surface (B3/B5). */
+  attentionCount?: number
+  /** True when the status read itself failed — the counts are not reliable and
+   *  the UI must NOT render "all synced" (B8). */
+  statusUnknown?: boolean
   failedIoSyncCount?: number
   failedL2SyncCount?: number
   oldestPendingIoSync?: string

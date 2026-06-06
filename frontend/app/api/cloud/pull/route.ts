@@ -170,11 +170,22 @@ export async function POST(req: Request, res: Response) {
       } as CloudPullResponse)
     }
 
+    // B6: the pull below is DESTRUCTIVE (DELETE FROM Ios + reinsert cloud
+    // state). The pre-pull backup is the last line of recovery. If it fails,
+    // ABORT — proceeding with a wipe and no backup is how unsynced field work
+    // becomes unrecoverable. (Was: failure logged and the wipe continued.)
     try {
       const backup = await createBackup('pre-pull')
       console.log(`[CloudPull] Auto-backup created: ${backup.filename}`)
     } catch (backupErr) {
-      console.error('[CloudPull] Backup failed:', backupErr)
+      console.error('[CloudPull] Pre-pull backup FAILED — aborting pull to protect local data:', backupErr)
+      return res.status(500).json({
+        success: false,
+        error:
+          'Pre-pull safety backup failed, so the pull was aborted to protect your local data. ' +
+          'A destructive pull without a backup risks unrecoverable loss of unsynced results. ' +
+          'Check disk space / backups folder permissions and try again.',
+      } as CloudPullResponse)
     }
 
     const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`
