@@ -100,6 +100,40 @@ Test impact: the hot-set is a B7 stress knob; it must be OFF for the
 propagation (I7) scenario or the queue never drains and I7 can't fire. Fixed
 the mutate scenario to HOT_FRACTION=0.
 
+### F3 — cloud-stage seeded NULL results → I4 false-positive on pre-existing field results — 2026-06-06
+
+The overnight soak's manual I4 first read FAIL: 52 IOs `local=Passed, cloud=null,
+not-queued, not-SPARE`. Investigated to ground truth: **all 52 already had a
+result in the field seed (pre-soak) and all 52 logged "No syncable change
+(resultChanged=false) — skipping PendingSync".** Root cause: the field DB seed
+carries ~500 real MCM02 results, but `seed.py` seeded cloud-stage results NULL.
+The tool only syncs CHANGES, so a bot re-marking an already-set value is a
+correct no-op — but it left local≠cloud for those pre-existing results forever,
+which the journal-vs-cloud check mis-read as loss. **Zero actual data loss.**
+Fix: cloud-stage now mirrors local's initial `result` (seed.py), so I4 tracks
+only genuine soak-changes. Lesson: a data-loss invariant must compare against a
+cloud baseline that matches local's initial state, and must judge a CONVERGED
+system (live snapshots also skew — the 6 "wiped" were concurrent-write ordering,
+local held valid results).
+
 ## Run log
 
-(Appended per soak. `verdict.json` per run in the `runs` volume.)
+### overnight-20260606-0236 — 7.5 h comprehensive soak — PASS ✅
+
+Config: real MCM02 dataset (1184 IOs / 72 VFDs), 3 realistic bots, all chaos at
+once — PLC download storm (3 downloads) + cloud flap (8 cuts, VPN-profile) +
+cloud-side mutations. Tool = v2.40.3 (B1-fixed).
+
+| Invariant | Result | Evidence |
+|---|---|---|
+| I1 responsiveness | **PASS** | `/api/health` p50 1.8 / p95 4.7 / **p99 ~20 ms** across 24k+ samples, no gap >10 s |
+| I2 no leak | **PASS** | RSS flat ~115→126 MB over 7.5 h (well under 5 MB/h) |
+| I3 flag restore | **PASS** | plc-reconnect restore syncs fired after PLC downloads |
+| I4 no data loss | **PASS** | **0 suspect silent drops** (B1 fix held all night); the 52 "unsynced"/6 "wiped" proven = F3 seed-asymmetry + no-op re-marks + live-snapshot ordering, **zero field work lost**; 1024 IOs safely queued |
+| I5 stability | **PASS** | 1 server.start, 0 FATAL, 0 Sync errors |
+| I7 propagation | n/a (degraded) | blocked by F2 hot-set queue bloat (test artifact, not a tool fault) — hot-set now OFF for the mutate scenario |
+
+Bottom line: **the v2.40.3 tool survived 7.5 h of simultaneous PLC + cloud
+chaos at field scale with zero data loss, zero crashes, no leak, and a flat
+fast event loop.** The two env-tuning issues found (F2 hot-set bloat, F3 seed
+asymmetry) are fixed for future runs.
