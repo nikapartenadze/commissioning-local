@@ -8,9 +8,10 @@
  * cap. This guard compares actual data, not the queue.
  */
 import { describe, it, expect } from 'vitest'
-import { computeAtRiskResults } from '@/lib/cloud/pull-guard'
+import { computeAtRiskResults, computeAtRiskComments } from '@/lib/cloud/pull-guard'
 
 const local = (id: number, name: string, result: string) => ({ id, Name: name, Result: result })
+const localC = (id: number, name: string, Comments: string) => ({ id, Name: name, Comments })
 
 describe('computeAtRiskResults', () => {
   it('flags local result when cloud has the IO but no result (the MCM08 shape)', () => {
@@ -52,5 +53,28 @@ describe('computeAtRiskResults', () => {
   it('empty local DB (fresh tablet setup) → nothing at risk', () => {
     const atRisk = computeAtRiskResults([], [{ id: 1, result: null }])
     expect(atRisk).toHaveLength(0)
+  })
+})
+
+describe('computeAtRiskComments (B2 — pull also wipes comments)', () => {
+  it('flags a local comment the cloud lacks', () => {
+    const atRisk = computeAtRiskComments(
+      [localC(1, 'IO_A', 'mech to fix bracket')],
+      [{ id: 1, comments: null }],
+    )
+    expect(atRisk).toEqual([{ id: 1, name: 'IO_A' }])
+  })
+
+  it('flags when the IO is missing from the cloud payload', () => {
+    const atRisk = computeAtRiskComments([localC(1, 'IO_A', 'note')], [{ id: 2, comments: 'x' }])
+    expect(atRisk).toHaveLength(1)
+  })
+
+  it('does NOT flag an empty/whitespace local comment', () => {
+    expect(computeAtRiskComments([localC(1, 'IO_A', '   ')], [{ id: 1, comments: null }])).toHaveLength(0)
+  })
+
+  it('does NOT flag when the cloud already has a comment (last-write-wins)', () => {
+    expect(computeAtRiskComments([localC(1, 'IO_A', 'local note')], [{ id: 1, comments: 'cloud note' }])).toHaveLength(0)
   })
 })

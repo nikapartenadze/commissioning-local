@@ -43,3 +43,36 @@ export function computeAtRiskResults(
     })
     .map(row => ({ id: row.id, name: row.Name, result: row.Result }))
 }
+
+export interface LocalCommentRow {
+  id: number
+  Name: string
+  Comments: string
+}
+
+export interface AtRiskComment {
+  id: number
+  name: string
+}
+
+/**
+ * B2: the destructive pull also wipes local COMMENTS (DELETE FROM Ios drops
+ * them before the cloud rows are inserted). The old warning counted only
+ * Result rows, so unsynced field comments could vanish without a mention.
+ * Returns local IOs that carry a comment the cloud payload lacks.
+ */
+export function computeAtRiskComments(
+  localWithComments: LocalCommentRow[],
+  cloudIos: Array<{ id: number | string; comments?: string | null }>,
+): AtRiskComment[] {
+  const cloudCommentById = new Map<number, string | null>(
+    cloudIos.map(io => [Number(io.id), (io.comments ?? null) as string | null])
+  )
+  return localWithComments
+    .filter(row => {
+      if (!row.Comments || row.Comments.trim() === '') return false
+      const cloudComment = cloudCommentById.get(row.id)
+      return cloudComment == null || cloudComment.trim() === ''
+    })
+    .map(row => ({ id: row.id, name: row.Name }))
+}
