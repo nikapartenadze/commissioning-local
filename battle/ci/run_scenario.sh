@@ -38,8 +38,11 @@ case "$SCENARIO" in
     s3) export CLOUD_FLAP="2,6"; export FLAP_BUDGET=60 ;;  # cloud connectivity hell
     s6) DELAY_MS=300 ;;                               # CIP-saturated controller
     mutate)                                           # cloud-side data changes
-        export CLOUD_FLAP="3,8"; export FLAP_BUDGET=60
-        export COMPOSE_PROFILES=mutate ;;
+        export CLOUD_FLAP="3,12"; export FLAP_BUDGET=60
+        export COMPOSE_PROFILES=mutate
+        # Hot-set OFF: it's a B7 stress knob that bloats the queue and blocks
+        # the propagation (I7) this scenario verifies (see FINDINGS F2).
+        export HOT_FRACTION=0 ;;
     *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;
 esac
 

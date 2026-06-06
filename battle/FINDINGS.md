@@ -57,6 +57,49 @@ This single fix is incident recommendation #1 ("Fix B1 immediately").
   pull-during-dirty-state scenario (planned).
 - **B4** heartbeat queue-depth — cloud-side/fleet change, out of the tool's soak.
 
+### Behavior notes (by-design, documented — not bugs)
+
+- **Cloud→field propagation requires a drained offline queue.** The tool skips
+  `pullFromCloud` while `PendingSyncs > 0` (it would 409 against the pull-guard
+  anyway). So cloud-side changes (new IOs, coordinator edits) reach a tablet
+  only once its own unsynced work has flushed. Correct (protects field data
+  over propagation), but means: a tablet with a persistent backlog won't see
+  cloud changes until it catches up. The battle env's I7 therefore needs
+  REALISTIC load (queue actually drains); a sustained 6-bot write storm keeps
+  the queue non-empty forever and propagation never fires — a test-tuning
+  artifact, not a tool fault.
+- **A growing queue under sustained overload is not data loss.** Writes are
+  safe in `PendingSyncs`; I4 treats queued IOs as safe and only fails on a
+  write that is neither in cloud nor queued (truly dropped/wiped).
+- **Harness DNS:** restoring a `cloudcut` must re-add the compose service alias
+  or the tool can never re-resolve `cloud` (fixed). Lesson for any docker-
+  network chaos: reconnect with the original aliases.
+
+### F2 — PendingSyncs table bloat under rapid same-IO writes (no durable coalescing) — 2026-06-06
+
+Observed in the overnight soak: with a hot-set of 8 IOs hammered by 3 bots,
+the durable `PendingSyncs` table grew unbounded (542→1224 rows/hour) and the
+cloud logged 7315 version conflicts. The hot IOs each had 60–99 queued rows.
+
+Mechanism: the tool writes one `PendingSyncs` row per IO write. The IN-MEMORY
+offline queue is keyed by IO id so it coalesces (stays ~= distinct IOs, never
+near MAX_OFFLINE_QUEUE=5000 — so NO write loss, confirmed), but the DURABLE
+table is not coalesced. Rapid repeated writes to one IO pile up rows whose
+base versions fall behind cloud; each push then `updatedCount=0` (version
+conflict), retries, and never drains while newer writes keep arriving.
+
+Severity: **not data loss** (0 non-SPARE drops — conflicts retry, don't drop;
+the latest version per IO does eventually sync). But it (a) bloats the queue,
+(b) blocks cloud→field propagation (pull is skipped while PendingSyncs>0), and
+(c) is the soil B7 grows in — if a version-conflicted row ever hit the retry
+cap it would be dropped. A durable per-IO coalesce (keep only the latest
+pending version per IO) would fix all three. Logged as a future enhancement,
+not fixed tonight (sync change = high-risk, no loss occurring).
+
+Test impact: the hot-set is a B7 stress knob; it must be OFF for the
+propagation (I7) scenario or the queue never drains and I7 can't fire. Fixed
+the mutate scenario to HOT_FRACTION=0.
+
 ## Run log
 
 (Appended per soak. `verdict.json` per run in the `runs` volume.)
