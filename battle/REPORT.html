@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commissioning Tool — Sync Hardening &amp; Battle-Test Report</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#30363d;
+    --txt:#e6edf3; --mut:#9aa7b4; --gold:#C6941A; --green:#2ea043; --red:#da3633;
+    --amber:#d29922; --blue:#388bfd;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:30px;margin:0 0 4px;letter-spacing:-.4px}
+  h2{font-size:21px;margin:42px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px;color:var(--gold)}
+  .sub{color:var(--mut);margin:0 0 6px}
+  .tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:20px;border:1px solid var(--line)}
+  .t-green{color:#7ee2a8;border-color:#1f6f3d;background:#0f2417}
+  .t-red{color:#ff9a96;border-color:#7a2420;background:#2a1413}
+  .t-amber{color:#f0c26a;border-color:#7a5a16;background:#241c0c}
+  .t-blue{color:#9ecbff;border-color:#1f4f8f;background:#0d1d33}
+  .grid{display:grid;gap:14px}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .kpi{font-size:30px;font-weight:700;line-height:1.1}
+  .kpi.green{color:#7ee2a8}.kpi.gold{color:var(--gold)}.kpi.blue{color:#9ecbff}
+  .kpi small{display:block;font-size:12.5px;font-weight:500;color:var(--mut);margin-top:6px}
+  table{width:100%;border-collapse:collapse;margin:6px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  code{background:#0a0e14;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font:13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;color:#d9e1e8}
+  .mono{font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+  .muted{color:var(--mut)}
+  .arch{background:#0a0e14;border:1px solid var(--line);border-radius:10px;padding:18px;overflow-x:auto}
+  .lane{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch;margin:10px 0}
+  .box{flex:1;min-width:150px;border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:var(--panel2)}
+  .box b{display:block;font-size:13.5px}
+  .box span{font-size:12px;color:var(--mut)}
+  .box.tool{border-color:#1f4f8f;background:#0d1b30}
+  .box.chaos{border-color:#7a2420;background:#1e1110}
+  .box.obs{border-color:#1f6f3d;background:#0f2014}
+  .box.cloud{border-color:#7a5a16;background:#1d1708}
+  .arrow{text-align:center;color:var(--mut);font-size:20px;margin:-2px 0}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--mut)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  ul.tight{margin:6px 0;padding-left:20px}ul.tight li{margin:3px 0}
+  .flow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0;font-size:13px}
+  .step{border:1px solid var(--line);border-radius:7px;padding:6px 10px;background:var(--panel2)}
+  .hl{color:var(--gold);font-weight:600}
+  .foot{margin-top:50px;color:var(--mut);font-size:12.5px;border-top:1px solid var(--line);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Commissioning Tool — Sync Hardening &amp; Battle-Test</h1>
+  <p class="sub">Engineering report · 2026‑06‑05 → 2026‑06‑06 · field tool <code>frontend/</code> + <code>commissioning‑cloud</code></p>
+  <p><span class="tag t-green">5 releases shipped</span> <span class="tag t-green">8 incident bugs fixed</span> <span class="tag t-blue">automated battle-test env built</span> <span class="tag t-amber">2 release-blockers caught pre-ship</span></p>
+
+  <h2>1 · What &amp; why</h2>
+  <div class="panel">
+    <p style="margin-top:0">Field reports: <em>“syncs disappear / not pushed”</em> and <em>“the tool says synced but the cloud is missing data.”</em> Root investigation tied this to the <b>TPA8/MCM11 incident</b> class — results testers entered were silently lost, while the UI looked clean. Two structural gaps made it invisible:</p>
+    <ul class="tight">
+      <li>The cloud rejected/throttled writes and the tool <b>deleted</b> the queued result instead of keeping it.</li>
+      <li>The “unsynced” badge only counted queue rows, so a deleted row read as <b>“synced.”</b></li>
+    </ul>
+    <p style="margin-bottom:0">We also stood up an <b>automated battle-test environment</b> so this class of bug is reproduced and caught <b>before</b> it reaches a tablet — at field scale, for hours, under injected chaos, with machine-checked invariants.</p>
+  </div>
+
+  <div class="grid cards" style="margin-top:16px">
+    <div class="card"><div class="kpi green">0</div><small>real data‑loss events under 7.5 h of PLC + cloud chaos at field scale</small></div>
+    <div class="card"><div class="kpi gold">8 / 8</div><small>MCM11 incident bugs (B1–B8) fixed or surfaced</small></div>
+    <div class="card"><div class="kpi blue">~24,000</div><small>health probes/run; sustained event‑loop p99 ~20 ms</small></div>
+    <div class="card"><div class="kpi green">2</div><small>release‑blocking bugs caught by battle‑verify that unit tests missed</small></div>
+  </div>
+
+  <h2>2 · Architecture — the battle-test environment</h2>
+  <p class="sub">One <code>docker compose</code> stack. Runs the <b>real shipped artifact</b> (the tool’s production Docker image), seeded with a <b>real field dataset</b> (MCM02: 1,184 IOs / 72 VFDs), driven by simulated technicians, beaten on by injected chaos, and judged by machine-checked invariants. Touches no production system.</p>
+
+  <div class="arch">
+    <div class="lane">
+      <div class="box"><b>seeder</b><span>real MCM02 DB → tool + cloud; generates 1,644 PLC tags</span></div>
+      <div class="box tool"><b>tool</b><span>THE field app (prod Docker image) — PLC + SQLite + cloud sync</span></div>
+      <div class="box cloud"><b>cloud‑stage</b><span>real commissioning‑cloud image + throwaway Postgres</span></div>
+    </div>
+    <div class="arrow">▲ &nbsp; CIP (EtherNet/IP) &nbsp;&nbsp;|&nbsp;&nbsp; HTTP push/pull + SSE &nbsp; ▲</div>
+    <div class="lane">
+      <div class="box"><b>plc‑sim</b><span>patched libplctag ab_server — speaks real CIP; restart = PLC program download</span></div>
+      <div class="box"><b>crew</b><span>3–12 simulated technicians marking pass/fail; action journals = ground truth</span></div>
+    </div>
+    <div class="lane">
+      <div class="box chaos"><b>chaos</b><span>PLC download / power‑cut / CIP‑saturation / tool SIGKILL · cloud cut + VPN‑flap · download‑storm</span></div>
+      <div class="box obs"><b>observer</b><span>1 s health probe · log scrape · machine‑checked verdict → PASS/FAIL + CSV artifacts</span></div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:#388bfd"></span>system under test</span>
+      <span><span class="dot" style="background:#d29922"></span>throwaway cloud</span>
+      <span><span class="dot" style="background:#da3633"></span>fault injection</span>
+      <span><span class="dot" style="background:#2ea043"></span>verdict</span>
+    </div>
+  </div>
+
+  <h3>Machine-checked invariants (the verdict)</h3>
+  <table>
+    <tr><th>ID</th><th>Invariant</th><th>Catches</th></tr>
+    <tr><td><b>I1</b></td><td><code>/api/health</code> p95&lt;500 ms, p99&lt;2 s, no gap &gt;10 s (post‑warmup)</td><td>event‑loop freeze (the MCM02 class)</td></tr>
+    <tr><td><b>I2</b></td><td>RSS slope &lt; 5 MB/h after warmup</td><td>memory / handle leaks</td></tr>
+    <tr><td><b>I3</b></td><td>after every PLC download → VFD flags restored</td><td>polarity/Valid_* loss (CDW5 class)</td></tr>
+    <tr><td><b>I4</b></td><td>no <b>true wipe</b> (field write erased) &amp; no <b>suspect drop</b> (bug‑path delete)</td><td>silent sync data loss (MCM08/MCM11)</td></tr>
+    <tr><td><b>I5</b></td><td>no unexpected restarts; PLC flaps ≤ injected</td><td>crashes / instability</td></tr>
+    <tr><td><b>I7</b></td><td>cloud‑side changes propagate to field without re‑pull churn / wipe</td><td>pull‑wipe + stale data</td></tr>
+  </table>
+
+  <h2>3 · The bugs we found &amp; fixed</h2>
+  <p class="sub">The MCM11 incident named 8 bugs (B1–B8). The environment reproduced the connectivity/load‑triggered ones automatically; the rest were fixed by code audit and verified in the env.</p>
+  <table>
+    <tr><th>Bug</th><th>Was</th><th>Now</th><th>Ship</th></tr>
+    <tr><td><b>B1</b> <span class="muted">High</span></td><td>HTTP 429 (rate‑limit) → result <b>deleted</b> on first throttle</td><td>429 is transient — retried, never dropped</td><td><span class="tag t-green">v2.40.3</span></td></tr>
+    <tr><td><b>B3/B5/B7/B8</b> <span class="muted">High</span></td><td>failed rows <b>deleted</b> → queue hits 0 → UI reads “synced”</td><td><b>park, never delete</b> — kept + surfaced as red “CHECK”; honest indicator</td><td><span class="tag t-green">v2.40.4</span></td></tr>
+    <tr><td><b>B6</b> <span class="muted">Med</span></td><td>destructive pull ran even if the backup failed</td><td>failed backup <b>aborts</b> the pull</td><td><span class="tag t-green">v2.40.4</span></td></tr>
+    <tr><td><b>B2</b> <span class="muted">High</span></td><td>pull warning ignored comments</td><td>warns on results <b>and</b> comments at risk</td><td><span class="tag t-green">v2.40.4</span></td></tr>
+    <tr><td><b>B4</b> <span class="muted">Med</span></td><td>heartbeat carried no queue depth → fleet‑blind</td><td>heartbeat carries pending + stuck counts</td><td><span class="tag t-green">v2.40.4*</span></td></tr>
+    <tr><td><b>Cloud limit</b></td><td>300 req/min shared per whole site → legit pushes 429’d</td><td>3,000 general + 10,000 for result push</td><td><span class="tag t-green">live in prod</span></td></tr>
+    <tr><td><b>+ perf / UX</b></td><td>queue bloated (60–99 rows/IO); native browser <code>confirm()</code></td><td>per‑IO coalescing (ratio 1.00); proper modals; 14‑day park audit log</td><td><span class="tag t-green">v2.40.4</span></td></tr>
+  </table>
+  <p class="muted" style="font-size:13px">* tool sends the data; the fleet‑dashboard display of it is a separate commissioning‑cloud UI task.</p>
+
+  <h3>The fix pattern (B3/B5/B7/B8 in one idea)</h3>
+  <div class="flow">
+    <span class="step">cloud rejects / retries exhausted</span><span>→</span>
+    <span class="step" style="border-color:#7a2420">OLD: <b>DELETE</b> row → invisible loss</span>
+    <span>vs</span>
+    <span class="step" style="border-color:#1f6f3d">NEW: <b>PARK</b> (keep + reason) → red “CHECK” + 14‑day audit</span>
+  </div>
+
+  <h2>4 · How the env caught new issues (the rigor)</h2>
+  <div class="panel">
+    <h3 style="margin-top:0">① A release‑blocker unit tests could not see</h3>
+    <p>While verifying v2.40.4, the env failed on a fresh database boot: a new DB trigger referenced the <code>DeadLettered</code> column <b>before</b> the migration that adds it, so the whole schema init threw and <b>silently skipped every migration</b> — the entire fix was dead and sync errored each cycle. <b>280 passing unit tests did not catch this</b> — only a real fresh‑tablet startup did. Fixed before ship.</p>
+    <h3>② A “FAIL” verdict run to ground instead of hand‑waved</h3>
+    <p>A run reported <span class="hl">298 “data losses.”</span> Rather than accept it, we converged the system (stopped the bots, drained the queue to 0) and compared local vs cloud directly:</p>
+    <div class="grid cards">
+      <div class="card"><div class="kpi gold">256</div><small>SPARE‑Passed — cloud <b>correctly</b> rejects an illegal value (business rule)</small></div>
+      <div class="card"><div class="kpi gold">42</div><small>last‑write‑wins — different cloud value, by design</small></div>
+      <div class="card"><div class="kpi green">0</div><small>true wipes (field write erased)</small></div>
+      <div class="card"><div class="kpi green">0</div><small>suspect bug‑drops (B1/B7)</small></div>
+    </div>
+    <p style="margin-bottom:0"><b>Zero real loss.</b> Two of our own test invariants were wrong (I1 counted a one‑time boot transient; I4 treated last‑write‑wins as loss) — both fixed so the verdict is trustworthy.</p>
+  </div>
+
+  <h2>5 · Where it ran &amp; how long</h2>
+  <table>
+    <tr><th>What</th><th>Where</th><th>Duration</th><th>Result</th></tr>
+    <tr><td>Overnight comprehensive soak (PLC downloads + cloud flap + mutations + load)</td><td>local Docker (this machine)</td><td><b>7.5 h</b> · ~24k probes</td><td><span class="tag t-green">PASS</span> 0 loss · 0 crash · no leak · p99 ~20 ms</td></tr>
+    <tr><td>Pre‑release verify soaks (v2.40.4)</td><td>local Docker</td><td>8–11 min each</td><td><span class="tag t-green">PASS</span> after env fixes</td></tr>
+    <tr><td>Unit test suite (Vitest)</td><td>local</td><td>~3 s</td><td><span class="tag t-green">280 / 280</span></td></tr>
+    <tr><td><b>commissioning‑cloud deploy</b> (rate‑limit fix) — GitLab CI/CD</td><td>ci‑runner (pipeline #632)</td><td><b>~9 min</b> (build 261 s · typecheck 95 s · test 48 s · deploy 42 s)</td><td><span class="tag t-green">deployed to prod</span> w/ auto‑rollback + pre‑deploy DB dump</td></tr>
+    <tr><td>Battle nightly CI (scheduled 00:30)</td><td>ci‑runner, GitLab</td><td>6 h soak/night</td><td><span class="tag t-blue">wired</span> — images staged to registry; runs nightly</td></tr>
+  </table>
+  <p class="muted" style="font-size:13px">Note: deep battle iteration ran <b>locally</b> for speed; the GitLab nightly is the durable, unattended gate. The first cloud deploy attempt (#631) failed on ci‑runner disk exhaustion — we reclaimed 16 GB and #632 succeeded. The runner can’t build the heavy images, so they’re staged to the GitLab registry and the nightly pulls them.</p>
+
+  <h2>6 · Releases this session</h2>
+  <table>
+    <tr><th>Version</th><th>Fix</th><th>Severity</th></tr>
+    <tr><td><b>v2.40.1</b></td><td>VFD writer froze the tool for all users at scale (event‑loop blocking)</td><td><span class="tag t-red">critical</span></td></tr>
+    <tr><td><b>v2.40.2</b></td><td>v2.40.1 flag‑restore silently no‑op’d (FFI ABI garbage)</td><td><span class="tag t-red">critical</span></td></tr>
+    <tr><td><b>v2.40.3</b></td><td>HTTP 429 silently dropped field results (B1, MCM11 class)</td><td><span class="tag t-amber">high</span></td></tr>
+    <tr><td><b>v2.40.4</b></td><td>Sync data‑loss hardening (B2–B8) + per‑IO coalescing + honest indicator + modals + audit</td><td><span class="tag t-amber">high</span></td></tr>
+    <tr><td><b>cloud</b></td><td>Sync API rate‑limit raised (live in prod)</td><td><span class="tag t-amber">high</span></td></tr>
+  </table>
+
+  <h2>7 · Net outcome</h2>
+  <div class="panel">
+    <ul class="tight" style="margin:0">
+      <li><b>Field data is no longer silently lost.</b> Rejected/stuck results are <b>parked</b> (kept + reason), shown as a red <b>CHECK</b> marker, written to a <b>14‑day audit log</b>, and reported in the <b>heartbeat</b> — visible, durable, recoverable, instead of invisible for days.</li>
+      <li><b>The badge can’t lie</b> — it reconciles real state, not just a queue count; a failed status read shows “unknown,” never “synced.”</li>
+      <li><b>The cloud no longer throttles legitimate field pushes</b> at a busy multi‑subsystem site.</li>
+      <li><b>Faster sync</b> — the queue can’t bloat (per‑IO coalescing).</li>
+      <li><b>A standing safety net</b> — every release now runs through a field‑scale chaos soak with machine‑checked no‑loss invariants, which already caught two bugs that would otherwise have shipped.</li>
+    </ul>
+  </div>
+
+  <p class="foot">Generated from the working repo. Sources: <code>battle/</code> (environment), <code>battle/FINDINGS.md</code> (per‑run log), GitLab pipelines #632 (cloud deploy) &amp; the battle nightly schedule, GitHub releases v2.40.1–v2.40.4. No production database or service was modified during testing; cloud changes shipped only through the existing CI/CD with auto‑rollback.</p>
+
+</div>
+</body>
+</html>
