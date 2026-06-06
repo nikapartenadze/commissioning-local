@@ -153,17 +153,17 @@ def journaled_results() -> dict[int, str]:
                     hot.add(iid)
                     continue
                 bot = str(e.get("bot", ""))
-                ts = e.get("ts", "")
-                slot = per_bot.setdefault(iid, {})
-                if bot not in slot or ts > slot[bot][0]:
-                    slot[bot] = (ts, e.get("result"))
+                # Append order within a bot's own journal IS its true write
+                # order — more reliable than string-comparing ISO timestamps,
+                # which tie at the same millisecond (a Failed and a Cleared in
+                # the same ms would otherwise mis-order and look like a wipe).
+                per_bot.setdefault(iid, {})[bot] = e.get("result")
     out: dict[int, str] = {}
     for iid, slot in per_bot.items():
         if iid in hot or len(slot) > 1:
             # Hot, or collided on by >1 bot → last write is order-ambiguous.
             continue
-        (_, result), = slot.values()
-        out[iid] = result
+        out[iid] = next(iter(slot.values()))  # the single writer's last result
     return out
 
 
@@ -382,6 +382,15 @@ def check_data_loss() -> dict:
         "suspect_drop_reasons": _top_reasons(suspect_drops),
         "explained_business_rejections": len(explained),
         "pending_queue_at_end": pending,
+        # True-wipe detail with the cloud value, so a failure self-explains:
+        # cloud HOLDS the value => MCM08-class local clobber (real, recoverable
+        # on next pull); cloud MISSING too => harder global loss.
+        "true_wipe_detail": [
+            {"io": iid, "field_wrote": journaled.get(iid),
+             "local_now": local.get(iid), "cloud_now": cloud.get(iid),
+             "queued": iid in queued}
+            for iid in wiped if norm(local.get(iid)) is None
+        ][:15],
         "wiped_samples": [
             {"io": iid, "field_wrote": journaled[iid], "local_now": local.get(iid)}
             for iid in wiped[:10]

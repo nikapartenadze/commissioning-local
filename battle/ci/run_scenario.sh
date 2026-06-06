@@ -49,7 +49,15 @@ case "$SCENARIO" in
         export DOWNLOAD_STORM="25,45"
         export CLOUD_FLAP="3,12"; export FLAP_BUDGET=120
         export COMPOSE_PROFILES=mutate; export MUTATE_PERIOD_SEC=240
-        export BOTS="${BOTS:-5}"; export HOT_FRACTION=0.15
+        export BOTS="${BOTS:-5}"
+        # HOT_FRACTION stays 0 here (as in the mutate scenario): the hot-set is a
+        # synthetic queue-stress knob that (a) bloats PendingSyncs so the tool
+        # never drains its queue and SKIPS cloud pulls — blinding I7 — and (b)
+        # creates multi-writer last-write ambiguity that fakes I4 wipes. It
+        # exercises no real field behavior; dropping it keeps the data-loss and
+        # propagation verdicts trustworthy while ALL real chaos still runs. See
+        # FINDINGS F2 + the mutate scenario.
+        export HOT_FRACTION=0
         export THINK_MIN_MS=700; export THINK_MAX_MS=3000 ;;
     *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;
 esac
