@@ -40,6 +40,32 @@ beforeEach(() => {
     LastError TEXT, CreatedAt TEXT,
     DeadLettered INTEGER NOT NULL DEFAULT 0
   )`)
+  // Mirror the production F2 coalesce trigger.
+  db.exec(`CREATE TRIGGER trg_pendingsyncs_coalesce
+    AFTER INSERT ON PendingSyncs WHEN NEW.DeadLettered = 0
+    BEGIN
+      DELETE FROM PendingSyncs WHERE IoId = NEW.IoId AND DeadLettered = 0 AND id < NEW.id;
+    END`)
+})
+
+describe('F2 coalesce trigger (one active row per IO)', () => {
+  it('rapid same-IO writes collapse to the latest row only', () => {
+    seedRow(100, 'Passed')
+    seedRow(100, 'Failed')
+    seedRow(100, 'Cleared')  // newest active wins
+    expect(activeCount()).toBe(1)
+    const row = db.prepare('SELECT TestResult FROM PendingSyncs WHERE IoId = 100 AND DeadLettered = 0').get() as any
+    expect(row.TestResult).toBe('Cleared')
+  })
+
+  it('coalesce never touches a different IO or a parked row', () => {
+    const parked = seedRow(1, 'Passed')
+    db.prepare('UPDATE PendingSyncs SET DeadLettered = 1 WHERE id = ?').run(parked)  // park it
+    seedRow(1, 'Failed')   // new active for the SAME IO — must not clear the parked one
+    seedRow(2, 'Passed')   // different IO — untouched
+    expect(attentionCount()).toBe(1)              // parked row preserved
+    expect(activeCount()).toBe(2)                 // io1-active + io2-active
+  })
 })
 
 describe('dead-letter (park, never delete)', () => {
