@@ -123,10 +123,19 @@ def injected_events() -> list[dict]:
 
 def journaled_results() -> dict[int, str]:
     """Latest accepted (status 200) result per IO id across all bot journals,
-    EXCLUDING hot-set writes (concurrent races on shared rows have ambiguous
-    last-write ordering — B7 is detected from logs instead). Last-write-wins,
-    mirroring the tool's UI. These are writes that must reach local AND cloud."""
-    latest: dict[int, tuple[str, str]] = {}  # ioId -> (ts, result)
+    EXCLUDING any IO whose last write is order-ambiguous. Last-write-wins,
+    mirroring the tool's UI. These are writes that must reach local AND cloud.
+
+    Ambiguous = written by more than one bot. The designated hot SET is the
+    obvious case, but bots also randomly COLLIDE on the same non-hot IO; those
+    uncoordinated concurrent writes have the same ambiguous last-write ordering
+    (the observer's ts-sort and the tool's actual apply-order can disagree
+    sub-second), so a later 'Cleared' winning locally would look like a wipe of
+    an earlier 'Failed'. A single-writer IO keeps strict latest-by-ts, so a real
+    destructive wipe (MCM08 class) on uncontended rows still trips I4, and the
+    bug-path drop class (B1/B7) is detected separately from logs."""
+    # ioId -> {bot -> (ts, result)} ; keep each bot's own latest write.
+    per_bot: dict[int, dict[str, tuple[str, str]]] = {}
     hot: set[int] = set()
     for path in glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl")):
         with open(path, errors="replace") as f:
@@ -143,12 +152,19 @@ def journaled_results() -> dict[int, str]:
                 if e.get("hot"):
                     hot.add(iid)
                     continue
+                bot = str(e.get("bot", ""))
                 ts = e.get("ts", "")
-                if iid not in latest or ts > latest[iid][0]:
-                    latest[iid] = (ts, e.get("result"))
-    # A row that was ever a hot target is excluded entirely (a bot may hit it
-    # both ways across the soak).
-    return {iid: r for iid, (ts, r) in latest.items() if iid not in hot}
+                slot = per_bot.setdefault(iid, {})
+                if bot not in slot or ts > slot[bot][0]:
+                    slot[bot] = (ts, e.get("result"))
+    out: dict[int, str] = {}
+    for iid, slot in per_bot.items():
+        if iid in hot or len(slot) > 1:
+            # Hot, or collided on by >1 bot → last write is order-ambiguous.
+            continue
+        (_, result), = slot.values()
+        out[iid] = result
+    return out
 
 
 def cloud_results() -> dict[int, str | None] | None:
@@ -247,6 +263,26 @@ def scrape_permanent_drops() -> tuple[set[int], list[dict]]:
     return business, suspect
 
 
+def mutator_edited_ids() -> set[int]:
+    """IO ids the cloud-mutator deliberately changed on the cloud authority.
+    For these, a journal-vs-local divergence is EXPECTED (the mutator overwrote
+    the field's value on the authoritative side) and is verified by I7 instead —
+    so they are out of scope for I4's field-work-loss check."""
+    edited: set[int] = set()
+    mut_path = os.path.join(RUNS_DIR, RUN_ID, "cloud-mutations.jsonl")
+    if not os.path.exists(mut_path):
+        return edited
+    for line in open(mut_path, errors="replace"):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for key in ("edited", "added"):
+            if e.get(key):
+                edited |= {int(x) for x in str(e[key]).split(",") if x}
+    return edited
+
+
 def check_data_loss() -> dict:
     """I4 — no silent data loss. Local SQLite is the authority. For every IO
     written DURING this soak (bot journals), cloud must mirror local. The only
@@ -254,6 +290,10 @@ def check_data_loss() -> dict:
     (cloud business rule). Anything else = a sync bug losing field work — the
     MCM08/MCM11 class. Re-polls cloud to absorb in-flight batch syncs."""
     journaled = journaled_results()  # {ioId: latest result the field wrote}
+    # Drop IOs the cloud-mutator changed: those diverge by design (I7's job).
+    mutated = mutator_edited_ids()
+    if mutated:
+        journaled = {i: r for i, r in journaled.items() if i not in mutated}
     rejected, suspect_drops = scrape_permanent_drops()
 
     # Tell chaos to stop flapping/storming and restore connectivity, so the
