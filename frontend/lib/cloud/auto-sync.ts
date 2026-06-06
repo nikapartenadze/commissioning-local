@@ -222,9 +222,12 @@ class AutoSyncService {
         // recovery — once the rows were gone, we couldn't see which IOs lost
         // a test or who tested them. Now every drop emits a structured line
         // that grep can find later.
+        // Only rows about to be NEWLY parked (DeadLettered = 0) — without this
+        // filter the audit log would re-emit every already-parked row each
+        // cycle.
         const toDrop = db.prepare(
           `SELECT id, IoId, InspectorName, TestResult, Comments, State, Version, Timestamp, RetryCount, CreatedAt
-             FROM PendingSyncs WHERE RetryCount >= ?`
+             FROM PendingSyncs WHERE RetryCount >= ? AND DeadLettered = 0`
         ).all(IO_PENDING_RETRY_CAP) as PendingSync[]
 
         if (toDrop.length > 0) {
@@ -340,6 +343,10 @@ class AutoSyncService {
           const r = await syncService.syncIoUpdate(mapPendingSyncToIoUpdate(pending))
           if (r.ok) {
             pendingSyncRepository.delete(pending.id)
+            // A newer write for this IO just reached cloud — any earlier PARKED
+            // (rejected/capped) row for the same IO is now stale; clear it so
+            // the "needs attention" surface doesn't keep flagging a resolved IO.
+            try { db.prepare('DELETE FROM PendingSyncs WHERE IoId = ? AND DeadLettered = 1').run(pending.IoId) } catch { /* best-effort */ }
             // Per-row trail so forensics can answer "did this specific IO
             // actually reach cloud?" without joining the summary line below
             // back to the queue snapshot.
@@ -356,6 +363,17 @@ class AutoSyncService {
             // N results" instead of the result silently vanishing while the
             // queue count drops to 0 and the UI reads "synced" (B3/B5).
             pendingSyncRepository.deadLetter(pending.id, r.reason ?? 'cloud permanently rejected')
+            // Durable 2-week audit trail for the rejected result (was console
+            // only) — so "why did this IO never reach cloud" is answerable later.
+            auditLog({
+              type: 'sync.push.park',
+              ioId: pending.IoId,
+              version: pending.Version,
+              result: pending.TestResult,
+              user: pending.InspectorName,
+              reason: `cloud permanent reject: ${r.reason ?? 'unknown'}`,
+              detail: { pendingId: pending.id, comments: pending.Comments, state: pending.State },
+            })
             console.warn(
               `[AutoSync] PARKED-PERMANENT pendingId=${pending.id} ioId=${pending.IoId} ` +
               `reason=${JSON.stringify(r.reason ?? 'unknown')} ` +

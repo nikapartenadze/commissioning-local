@@ -35,6 +35,7 @@ export type AuditEventType =
   | 'sync.push.ok'
   | 'sync.push.defer'
   | 'sync.push.drop' // a pending push was discarded — the recovery-critical case
+  | 'sync.push.park' // a pending push was PARKED (cloud-rejected/cap) — kept for attention, not lost
   | 'sync.pull'
   | 'plc.connect'
   | 'plc.disconnect'

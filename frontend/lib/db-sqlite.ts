@@ -186,6 +186,23 @@ export function initializeSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_ioid ON PendingSyncs(IoId);
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_createdat ON PendingSyncs(CreatedAt);
+    -- Fast active-queue scans + the coalesce trigger lookup (battle F2: rapid
+    -- same-IO writes used to scan a bloated table).
+    CREATE INDEX IF NOT EXISTS idx_pendingsyncs_active ON PendingSyncs(DeadLettered, IoId);
+    -- F2 coalesce: keep only the LATEST active pending row per IO. Rapid
+    -- repeated edits to one IO (e.g. the same point toggled several times)
+    -- otherwise pile up thousands of redundant rows that endlessly version-
+    -- conflict on push and never drain. The newest row carries the latest
+    -- result+version — the only state the cloud needs. Parked (DeadLettered=1)
+    -- rows are left alone (they're the attention surface). Centralised here so
+    -- every insert path (IO test, guided, dependencies, blocker) benefits.
+    CREATE TRIGGER IF NOT EXISTS trg_pendingsyncs_coalesce
+    AFTER INSERT ON PendingSyncs
+    WHEN NEW.DeadLettered = 0
+    BEGIN
+      DELETE FROM PendingSyncs
+      WHERE IoId = NEW.IoId AND DeadLettered = 0 AND id < NEW.id;
+    END;
 
     CREATE TABLE IF NOT EXISTS TagTypeDiagnostics (
       TagType TEXT NOT NULL,
