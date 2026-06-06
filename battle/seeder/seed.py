@@ -130,8 +130,13 @@ def main() -> None:
     # The throwaway cloud Postgres must hold the SAME IOs (matching ids) under
     # a project whose api_key == the tool's apiPassword, so the tool's pushes
     # (validated cloud-side by io->subsystem->project.apiKey) are accepted and
-    # the I4 data-loss invariant can read results back. Results start NULL —
-    # we track writes the bots make DURING the soak, not pre-seeded state.
+    # the I4 data-loss invariant can read results back. Cloud-stage MIRRORS the
+    # local DB's initial RESULTS too: the field seed has ~500 pre-existing MCM02
+    # results, and the tool only syncs CHANGES — so a bot re-marking an already-
+    # set value is a no-op (resultChanged=false, no PendingSync). If cloud
+    # started NULL, those pre-existing results would look "unsynced" forever and
+    # FALSELY trip I4 (caught in the 2026-06-06 overnight soak — F3). Mirroring
+    # the initial state means I4 only flags genuine soak-changes.
     gen_cloud_seed(cur)
 
 
@@ -149,7 +154,7 @@ def gen_cloud_seed(cur) -> None:
     # permanent version conflict (discovered in battle, 2026-06-06). In the
     # field this is aligned because local pulled its versions FROM cloud.
     ios = cur.execute(
-        "SELECT id, SubsystemId, Name, Description, \"Order\", COALESCE(Version, 0) FROM Ios "
+        "SELECT id, SubsystemId, Name, Description, \"Order\", COALESCE(Version, 0), Result FROM Ios "
         "WHERE Name IS NOT NULL AND Name <> ''"
     ).fetchall()
 
@@ -165,11 +170,13 @@ def gen_cloud_seed(cur) -> None:
             f"INSERT INTO subsystems (id, project_id, name) "
             f"VALUES ({sid}, 1, 'MCM02') ON CONFLICT (id) DO NOTHING;"
         )
-    for (iid, sid, name, desc, order, ver) in ios:
+    for (iid, sid, name, desc, order, ver, result) in ios:
         order_sql = "NULL" if order is None else str(int(order))
+        # Mirror the local result so pre-existing field results match cloud and
+        # only genuine soak-changes are tracked by I4 (F3 fix).
         lines.append(
-            "INSERT INTO ios (id, subsystemid, name, description, \"Order\", version) "
-            f"VALUES ({int(iid)}, {int(sid)}, {sql_str(name)}, {sql_str(desc)}, {order_sql}, {int(ver)}) "
+            "INSERT INTO ios (id, subsystemid, name, description, \"Order\", version, result) "
+            f"VALUES ({int(iid)}, {int(sid)}, {sql_str(name)}, {sql_str(desc)}, {order_sql}, {int(ver)}, {sql_str(result)}) "
             "ON CONFLICT (id) DO NOTHING;"
         )
     # Keep the sequences ahead of our explicit ids so cloud-side inserts (the
