@@ -35,6 +35,9 @@ import {
   plc_tag_get_float32,
   readTagAsync,
   writeTagAsync,
+  createTagsBatchAsync,
+  readTagsBatchAsync,
+  writeTagsBatchAsync,
   buildAttributeString,
 } from './libplctag';
 
@@ -705,6 +708,160 @@ export class PlcClient extends EventEmitter {
     } finally {
       try { plc_tag_destroy(handle); } catch { /* ignore */ }
     }
+  }
+
+  /**
+   * ASYNC batch read of typed tags BY NAME — the non-blocking replacement for
+   * looping readTypedTag(). The sync per-tag version parks the whole event
+   * loop for up to 5 s PER TAG on a slow controller (the MCM02-freeze class);
+   * in the plc-gateway that loop serves EVERY MCM, so a saturated controller
+   * would starve them all. This version initiates creates/reads non-blocking
+   * and resolves them with shared status sweeps (O(1) timers per batch),
+   * keeping the loop responsive regardless of controller health. Same
+   * temporary-handle semantics and value decoding as readTypedTag.
+   */
+  async readTypedTags(
+    reads: Array<{ name: string; dataType: 'BOOL' | 'REAL' | 'INT' }>,
+    timeoutMs: number = 5000,
+  ): Promise<Array<{ name: string; success: boolean; value?: number | boolean; error?: string }>> {
+    if (!this.connectionConfig) {
+      return reads.map((r) => ({ name: r.name, success: false, error: 'No connection config' }));
+    }
+    const cfg = this.connectionConfig;
+    const created = await createTagsBatchAsync(
+      reads.map((r) => ({
+        gateway: cfg.ip,
+        path: cfg.path,
+        name: r.name,
+        elemSize: elemSizeFor(r.dataType),
+        elemCount: 1,
+      })),
+      timeoutMs,
+    );
+    const out: Array<{ name: string; success: boolean; value?: number | boolean; error?: string }> =
+      reads.map((r) => ({ name: r.name, success: false }));
+    try {
+      // Only sweep-read the handles that created OK.
+      const okIdx: number[] = [];
+      for (let i = 0; i < created.length; i++) {
+        if (created[i].status === PlcTagStatus.PLCTAG_STATUS_OK && created[i].handle >= 0) {
+          okIdx.push(i);
+        } else {
+          out[i].error = `Failed to create tag: ${getStatusMessage(created[i].status)}`;
+        }
+      }
+      const readStatuses = await readTagsBatchAsync(okIdx.map((i) => created[i].handle), timeoutMs);
+      for (let j = 0; j < okIdx.length; j++) {
+        const i = okIdx[j];
+        if (readStatuses[j] !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          out[i].error = getStatusMessage(readStatuses[j]);
+          continue;
+        }
+        try {
+          const dt = reads[i].dataType;
+          out[i].value = dt === 'BOOL'
+            ? plc_tag_get_bit(created[i].handle, 0) === 1
+            : dt === 'REAL'
+              ? plc_tag_get_float32(created[i].handle, 0)
+              : plc_tag_get_int16(created[i].handle, 0);
+          out[i].success = true;
+        } catch (err) {
+          out[i].error = err instanceof Error ? err.message : String(err);
+        }
+      }
+    } finally {
+      for (const c of created) {
+        if (c.handle >= 0) {
+          try { plc_tag_destroy(c.handle); } catch { /* ignore */ }
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * ASYNC batch write of typed tags BY NAME — non-blocking replacement for
+   * looping writeTypedTag() (same loop-parking hazard, see readTypedTags).
+   * Semantics match writeTypedTag exactly: read-before-write to sync the tag
+   * buffer, typed setter, write, temporary handles destroyed afterwards.
+   */
+  async writeTypedTags(
+    writes: Array<{ name: string; value: number; dataType: 'BOOL' | 'REAL' | 'INT' }>,
+    timeoutMs: number = 5000,
+  ): Promise<Array<{ name: string; success: boolean; error?: string }>> {
+    if (!this.connectionConfig) {
+      return writes.map((w) => ({ name: w.name, success: false, error: 'No connection config' }));
+    }
+    const cfg = this.connectionConfig;
+    const created = await createTagsBatchAsync(
+      writes.map((w) => ({
+        gateway: cfg.ip,
+        path: cfg.path,
+        name: w.name,
+        elemSize: elemSizeFor(w.dataType),
+        elemCount: 1,
+      })),
+      timeoutMs,
+    );
+    const out: Array<{ name: string; success: boolean; error?: string }> =
+      writes.map((w) => ({ name: w.name, success: false }));
+    try {
+      const okIdx: number[] = [];
+      for (let i = 0; i < created.length; i++) {
+        if (created[i].status === PlcTagStatus.PLCTAG_STATUS_OK && created[i].handle >= 0) {
+          okIdx.push(i);
+        } else {
+          out[i].error = `Failed to create tag: ${getStatusMessage(created[i].status)}`;
+        }
+      }
+
+      // Read-before-write (buffer sync, matches writeTypedTag).
+      const readStatuses = await readTagsBatchAsync(okIdx.map((i) => created[i].handle), timeoutMs);
+      const writeIdx: number[] = [];
+      for (let j = 0; j < okIdx.length; j++) {
+        const i = okIdx[j];
+        if (readStatuses[j] !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          out[i].error = `Failed to read before write: ${getStatusMessage(readStatuses[j])}`;
+          continue;
+        }
+        const w = writes[i];
+        let setStatus: number;
+        try {
+          if (w.dataType === 'BOOL') {
+            setStatus = plc_tag_set_int8(created[i].handle, 0, w.value ? 1 : 0);
+          } else if (w.dataType === 'REAL') {
+            setStatus = plc_tag_set_int32(created[i].handle, 0, floatToInt32Bits(w.value));
+          } else {
+            setStatus = plc_tag_set_int16(created[i].handle, 0, w.value);
+          }
+        } catch (err) {
+          out[i].error = err instanceof Error ? err.message : String(err);
+          continue;
+        }
+        if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          out[i].error = `Failed to set value: ${getStatusMessage(setStatus)}`;
+          continue;
+        }
+        writeIdx.push(i);
+      }
+
+      const writeStatuses = await writeTagsBatchAsync(writeIdx.map((i) => created[i].handle), timeoutMs);
+      for (let k = 0; k < writeIdx.length; k++) {
+        const i = writeIdx[k];
+        if (writeStatuses[k] === PlcTagStatus.PLCTAG_STATUS_OK) {
+          out[i].success = true;
+        } else {
+          out[i].error = `Failed to write tag: ${getStatusMessage(writeStatuses[k])}`;
+        }
+      }
+    } finally {
+      for (const c of created) {
+        if (c.handle >= 0) {
+          try { plc_tag_destroy(c.handle); } catch { /* ignore */ }
+        }
+      }
+    }
+    return out;
   }
 
   /**

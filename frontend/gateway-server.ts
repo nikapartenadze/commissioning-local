@@ -52,6 +52,13 @@ if (process.env.PLC_MODE === 'remote') {
   process.exit(1);
 }
 
+// Mark this process as the gateway BEFORE any registry event can fire. The
+// registry's per-MCM 'initialized' hook checks this at runtime: in the
+// gateway it must broadcast McmReconnected to the app (which owns SQLite and
+// runs the VFD validation writer) instead of dynamic-importing the writer —
+// that import pulls in db-sqlite, and the gateway is DB-free by design.
+process.env.PLC_GATEWAY_PROCESS = '1';
+
 const PORT = parseInt(process.env.GATEWAY_PORT || String(DEFAULT_GATEWAY_PORT), 10);
 const HOST = process.env.GATEWAY_HOST || '0.0.0.0';
 const VERSION = getAppVersion();
@@ -187,16 +194,18 @@ app.post('/mcm/:subsystemId/io/read', (req: Request, res: Response) => {
 });
 
 // ── Generic typed tag batch write/read (VFD commissioning, etc.) ──────────────
-app.post('/mcm/:subsystemId/tags/write', (req: Request, res: Response) => {
+// Async (Phase 1.1): the typed ops no longer park the gateway's event loop —
+// a saturated controller can't starve the other MCMs' requests.
+app.post('/mcm/:subsystemId/tags/write', async (req: Request, res: Response) => {
   const subsystemId = String(req.params.subsystemId);
   const writes = Array.isArray(req.body?.writes) ? req.body.writes : [];
-  res.json(writeTypedTagsForMcmLocal(subsystemId, writes));
+  res.json(await writeTypedTagsForMcmLocal(subsystemId, writes));
 });
 
-app.post('/mcm/:subsystemId/tags/read', (req: Request, res: Response) => {
+app.post('/mcm/:subsystemId/tags/read', async (req: Request, res: Response) => {
   const subsystemId = String(req.params.subsystemId);
   const reads = Array.isArray(req.body?.reads) ? req.body.reads : [];
-  res.json(readTypedTagsForMcmLocal(subsystemId, reads));
+  res.json(await readTypedTagsForMcmLocal(subsystemId, reads));
 });
 
 app.post('/mcm/:subsystemId/tags/hammer-write', (req: Request, res: Response) => {

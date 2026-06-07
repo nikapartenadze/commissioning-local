@@ -294,6 +294,25 @@ const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerRespo
         // stream the gateway sends, so server-side route logic doesn't lag the
         // live UI between gateway /state polls.
         if (PLC_REMOTE) applyBroadcastToCache(message);
+        // Split deployment, SAFETY-CRITICAL: the gateway cannot run the VFD
+        // validation writer (it is DB-free; the writer needs L2 truth from
+        // SQLite), so on a per-MCM PLC (re)connect — typically a program
+        // download that zeroed Valid_*/polarity bits — it broadcasts
+        // McmReconnected over this seam and the APP runs the restore here,
+        // writing back through the gateway's typed-batch endpoints. Without
+        // this intercept, split-mode drives would silently lose their
+        // polarity write-back (the CDW5 class).
+        if (PLC_REMOTE && message?.type === 'McmReconnected' && message.subsystemId) {
+          setTimeout(async () => {
+            try {
+              const { syncValidationFlags, clearKnownMissingTags } = await import('@/lib/vfd-validation-writer');
+              clearKnownMissingTags(`MCM ${message.subsystemId} (re)connected via gateway — possible program download`);
+              await syncValidationFlags(`mcm-${message.subsystemId}-reconnect`);
+            } catch (err) {
+              console.warn(`[Broadcast] Remote-mode VFD validation sync failed for MCM ${message.subsystemId}:`, err);
+            }
+          }, 3000); // same settle delay as the embedded hook
+        }
         let sent = 0;
         let filtered = 0;
         plcClients.forEach((ws) => {

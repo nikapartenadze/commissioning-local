@@ -715,11 +715,19 @@ export interface TypedWriteResult { name: string; success: boolean; error?: stri
 export interface TypedReadResult { name: string; success: boolean; value?: number | boolean; error?: string; }
 export interface TypedBatchResult<T> { connected: boolean; results: T[]; }
 
-/** Gateway-side (embedded) batch typed write against an MCM's client. */
-export function writeTypedTagsForMcmLocal(
+/**
+ * Gateway-side (embedded) batch typed write against an MCM's client.
+ *
+ * ASYNC (Phase 1.1): the previous implementation looped the SYNCHRONOUS
+ * writeTypedTag — each tag parks the event loop for up to 5 s on a slow
+ * controller, and in the plc-gateway that loop serves EVERY MCM. Now the
+ * whole batch goes through PlcClient.writeTypedTags (non-blocking initiate +
+ * shared status sweeps); semantics per tag are unchanged.
+ */
+export async function writeTypedTagsForMcmLocal(
   subsystemId: string,
   writes: TypedTagWrite[]
-): TypedBatchResult<TypedWriteResult> {
+): Promise<TypedBatchResult<TypedWriteResult>> {
   const entry = reg().mcms.get(subsystemId);
   if (!entry || !entry.client.isConnected) {
     return {
@@ -727,20 +735,18 @@ export function writeTypedTagsForMcmLocal(
       results: writes.map((w) => ({ name: w.name, success: false, error: `MCM ${subsystemId} not connected` })),
     };
   }
+  const results = await entry.client.writeTypedTags(writes);
   return {
     connected: true,
-    results: writes.map((w) => {
-      const r = entry.client.writeTypedTag(w.name, w.value, w.dataType);
-      return { name: w.name, success: r.success, error: r.error };
-    }),
+    results: results.map((r) => ({ name: r.name, success: r.success, error: r.error })),
   };
 }
 
-/** Gateway-side (embedded) batch typed read against an MCM's client. */
-export function readTypedTagsForMcmLocal(
+/** Gateway-side (embedded) batch typed read against an MCM's client. ASYNC — see writeTypedTagsForMcmLocal. */
+export async function readTypedTagsForMcmLocal(
   subsystemId: string,
   reads: TypedTagRead[]
-): TypedBatchResult<TypedReadResult> {
+): Promise<TypedBatchResult<TypedReadResult>> {
   const entry = reg().mcms.get(subsystemId);
   if (!entry || !entry.client.isConnected) {
     return {
@@ -748,12 +754,10 @@ export function readTypedTagsForMcmLocal(
       results: reads.map((rd) => ({ name: rd.name, success: false, error: `MCM ${subsystemId} not connected` })),
     };
   }
+  const results = await entry.client.readTypedTags(reads);
   return {
     connected: true,
-    results: reads.map((rd) => {
-      const r = entry.client.readTypedTag(rd.name, rd.dataType);
-      return { name: rd.name, success: r.success, value: r.value, error: r.error };
-    }),
+    results: results.map((r) => ({ name: r.name, success: r.success, value: r.value, error: r.error })),
   };
 }
 
@@ -933,7 +937,20 @@ function setupListeners(entry: McmEntry): void {
     // restored by the writer's 5-minute safety net instead of seconds after
     // reconnect. clearKnownMissingTags first: NOT_FOUND verdicts collected
     // mid-download are not durable truth.
+    //
+    // SPLIT DEPLOYMENT (Phase 1.1): inside the plc-gateway process the writer
+    // CANNOT run — it needs SQLite (L2 truth) and the gateway is DB-free, so
+    // the dynamic import below would fail trying to open a database that
+    // doesn't exist there and the restore would silently never happen (the
+    // exact CDW5 polarity-loss class this hook exists to prevent). Instead
+    // the gateway broadcasts an McmReconnected event over the :3102 seam;
+    // the APP intercepts it in its /broadcast handler and runs the writer
+    // there, writing back through the gateway's typed-batch endpoints.
     setTimeout(async () => {
+      if (process.env.PLC_GATEWAY_PROCESS === '1') {
+        void broadcast({ type: 'McmReconnected', subsystemId });
+        return;
+      }
       try {
         const { syncValidationFlags, clearKnownMissingTags } = await import('@/lib/vfd-validation-writer');
         clearKnownMissingTags(`MCM ${subsystemId} (re)connected — possible program download, re-discovering CMD tags`);

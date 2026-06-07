@@ -154,6 +154,13 @@ const MIN_SYNC_INTERVAL_MS = 5_000 // at most once per 5 s
 // the PLC; validation/polarity flags will NOT be restored after a download.
 const WRITER_DISABLED = process.env.VFD_VALIDATION_DISABLED === '1'
 
+// Split deployment (Phase 1.1): in PLC_MODE=remote the libplctag FFI lives in
+// the plc-gateway process — the writer (which needs SQLite/L2 truth and so
+// runs in the APP) converges flags through the gateway's typed-batch
+// endpoints instead of direct FFI. Same read-compare-write semantics; the
+// gateway executes the actual CIP traffic with its own non-blocking sweeps.
+const PLC_REMOTE = process.env.PLC_MODE === 'remote'
+
 // Safety-net cadence. 5 min default: the only scenario it exists for is a
 // program download that never drops the CIP session (rare); everything common
 // (power loss, controller restart, normal download) is handled IMMEDIATELY by
@@ -580,6 +587,94 @@ export async function batchWriteFlags(
   return { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected }
 }
 
+/**
+ * One convergence pass for a REMOTE (gateway-owned) MCM: read every earned
+ * flag through the gateway's typed-batch endpoint, compare against L2 truth,
+ * write back ONLY the mismatches. Mirrors batchWriteFlags' semantics and
+ * counters; the gateway executes the CIP traffic with its own non-blocking
+ * sweeps, so neither the app's nor the gateway's event loop parks.
+ *
+ * Differences from the embedded pass (documented, deliberate):
+ *  - No ConnectionFaulted pre-skip: the app has no per-device fault cache for
+ *    remote MCMs. A faulted device's reads simply fail in the batch result
+ *    and are counted; the next trigger retries. The gateway's batch sweep
+ *    bounds the cost (one timeout window for the whole batch, not per tag).
+ *  - "Tag not in the program" verdicts are detected from the result error
+ *    text and cached in the same knownMissingTags set (keyed by PLC ip).
+ */
+async function runRemoteTargetPass(
+  subsystemId: string,
+  ip: string,
+  devices: ValidatedDevice[],
+): Promise<BatchResult> {
+  const { readTypedTagsForMcm, writeTypedTagsForMcm } = await import('@/lib/mcm-registry')
+
+  let ok = 0
+  let verified = 0
+  let fail = 0
+  let skipped = 0
+
+  const jobs: FlagJob[] = []
+  for (let deviceIdx = 0; deviceIdx < devices.length; deviceIdx++) {
+    for (const { field, value } of devices[deviceIdx].writes) {
+      const tagPath = `CBT_${devices[deviceIdx].deviceName}.CTRL.CMD.${field}`
+      const cacheKey = `${ip}::${tagPath}`
+      if (knownMissingTags.has(cacheKey)) {
+        skipped++
+        continue
+      }
+      jobs.push({ deviceIdx, tagPath, cacheKey, value })
+    }
+  }
+  if (jobs.length === 0) {
+    return { ok, verified, fail, skipped, skippedFaulted: 0, abortedAt: null, disconnected: false }
+  }
+
+  const readBatch = await readTypedTagsForMcm(
+    subsystemId,
+    jobs.map((j) => ({ name: j.tagPath, dataType: 'BOOL' as const })),
+  )
+  if (!readBatch.connected) {
+    return { ok, verified, fail: jobs.length, skipped, skippedFaulted: 0, abortedAt: null, disconnected: true }
+  }
+
+  const writes: Array<{ name: string; value: number; dataType: 'BOOL' }> = []
+  for (let i = 0; i < jobs.length; i++) {
+    const r = readBatch.results[i]
+    if (!r || !r.success) {
+      // Cache ONLY definitive "not in the program" verdicts — transient
+      // failures must retry (same rule as the embedded pass).
+      if (r?.error && /not.?found/i.test(r.error)) {
+        knownMissingTags.add(jobs[i].cacheKey)
+        skipped++
+      } else {
+        fail++
+      }
+      continue
+    }
+    const currentSet = r.value === true || r.value === 1
+    if (currentSet === (jobs[i].value !== 0)) {
+      verified++
+    } else {
+      writes.push({ name: jobs[i].tagPath, value: jobs[i].value, dataType: 'BOOL' })
+    }
+  }
+
+  if (writes.length > 0) {
+    const writeBatch = await writeTypedTagsForMcm(subsystemId, writes)
+    if (!writeBatch.connected) {
+      fail += writes.length
+      return { ok, verified, fail, skipped, skippedFaulted: 0, abortedAt: null, disconnected: true }
+    }
+    for (const w of writeBatch.results) {
+      if (w.success) ok++
+      else fail++
+    }
+  }
+
+  return { ok, verified, fail, skipped, skippedFaulted: 0, abortedAt: null, disconnected: false }
+}
+
 // ── Main sync function ─────────────────────────────────────────────
 
 /**
@@ -629,9 +724,13 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
     // device's flags to a PLC that doesn't own it is at best wasted CIP
     // traffic and at worst a wrong-controller write.
     interface WriteTarget {
+      /** ffi = in-process PlcClient (embedded); remote = via plc-gateway typed batches. */
+      kind: 'ffi' | 'remote'
       label: string
       ip: string
       path: string
+      /** remote targets only — the gateway route key. */
+      subsystemId?: string
       isConnected: () => boolean
       readTagCached: (name: string) => boolean | null
       devices: ValidatedDevice[]
@@ -639,40 +738,67 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
     const targets: WriteTarget[] = []
 
     let singletonTarget: WriteTarget | null = null
-    try {
-      const client = getPlcClient()
-      const { connectionConfig } = getPlcStatus()
-      if (client.isConnected && connectionConfig) {
-        singletonTarget = {
-          label: 'active-plc',
-          ip: connectionConfig.ip,
-          path: connectionConfig.path,
-          isConnected: () => client.isConnected,
-          readTagCached: (name) => client.readTagCached(name),
-          devices: [],
+    if (!PLC_REMOTE) {
+      // The singleton would lazily LOAD libplctag into the app process —
+      // forbidden in the split deployment (the gateway owns the library).
+      try {
+        const client = getPlcClient()
+        const { connectionConfig } = getPlcStatus()
+        if (client.isConnected && connectionConfig) {
+          singletonTarget = {
+            kind: 'ffi',
+            label: 'active-plc',
+            ip: connectionConfig.ip,
+            path: connectionConfig.path,
+            isConnected: () => client.isConnected,
+            readTagCached: (name) => client.readTagCached(name),
+            devices: [],
+          }
+          targets.push(singletonTarget)
         }
-        targets.push(singletonTarget)
-      }
-    } catch { /* singleton not initialized — registry-only deployment */ }
+      } catch { /* singleton not initialized — registry-only deployment */ }
+    }
 
     const mcmTargetById = new Map<string, WriteTarget>()
-    for (const mcm of getConnectedEmbeddedMcms()) {
-      // An MCM pointing at the same controller as the active singleton would
-      // run every job twice — route its devices through the singleton pass.
-      if (singletonTarget && mcm.ip === singletonTarget.ip && mcm.path === singletonTarget.path) {
-        mcmTargetById.set(mcm.subsystemId, singletonTarget)
-        continue
+    if (PLC_REMOTE) {
+      // Split deployment: connected MCMs come from the gateway-state cache;
+      // flag convergence rides the gateway's typed-batch endpoints.
+      const { listMcms } = await import('@/lib/mcm-registry')
+      for (const mcm of listMcms()) {
+        if (!mcm.connected) continue
+        const target: WriteTarget = {
+          kind: 'remote',
+          label: `mcm-${mcm.subsystemId}`,
+          ip: mcm.ip,
+          path: mcm.path,
+          subsystemId: mcm.subsystemId,
+          isConnected: () => true, // batch results carry connectivity per call
+          readTagCached: () => null, // no per-device fault cache app-side; see runRemoteTargetPass
+          devices: [],
+        }
+        mcmTargetById.set(mcm.subsystemId, target)
+        targets.push(target)
       }
-      const target: WriteTarget = {
-        label: `mcm-${mcm.subsystemId}`,
-        ip: mcm.ip,
-        path: mcm.path,
-        isConnected: () => mcm.client.isConnected,
-        readTagCached: (name) => mcm.client.readTagCached(name),
-        devices: [],
+    } else {
+      for (const mcm of getConnectedEmbeddedMcms()) {
+        // An MCM pointing at the same controller as the active singleton would
+        // run every job twice — route its devices through the singleton pass.
+        if (singletonTarget && mcm.ip === singletonTarget.ip && mcm.path === singletonTarget.path) {
+          mcmTargetById.set(mcm.subsystemId, singletonTarget)
+          continue
+        }
+        const target: WriteTarget = {
+          kind: 'ffi',
+          label: `mcm-${mcm.subsystemId}`,
+          ip: mcm.ip,
+          path: mcm.path,
+          isConnected: () => mcm.client.isConnected,
+          readTagCached: (name) => mcm.client.readTagCached(name),
+          devices: [],
+        }
+        mcmTargetById.set(mcm.subsystemId, target)
+        targets.push(target)
       }
-      mcmTargetById.set(mcm.subsystemId, target)
-      targets.push(target)
     }
 
     if (targets.length === 0) {
@@ -728,16 +854,21 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
       // the network-status endpoint and refreshed continuously by the IO
       // reader's main poll loop (~75 ms), so the lookup is O(1) per device
       // and the data is at most a fraction of a second stale.
-      const faultedDevices = buildFaultedDeviceSet(target.readTagCached, target.devices)
-
       const t0 = Date.now()
-      const { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected } = await batchWriteFlags(
-        target.ip,
-        target.path,
-        target.devices,
-        faultedDevices,
-        target.isConnected,
-      )
+      let passResult: BatchResult
+      if (target.kind === 'remote') {
+        passResult = await runRemoteTargetPass(target.subsystemId!, target.ip, target.devices)
+      } else {
+        const faultedDevices = buildFaultedDeviceSet(target.readTagCached, target.devices)
+        passResult = await batchWriteFlags(
+          target.ip,
+          target.path,
+          target.devices,
+          faultedDevices,
+          target.isConnected,
+        )
+      }
+      const { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected } = passResult
       const elapsed = Date.now() - t0
 
       // Single structured log line per target per cycle. Critical for
