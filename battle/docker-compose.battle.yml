@@ -47,6 +47,10 @@ services:
       SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
       # central scenario: clone the subsystem into N MCMs, one plc-sim each
       MCM_COUNT: ${MCM_COUNT:-1}
+      # central-cdw5: MCM_MODE=real + SEED_DB=/seed/database-cdw5.db — the
+      # 19-MCM CDW5 production dump, real subsystems, per-MCM tag files
+      MCM_MODE: ${MCM_MODE:-clone}
+      SEED_DB: ${SEED_DB:-database.db}
       KEEP_DATA: ${KEEP_DATA:-0}
       # Tool↔cloud auth: this key is written into config.json (apiPassword) AND
       # into the cloud-stage project's api_key, so pushes validate.
@@ -243,8 +247,9 @@ services:
       cloud:
         condition: service_started
     restart: always    # SIGKILL chaos relies on this (NSSM-equivalent recovery)
-    mem_limit: 1500m
-    cpus: 2
+    # central-cdw5 raises these (19 concurrent PlcClients / 25k IOs)
+    mem_limit: ${TOOL_MEM:-1500m}
+    cpus: ${TOOL_CPUS:-2}
 
   crew:
     build: ./crew
