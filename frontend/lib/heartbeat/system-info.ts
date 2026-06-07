@@ -142,7 +142,9 @@ function collectPlcStatus(): HeartbeatSystemInfo['plc'] {
 
 function collectPendingSyncCount(): number | undefined {
   try {
-    const io = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs').get() as { count: number }).count
+    // ACTIVE rows only — parked (DeadLettered=1) rows are reported as attention,
+    // not as pending work waiting to sync.
+    const io = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 0').get() as { count: number }).count
     let l2 = 0
     try {
       l2 = (db.prepare('SELECT COUNT(*) as count FROM L2PendingSyncs').get() as { count: number }).count

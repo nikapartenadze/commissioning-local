@@ -153,20 +153,35 @@ export async function POST(req: Request, res: Response) {
     console.log(`[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
-    const pendingIoCount = (getPullStmts().pendingIoCount.get() as { cnt: number }).cnt
+    // Split the IO queue: ACTIVE rows can still sync; PARKED rows (DeadLettered=1)
+    // are writes the cloud permanently rejected — they will NEVER sync, so telling
+    // the user to "sync them first" is impossible. Both still BLOCK this DESTRUCTIVE
+    // pull (it overwrites local; a backup is taken first), but the guidance differs:
+    // sync the active ones, RESOLVE the parked ones.
+    const pendingIoActive = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 0').get() as { cnt: number }).cnt
+    const pendingIoParked = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
     const pendingL2Count = (getPullStmts().pendingL2Count.get() as { cnt: number }).cnt
     const pendingChangeRequestCount = (getPullStmts().pendingChangeRequestCount.get() as { cnt: number }).cnt
-    const totalPendingCount = pendingIoCount + pendingL2Count + pendingChangeRequestCount
+    const totalPendingCount = pendingIoActive + pendingIoParked + pendingL2Count + pendingChangeRequestCount
     if (totalPendingCount > 0) {
-      const blockedQueues = [
-        pendingIoCount > 0 ? `${pendingIoCount} IO test changes` : null,
-        pendingL2Count > 0 ? `${pendingL2Count} L2 cell changes` : null,
-        pendingChangeRequestCount > 0 ? `${pendingChangeRequestCount} change requests` : null,
+      const syncable = [
+        pendingIoActive > 0 ? `${pendingIoActive} IO test change(s)` : null,
+        pendingL2Count > 0 ? `${pendingL2Count} L2 cell change(s)` : null,
+        pendingChangeRequestCount > 0 ? `${pendingChangeRequestCount} change request(s)` : null,
       ].filter(Boolean).join(', ')
+
+      const parts: string[] = []
+      if (syncable) parts.push(`sync ${syncable} first`)
+      if (pendingIoParked > 0) {
+        parts.push(
+          `resolve ${pendingIoParked} flagged row(s) the cloud rejected ` +
+          `(re-pass/fail/clear or accept in the grid — these cannot be synced)`
+        )
+      }
 
       return res.status(409).json({
         success: false,
-        error: `Pull blocked to protect unsynced local data: ${blockedQueues}. Sync them first before pulling from cloud.`
+        error: `Pull blocked to protect unsynced local data: ${parts.join('; ')}.`
       } as CloudPullResponse)
     }
 

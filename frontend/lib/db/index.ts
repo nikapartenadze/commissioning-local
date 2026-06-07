@@ -86,7 +86,11 @@ export function getIoStatusCounts(subsystemId?: number) {
  * Get pending sync count
  */
 export function getPendingSyncCount(): number {
-  return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs').get() as any).count
+  // ACTIVE rows only — parked (DeadLettered=1) rows are permanently-rejected
+  // writes set aside for attention, not pending work. Counting them here would
+  // mislead any caller using this as a "is there work to sync / can we pull" gate
+  // (the B9 pull-gate class). Use the dead-letter count for the attention total.
+  return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 0').get() as any).count
 }
 
 /**
