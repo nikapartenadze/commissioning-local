@@ -88,3 +88,4 @@ frontend/logs-*/
 # PLC program exports (large binaries) + local scratch/debug scripts
 *.L5X
 check-polarity.js
+battle/docker-compose.cdw5-sims.yml

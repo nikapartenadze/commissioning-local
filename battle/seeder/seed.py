@@ -25,7 +25,10 @@ import shutil
 import sqlite3
 import sys
 
-SEED_DB = "/seed/database.db"
+# SEED_DB may be a bare filename or a path; only the basename is honored and
+# it is always resolved inside /seed/. (A Git-Bash host mangles leading-slash
+# env values into C:/Program Files/Git/... — basename defuses that too.)
+SEED_DB = os.path.join("/seed", os.path.basename(os.environ.get("SEED_DB", "database.db").replace("\\", "/")))
 DATA_DB = "/data/database.db"
 CONFIG = "/data/config.json"
 TAGS_OUT = "/gen/tags.txt"
@@ -41,8 +44,18 @@ SUBSYSTEM_ID = os.environ.get("SUBSYSTEM_ID", "38")
 KEEP_DATA = os.environ.get("KEEP_DATA") == "1"
 
 # ── Multi-MCM (central-server scenario) ─────────────────────────────
-# MCM_COUNT>1 clones the base subsystem (SUBSYSTEM_ID) into N-1 additional
-# subsystems so the CENTRAL tool holds N concurrent registry PLC connections.
+# Two ways to get N MCMs:
+#
+# MCM_MODE=real — the seed DB already holds N REAL subsystems (e.g. the CDW5
+# production dump, battle/seed/database-cdw5.db: 19 MCMs / 25k IOs). Every
+# subsystem WITH IOs becomes a registry MCM; sim i serves subsystem i (sorted
+# by id) at MCM_GATEWAY_IPS[i]; per-MCM tag files tags-<sid>.txt are emitted so
+# each sim serves ONLY its own controller's tags (a wrong-PLC read/write fails
+# loudly instead of silently succeeding).
+#
+# MCM_COUNT>1 (clone mode) — clones the base subsystem (SUBSYSTEM_ID) into N-1
+# additional subsystems so the CENTRAL tool holds N concurrent registry PLC
+# connections.
 # Clone k (k=2..N):
 #   subsystem id = base + (k-1)*1000        (38 → 1038, 2038, 3038…)
 #   io id        = io.id + (k-1)*10_000_000 (unique, far above field ids)
@@ -51,15 +64,28 @@ KEEP_DATA = os.environ.get("KEEP_DATA") == "1"
 # config.json gets an `mcms` array (registry connections) and, in multi mode,
 # an EMPTY legacy ip so the singleton boot-autoconnect stays out of the way —
 # everything runs through the mcm-registry, which is exactly what we're testing.
+MCM_MODE = os.environ.get("MCM_MODE", "clone")  # clone | real
 MCM_COUNT = int(os.environ.get("MCM_COUNT", "1"))
 MCM_GATEWAY_IPS = [
     ip.strip() for ip in os.environ.get(
         "MCM_GATEWAY_IPS",
-        "172.28.0.10,172.28.0.11,172.28.0.12,172.28.0.13,172.28.0.14,172.28.0.15",
+        # .10 + one per additional sim, matching the generated compose override
+        ",".join(f"172.28.0.{10 + i}" for i in range(24)),
     ).split(",") if ip.strip()
 ]
 SUBSYSTEM_STRIDE = 1000
 IO_ID_STRIDE = 10_000_000
+
+
+def real_subsystems(db: sqlite3.Connection) -> list[tuple[str, str]]:
+    """MCM_MODE=real: every subsystem that actually has IOs, ordered by id —
+    [(subsystemId, name), …]. Sim i (compose override) serves entry i."""
+    rows = db.execute(
+        """SELECT s.id, s.Name FROM Subsystems s
+           WHERE EXISTS (SELECT 1 FROM Ios i WHERE i.SubsystemId = s.id)
+           ORDER BY s.id"""
+    ).fetchall()
+    return [(str(sid), name or f"Subsystem {sid}") for sid, name in rows]
 
 
 def clone_subsystems(db: sqlite3.Connection) -> list[tuple[str, str]]:
@@ -123,26 +149,31 @@ def main() -> None:
         shutil.copyfile(SEED_DB, DATA_DB)
         print(f"seeder: seeded {DATA_DB} from {SEED_DB} ({os.path.getsize(DATA_DB)} bytes)")
 
-    # ── 1b. multi-MCM cloning (central-server scenario) ────────────
+    # ── 1b. multi-MCM (central-server scenario) ────────────────────
     rw = sqlite3.connect(DATA_DB)
-    mcms = clone_subsystems(rw)
+    if MCM_MODE == "real":
+        mcms = real_subsystems(rw)
+        print(f"seeder: MCM_MODE=real — {len(mcms)} subsystems with IOs in the seed")
+    else:
+        mcms = clone_subsystems(rw)
     rw.close()
+    multi = MCM_MODE == "real" or MCM_COUNT > 1
 
     # ── 2. config.json ─────────────────────────────────────────────
     config = {
         # Multi-MCM: EMPTY legacy ip — the singleton boot-autoconnect must not
         # grab sim-1 with the whole (cross-subsystem) IO table; the registry
         # owns every connection. Single-MCM: legacy behavior unchanged.
-        "ip": GATEWAY_IP if MCM_COUNT <= 1 else "",
+        "ip": GATEWAY_IP if not multi else "",
         "path": PLC_PATH,
         # Phase 0: no cloud — sync paths log-and-skip ("no remote URL" is a
         # known, suppressed log line). Phase 1 points this at cloud-stage.
         "remoteUrl": os.environ.get("REMOTE_URL", ""),
         "apiPassword": os.environ.get("API_PASSWORD", ""),
-        "subsystemId": SUBSYSTEM_ID,
+        "subsystemId": SUBSYSTEM_ID if MCM_MODE != "real" else (mcms[0][0] if mcms else SUBSYSTEM_ID),
         "orderMode": "0",
     }
-    if MCM_COUNT > 1:
+    if multi:
         config["mcms"] = [
             {
                 "subsystemId": sid,
@@ -155,7 +186,7 @@ def main() -> None:
         ]
     with open(CONFIG, "w") as f:
         json.dump(config, f, indent=2)
-    print(f"seeder: wrote {CONFIG} (gateway={GATEWAY_IP}, subsystem={SUBSYSTEM_ID}, mcms={len(config.get('mcms', []))})")
+    print(f"seeder: wrote {CONFIG} (gateway={GATEWAY_IP}, subsystem={config['subsystemId']}, mcms={len(config.get('mcms', []))})")
 
     # ── 3. tag set for plc-sim ─────────────────────────────────────
     db = sqlite3.connect(f"file:{DATA_DB}?mode=ro", uri=True)
@@ -203,6 +234,53 @@ def main() -> None:
 
     if len(tags) < 100:
         sys.exit("seeder: suspiciously few tags — wrong seed DB?")
+
+    # ── 3b. per-MCM tag files (MCM_MODE=real) ──────────────────────
+    # Each sim serves ONLY its subsystem's tags: that controller's IO tags,
+    # its devices' ConnectionFaulted bits, and the CMD validation flags of the
+    # L2 devices whose Mcm matches the subsystem's name. A read or write
+    # routed to the wrong PLC then FAILS (tag-not-found) instead of silently
+    # succeeding against an identical clone — so cross-MCM routing bugs in
+    # the tool show up as hard errors in the soak.
+    if MCM_MODE == "real":
+        name_to_sid = {name.upper(): sid for sid, name in mcms}
+        for sid, sub_name in mcms:
+            per: dict[str, str] = {}
+            for (tag_name,) in cur.execute(
+                "SELECT DISTINCT Name FROM Ios WHERE SubsystemId = ? AND Name IS NOT NULL AND Name <> ''",
+                (int(sid),),
+            ):
+                tag_name = tag_name.strip()
+                if tag_ok(tag_name):
+                    per[tag_name] = "SINT[1]"
+            for (dev,) in cur.execute(
+                "SELECT DISTINCT NetworkDeviceName FROM Ios WHERE SubsystemId = ? "
+                "AND NetworkDeviceName IS NOT NULL AND NetworkDeviceName <> ''",
+                (int(sid),),
+            ):
+                fault = f"{dev.strip()}:I.ConnectionFaulted"
+                if tag_ok(fault):
+                    per.setdefault(fault, "SINT[1]")
+            # VFD CMD flags for the L2 devices this MCM owns (L2Devices.Mcm).
+            for (dev, mcm_name) in cur.execute(
+                """SELECT DISTINCT d.DeviceName, d.Mcm FROM L2Devices d
+                   JOIN L2Sheets s ON s.id = d.SheetId
+                   WHERE UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%'"""
+            ):
+                owner = name_to_sid.get((mcm_name or "").strip().upper())
+                # unmatched ownership → serve on every sim (can't mis-route a
+                # tag the tool can find everywhere)
+                if owner is not None and owner != sid:
+                    continue
+                for field in VFD_CMD_FIELDS:
+                    flag = f"CBT_{dev.strip()}.CTRL.CMD.{field}"
+                    if tag_ok(flag):
+                        per.setdefault(flag, "SINT[1]")
+            out = os.path.join(os.path.dirname(TAGS_OUT), f"tags-{sid}.txt")
+            with open(out, "w") as f:
+                for tag_name, decl in sorted(per.items()):
+                    f.write(f"--tag={tag_name}:{decl}\n")
+            print(f"seeder: wrote {out}: {len(per)} tags ({sub_name})")
 
     # ── 4. cloud-stage seed SQL ────────────────────────────────────
     # The throwaway cloud Postgres must hold the SAME IOs (matching ids) under
