@@ -24,6 +24,7 @@ import {
   plc_tag_get_int32,
   plc_tag_get_bit,
   readTagAsync,
+  readTagsBatchAsync,
 } from './libplctag';
 import { connectionVerdict } from './connection-verdict';
 
@@ -697,6 +698,11 @@ export class TagReaderService extends EventEmitter {
   private async continuousReadLoop(): Promise<void> {
     const signal = this.abortController?.signal;
 
+    // Stagger: multiple readers (central server holds one per MCM) must not
+    // start their cycles in lockstep, or every cycle boundary lands a burst
+    // of N×batch FFI initiations on the same event-loop tick.
+    await this.delay(Math.random() * this.config.pollIntervalMs);
+
     while (this.isReading && !signal?.aborted) {
       const cycleStart = Date.now();
       let successCount = 0;
@@ -704,12 +710,26 @@ export class TagReaderService extends EventEmitter {
 
       try {
         // --- Read grouped words AND individual tags concurrently ---
+        // Both paths use the batched status-sweep (readTagsBatchAsync): one
+        // shared poll timer per batch instead of a setTimeout backoff chain
+        // PER TAG. With 19 concurrent MCM readers the per-tag chains added up
+        // to hundreds of thousands of timers/sec and saturated the event loop
+        // (2026-06-07 central-cdw5 soak: health p50 ~650 ms with idle CPU).
+        // CIP traffic and in-flight read concurrency are unchanged.
         const groupedPromise = (async () => {
           let s = 0, f = 0;
-          for (const word of Array.from(this.groupedWords.values())) {
+          const words = Array.from(this.groupedWords.values());
+          for (let i = 0; i < words.length; i += this.config.batchSize) {
             if (signal?.aborted) break;
-            const ok = await this.readAndProcessGroupedWord(word);
-            if (ok) s += word.bits.size; else f += word.bits.size;
+            const batch = words.slice(i, i + this.config.batchSize);
+            const statuses = await readTagsBatchAsync(
+              batch.map((w) => w.handle),
+              this.config.readTimeoutMs,
+            );
+            for (let j = 0; j < batch.length; j++) {
+              const ok = this.processGroupedWordResult(batch[j], statuses[j]);
+              if (ok) s += batch[j].bits.size; else f += batch[j].bits.size;
+            }
           }
           return { s, f };
         })();
@@ -722,11 +742,12 @@ export class TagReaderService extends EventEmitter {
           for (let i = 0; i < tagArray.length; i += this.config.batchSize) {
             if (signal?.aborted) break;
             const batch = tagArray.slice(i, i + this.config.batchSize);
-            const results = await Promise.allSettled(
-              batch.map((tagState) => this.readAndProcessTag(tagState))
+            const statuses = await readTagsBatchAsync(
+              batch.map((t) => t.handle),
+              this.config.readTimeoutMs,
             );
-            for (const result of results) {
-              if (result.status === 'fulfilled' && result.value) s++; else f++;
+            for (let j = 0; j < batch.length; j++) {
+              if (this.processTagReadResult(batch[j], statuses[j])) s++; else f++;
             }
           }
           return { s, f };
@@ -765,12 +786,12 @@ export class TagReaderService extends EventEmitter {
   }
 
   /**
-   * Read a single tag and process value changes
+   * Process the completed read of a single tag: cache the value and emit a
+   * change event. Synchronous — the read itself already finished (status from
+   * readTagsBatchAsync); this is only bookkeeping + the cheap get_bit.
    */
-  private async readAndProcessTag(tagState: TagState): Promise<boolean> {
+  private processTagReadResult(tagState: TagState, status: number): boolean {
     try {
-      const status = await readTagAsync(tagState.handle, this.config.readTimeoutMs);
-
       if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
         tagState.lastReadStatus = status as PlcTagStatusCode;
         return false;
@@ -803,12 +824,11 @@ export class TagReaderService extends EventEmitter {
   }
 
   /**
-   * Read a grouped parent word and update all child TagState entries.
-   * One PLC read → extract N bits locally, no extra network requests.
+   * Process the completed read of a grouped parent word: extract N bits and
+   * update all child TagState entries. One PLC read covered them all.
    */
-  private async readAndProcessGroupedWord(word: GroupedWord): Promise<boolean> {
+  private processGroupedWordResult(word: GroupedWord, status: number): boolean {
     try {
-      const status = await readTagAsync(word.handle, this.config.readTimeoutMs);
       if (status !== PlcTagStatus.PLCTAG_STATUS_OK) return false;
 
       const now = Date.now();

@@ -939,6 +939,71 @@ export async function readTagAsync(tag: TagHandle, timeoutMs: number = 5000): Pr
 }
 
 /**
+ * Initiate non-blocking reads on a whole BATCH of tags and resolve all of
+ * their final statuses with a SINGLE status-sweep loop.
+ *
+ * Why this exists (2026-06-07 central-server soak, 19 concurrent MCMs):
+ * readTagAsync() runs one waitForStatus() per tag — its own setTimeout
+ * backoff chain and promise machinery PER TAG. One reader polling ~1,300
+ * tags per 75 ms cycle multiplied by 19 registry PlcClients produced
+ * hundreds of thousands of timers/sec; the Node event loop saturated
+ * (health p50 ~650 ms, p99 3.9 s) while CPU sat half-idle. This helper
+ * issues the same plc_tag_read(…, 0) initiations — identical CIP traffic
+ * and in-flight concurrency — but polls ALL still-pending handles from one
+ * shared timer tick, collapsing O(tags) timer chains per batch into O(1).
+ *
+ * Per-tag read latency is unchanged: libplctag completes each read in its
+ * own threads; the sweep notices completions within ≤tick ms (5–25 ms),
+ * the same order as the old per-tag backoff. State-change detection stays
+ * instant — this changes bookkeeping, not CIP behavior.
+ *
+ * @returns one final status per input handle, same order as `tags`.
+ */
+export async function readTagsBatchAsync(tags: TagHandle[], timeoutMs: number = 5000): Promise<number[]> {
+  const statuses: number[] = new Array(tags.length).fill(PlcTagStatus.PLCTAG_ERR_BAD_STATUS);
+  const pending = new Set<number>(); // indices into `tags`
+
+  for (let i = 0; i < tags.length; i++) {
+    try {
+      const st = plc_tag_read(tags[i], 0); // Non-blocking initiate
+      if (isStatusPending(st)) {
+        pending.add(i);
+      } else {
+        statuses[i] = st;
+      }
+    } catch {
+      statuses[i] = PlcTagStatus.PLCTAG_ERR_BAD_STATUS;
+    }
+  }
+
+  const start = Date.now();
+  let tick = 5; // ms — same starting cadence as waitForStatus
+  while (pending.size > 0) {
+    const elapsed = Date.now() - start;
+    if (elapsed > timeoutMs) {
+      for (const i of pending) statuses[i] = PlcTagStatus.PLCTAG_ERR_TIMEOUT;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, tick));
+    tick = Math.min(tick * 1.5, 25); // cap low — one timer serves the whole batch
+    for (const i of Array.from(pending)) {
+      try {
+        const st = plc_tag_status(tags[i]);
+        if (!isStatusPending(st)) {
+          statuses[i] = st;
+          pending.delete(i);
+        }
+      } catch {
+        statuses[i] = PlcTagStatus.PLCTAG_ERR_BAD_STATUS;
+        pending.delete(i);
+      }
+    }
+  }
+
+  return statuses;
+}
+
+/**
  * Write a tag with automatic status waiting
  *
  * @param tag - Tag handle
