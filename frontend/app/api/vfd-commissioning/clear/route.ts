@@ -3,7 +3,7 @@ import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { getPlcClient, getPlcStatus } from '@/lib/plc-client-manager'
-import { hasMcm, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
+import { hasMcm } from '@/lib/mcm-registry'
 import {
   createTag,
   plc_tag_read,
@@ -252,33 +252,49 @@ export async function POST(req: Request, res: Response) {
     const plcWrites: Array<{ field: string; ok: boolean; error?: string }> = []
     let plcAttempted = false
     if (clearPlc) {
-      let conn: { ip: string; path: string; timeoutMs: number } | null = null
       if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
-        const mcm = getEmbeddedMcmConnection(String(subsystemId))
-        // Known MCM but no embedded connection (disconnected, or
-        // PLC_MODE=remote where direct FFI can't run here — Phase 1.1):
-        // skip the PLC pulses rather than hit the wrong controller.
-        if (mcm) conn = { ip: mcm.ip, path: mcm.path, timeoutMs: 5000 }
+        // Registry MCM: pulse through the mode-aware typed batch ops — same
+        // read-set-write semantics as the FFI helpers below, executed
+        // in-process (embedded) or in the plc-gateway (PLC_MODE=remote,
+        // Phase 1.1). One batch carries the three Invalidate pulses AND the
+        // polarity-latch reset (Normal=1, Reverse=0 — rung 13 of
+        // AOI_IOCT_BELT_TRACKING clears the latch only with both).
+        const { writeTypedTagsForMcm } = await import('@/lib/mcm-registry')
+        const base = `CBT_${deviceName}.CTRL.CMD.`
+        const batch: Array<{ name: string; value: number; dataType: 'BOOL'; label: string }> = [
+          { name: `${base}Invalidate_Map`, value: 1, dataType: 'BOOL', label: 'Invalidate_Map' },
+          { name: `${base}Invalidate_HP`, value: 1, dataType: 'BOOL', label: 'Invalidate_HP' },
+          { name: `${base}Invalidate_Direction`, value: 1, dataType: 'BOOL', label: 'Invalidate_Direction' },
+          { name: `${base}Normal_Polarity`, value: 1, dataType: 'BOOL', label: 'Polarity_Reset(Normal=1)' },
+          { name: `${base}Reverse_Polarity`, value: 0, dataType: 'BOOL', label: 'Polarity_Reset(Reverse=0)' },
+        ]
+        const r = await writeTypedTagsForMcm(String(subsystemId), batch.map(({ name, value, dataType }) => ({ name, value, dataType })))
+        if (r.connected) {
+          plcAttempted = true
+          for (let i = 0; i < batch.length; i++) {
+            const w = r.results[i]
+            plcWrites.push({ field: batch[i].label, ok: !!w?.success, error: w?.error })
+          }
+        }
+        // Not connected → best-effort skip: L2 cells are already cleared.
       } else {
         const client = getPlcClient()
         const { connectionConfig } = getPlcStatus()
         if (client.isConnected && connectionConfig) {
-          conn = { ip: connectionConfig.ip, path: connectionConfig.path, timeoutMs: connectionConfig.timeout || 5000 }
+          plcAttempted = true
+          const timeoutMs = connectionConfig.timeout || 5000
+          const fields: Array<'Invalidate_Map' | 'Invalidate_HP' | 'Invalidate_Direction'> = [
+            'Invalidate_Map', 'Invalidate_HP', 'Invalidate_Direction',
+          ]
+          for (const field of fields) {
+            const r = await pulseInvalidate(connectionConfig.ip, connectionConfig.path, deviceName, field, timeoutMs)
+            plcWrites.push({ field, ok: r.ok, error: r.error })
+          }
+          // Reset Reverse_Polarity latch back to default-forward (older AOIs
+          // without these CMD bits will fail with tag-not-found — logged, not fatal).
+          const polarity = await resetPolarityLatch(connectionConfig.ip, connectionConfig.path, deviceName, timeoutMs)
+          plcWrites.push({ field: 'Polarity_Reset', ok: polarity.ok, error: polarity.error })
         }
-      }
-      if (conn) {
-        plcAttempted = true
-        const fields: Array<'Invalidate_Map' | 'Invalidate_HP' | 'Invalidate_Direction'> = [
-          'Invalidate_Map', 'Invalidate_HP', 'Invalidate_Direction',
-        ]
-        for (const field of fields) {
-          const r = await pulseInvalidate(conn.ip, conn.path, deviceName, field, conn.timeoutMs)
-          plcWrites.push({ field, ok: r.ok, error: r.error })
-        }
-        // Reset Reverse_Polarity latch back to default-forward (older AOIs
-        // without these CMD bits will fail with tag-not-found — logged, not fatal).
-        const polarity = await resetPolarityLatch(conn.ip, conn.path, deviceName, conn.timeoutMs)
-        plcWrites.push({ field: 'Polarity_Reset', ok: polarity.ok, error: polarity.error })
       }
     }
 

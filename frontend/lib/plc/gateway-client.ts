@@ -215,6 +215,31 @@ export const gatewayClient = {
       { connected: false, success: false, iterations: 0, writes: [], error: 'plc-gateway unreachable' }
     );
   },
+
+  /** Phase 1.1: open/refresh the gateway-hosted VFD wizard reader for one device. */
+  async wizardOpen(
+    subsystemId: string,
+    deviceName: string
+  ): Promise<{ ok: boolean; tagCount?: number; failedTags?: string[]; error?: string }> {
+    return request<{ ok: boolean; tagCount?: number; failedTags?: string[]; error?: string }>(
+      'POST',
+      `/mcm/${encodeURIComponent(subsystemId)}/wizard/open`,
+      { deviceName },
+      15_000, // first open creates 8 persistent handles
+      { ok: false, error: 'plc-gateway unreachable' }
+    );
+  },
+
+  /** Phase 1.1: close the gateway-hosted VFD wizard reader for one device. */
+  async wizardClose(subsystemId: string, deviceName: string): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(
+      'POST',
+      `/mcm/${encodeURIComponent(subsystemId)}/wizard/close`,
+      { deviceName },
+      DEFAULT_TIMEOUT_MS,
+      { ok: false }
+    );
+  },
 };
 
 export type GatewayClient = typeof gatewayClient;

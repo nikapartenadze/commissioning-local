@@ -1643,7 +1643,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       fetch('/api/vfd-commissioning/wizard-close', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceName: device.deviceName }),
+        body: JSON.stringify({ deviceName: device.deviceName, subsystemId }),
       }).catch(() => { /* ignore */ })
     }
   }, [

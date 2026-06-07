@@ -30,9 +30,16 @@ export async function GET(_req: Request, res: Response) {
         lastActiveNode2: r.lastActiveNode2 ?? null,
       }
     }
-    systemRunning = deriveSystemRunning(mgr.getPlcTags().tags as { name?: string; state?: string }[])
   } catch {
-    /* no PLC stack available — both stay null/unknown */
+    /* legacy singleton stack unavailable — ring stays null */
+  }
+  try {
+    // Mode-aware union (Phase 1.1): registry MCMs (embedded or gateway cache
+    // in PLC_MODE=remote), singleton fallback on tablets.
+    const { getLiveTagsUnion } = require('@/lib/plc-live-tags') as typeof import('@/lib/plc-live-tags')
+    systemRunning = deriveSystemRunning(getLiveTagsUnion())
+  } catch {
+    /* no PLC stack available — stays unknown */
   }
   return res.json({ ring, systemRunning })
 }
