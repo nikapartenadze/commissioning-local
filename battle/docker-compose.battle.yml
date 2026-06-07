@@ -45,6 +45,8 @@ services:
       PYTHONUNBUFFERED: "1"
       GATEWAY_IP: ${GATEWAY_IP:-172.28.0.10}
       SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
+      # central scenario: clone the subsystem into N MCMs, one plc-sim each
+      MCM_COUNT: ${MCM_COUNT:-1}
       KEEP_DATA: ${KEEP_DATA:-0}
       # Tool↔cloud auth: this key is written into config.json (apiPassword) AND
       # into the cloud-stage project's api_key, so pushes validate.
@@ -163,6 +165,55 @@ services:
     mem_limit: 256m
     cpus: 1
 
+  # ── central scenario: extra PLC sims, one per additional MCM ──────────────
+  # All serve the SAME tag set (/gen/tags.txt) — the seeder clones the base
+  # subsystem per MCM with identical tag names, so any sim can serve any clone.
+  # The central tool holds one concurrent registry PlcClient per sim.
+  plc-sim-2:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central"]
+    networks:
+      battle:
+        ipv4_address: 172.28.0.11
+    volumes:
+      - gen:/gen:ro
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  plc-sim-3:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central"]
+    networks:
+      battle:
+        ipv4_address: 172.28.0.12
+    volumes:
+      - gen:/gen:ro
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  plc-sim-4:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central"]
+    networks:
+      battle:
+        ipv4_address: 172.28.0.13
+    volumes:
+      - gen:/gen:ro
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
   tool:
     image: ${TOOL_IMAGE:-battle/tool:local}
     environment:
@@ -220,6 +271,8 @@ services:
     build: ./chaos
     environment:
       PLC_SIM_CONTAINER: battle-plc-sim-1
+      # central scenario: downloads/power-cuts rotate across all sims
+      PLC_SIM_CONTAINERS: ${PLC_SIM_CONTAINERS:-}
       TOOL_CONTAINER: battle-tool-1
       RUN_ID: ${RUN_ID:-dev}
       RUNS_DIR: /runs
@@ -248,7 +301,9 @@ services:
       FLAP_BUDGET: ${FLAP_BUDGET:-0}
       CLOUD_URL: http://cloud:3000
       CLOUD_API_KEY: ${CLOUD_API_KEY:-battle-key-mcm02}
-      SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
+      # central scenario: comma-separated list of every seeded subsystem so the
+      # cloud-side I4 read covers all clones
+      SUBSYSTEM_ID: ${OBS_SUBSYSTEM_IDS:-${SUBSYSTEM_ID:-38}}
     volumes:
       - runs:/runs
       - tool-data:/data:ro
