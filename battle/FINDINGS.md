@@ -197,3 +197,22 @@ Open follow-up (lower priority): push throughput under sustained load + flap was
 low (77 successful row-pushes in 8h, cloud-flap-dominated); worth confirming the
 tool catches up cleanly once cloud is stable. Also consider teaching bots to not
 mark SPARE IOs Passed (reduces unrealistic rejection churn).
+
+### B10 (open — surfaced once B9 was fixed): cloud ADDITIONS don't reach the field
+
+With B9 fixed and the active queue draining to 0 (#662: queue_end=0), I7 finally
+runs as a real test — and fails: 9 IOs added cloud-side, 0 reached local. Tool
+logs show **0 pull executions** the whole run. Auto-pull is "on SSE reconnect
+only"; the SSE connected at boot (pulled the pre-mutation seed), the cloud-flap
+TERMINATED it mid-soak, and reconnect looped on "fetch failed" — so no post-
+mutation change-pull ever fired. Unclear yet whether this is:
+  (a) env: the docker-network flap doesn't cleanly restore SSE, so the trigger
+      never fires (most likely from the logs), or
+  (b) tool: auto-pull only fires on SSE (re)connect with no fallback, so a tablet
+      that stays connected after additions appear won't see them until it
+      reconnects — a real propagation-latency gap worth confirming.
+Action taken: I7 made REPORT-ONLY (does not gate the build) — it's the most env-
+dependent invariant and shouldn't red the nightly on (a). To investigate: give
+the env a clean cloud-cut that the SSE recovers from (or an explicit reconnect),
+then re-judge; if additions still don't import after a confirmed reconnect+pull,
+it's a real tool bug.

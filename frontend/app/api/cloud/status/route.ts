@@ -127,7 +127,9 @@ export async function POST(req: Request, res: Response) {
       error = 'Remote URL not configured'
     }
 
-    const pendingSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }).cnt
+    // ACTIVE rows only — parked (DeadLettered=1) rows are "attention", not
+    // pending work (consistent with the GET handler + toolbar split).
+    const pendingSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 0').get() as { cnt: number }).cnt
 
     return res.json({ connected, pendingSyncCount, error } as CloudSyncStatusResponse)
   } catch (error) {
