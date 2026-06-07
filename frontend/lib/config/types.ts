@@ -171,8 +171,16 @@ export interface PlcConnectRequest {
  * Embedded cloud server URL. Single source of truth — the field tool always
  * talks to this host, regardless of what's stored in config.json. The Remote
  * URL field was removed from the UI to prevent operator misconfiguration.
+ *
+ * CLOUD_URL_OVERRIDE: a deployment-time env override (NOT operator-facing, not
+ * in config.json). Exists for the battle-test environment, which points the
+ * tool at a throwaway cloud-stage so sync is exercised against a real cloud
+ * WITHOUT ever touching production. Field installs never set it, so the
+ * embedded production URL stands. The battle stack ALSO runs the tool on an
+ * internet-less internal docker network, so even a missing override cannot
+ * leak a test write to prod.
  */
-export const EMBEDDED_REMOTE_URL = 'https://commissioning.autstand.com';
+export const EMBEDDED_REMOTE_URL = process.env.CLOUD_URL_OVERRIDE || 'https://commissioning.autstand.com';
 
 /**
  * Default configuration values.

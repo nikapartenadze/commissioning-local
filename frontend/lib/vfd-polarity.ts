@@ -21,12 +21,31 @@ export interface FlagWrite {
 /** Validation CMD flags asserted (=1) for every validated VFD. */
 export const VALIDATION_FLAGS = ['Valid_Map', 'Valid_HP', 'Valid_Direction'] as const
 
-/** Parse the recorded polarity out of a "Polarity" L2 stamp; null when unrecorded. */
+/**
+ * Parse the recorded polarity out of a "Polarity" L2 stamp; null when unrecorded.
+ * Tolerant of every format that has reached field databases:
+ *   - wizard stamp        "AI 5/29 · Inverter"
+ *   - recovery backfill   "ACD 5/29 Inverter" (no middle dot — CDW5 May 2026)
+ *   - "Inverted" wording  (legacy/manual; means the same as Inverter)
+ */
 export function parsePolarity(stamp: string | null | undefined): Polarity | null {
   if (!stamp) return null
-  if (/\bInverter\b/i.test(stamp)) return 'Inverter'
+  if (/\bInvert(?:er|ed)\b/i.test(stamp)) return 'Inverter'
   if (/\bNormal\b/i.test(stamp)) return 'Normal'
   return null
+}
+
+/**
+ * Whether a "Check Direction" L2 cell value counts as a completed direction
+ * check for validation purposes. A literal "fail" must NOT cause the
+ * validation writer to force Valid_Direction=1 — that certified failed
+ * drives as direction-valid on every sync cycle (CDW5, June 2026).
+ */
+export function isDirectionCheckValid(value: string | null | undefined): boolean {
+  if (!value) return false
+  const v = value.trim()
+  if (v === '') return false
+  return v.toLowerCase() !== 'fail'
 }
 
 /**

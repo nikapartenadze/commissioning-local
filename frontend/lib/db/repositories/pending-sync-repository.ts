@@ -62,10 +62,27 @@ export const pendingSyncRepository = {
   },
 
   /**
-   * Get next batch of pending syncs to process
+   * Get next batch of ACTIVE pending syncs to process. Excludes dead-lettered
+   * rows (cloud-rejected / retry-cap-exhausted) — those are parked, not
+   * retried, but kept for the "needs attention" surface.
    */
   getNextBatch(batchSize: number): PendingSync[] {
-    return db.prepare('SELECT * FROM PendingSyncs ORDER BY CreatedAt ASC LIMIT ?').all(batchSize) as PendingSync[]
+    return db.prepare('SELECT * FROM PendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT ?').all(batchSize) as PendingSync[]
+  },
+
+  /**
+   * Park a row that must NOT be retried but must NOT be lost: the cloud
+   * permanently rejected it (e.g. SPARE cannot be Passed) or it exhausted the
+   * retry cap. Keeps the row + reason so the indicator can surface it as
+   * "needs attention" instead of the result silently vanishing (B3/B5/B7).
+   */
+  deadLetter(id: number, reason: string): void {
+    db.prepare('UPDATE PendingSyncs SET DeadLettered = 1, LastError = ? WHERE id = ?').run(reason, id)
+  },
+
+  /** Count of rows parked for attention (cloud-rejected / cap-exhausted). */
+  countDeadLettered(): number {
+    return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 1').get() as any).count
   },
 
   /**
@@ -76,13 +93,28 @@ export const pendingSyncRepository = {
   },
 
   /**
-   * Increment retry count and set last error
+   * Increment retry count and set last error.
+   *
+   * Only call this when the CLOUD gave a verdict on the row (e.g.
+   * updatedCount=0 / version mismatch). For network-level failures use
+   * recordTransientFailure — counting offline timeouts as strikes is what
+   * emptied the queue in the 2026-06-04 TPA8/MCM08 data-loss incident.
    */
   recordFailure(id: number, error: string): PendingSync {
     db.prepare(
       'UPDATE PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
     ).run(error, id)
     return db.prepare('SELECT * FROM PendingSyncs WHERE id = ?').get(id) as PendingSync
+  },
+
+  /**
+   * Record a network-level failure WITHOUT burning a retry-cap strike.
+   * The row is still good — it just couldn't reach the cloud (offline,
+   * timeout, proxy 5xx, auth misconfig). Keeps LastError fresh for
+   * diagnostics.
+   */
+  recordTransientFailure(id: number, error: string): void {
+    db.prepare('UPDATE PendingSyncs SET LastError = ? WHERE id = ?').run(error, id)
   },
 
   /**
@@ -119,10 +151,12 @@ export const pendingSyncRepository = {
   },
 
   /**
-   * Get count of pending syncs
+   * Count of ACTIVE pending syncs (work still to be delivered to cloud).
+   * Excludes dead-lettered rows so the "unsynced" badge reflects retryable
+   * work, while attention rows are surfaced separately (countDeadLettered).
    */
   count(): number {
-    return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs').get() as any).count
+    return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 0').get() as any).count
   },
 
   /**

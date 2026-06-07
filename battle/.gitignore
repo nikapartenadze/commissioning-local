@@ -1,0 +1,6 @@
+# Field database copies — real site data, never in git
+seed/
+# Run artifacts (CSVs, verdicts, journals, logs)
+runs/
+# Downloaded upstream sources kept only for patch reference
+plc-sim/upstream/

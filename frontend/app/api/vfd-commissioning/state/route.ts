@@ -57,6 +57,7 @@ const COMMISSIONING_COLUMNS = [
   'Polarity',
   'Belt Tracked',
   'Speed Set Up',
+  'Bump Blocker',
 ] as const
 
 type CommissioningColumn = typeof COMMISSIONING_COLUMNS[number]
@@ -70,6 +71,7 @@ function columnKey(name: CommissioningColumn): keyof CellSet {
     case 'Polarity':           return 'polarity'
     case 'Belt Tracked':       return 'beltTracked'
     case 'Speed Set Up':       return 'speedSetUp'
+    case 'Bump Blocker':       return 'bumpBlocker'
   }
 }
 
@@ -82,12 +84,16 @@ interface CellSet {
   beltTracked:         string | null
   speedSetUp:          string | null
   controlsVerified:    string | null
+  // Step 3 "Bump didn't work?" blocker. Tolerant of the column not existing on
+  // a sheet yet (LEFT JOIN + IN-list below) — stays null until cloud provisions
+  // the column, exactly like Polarity did before its rollout.
+  bumpBlocker:         string | null
 }
 
 const emptyCells = (): CellSet => ({
   verifyIdentity: null, motorHpField: null, vfdHpField: null,
   checkDirection: null, polarity: null, beltTracked: null, speedSetUp: null,
-  controlsVerified: null,
+  controlsVerified: null, bumpBlocker: null,
 })
 
 // One bulk query: for every L2 device on a VFD/APF sheet, give me each of the
@@ -104,7 +110,7 @@ const stmtAllCells = db.prepare(`
   JOIN L2Sheets   s ON s.id = d.SheetId
   JOIN L2Columns  c ON c.SheetId = d.SheetId
   LEFT JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
-  WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Check Direction', 'Polarity', 'Belt Tracked', 'Speed Set Up')
+  WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Check Direction', 'Polarity', 'Belt Tracked', 'Speed Set Up', 'Bump Blocker')
     AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
 `)
 

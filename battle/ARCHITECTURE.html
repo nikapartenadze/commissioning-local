@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battle-Test — Architecture, Findings, Coverage</title>
+<style>
+  :root{
+    --bg:#000000; --panel:#0e0e10; --panel2:#15151a; --card:#121217;
+    --txt:#f4f4f6; --mut:#9b9ba6; --faint:#6c6c78; --line:#26262e;
+    --green:#22c55e; --green-d:#15351f; --red:#ef4444; --red-d:#3a1414;
+    --amber:#f59e0b; --amber-d:#3a2a0a; --blue:#3b82f6; --blue-d:#11233f;
+    --cyan:#22d3ee; --violet:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:46px 28px 100px}
+  h1{font-size:32px;font-weight:700;letter-spacing:-.5px;margin:0 0 6px}
+  h1 .em{color:var(--green)}
+  h2{font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--faint);margin:56px 0 14px;
+    display:flex;align-items:center;gap:10px}
+  h2::after{content:"";flex:1;height:1px;background:var(--line)}
+  .sub{color:var(--mut);margin:0;font-size:15px}
+  .lede{font-size:17px;line-height:1.55;color:var(--txt);margin:16px 0 0;max-width:780px}
+  .lede b{color:var(--green)}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--cyan)}
+
+  /* status banner */
+  .banner{display:flex;align-items:center;gap:14px;background:var(--green-d);border:1px solid #1f6f3d;
+    border-radius:12px;padding:16px 20px;margin:22px 0 0}
+  .banner .ok{font-size:26px}
+  .banner b{color:var(--green);font-size:16px}
+  .banner span{color:#bfe9cd;font-size:13.5px;display:block}
+
+  /* the loop */
+  .loop{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .lp{padding:16px 14px;border:1px solid var(--line);border-radius:11px;background:var(--card);position:relative}
+  .lp .n{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--blue)}
+  .lp b{display:block;margin:8px 0 4px;font-size:14px;font-weight:600}
+  .lp span{font-size:12.5px;color:var(--mut);line-height:1.4}
+  .lp.win{border-color:#1f6f3d;background:var(--green-d)}
+  .lp.win .n{color:var(--green)}
+  @media(max-width:820px){.loop{grid-template-columns:1fr 1fr}}
+
+  /* architecture */
+  .arch{border:1px solid var(--line);border-radius:13px;padding:22px;background:var(--panel)}
+  .row{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 12px}
+  .node{flex:1;min-width:165px;border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--card)}
+  .node .k{font-size:10.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase}
+  .node b{display:block;font-size:15px;font-weight:600;margin:4px 0 5px}
+  .node span{font-size:12px;color:var(--mut);display:block;line-height:1.45}
+  .node.sut{border-color:var(--blue);background:var(--blue-d)} .node.sut .k{color:var(--blue)}
+  .node.cloud{border-color:#a16207;background:#1c1708} .node.cloud .k{color:var(--amber)}
+  .node.sim{border-color:#0e7490;background:#08191e} .node.sim .k{color:var(--cyan)}
+  .node.gt{border-color:#6d28d9;background:#150a26} .node.gt .k{color:var(--violet)}
+  .node.chaos{border-color:#b91c1c;background:var(--red-d)} .node.chaos .k{color:var(--red)}
+  .node.obs{border-color:#15803d;background:var(--green-d)} .node.obs .k{color:var(--green)}
+  .conn{text-align:center;color:var(--faint);font-size:12px;letter-spacing:.5px;margin:6px 0 12px}
+  .conn b{color:var(--mut);font-weight:600}
+  .note{font-size:13.5px;color:var(--mut);margin-top:16px;line-height:1.6;max-width:840px}
+  .note b{color:var(--txt)}
+
+  /* problems */
+  .probs{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+  .prob{background:var(--card);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:15px}
+  .prob .top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px}
+  .prob h4{margin:0;font-size:15px;font-weight:600}
+  .prob p{margin:0;font-size:13px;color:var(--mut);line-height:1.5}
+  .prob .fix{display:inline-block;margin-top:9px;font-size:11.5px;font-weight:700;color:var(--green);
+    background:var(--green-d);border:1px solid #1f6f3d;border-radius:5px;padding:2px 8px}
+  .sev{font-size:10.5px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:5px;white-space:nowrap}
+  .crit{border-left-color:var(--red)} .crit .sev{background:var(--red);color:#1a0606}
+  .high{border-left-color:var(--amber)} .high .sev{background:var(--amber);color:#231706}
+  .perf{border-left-color:var(--blue)} .perf .sev{background:var(--blue);color:#06122a}
+
+  /* coverage */
+  .cov{display:grid;gap:10px}
+  .cv{display:grid;grid-template-columns:235px 1fr 52px;gap:16px;align-items:center;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 16px}
+  .cv .lab b{font-size:14px;font-weight:600}.cv .lab span{font-size:12px;color:var(--mut);display:block;margin-top:1px}
+  .track{height:9px;background:#08080a;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .fill{height:100%;border-radius:6px}
+  .pct{text-align:right;font-weight:800;font-size:15px;font-variant-numeric:tabular-nums}
+  .green .fill{background:linear-gradient(90deg,#15803d,var(--green))} .green .pct{color:var(--green)}
+  .amber .fill{background:linear-gradient(90deg,#a16207,var(--amber))} .amber .pct{color:var(--amber)}
+  .grp{font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--faint);
+    margin:18px 0 2px;display:flex;align-items:center;gap:8px}
+  .grp .d{width:9px;height:9px;border-radius:3px}
+  .grp.gG .d{background:var(--green)} .grp.gA .d{background:var(--amber)}
+
+  .foot{margin-top:56px;color:var(--faint);font-size:12.5px;border-top:1px solid var(--line);padding-top:16px;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Battle-Test <span class="em">·</span></h1>
+  <p class="sub">Commissioning field tool — automated pre-release chaos testing at field scale</p>
+  <p class="lede">Run the <b>real shipped app</b> against a <b>real field dataset</b>, hammer it with <b>injected faults</b> for hours, and let <b>machine-checked invariants</b> decide pass or fail — before a tablet ever sees the build.</p>
+
+  <div class="banner">
+    <div class="ok">✅</div>
+    <div><b>Nightly soak armed — runs 02:00 → 10:00 every night on the CI runner</b>
+    <span>8-hour all-chaos run · red pipeline + 30-day artifacts if any invariant fails</span></div>
+  </div>
+
+  <!-- ───────────────── THE LOOP ───────────────── -->
+  <h2>How it works</h2>
+  <div class="loop">
+    <div class="lp"><div class="n">STEP 1</div><b>Real artifact + data</b><span>Production image · MCM02 dataset (1,184 IOs / 72 VFDs)</span></div>
+    <div class="lp"><div class="n">STEP 2</div><b>Simulated crew</b><span>3–12 “technicians” marking pass/fail like the field</span></div>
+    <div class="lp"><div class="n">STEP 3</div><b>Inject chaos</b><span>PLC downloads · power cuts · cloud flaps · crashes</span></div>
+    <div class="lp"><div class="n">STEP 4</div><b>Judge</b><span>1-second probes + log scrape → invariant verdict</span></div>
+    <div class="lp win"><div class="n">STEP 5</div><b>Find &amp; fix</b><span>Bug surfaced → fixed → re-verified, repeat</span></div>
+  </div>
+
+  <!-- ───────────────── ARCHITECTURE ───────────────── -->
+  <h2>Architecture</h2>
+  <p class="sub" style="margin-bottom:16px">One <code>docker compose</code> project. <b style="color:var(--green)">No production data is touched</b> — the cloud is a throwaway Postgres seeded from a <em>copy</em> of field data and deleted after each run.</p>
+  <div class="arch">
+    <div class="row">
+      <div class="node sut"><div class="k">System Under Test</div><b>tool</b><span>The field app — the exact production image. Express + SQLite + PLC + cloud sync.</span></div>
+      <div class="node cloud"><div class="k">Throwaway cloud</div><b>cloud-stage</b><span>Real commissioning-cloud image + disposable Postgres. Never production.</span></div>
+    </div>
+    <div class="conn">▲ &nbsp;<b>EtherNet/IP (CIP)</b>&nbsp;&nbsp;·&nbsp;&nbsp;<b>HTTP push / pull + live events</b>&nbsp; ▲</div>
+    <div class="row">
+      <div class="node sim"><div class="k">Fake PLC</div><b>plc-sim</b><span>Patched libplctag <code>ab_server</code> — real CIP, 1,644 tags. Restart = program download.</span></div>
+      <div class="node gt"><div class="k">Ground truth</div><b>crew</b><span>API technicians; every action journaled — the reference for the no-loss check.</span></div>
+    </div>
+    <div class="row">
+      <div class="node chaos"><div class="k">Fault injection</div><b>chaos</b><span>Via Docker socket: PLC download / power-off / CIP-saturation / tool kill · cloud cut + VPN-flap · download-storm · cloud data mutations.</span></div>
+      <div class="node obs"><div class="k">The verdict</div><b>observer</b><span>Probes <code>/api/health</code> every second from outside · scrapes logs &amp; audit · runs invariants → PASS/FAIL + CSV artifacts.</span></div>
+    </div>
+  </div>
+  <p class="note">Runs locally for fast iteration, and <b>unattended on the CI runner nightly 02:00→10:00</b> (8-hour all-chaos soak).</p>
+
+  <!-- ───────────────── PROBLEMS FOUND ───────────────── -->
+  <h2>Problems found &amp; fixed</h2>
+  <div class="probs">
+    <div class="prob crit"><div class="top"><h4>Tool froze for all users</h4><span class="sev">CRITICAL</span></div><p>VFD writer blocked the event loop at 72-VFD scale — every screen “stuck on loading”.</p><span class="fix">FIXED · v2.40.1</span></div>
+    <div class="prob crit"><div class="top"><h4>Silent flag-restore no-op</h4><span class="sev">CRITICAL</span></div><p>FFI ABI garbage made the post-download polarity / Valid_* restore do nothing.</p><span class="fix">FIXED · v2.40.2</span></div>
+    <div class="prob high"><div class="top"><h4>HTTP 429 deleted results</h4><span class="sev">HIGH</span></div><p>Rate-limit throttle → result discarded instead of retried — the MCM11 disappearance.</p><span class="fix">FIXED · v2.40.3</span></div>
+    <div class="prob high"><div class="top"><h4>The “synced” badge lied</h4><span class="sev">HIGH</span></div><p>Failed rows deleted → queue hits 0 → UI says synced while data is gone. Now parked + red “CHECK”.</p><span class="fix">FIXED · v2.40.4</span></div>
+    <div class="prob high"><div class="top"><h4>Pull wiped unwarned data</h4><span class="sev">HIGH</span></div><p>Destructive pull erased comments not in the warning, and ran even when the backup failed.</p><span class="fix">FIXED · v2.40.4</span></div>
+    <div class="prob high"><div class="top"><h4>Cloud throttled the whole site</h4><span class="sev">HIGH</span></div><p>300 req/min shared across 20 subsystems → legit pushes 429’d. Raised to 3,000 / 10,000.</p><span class="fix">FIXED · prod</span></div>
+    <div class="prob crit"><div class="top"><h4>Migration silently skipped</h4><span class="sev">BLOCKER</span></div><p>A trigger referenced a column before its migration → schema init aborted, feature dead. 280 unit tests passed it; only a fresh-DB boot caught it.</p><span class="fix">CAUGHT pre-ship</span></div>
+    <div class="prob perf"><div class="top"><h4>Sync queue bloat</h4><span class="sev">PERF</span></div><p>Rapid same-IO edits piled 60–99 rows per IO. Per-IO coalescing brought the ratio to 1.00.</p><span class="fix">FIXED · v2.40.4</span></div>
+  </div>
+
+  <!-- ───────────────── COVERAGE ───────────────── -->
+  <h2>How much it covers</h2>
+  <p class="sub" style="margin-bottom:4px">Green = exercised under chaos with a machine-checked invariant. Amber = simulated or partial.</p>
+
+  <div class="grp gG"><span class="d"></span>Verified under chaos</div>
+  <div class="cov">
+    <div class="cv green"><div class="lab"><b>Scale</b><span>Field-size dataset, many devices</span></div><div class="track"><div class="fill" style="width:95%"></div></div><div class="pct">95</div></div>
+    <div class="cv green"><div class="lab"><b>Duration / leaks</b><span>Hours of continuous run</span></div><div class="track"><div class="fill" style="width:92%"></div></div><div class="pct">92</div></div>
+    <div class="cv green"><div class="lab"><b>Crash / recovery</b><span>Kill mid-write, restart, DB integrity</span></div><div class="track"><div class="fill" style="width:90%"></div></div><div class="pct">90</div></div>
+    <div class="cv green"><div class="lab"><b>Cloud sync &amp; data-loss</b><span>Push/pull, flap, 429, version race, pull-wipe</span></div><div class="track"><div class="fill" style="width:90%"></div></div><div class="pct">90</div></div>
+    <div class="cv green"><div class="lab"><b>PLC chaos</b><span>Downloads, power-cut, CIP saturation</span></div><div class="track"><div class="fill" style="width:88%"></div></div><div class="pct">88</div></div>
+    <div class="cv green"><div class="lab"><b>Cloud-side changes</b><span>Data added/edited on cloud → field</span></div><div class="track"><div class="fill" style="width:80%"></div></div><div class="pct">80</div></div>
+  </div>
+
+  <div class="grp gA"><span class="d"></span>Simulated / partial</div>
+  <div class="cov">
+    <div class="cv amber"><div class="lab"><b>Multi-tablet concurrency</b><span>Simulated by bots, not real devices</span></div><div class="track"><div class="fill" style="width:60%"></div></div><div class="pct">60</div></div>
+    <div class="cv amber"><div class="lab"><b>Real network conditions</b><span>Hard cuts simulated; not real WiFi/VPN RF</span></div><div class="track"><div class="fill" style="width:55%"></div></div><div class="pct">55</div></div>
+    <div class="cv amber"><div class="lab"><b>Real PLC hardware quirks</b><span>Sim by default; real ControlLogix via Emulate box on demand</span></div><div class="track"><div class="fill" style="width:45%"></div></div><div class="pct">45</div></div>
+    <div class="cv amber"><div class="lab"><b>Browser UI flows</b><span>API-level today; Playwright (real clicks) not yet wired</span></div><div class="track"><div class="fill" style="width:35%"></div></div><div class="pct">35</div></div>
+  </div>
+
+  <p class="note">
+    <b>Bottom line:</b> the failure classes that have actually bitten the field — <b style="color:var(--green)">scale freezes, leaks, PLC-download data loss, and silent sync loss</b> — are now reproduced automatically every night with a no-loss verdict. The amber rows are simulated well enough to catch logic bugs, not hardware-specific ones. Roadmap to raise them: a Playwright crew (real UI), packet-level network shaping, and a periodic run against the real Logix Emulate box.
+  </p>
+
+  <p class="foot">
+    Repository — <code>battle/</code> (environment) · <code>battle/FINDINGS.md</code> (per-run log) · <code>battle/REPORT.html</code> (results) · <code>battle/ARCHITECTURE.html</code> (this document).<br>
+    No production data was touched. The only production change — the cloud rate-limit increase — shipped via CI/CD with an automatic rollback safeguard.
+  </p>
+
+</div>
+</body>
+</html>

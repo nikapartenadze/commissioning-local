@@ -12,7 +12,7 @@ import * as VisuallyHidden from "@radix-ui/react-visually-hidden"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check, Zap, Loader2 } from "lucide-react"
+import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check, Zap, Loader2, AlertTriangle } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { EMBEDDED_REMOTE_URL, type PlcProfile } from "@/lib/config/types"
 
@@ -78,6 +78,10 @@ export function PlcConfigDialog({
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
 
   const [pullStatus, setPullStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
+  // Promise-based pull-loss confirmation modal (replaces the old window.confirm).
+  // `resolve` is called with the user's choice; the awaiting confirmAndForcePull
+  // continues from there.
+  const [pullGuard, setPullGuard] = useState<{ data: any; resolve: (ok: boolean) => void } | null>(null)
   const [plcStatus, setPlcStatus] = useState<{ type: 'success' | 'error' | 'loading' | null; message: string }>({ type: null, message: '' })
   const [excludePatterns, setExcludePatterns] = useState('')
 
@@ -285,6 +289,51 @@ export function PlcConfigDialog({
     }
   }
 
+  // ── Result-loss guard: confirm + force-pull ──────────────────────────
+  // The server refuses a pull (409 requiresForce) when local IOs hold test
+  // results the cloud payload lacks — i.e. field work that never synced
+  // (2026-06-04 TPA8/MCM08 incident: 818 results wiped). Only proceed after
+  // the user explicitly confirms the overwrite.
+  const confirmAndForcePull = async (errorData: any): Promise<boolean> => {
+    const n = errorData.wouldLoseResults ?? 0
+    const c = errorData.wouldLoseComments ?? 0
+    addPullLog(`GUARD: pull would erase ${n} local result(s) + ${c} comment(s) the cloud does not have`)
+    // Show the in-app modal and wait for the user's explicit choice (replaces
+    // the old blocking window.confirm — see pull-guard modal in the JSX).
+    const proceed = await new Promise<boolean>(resolve => setPullGuard({ data: errorData, resolve }))
+    setPullGuard(null)
+    if (!proceed) {
+      addPullLog('Pull cancelled by user — local data kept')
+      setPullStatus({ type: 'error', message: `Pull cancelled — ${n} result(s) + ${c} comment(s) protected` })
+      return false
+    }
+    addPullLog('User confirmed overwrite — retrying pull with force')
+    setPullStatus({ type: 'loading', message: 'Pulling (overwrite confirmed)...' })
+    const forceRes = await authFetch(API_ENDPOINTS.cloudPull, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        remoteUrl: localConfig.remoteUrl || "",
+        apiPassword: localConfig.apiPassword || "",
+        subsystemId: localConfig.subsystemId,
+        force: true,
+      }),
+    })
+    if (forceRes.ok) {
+      const result = await forceRes.json()
+      addPullLog(`Pulled ${result.ioCount} IOs (forced)`)
+      const l2Note = result.l2Pulled > 0 ? `, ${result.l2Pulled} FV devices` : ''
+      setPullStatus({ type: 'success', message: `Pulled ${result.ioCount} IOs${l2Note}` })
+      onCloudPull(localConfig)
+      return true
+    }
+    let msg = `HTTP ${forceRes.status}`
+    try { msg = (await forceRes.json()).error || msg } catch { /* keep status text */ }
+    addPullLog(`Forced pull failed: ${msg}`)
+    setPullStatus({ type: 'error', message: `Pull failed: ${msg}` })
+    return false
+  }
+
   // ── Pull IOs from Cloud ──
   const handlePullIos = async () => {
     if (scoped) return handleScopedPull()
@@ -414,6 +463,15 @@ export function PlcConfigDialog({
         // Pending local queues block pull so cloud cannot overwrite unsynced site data.
         let errorData: any = {}
         try { errorData = await response.json() } catch {}
+
+        // Result-loss guard: local results exist that cloud lacks. Pending
+        // queues may be EMPTY here (that's the whole point of this guard) —
+        // syncing won't help, only an explicit user confirmation can proceed.
+        if (errorData.requiresForce) {
+          await confirmAndForcePull(errorData)
+          return
+        }
+
         const msg = errorData.error || 'Unsynced test results exist'
         addPullLog(`BLOCKED: ${msg}`)
         addPullLog('Attempting to sync pending results first...')
@@ -454,6 +512,17 @@ export function PlcConfigDialog({
               const l2Note = retryResult.l2Pulled > 0 ? `, ${retryResult.l2Pulled} FV devices` : ''
               setPullStatus({ type: 'success', message: `Synced & pulled ${retryResult.ioCount} IOs${l2Note}` })
               onCloudPull(localConfig)
+            } else if (retryRes.status === 409) {
+              // Queue synced but the result-loss guard still refuses: results
+              // exist locally that never made it to a queue (or sync dropped
+              // them). Ask the user before overwriting.
+              let retryErr: any = {}
+              try { retryErr = await retryRes.json() } catch {}
+              if (retryErr.requiresForce) {
+                await confirmAndForcePull(retryErr)
+              } else {
+                setPullStatus({ type: 'error', message: retryErr.error || 'Pull still blocked after sync' })
+              }
             } else {
               setPullStatus({ type: 'error', message: 'Pull failed after sync' })
             }
@@ -762,6 +831,7 @@ export function PlcConfigDialog({
           : 'disconnected'
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => {
       if (!busy) {
         if (!v && pendingConnectConfigRef.current) {
@@ -1095,5 +1165,48 @@ export function PlcConfigDialog({
         </div>
       </DialogContent>
     </Dialog>
+
+    {/* Pull-loss confirmation modal — replaces the old window.confirm. Shown
+        when the server refuses a destructive pull because local results/comments
+        the cloud lacks would be erased. */}
+    <Dialog open={pullGuard !== null} onOpenChange={(v) => { if (!v && pullGuard) { pullGuard.resolve(false) } }}>
+      <DialogContent className="max-w-lg border-2 border-red-500">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-red-600">
+            <AlertTriangle className="w-5 h-5" />
+            Pull would erase unsynced local work
+          </DialogTitle>
+          <DialogDescription className="text-foreground/80">
+            {(() => {
+              const d = pullGuard?.data ?? {}
+              const n = d.wouldLoseResults ?? 0
+              const c = d.wouldLoseComments ?? 0
+              const parts = [n > 0 ? `${n} test result${n === 1 ? '' : 's'}` : null, c > 0 ? `${c} comment${c === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')
+              return `${parts} exist on this machine that the cloud does NOT have — usually field work that never synced (bad internet). Pulling now will ERASE them from the grid.`
+            })()}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-48 overflow-auto rounded border border-border bg-muted/40 p-2 text-xs font-mono">
+          {((pullGuard?.data?.atRiskSample) || []).slice(0, 8).map((s: any) => (
+            <div key={`r-${s.id}`}>• {s.name}: <span className="text-red-600 font-semibold">{s.result}</span></div>
+          ))}
+          {((pullGuard?.data?.atRiskCommentSample) || []).slice(0, 6).map((s: any) => (
+            <div key={`c-${s.id}`}>• {s.name}: <span className="text-amber-600">comment</span></div>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          A backup is taken automatically regardless. Keeping your local data is recommended — it will sync to the cloud when internet returns.
+        </p>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => pullGuard?.resolve(false)}>
+            Keep local data (recommended)
+          </Button>
+          <Button variant="destructive" onClick={() => pullGuard?.resolve(true)}>
+            Overwrite with cloud
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }

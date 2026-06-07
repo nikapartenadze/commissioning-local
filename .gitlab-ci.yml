@@ -1,0 +1,113 @@
+# ============================================================================
+# commissioning-local CI — battle-test pipelines.
+#
+# This repo's primary remote is GitHub (releases live there); GitLab hosts it
+# for CI on the shared tracker-ci-dind runner. Push to BOTH remotes.
+#
+# Pipelines:
+#   - nightly schedule (00:30): full battle soak, scenario rotated by weekday
+#     (see battle/ci/run_scenario.sh). 6 h so the runner is free before
+#     work-hours builds (it is SHARED with installation-tracker and
+#     commissioning-cloud deploys).
+#   - manual "battle-smoke": 15 min storm run — release gate; run it on the
+#     release commit before cutting a GitHub release.
+#
+# The seed DB (real field data, git-ignored) comes from the project's generic
+# package registry: battle-seed/1/database.db. Refresh it with:
+#   curl --header "PRIVATE-TOKEN: <tok>" --upload-file battle/seed/database.db \
+#     https://gitlab.lci.ge/api/v4/projects/<id>/packages/generic/battle-seed/1/database.db
+# ============================================================================
+
+stages: [prebuild, battle]
+
+# ── refresh-cloud-image ──────────────────────────────────────────────────────
+# Copies the current prod commissioning-cloud image into THIS project's
+# registry as cloud:latest so the nightly pulls a known tag. Light enough for
+# the disk-constrained ci-runner (pull + retag + push, no build).
+#
+# The heavy `tool` and `plc-sim` images CANNOT be built on this runner — its
+# DinD storage is too small (pipeline 622/624 failed on /var/cache/apt). They
+# are pushed from a machine with disk via `battle/ci/build_and_push.sh`
+# (a dev box or dh1). The nightly only PULLS, so it doesn't hit the limit.
+refresh-cloud-image:
+  stage: prebuild
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    # Bump to a newer commissioning-cloud SHA to refresh cloud-stage.
+    CLOUD_SRC: registry.gitlab.lci.ge/commissioning/commissioning-cloud:c3e44ea1f11f866585cd2f4387d0833a80dbde60
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$RUN_PREBUILD == "1"'        # API/scheduled trigger with this var
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+      allow_failure: true
+  timeout: 30m
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - docker pull "$CLOUD_SRC"
+    - docker tag "$CLOUD_SRC" "$CI_REGISTRY_IMAGE/cloud:latest"
+    - docker push "$CI_REGISTRY_IMAGE/cloud:latest"
+
+.battle-base:
+  stage: battle
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    # Pull the heavy pre-built images (staged by the prebuild-images job into
+    # THIS project's GitLab registry) instead of building them on the disk-
+    # constrained ci-runner — that's what blew up pipeline 622.
+    BATTLE_PULL: "1"
+    TOOL_IMAGE: $CI_REGISTRY_IMAGE/tool:latest
+    CLOUD_IMAGE: $CI_REGISTRY_IMAGE/cloud:latest
+    PLC_SIM_IMAGE: $CI_REGISTRY_IMAGE/plc-sim:latest
+  # tracker-ci-dind (runner 10) is untagged + project-scoped — it must be
+  # enabled for this project (done via API at setup; see battle/README.md).
+  before_script:
+    - docker info >/dev/null
+    - apk add --no-cache curl
+    # Pull the staged battle images from this project's private registry.
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    # Seed DB (git-ignored field data) from the generic package registry.
+    - mkdir -p battle/seed
+    - >
+      curl --fail --silent --show-error
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --output battle/seed/database.db
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/battle-seed/1/database.db"
+    - test -s battle/seed/database.db
+  artifacts:
+    when: always
+    paths:
+      - battle-artifacts/
+    expire_in: 30 days
+
+nightly-battle:
+  extends: .battle-base
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  # 8 h soak (02:00→10:00) + /calm settle + verdict + artifact export needs
+  # headroom beyond the soak itself. Project build_timeout is 9 h.
+  timeout: 9h
+  script:
+    - sh battle/ci/run_scenario.sh
+
+battle-smoke:
+  extends: .battle-base
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$RUN_SMOKE == "1"'          # API/manual trigger with this var
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+      allow_failure: true
+  timeout: 90m
+  variables:
+    SCENARIO: s2
+    SOAK_MINUTES: "15"
+  script:
+    - sh battle/ci/run_scenario.sh

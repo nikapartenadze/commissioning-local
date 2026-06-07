@@ -27,6 +27,13 @@ import {
   BatchSyncResult,
 } from './types'
 import { configService } from '@/lib/config'
+import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
+import {
+  listDeviceBlockerSyncs,
+  deleteDeviceBlockerSync,
+  recordDeviceBlockerSyncFailure,
+  recordDeviceBlockerSyncTransientFailure,
+} from '@/lib/db/repositories/device-blocker-sync-repository'
 
 /**
  * Outcome of attempting to push a single IO update to cloud.
@@ -38,6 +45,14 @@ export interface SyncIoResult {
   ok: boolean
   /** True when retrying with the same payload will fail the same way. Caller MUST delete the PendingSync row. */
   permanent?: boolean
+  /**
+   * True when the failure is network-level / environmental (offline, fetch
+   * threw, 401 auth misconfig, 5xx) — the cloud never gave a verdict on the
+   * payload. Caller must NOT count it toward the PendingSync retry cap;
+   * burning the cap on network failures is what emptied the queue and
+   * enabled the 2026-06-04 TPA8/MCM08 pull-wipe data loss.
+   */
+  network?: boolean
   /** Human-readable reason for the failure / rejection. */
   reason?: string
 }
@@ -378,7 +393,7 @@ export class CloudSyncService {
     ) {
       await this.addToOfflineQueue(update)
       log.debug(`Queued IO ${update.id} for offline sync (connection unavailable)`)
-      return { ok: false, reason: 'offline' }
+      return { ok: false, network: true, reason: 'offline' }
     }
 
     // Try real-time sync
@@ -500,7 +515,7 @@ export class CloudSyncService {
       Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
     ) {
       log.debug(`Skipping sync for IO ${update.id} - offline`)
-      return { ok: false, reason: 'offline' }
+      return { ok: false, network: true, reason: 'offline' }
     }
 
     // Try HTTP sync
@@ -508,7 +523,7 @@ export class CloudSyncService {
       const { remoteUrl } = await this.getCloudConfig()
       if (!remoteUrl) {
         log.warn('Cloud URL not configured')
-        return { ok: false, reason: 'no remote URL' }
+        return { ok: false, network: true, reason: 'no remote URL' }
       }
 
       const headers = new Headers({ 'Content-Type': 'application/json' })
@@ -528,7 +543,9 @@ export class CloudSyncService {
 
       if (response.status === 401) {
         log.error('Authentication failed for IO sync')
-        return { ok: false, reason: 'HTTP 401 auth failed' }
+        // Config problem on the tool, not a cloud verdict on the row — must
+        // not burn the retry cap, or a wrong API password deletes the queue.
+        return { ok: false, network: true, reason: 'HTTP 401 auth failed' }
       }
 
       if (response.ok) {
@@ -582,15 +599,23 @@ export class CloudSyncService {
         `tester=${JSON.stringify(update.testedBy)}, state=${JSON.stringify(update.state)}, ts=${update.timestamp}`,
       )
       this.setConnectionState('error', 'Sync failed')
-      // 4xx (other than 401) means the request was malformed — retrying won't
-      // help. 5xx is transient. Treat 4xx as permanent so the row is dropped.
-      const permanent = response.status >= 400 && response.status < 500
-      return { ok: false, permanent, reason: `HTTP ${response.status}` }
+      // 4xx (other than 401/429) means the request was malformed — retrying
+      // won't help. 401 (auth), 429 (rate limit) and 5xx (cloud/proxy down)
+      // are transient and must NOT burn the retry cap: the row is fine, the
+      // infrastructure is not. 429 specifically is bug B1 from the MCM11
+      // incident — it was being deleted on first throttle (silent loss).
+      // `permanent` MUST exclude 429 because the caller checks permanent
+      // BEFORE network and deletes the row on permanent=true.
+      const network = isNetworkLevelFailure({ httpStatus: response.status })
+      const permanent = response.status >= 400 && response.status < 500 && !network
+      return { ok: false, permanent, network, reason: `HTTP ${response.status}` }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       log.debug(`HTTP sync failed for IO ${update.id}: ${errorMessage}`)
       this.setConnectionState('error', 'Sync failed')
-      return { ok: false, reason: errorMessage }
+      // fetch threw — DNS / connect timeout / aborted. The payload never
+      // reached the cloud app, so this must not count toward the retry cap.
+      return { ok: false, network: true, reason: errorMessage }
     }
   }
 
@@ -892,6 +917,135 @@ export class CloudSyncService {
 
     return result
   }
+
+  // ===========================================================================
+  // Device-level Blocker Sync (VFD bump-test failures)
+  // ===========================================================================
+
+  /**
+   * Drain the DeviceBlockerPendingSyncs queue oldest-first, POSTing each row to
+   * the cloud's /api/sync/device-blocker endpoint.
+   *
+   * Same retry-cap philosophy as the IO / L2 push (see auto-sync.ts and
+   * sync-failure-classification.ts): a 2xx with a useful body deletes the row;
+   * a cloud verdict (non-401 4xx, or 2xx with ok:false) burns a retry strike;
+   * a network-level failure (fetch threw, no remote URL, 401, 5xx) keeps the
+   * row alive WITHOUT a strike and stops the batch — every later row would
+   * fail the same way and each attempt costs a timeout. The downstream
+   * RETRY_CAP drop in auto-sync only ever fires on genuine cloud rejections.
+   *
+   * An unresolvable device on the cloud side returns 200 { ok:true,
+   * deviceId:null } per the contract, so it is treated as success and removed
+   * (it must NOT poison the queue).
+   */
+  async pushDeviceBlockerSyncs(): Promise<number> {
+    const rows = listDeviceBlockerSyncs(50)
+    if (rows.length === 0) return 0
+
+    const { remoteUrl } = await this.getCloudConfig()
+    if (!remoteUrl) {
+      // No remote configured — network-level, no strikes. Leave the rows.
+      log.debug('Device blocker push skipped — no remote URL configured')
+      return 0
+    }
+
+    log.info(`Pushing ${rows.length} device blocker sync row(s) to cloud...`)
+
+    let synced = 0
+    for (const row of rows) {
+      try {
+        const headers = new Headers({ 'Content-Type': 'application/json' })
+        await this.addApiKeyHeader(headers)
+
+        // Body = the queue row, per the Task 5 cloud-endpoint contract.
+        const body = {
+          subsystemId: row.subsystemId,
+          deviceName: row.deviceName,
+          op: row.op,
+          blockerResponsibleParty: row.blockerResponsibleParty ?? undefined,
+          blockerDescription: row.blockerDescription ?? undefined,
+          expectedParty: row.expectedParty ?? undefined,
+          expectedDescription: row.expectedDescription ?? undefined,
+          updatedBy: row.updatedBy ?? undefined,
+          timestamp: row.timestamp ?? new Date().toISOString(),
+        }
+
+        const response = await this.fetchWithTimeout(
+          `${remoteUrl}/api/sync/device-blocker`,
+          { method: 'POST', headers, body: JSON.stringify(body) },
+          15000,
+        )
+
+        if (response.status === 401) {
+          // Auth/config problem on the tool, not a verdict on the row — must
+          // not burn the retry cap (TPA8/MCM08 2026-06-04 lesson). Stop here.
+          log.error('Device blocker push: HTTP 401 auth failed — deferring queue, no strikes burned')
+          recordDeviceBlockerSyncTransientFailure(row.id, 'HTTP 401 auth failed')
+          break
+        }
+
+        if (response.ok) {
+          // The cloud always 200s even for an unresolvable device
+          // (deviceId:null) so it never poisons the queue — treat any 2xx
+          // with ok!==false as done.
+          let data: { ok?: boolean; deviceId?: number | null; cleared?: boolean; reason?: string } | null = null
+          try {
+            data = await response.json()
+          } catch {
+            data = null
+          }
+
+          if (data && data.ok === false) {
+            // Explicit cloud rejection — burns a strike (retry cap will drop it).
+            log.warn(
+              `[CloudSync] Device blocker row ${row.id} rejected by cloud: ${data.reason ?? 'unknown'} ` +
+              `(device=${row.deviceName}, op=${row.op})`,
+            )
+            recordDeviceBlockerSyncFailure(row.id, `cloud-rejected: ${data.reason ?? 'unknown'}`)
+            continue
+          }
+
+          deleteDeviceBlockerSync(row.id)
+          synced++
+          if (data?.deviceId == null) {
+            log.warn(
+              `[CloudSync] Device blocker row ${row.id} accepted but device unresolved on cloud ` +
+              `(device=${row.deviceName}, subsystem=${row.subsystemId}, reason=${data?.reason ?? 'device-not-found'}). ` +
+              `Row removed — Devices.Blocker* not written. Verify the device name matches a Devices row.`,
+            )
+          }
+          this.setConnectionState('connected')
+          continue
+        }
+
+        // Non-2xx, non-401.
+        if (isNetworkLevelFailure({ httpStatus: response.status })) {
+          // 5xx — cloud/proxy down. Keep the row, no strike, stop the batch.
+          log.warn(`Device blocker push: HTTP ${response.status} (network-level) — deferring queue, no strikes burned`)
+          recordDeviceBlockerSyncTransientFailure(row.id, `HTTP ${response.status} (network-level)`)
+          break
+        }
+
+        // 4xx (other than 401): malformed/validation — retrying won't help.
+        // Burn a strike so the retry cap eventually drops it.
+        log.warn(`[CloudSync] Device blocker row ${row.id} got HTTP ${response.status} — counting a strike`)
+        recordDeviceBlockerSyncFailure(row.id, `HTTP ${response.status}`)
+      } catch (error) {
+        // fetch threw (DNS / connect timeout / aborted) — never reached the
+        // cloud, so no strike. Stop the batch.
+        const msg = error instanceof Error ? error.message : String(error)
+        log.debug(`Device blocker push failed for row ${row.id}: ${msg} — deferring queue, no strikes burned`)
+        recordDeviceBlockerSyncTransientFailure(row.id, msg)
+        this.setConnectionState('error', 'Device blocker sync failed')
+        break
+      }
+    }
+
+    if (synced > 0) {
+      log.info(`Pushed ${synced} device blocker sync row(s) to cloud`)
+    }
+    return synced
+  }
 }
 
 // =============================================================================
@@ -913,4 +1067,32 @@ export function getCloudSyncService(config?: Partial<CloudSyncConfig>): CloudSyn
 
 export function resetCloudSyncService(): void {
   cloudSyncServiceInstance = null
+}
+
+// =============================================================================
+// Device-level Blocker Push Trigger
+// =============================================================================
+
+/**
+ * Debounced instant push of the DeviceBlockerPendingSyncs queue. Fired by the
+ * local /api/vfd-commissioning/bump-blocker route right after it enqueues a
+ * row, so a blocker set/clear reaches the cloud in ~1 s instead of waiting for
+ * the 10 s background cycle. Debounced so a burst of rapid edits collapses
+ * into a single drain. Best-effort — failures are swallowed; the background
+ * loop (pushDeviceBlockerSyncs in the AutoSync tick) retries anything left.
+ */
+let deviceBlockerPushTimer: NodeJS.Timeout | null = null
+
+export function triggerDeviceBlockerPush(debounceMs = 500): void {
+  if (deviceBlockerPushTimer) clearTimeout(deviceBlockerPushTimer)
+  deviceBlockerPushTimer = setTimeout(() => {
+    deviceBlockerPushTimer = null
+    void getCloudSyncService()
+      .pushDeviceBlockerSyncs()
+      .catch(err =>
+        log.debug(`triggerDeviceBlockerPush drain failed: ${err instanceof Error ? err.message : String(err)}`),
+      )
+  }, debounceMs)
+  // Don't keep the event loop alive for a best-effort push.
+  if (typeof deviceBlockerPushTimer.unref === 'function') deviceBlockerPushTimer.unref()
 }

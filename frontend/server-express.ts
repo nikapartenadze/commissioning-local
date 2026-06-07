@@ -31,6 +31,7 @@ import { getAppVersion } from '@/lib/app-version';
 import { startRemotePolling, applyBroadcastToCache } from '@/lib/plc/remote-cache';
 import { appendDailyLog } from '@/lib/logging/file-log';
 import { auditLog } from '@/lib/logging/recovery-log';
+import { reportError, reportFatal } from '@/lib/glitchtip';
 
 // Split deployment: when PLC connections live in a separate plc-gateway process
 // (CENTRAL-SERVER-DEPLOYMENT.md §4, Phase 1) the app polls the gateway to back
@@ -471,6 +472,17 @@ app.use((req, res, next) => {
 // Mount all API routes
 app.use(createApiRouter());
 
+// Global API error handler — log locally + report to GlitchTip, return JSON.
+// (asyncHandler in routes/index.ts forwards rejected promises here.)
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const msg = `[API] ${req.method} ${req.path} failed: ${err?.message || err}`;
+  console.error(msg);
+  appendLog(ERROR_FILE, `${logTimestamp()} [ERROR] ${msg}\n${err?.stack || ''}`);
+  reportError(err, { method: req.method, path: req.path });
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 // Serve static files from Vite build output
 const distPath = path.join(__dirname, 'dist');
 app.use(express.static(distPath));
@@ -734,8 +746,8 @@ process.on('uncaughtException', (err: Error) => {
   appendLog(LOG_FILE, `${ts} ${msg}`);
   // Also print to raw stderr so it shows in the terminal
   process.stderr.write(`\n${ts} ${msg}\n`);
-  // Exit with error code — the process is in an unknown state
-  process.exit(1);
+  // Best-effort crash report (≤1.5s), then exit — the process is in an unknown state
+  reportFatal(err, { source: 'uncaughtException' }).finally(() => process.exit(1));
 });
 
 process.on('unhandledRejection', (reason: unknown) => {
@@ -747,8 +759,8 @@ process.on('unhandledRejection', (reason: unknown) => {
   appendLog(ERROR_FILE, `${ts} ${msg}`);
   appendLog(LOG_FILE, `${ts} ${msg}`);
   process.stderr.write(`\n${ts} ${msg}\n`);
-  // Exit — unhandled rejections are crashes since Node 15+
-  process.exit(1);
+  // Best-effort crash report (≤1.5s), then exit — unhandled rejections are crashes since Node 15+
+  reportFatal(reason, { source: 'unhandledRejection' }).finally(() => process.exit(1));
 });
 
 // Log memory usage periodically to detect leaks leading to crashes

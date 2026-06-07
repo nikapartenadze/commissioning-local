@@ -955,6 +955,38 @@ export async function writeTagAsync(tag: TagHandle, timeoutMs: number = 5000): P
   return waitForStatus(tag, timeoutMs);
 }
 
+/**
+ * Create a tag without blocking the event loop.
+ *
+ * `plc_tag_create(attrib, 0)` returns a handle immediately with status
+ * PENDING; the CIP session/handshake completes in libplctag's own threads
+ * while we poll via waitForStatus. Contrast with createTag(), whose
+ * synchronous timeout parks the WHOLE Node event loop for the round-trip
+ * (the VFD validation writer doing 338 of those every 10 s was the
+ * 2026-06-05 MCM02 "tool frozen, all API calls take 10 s" incident).
+ *
+ * Returns the handle and the FINAL status. On any non-OK status the caller
+ * MUST still plc_tag_destroy() a non-negative handle — unlike the sync
+ * create, a failed async create usually has a live handle to clean up.
+ * A negative handle means creation failed before a handle existed; the
+ * handle value itself is then the error code.
+ */
+export async function createTagAsync(
+  config: PlcTagConfig,
+  timeoutMs: number = 5000,
+): Promise<{ handle: TagHandle; status: number }> {
+  const attribStr = buildAttributeString(config);
+  const handle = plc_tag_create(attribStr, 0); // Non-blocking
+
+  if (handle < 0) {
+    // Immediate failure — error code returned in place of a handle.
+    return { handle, status: handle };
+  }
+
+  const status = await waitForStatus(handle, timeoutMs);
+  return { handle, status };
+}
+
 // ============================================================================
 // Re-exports from types
 // ============================================================================
