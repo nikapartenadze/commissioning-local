@@ -163,3 +163,37 @@ Bottom line: **the v2.40.3 tool survived 7.5 h of simultaneous PLC + cloud
 chaos at field scale with zero data loss, zero crashes, no leak, and a flat
 fast event loop.** The two env-tuning issues found (F2 hot-set bloat, F3 seed
 asymmetry) are fixed for future runs.
+
+---
+
+## Nightly 2026-06-07 (run #657, `all` scenario, 8h) — findings
+
+The first real 8-hour nightly. 4 invariants strong (I1 p95 150ms / 0 stalls,
+I2 2.8 MB/h, I5 1 start / 14 flaps, **I3 13/13 PLC-download restores**). But it
+surfaced one harness flaw and one **real tool bug**:
+
+- **F4 (harness): I4 was VACUOUS.** Over 8h, 85,278 random writes hit all 1,184
+  IOs, so every IO became multi-writer → the observer's collision-exclusion
+  dropped all of them → `soak_writes=0`, I4 checked nothing (a meaningless
+  green). **Fix:** partition IO ownership per bot (`io.id % BOTS`), so every IO
+  is single-writer and I4 verifies the full set even over hours. (`crew/bot.mjs`)
+
+- **B9 (REAL TOOL BUG): parked rows block cloud auto-pull forever.** The auto-
+  pull gate (`pullFromCloud`) counted `COUNT(*) FROM PendingSyncs` — ALL rows.
+  v2.40.4 PARKS permanently-rejected rows (DeadLettered=1) instead of deleting,
+  so one SPARE-Passed mistake leaves a parked row forever → the gate is never
+  clear → the tablet STOPS pulling cloud changes entirely (coordinator/other-
+  tablet/installation-tracker edits invisible). A v2.40.4 regression: park-not-
+  delete fixed silent loss (B3/B5/B7) but broke propagation. **This is exactly
+  the I7 "queue never drained" symptom** — the 14,564 "pending" in #657 was
+  almost all parked rows, not backlog. **Fix:** auto-pull gate counts ACTIVE
+  rows only (`DeadLettered=0`); per-IO no-clobber set still preserves parked IO
+  local values; manual destructive pull-guard unchanged (still all rows, by
+  design). `frontend/lib/cloud/auto-sync.ts` + regression tests in
+  `pending-sync-deadletter.test.ts`. Observer pending count also → active-only
+  so the verdict + I7 precondition match the tool.
+
+Open follow-up (lower priority): push throughput under sustained load + flap was
+low (77 successful row-pushes in 8h, cloud-flap-dominated); worth confirming the
+tool catches up cleanly once cloud is stable. Also consider teaching bots to not
+mark SPARE IOs Passed (reduces unrealistic rejection churn).
