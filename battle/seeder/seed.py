@@ -327,13 +327,15 @@ def gen_cloud_seed(cur, names: dict[int, str] | None = None) -> None:
             f"INSERT INTO subsystems (id, project_id, name) "
             f"VALUES ({sid}, 1, {sql_str(sub_name)}) ON CONFLICT (id) DO NOTHING;"
         )
-    for (iid, sid, name, desc, order, ver, result) in ios:
+    for (iid, sid, name, desc, order, ver, result, comments) in ios:
         order_sql = "NULL" if order is None else str(int(order))
-        # Mirror the local result so pre-existing field results match cloud and
-        # only genuine soak-changes are tracked by I4 (F3 fix).
+        # Mirror the local result AND comments so pre-existing field state
+        # matches cloud and only genuine soak-changes are tracked by I4 (F3
+        # fix; comments asymmetry tripped the scoped pull-guard on every
+        # auto-pull in the 2026-06-07 central-cdw5 round).
         lines.append(
-            "INSERT INTO ios (id, subsystemid, name, description, \"Order\", version, result) "
-            f"VALUES ({int(iid)}, {int(sid)}, {sql_str(name)}, {sql_str(desc)}, {order_sql}, {int(ver)}, {sql_str(result)}) "
+            "INSERT INTO ios (id, subsystemid, name, description, \"Order\", version, result, comments) "
+            f"VALUES ({int(iid)}, {int(sid)}, {sql_str(name)}, {sql_str(desc)}, {order_sql}, {int(ver)}, {sql_str(result)}, {sql_str(comments)}) "
             "ON CONFLICT (id) DO NOTHING;"
         )
     # Keep the sequences ahead of our explicit ids so cloud-side inserts (the
