@@ -265,10 +265,19 @@ class AutoSyncService {
         // Only rows about to be NEWLY parked (DeadLettered = 0) — without this
         // filter the audit log would re-emit every already-parked row each
         // cycle.
+        // Version-conflict rows get DOUBLE the cap before parking: they are
+        // the B7 reconcile's job (usually at-least-once ghosts that resolve
+        // against cloud truth within a couple of reconcile windows), and a
+        // premature park reads as a suspect drop to the battle observer.
         const toDrop = db.prepare(
           `SELECT id, IoId, InspectorName, TestResult, Comments, State, Version, Timestamp, RetryCount, CreatedAt
-             FROM PendingSyncs WHERE RetryCount >= ? AND DeadLettered = 0`
-        ).all(IO_PENDING_RETRY_CAP) as PendingSync[]
+             FROM PendingSyncs
+            WHERE DeadLettered = 0
+              AND (
+                    (LastError NOT LIKE '%updatedCount=0%' AND RetryCount >= ?)
+                 OR (LastError LIKE '%updatedCount=0%' AND RetryCount >= ?)
+                  )`
+        ).all(IO_PENDING_RETRY_CAP, IO_PENDING_RETRY_CAP * 2) as PendingSync[]
 
         if (toDrop.length > 0) {
           console.warn(
@@ -343,8 +352,13 @@ class AutoSyncService {
         // field work. Dead-lettering keeps the local result + reason and
         // surfaces it as "needs attention" instead.
         const dropped = db.prepare(
-          `UPDATE PendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'retry cap exhausted') WHERE RetryCount >= ? AND DeadLettered = 0`
-        ).run(IO_PENDING_RETRY_CAP)
+          `UPDATE PendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'retry cap exhausted')
+            WHERE DeadLettered = 0
+              AND (
+                    (LastError NOT LIKE '%updatedCount=0%' AND RetryCount >= ?)
+                 OR (LastError LIKE '%updatedCount=0%' AND RetryCount >= ?)
+                  )`
+        ).run(IO_PENDING_RETRY_CAP, IO_PENDING_RETRY_CAP * 2)
         if (dropped.changes > 0) {
           console.warn(
             `[AutoSync] PARKED ${dropped.changes} row(s) at the retry cap (kept for attention, not deleted)`
@@ -767,7 +781,9 @@ class AutoSyncService {
    */
   private _lastB7ReconcileAt = 0
   private async reconcileVersionConflicts(): Promise<void> {
-    const THROTTLE_MS = 5 * 60_000
+    // 2 min: drains run every ~30 s and a conflicted row strikes once per
+    // drain, so the reconcile must fire well before 10 strikes accumulate.
+    const THROTTLE_MS = 2 * 60_000
     if (Date.now() - this._lastB7ReconcileAt < THROTTLE_MS) return
 
     interface ConflictRow {
