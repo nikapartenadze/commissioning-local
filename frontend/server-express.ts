@@ -552,8 +552,9 @@ httpServer.listen(PORT, HOSTNAME, () => {
   // channel isn't stuck on "Updating…". Cheap sync file op — safe inline.
   reconcileUpdateStateOnBoot();
 
-  // Recovery marker — server (re)start is a boundary when reconstructing history.
-  auditLog({ type: 'server.start', detail: { version: SERVER_VERSION, plcMode: PLC_REMOTE ? 'remote' : 'embedded', pid: process.pid } });
+  // (server.start is audited ONCE, above — a second copy here was a merge
+  // artifact that made every boot read as a crash-loop in the audit trail,
+  // caught by the battle central soak on 2026-06-07.)
 
   // Deferred startup backup + periodic backups — runs after server is listening
   // so it doesn't block startup.
