@@ -118,9 +118,36 @@ describe('dead-letter (park, never delete)', () => {
 
   it('pull-guard raw count still includes parked rows (a destructive pull stays blocked)', () => {
     seedRow(1, 'Passed', 0, 1)  // parked, local-only, NOT on cloud
-    // the pull-guard uses COUNT(*) (all rows) — parked work must keep it blocked
+    // the MANUAL destructive pull-guard uses COUNT(*) (all rows) — parked work
+    // must keep it blocked so a user-triggered overwrite can't wipe attention rows
     expect(totalRows()).toBe(1)
     expect(activeCount()).toBe(0)  // but the "pending" badge shows 0 active...
     expect(attentionCount()).toBe(1)  // ...and the red "attention" marker instead
+  })
+})
+
+describe('auto-pull gate — parked rows must NOT block cloud→field propagation', () => {
+  // Regression: battle nightly 2026-06-07 found that auto-pull (pullFromCloud,
+  // on SSE reconnect) gated on COUNT(*) FROM PendingSyncs — ALL rows. Because
+  // v2.40.4 PARKS permanently-rejected rows (keeps them) instead of deleting,
+  // a single SPARE-Passed mistake left a parked row forever, so the tablet
+  // NEVER pulled cloud changes again (coordinator/other-tablet edits invisible).
+  // The auto-pull gate must count ACTIVE rows only; the manual destructive
+  // pull-guard above still counts all rows (different, intentional).
+  const autoPullGate = () =>
+    (db.prepare('SELECT COUNT(*) c FROM PendingSyncs WHERE DeadLettered = 0').get() as any).c
+
+  it('only parked rows present → auto-pull gate is CLEAR (propagation proceeds)', () => {
+    seedRow(1, 'Passed', 0, 1)  // parked SPARE-Passed, local-only
+    seedRow(2, 'Failed', 0, 1)  // another parked
+    expect(autoPullGate()).toBe(0)   // gate clear → cloud→field pull runs
+    expect(totalRows()).toBe(2)      // rows still kept for attention
+    expect(attentionCount()).toBe(2)
+  })
+
+  it('a genuinely-unsynced ACTIVE row still defers auto-pull (local work first)', () => {
+    seedRow(1, 'Passed', 0, 0)  // active, genuinely waiting to sync
+    seedRow(2, 'Passed', 0, 1)  // parked
+    expect(autoPullGate()).toBe(1)   // active work present → auto-pull waits
   })
 })

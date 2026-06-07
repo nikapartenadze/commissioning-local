@@ -199,10 +199,19 @@ def local_results_and_queue() -> tuple[dict[int, str | None], int, set[int]]:
         # Sum all three offline queues — IO results, L2 cell writes, and
         # device-blocker edits. A non-empty queue is pending work (safe), not
         # loss; we report depth but don't fail on it.
+        # ACTIVE queue only — match the tool's own pull-gate semantics. Parked
+        # rows (DeadLettered=1) are permanently-rejected writes set aside for
+        # attention; they will never sync and must NOT count as backlog, or the
+        # queue would look "never drained" forever (masking real propagation —
+        # exactly the v2.40.4 pull-gate regression this run surfaced).
         pending = 0
-        for tbl in ("PendingSyncs", "L2PendingSyncs", "DeviceBlockerPendingSyncs"):
+        for tbl, where in (
+            ("PendingSyncs", " WHERE DeadLettered = 0"),
+            ("L2PendingSyncs", ""),
+            ("DeviceBlockerPendingSyncs", ""),
+        ):
             try:
-                pending += con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+                pending += con.execute(f"SELECT COUNT(*) FROM {tbl}{where}").fetchone()[0]
             except sqlite3.Error:
                 pass
         try:
