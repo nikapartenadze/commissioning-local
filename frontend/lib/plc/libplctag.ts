@@ -1052,6 +1052,112 @@ export async function createTagAsync(
   return { handle, status };
 }
 
+/**
+ * Batch variant of createTagAsync: initiate every create non-blocking, then
+ * resolve all final statuses with ONE shared status-sweep loop (same shape as
+ * readTagsBatchAsync — O(1) timers per batch instead of O(tags)).
+ *
+ * On any non-OK status the caller MUST still plc_tag_destroy() non-negative
+ * handles; a negative handle means creation failed before a handle existed.
+ */
+export async function createTagsBatchAsync(
+  configs: PlcTagConfig[],
+  timeoutMs: number = 5000,
+): Promise<Array<{ handle: TagHandle; status: number }>> {
+  const out: Array<{ handle: TagHandle; status: number }> = configs.map(() => ({
+    handle: -1,
+    status: PlcTagStatus.PLCTAG_ERR_BAD_STATUS,
+  }));
+  const pending = new Set<number>();
+
+  for (let i = 0; i < configs.length; i++) {
+    try {
+      const handle = plc_tag_create(buildAttributeString(configs[i]), 0); // Non-blocking
+      if (handle < 0) {
+        out[i] = { handle, status: handle };
+      } else {
+        out[i] = { handle, status: PlcTagStatus.PLCTAG_STATUS_PENDING };
+        pending.add(i);
+      }
+    } catch {
+      out[i] = { handle: -1, status: PlcTagStatus.PLCTAG_ERR_BAD_STATUS };
+    }
+  }
+
+  const start = Date.now();
+  let tick = 5;
+  while (pending.size > 0) {
+    if (Date.now() - start > timeoutMs) {
+      for (const i of pending) out[i].status = PlcTagStatus.PLCTAG_ERR_TIMEOUT;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, tick));
+    tick = Math.min(tick * 1.5, 25);
+    for (const i of Array.from(pending)) {
+      try {
+        const st = plc_tag_status(out[i].handle);
+        if (!isStatusPending(st)) {
+          out[i].status = st;
+          pending.delete(i);
+        }
+      } catch {
+        out[i].status = PlcTagStatus.PLCTAG_ERR_BAD_STATUS;
+        pending.delete(i);
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Batch variant of writeTagAsync: initiate every write non-blocking, then
+ * resolve all final statuses with ONE shared status-sweep loop. The caller
+ * must have set each tag's buffer value (plc_tag_set_*) beforehand.
+ */
+export async function writeTagsBatchAsync(tags: TagHandle[], timeoutMs: number = 5000): Promise<number[]> {
+  const statuses: number[] = new Array(tags.length).fill(PlcTagStatus.PLCTAG_ERR_BAD_STATUS);
+  const pending = new Set<number>();
+
+  for (let i = 0; i < tags.length; i++) {
+    try {
+      const st = plc_tag_write(tags[i], 0); // Non-blocking initiate
+      if (isStatusPending(st)) {
+        pending.add(i);
+      } else {
+        statuses[i] = st;
+      }
+    } catch {
+      statuses[i] = PlcTagStatus.PLCTAG_ERR_BAD_STATUS;
+    }
+  }
+
+  const start = Date.now();
+  let tick = 5;
+  while (pending.size > 0) {
+    if (Date.now() - start > timeoutMs) {
+      for (const i of pending) statuses[i] = PlcTagStatus.PLCTAG_ERR_TIMEOUT;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, tick));
+    tick = Math.min(tick * 1.5, 25);
+    for (const i of Array.from(pending)) {
+      try {
+        const st = plc_tag_status(tags[i]);
+        if (!isStatusPending(st)) {
+          statuses[i] = st;
+          pending.delete(i);
+        }
+      } catch {
+        statuses[i] = PlcTagStatus.PLCTAG_ERR_BAD_STATUS;
+        pending.delete(i);
+      }
+    }
+  }
+
+  return statuses;
+}
+
 // ============================================================================
 // Re-exports from types
 // ============================================================================
