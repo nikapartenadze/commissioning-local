@@ -63,17 +63,37 @@ export async function POST(req: Request, res: Response) {
     // Refuse to pull when there are unsynced local changes for this subsystem.
     // The legacy route guards the whole table; here we scope the guard by
     // subsystem so other MCMs' pending work doesn't block this one.
-    const pendingIo = (db
+    //
+    // B9 sweep (mirrors /api/cloud/pull): split ACTIVE rows (can still sync)
+    // from PARKED rows (DeadLettered=1 — the cloud permanently rejected them,
+    // they will NEVER sync, so "sync first" is impossible guidance). Both
+    // still BLOCK this DESTRUCTIVE pull; the guidance differs.
+    const pendingActive = (db
       .prepare(
         `SELECT COUNT(*) as cnt FROM PendingSyncs ps
          JOIN Ios i ON i.id = ps.IoId
-         WHERE i.SubsystemId = ?`,
+         WHERE i.SubsystemId = ? AND ps.DeadLettered = 0`,
       )
       .get(subsystemId) as { cnt: number }).cnt;
-    if (pendingIo > 0) {
+    const pendingParked = (db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM PendingSyncs ps
+         JOIN Ios i ON i.id = ps.IoId
+         WHERE i.SubsystemId = ? AND ps.DeadLettered = 1`,
+      )
+      .get(subsystemId) as { cnt: number }).cnt;
+    if (pendingActive + pendingParked > 0) {
+      const parts: string[] = [];
+      if (pendingActive > 0) parts.push(`sync ${pendingActive} IO test change(s) first`);
+      if (pendingParked > 0) {
+        parts.push(
+          `resolve ${pendingParked} flagged row(s) the cloud rejected ` +
+          '(re-pass/fail/clear or accept in the grid — these cannot be synced)',
+        );
+      }
       return res.status(409).json({
         success: false,
-        error: `Pull blocked: ${pendingIo} IO test changes for subsystem ${subsystemId} are awaiting cloud sync. Sync first.`,
+        error: `Pull blocked to protect unsynced local data for subsystem ${subsystemId}: ${parts.join('; ')}.`,
       });
     }
 
