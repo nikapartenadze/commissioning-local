@@ -252,6 +252,38 @@ New findings:
 - Flap-count blind spot from round 1 still open (registry clients invisible to
   the observer's flap regex; I5 flap budget vacuous in central mode).
 
+## Central round 3b — 2026-06-07, 1 h, 19 CDW5 MCMs + reader fix + realistic crew
+
+Two fixes between rounds:
+1. **Tool: batched status-sweep reads** (`readTagsBatchAsync`, frontend
+   17b2292). Root cause of round-2's I1 failure was one setTimeout backoff
+   chain PER TAG READ — 19 readers × ~1,300 tags ≈ hundreds of thousands of
+   timers/sec. Now one sweep timer per 100-tag batch (identical CIP traffic),
+   plus randomized reader-cycle stagger.
+2. **Harness: realistic crew** (9296606). Bots fetched the UNSCOPED
+   /api/ios (25k rows!) every think-cycle — ~8 site-wide JSON builds/sec
+   saturated the loop by itself and confounded round 3's first attempt
+   (discarded). Real clients fetch one MCM; bots now do too. Also: no more
+   Passed on SPAREs (each refusal parked a row and jammed the scoped
+   auto-pull at the result-loss guard).
+
+| Invariant | Round 2 → Round 3b |
+|---|---|
+| I4 | PASS → **PASS, 2× throughput: 7,596 verified writes, 0 wipes, 0 suspect drops, 0 business rejections, queue drained** |
+| I3 | PASS → PASS, same 282-flag restore **27.5 s → 8.8 s** |
+| I1 | FAIL p50 649 / p95 3,170 / p99 3,926 ms → **FAIL p50 318 / p95 921 / p99 1,456 ms** (−51/−71/−63%), max 8.3 → 4.9 s, gaps>10 s 5 → 6 |
+
+I1 remains formally red on this host (laptop also runs 19 sims + cloud +
+12 bots). Residual cost: ~25k synchronous plc_tag_read FFI initiations per
+cycle period (ffi-rs per-call floor) + per-MCM /api/ios serialization under
+load. Next levers, in value order:
+1. **Grouped-word expansion** — the reader already supports one read
+   covering N bits (GroupedWord); most CDW5 tags read individually today.
+2. **libplctag auto_sync** — push polling into C threads entirely
+   (hardware-validation required).
+3. Validate on real central-server hardware before treating laptop numbers
+   as the tool's ceiling.
+
 ### B10 (open — surfaced once B9 was fixed): cloud ADDITIONS don't reach the field
 
 With B9 fixed and the active queue draining to 0 (#662: queue_end=0), I7 finally
