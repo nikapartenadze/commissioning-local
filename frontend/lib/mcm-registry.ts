@@ -428,6 +428,59 @@ export function getClientForIo(ioId: number): PlcClient | null {
 }
 
 /**
+ * One embedded-mode MCM connection, exposed for direct-FFI consumers (the VFD
+ * validation writer / wizard reader) that need the controller's ip/path plus
+ * a live client for connectivity + cached-tag checks.
+ */
+export interface EmbeddedMcmConnection {
+  subsystemId: string;
+  name: string;
+  ip: string;
+  path: string;
+  client: PlcClient;
+}
+
+/**
+ * Every currently-CONNECTED MCM in embedded mode. Returns [] in REMOTE mode —
+ * libplctag lives in the gateway process there, so direct-FFI flows (VFD
+ * validation writer, wizard reader) cannot run in-process (Phase 1.1 routes
+ * them through the gateway protocol instead).
+ */
+export function getConnectedEmbeddedMcms(): EmbeddedMcmConnection[] {
+  if (REMOTE) return [];
+  const out: EmbeddedMcmConnection[] = [];
+  for (const entry of reg().mcms.values()) {
+    if (entry.client.isConnected) {
+      out.push({
+        subsystemId: entry.subsystemId,
+        name: entry.name,
+        ip: entry.config.ip,
+        path: entry.config.path,
+        client: entry.client,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The named MCM's embedded connection, or null when unknown, disconnected, or
+ * running in REMOTE mode (see getConnectedEmbeddedMcms).
+ */
+export function getEmbeddedMcmConnection(subsystemId: string): EmbeddedMcmConnection | null {
+  if (REMOTE) return null;
+  const entry = reg().mcms.get(subsystemId);
+  if (!entry || !entry.client.isConnected) return null;
+  return {
+    subsystemId: entry.subsystemId,
+    name: entry.name,
+    ip: entry.config.ip,
+    path: entry.config.path,
+    client: entry.client,
+  };
+}
+
+/**
  * Find the current tag value/state for an IO across every loaded MCM.
  * Returns null if the IO isn't found in any registry client. The IO does
  * not need to be currently connected — the tag reader caches the last
@@ -872,6 +925,23 @@ function setupListeners(entry: McmEntry): void {
 
   client.on('initialized', () => {
     void startPoller(entry);
+
+    // On (re)connect, restore VFD validation/polarity flags for THIS MCM's
+    // drives — mirrors the legacy manager's singleton hook. A reconnect often
+    // follows a PLC program download that zeroes the Valid_* / polarity bits
+    // (CDW5, June 2026); without this, registry-connected MCMs would only be
+    // restored by the writer's 5-minute safety net instead of seconds after
+    // reconnect. clearKnownMissingTags first: NOT_FOUND verdicts collected
+    // mid-download are not durable truth.
+    setTimeout(async () => {
+      try {
+        const { syncValidationFlags, clearKnownMissingTags } = await import('@/lib/vfd-validation-writer');
+        clearKnownMissingTags(`MCM ${subsystemId} (re)connected — possible program download, re-discovering CMD tags`);
+        await syncValidationFlags(`mcm-${subsystemId}-reconnect`);
+      } catch (err) {
+        console.warn(`[McmRegistry ${subsystemId}] VFD validation sync failed:`, err);
+      }
+    }, 3000); // 3 s delay — let the tag reader settle first (same as legacy manager)
 
     // Broadcast a one-shot snapshot of every tag's current state once the
     // first read cycle has completed. Matches the legacy manager's behaviour

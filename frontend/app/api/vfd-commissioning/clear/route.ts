@@ -3,6 +3,7 @@ import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { getPlcClient, getPlcStatus } from '@/lib/plc-client-manager'
+import { hasMcm, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
 import {
   createTag,
   plc_tag_read,
@@ -133,11 +134,12 @@ async function resetPolarityLatch(
 
 export async function POST(req: Request, res: Response) {
   try {
-    const { deviceName, sheetName, clearPlc = true, updatedBy } = req.body as {
+    const { deviceName, sheetName, clearPlc = true, updatedBy, subsystemId } = req.body as {
       deviceName?: string
       sheetName?: string
       clearPlc?: boolean
       updatedBy?: string
+      subsystemId?: string | number
     }
 
     if (!deviceName) {
@@ -241,25 +243,41 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
-    // 4. Optional: PLC invalidate pulses + polarity latch reset
+    // 4. Optional: PLC invalidate pulses + polarity latch reset.
+    //    MCM-aware (central server): when the caller names a registry MCM,
+    //    pulse THAT controller; otherwise the legacy active-subsystem
+    //    singleton (hasMcm gate — same convention as /api/ios — so a legacy
+    //    tablet sending its active subsystemId still uses the singleton).
+    //    Best-effort either way: L2 cells are already cleared above.
     const plcWrites: Array<{ field: string; ok: boolean; error?: string }> = []
     let plcAttempted = false
     if (clearPlc) {
-      const client = getPlcClient()
-      const { connectionConfig } = getPlcStatus()
-      if (client.isConnected && connectionConfig) {
+      let conn: { ip: string; path: string; timeoutMs: number } | null = null
+      if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
+        const mcm = getEmbeddedMcmConnection(String(subsystemId))
+        // Known MCM but no embedded connection (disconnected, or
+        // PLC_MODE=remote where direct FFI can't run here — Phase 1.1):
+        // skip the PLC pulses rather than hit the wrong controller.
+        if (mcm) conn = { ip: mcm.ip, path: mcm.path, timeoutMs: 5000 }
+      } else {
+        const client = getPlcClient()
+        const { connectionConfig } = getPlcStatus()
+        if (client.isConnected && connectionConfig) {
+          conn = { ip: connectionConfig.ip, path: connectionConfig.path, timeoutMs: connectionConfig.timeout || 5000 }
+        }
+      }
+      if (conn) {
         plcAttempted = true
-        const timeoutMs = connectionConfig.timeout || 5000
         const fields: Array<'Invalidate_Map' | 'Invalidate_HP' | 'Invalidate_Direction'> = [
           'Invalidate_Map', 'Invalidate_HP', 'Invalidate_Direction',
         ]
         for (const field of fields) {
-          const r = await pulseInvalidate(connectionConfig.ip, connectionConfig.path, deviceName, field, timeoutMs)
+          const r = await pulseInvalidate(conn.ip, conn.path, deviceName, field, conn.timeoutMs)
           plcWrites.push({ field, ok: r.ok, error: r.error })
         }
         // Reset Reverse_Polarity latch back to default-forward (older AOIs
         // without these CMD bits will fail with tag-not-found — logged, not fatal).
-        const polarity = await resetPolarityLatch(connectionConfig.ip, connectionConfig.path, deviceName, timeoutMs)
+        const polarity = await resetPolarityLatch(conn.ip, conn.path, deviceName, conn.timeoutMs)
         plcWrites.push({ field: 'Polarity_Reset', ok: polarity.ok, error: polarity.error })
       }
     }

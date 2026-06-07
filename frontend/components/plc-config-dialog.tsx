@@ -242,35 +242,71 @@ export function PlcConfigDialog({
   // ── Scoped pull (central-tool) — pulls only THIS MCM, never touches the
   // global active subsystem (POST /api/mcm/:id/pull). ──
   const handleScopedPull = async () => {
+    const doScopedPull = async (forcePull: boolean) => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 180000)
+      try {
+        const response = await authFetch(`/api/mcm/${scopedSubsystemId}/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(forcePull ? { force: true } : {}),
+          signal: controller.signal,
+        })
+        const result = await response.json().catch(() => ({} as any))
+        return { response, result }
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    }
+
+    const reportScopedSuccess = (result: any) => {
+      if (result.networkPulled !== undefined) addPullLog(`Network: ${result.networkPulled} rings`)
+      if (result.estopPulled !== undefined) addPullLog(`E-Stop: ${result.estopPulled} zones`)
+      if (result.punchlistsPulled !== undefined) addPullLog(`Punchlists: ${result.punchlistsPulled}`)
+      const n = result.iosCount ?? 0
+      if (n === 0) {
+        addPullLog('No IOs found for this subsystem')
+        setPullStatus({ type: 'error', message: `No IOs for subsystem ${scopedSubsystemId}` })
+      } else {
+        addPullLog(`Pulled ${n} IOs`)
+        setPullStatus({ type: 'success', message: `Pulled ${n} IOs` })
+        onCloudPull(localConfig)
+      }
+    }
+
     try {
       setIsPulling(true)
       setPullLog([])
       addPullLog(`Pull IOs for MCM ${scopedSubsystemId} (scoped — active subsystem unchanged)`)
       setPullStatus({ type: 'loading', message: `Pulling IOs for subsystem ${scopedSubsystemId}...` })
 
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 180000)
-      const response = await authFetch(`/api/mcm/${scopedSubsystemId}/pull`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
-      const result = await response.json().catch(() => ({} as any))
+      const { response, result } = await doScopedPull(false)
 
       if (response.ok && result.success) {
-        if (result.networkPulled !== undefined) addPullLog(`Network: ${result.networkPulled} rings`)
-        if (result.estopPulled !== undefined) addPullLog(`E-Stop: ${result.estopPulled} zones`)
-        if (result.punchlistsPulled !== undefined) addPullLog(`Punchlists: ${result.punchlistsPulled}`)
-        const n = result.iosCount ?? 0
-        if (n === 0) {
-          addPullLog('No IOs found for this subsystem')
-          setPullStatus({ type: 'error', message: `No IOs for subsystem ${scopedSubsystemId}` })
+        reportScopedSuccess(result)
+      } else if (response.status === 409 && result.requiresForce) {
+        // Result-loss guard tripped (MCM08 incident class): local results or
+        // comments exist that the cloud lacks. Same confirm-overwrite modal
+        // as the legacy pull, then retry scoped with force.
+        const n = result.wouldLoseResults ?? 0
+        const c = result.wouldLoseComments ?? 0
+        addPullLog(`GUARD: pull would erase ${n} local result(s) + ${c} comment(s) the cloud does not have`)
+        const proceed = await new Promise<boolean>(resolve => setPullGuard({ data: result, resolve }))
+        setPullGuard(null)
+        if (!proceed) {
+          addPullLog('Pull cancelled by user — local data kept')
+          setPullStatus({ type: 'error', message: `Pull cancelled — ${n} result(s) + ${c} comment(s) protected` })
         } else {
-          addPullLog(`Pulled ${n} IOs`)
-          setPullStatus({ type: 'success', message: `Pulled ${n} IOs` })
-          onCloudPull(localConfig)
+          addPullLog('User confirmed overwrite — retrying pull with force')
+          setPullStatus({ type: 'loading', message: 'Pulling (overwrite confirmed)...' })
+          const forced = await doScopedPull(true)
+          if (forced.response.ok && forced.result.success) {
+            reportScopedSuccess(forced.result)
+          } else {
+            const msg = forced.result.error || `HTTP ${forced.response.status}`
+            addPullLog(`Forced pull failed: ${msg}`)
+            setPullStatus({ type: 'error', message: `Pull failed: ${msg}` })
+          }
         }
       } else if (response.status === 409) {
         const msg = result.error || 'Unsynced test results exist — sync first'

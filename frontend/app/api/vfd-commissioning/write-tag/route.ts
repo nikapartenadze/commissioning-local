@@ -1,6 +1,6 @@
 import { Request, Response } from 'express'
 import { getPlcClient } from '@/lib/plc-client-manager'
-import { writeTypedTagsForMcm } from '@/lib/mcm-registry'
+import { writeTypedTagsForMcm, hasMcm } from '@/lib/mcm-registry'
 
 /**
  * POST /api/vfd-commissioning/write-tag
@@ -50,7 +50,10 @@ export async function POST(req: Request, res: Response) {
     console.log(`[VFD WriteTag] ${tagPath} = ${value} (${dataType})${subsystemId ? ` MCM ${subsystemId}` : ' singleton'}`)
 
     // MCM-aware path (central server / split): route to the owning controller.
-    if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '') {
+    // hasMcm gate (same convention as /api/ios): a legacy single-PLC tablet
+    // sends its active subsystemId too, but has no registry entry for it —
+    // it must fall through to the singleton below, not 503.
+    if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
       const { connected, results } = await writeTypedTagsForMcm(String(subsystemId), [
         { name: tagPath, value, dataType },
       ])

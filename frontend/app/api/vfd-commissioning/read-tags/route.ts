@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { getPlcClient } from '@/lib/plc-client-manager'
 import {
   readTypedTagsForMcm,
+  hasMcm,
   type TypedTagRead,
   type TypedReadResult,
   type TagDataType,
@@ -53,7 +54,9 @@ export async function POST(req: Request, res: Response) {
     const reads: TypedTagRead[] = specs.map((s) => ({ name: s.name, dataType: s.dataType }))
 
     let results: TypedReadResult[]
-    if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '') {
+    // hasMcm gate (same convention as /api/ios): a legacy single-PLC tablet
+    // sends its active subsystemId too — fall through to the singleton, not 503.
+    if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
       const batch = await readTypedTagsForMcm(String(subsystemId), reads)
       if (!batch.connected) return res.status(503).json({ error: `PLC for MCM ${subsystemId} not connected` })
       results = batch.results
