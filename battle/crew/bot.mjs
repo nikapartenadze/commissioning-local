@@ -91,7 +91,18 @@ async function bot(n) {
         result = Math.random() < 0.5 ? 'Failed' : 'Cleared';
         hot = true;
       } else {
-        io = pick(ios);
+        // PARTITIONED ownership: each bot writes ONLY its disjoint slice of the
+        // IO space, keyed on the STABLE io.id (io.id % BOTS === n-1) so the
+        // slices never overlap even if /api/ios returns a different order
+        // between fetches. Over a long run this keeps every IO single-writer,
+        // so its last write is unambiguous and the I4 data-loss check can
+        // verify ALL of them — instead of every IO becoming a multi-writer
+        // collision (which the observer must exclude, leaving 0 checkable IOs
+        // over an 8 h soak). Real techs don't both test the same point either;
+        // concurrent-write stress stays in the (separate) hot-set branch.
+        const mine = ios.filter((io) => (io.id % BOTS) === (n - 1));
+        if (mine.length === 0) { await sleep(2000); continue; }
+        io = pick(mine);
         const roll = Math.random();
         result = roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared';
       }
