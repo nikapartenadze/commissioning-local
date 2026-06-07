@@ -180,7 +180,9 @@ class AutoSyncService {
   getStatus(): AutoSyncStatus {
     let pendingCount: number | null = null
     try {
-      pendingCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs').get() as any).count
+      // ACTIVE rows only — parked (DeadLettered=1) rows are reported separately
+      // as "attention", not as pending work waiting to sync.
+      pendingCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 0').get() as any).count
     } catch { /* db might not be ready */ }
 
     return {
@@ -738,7 +740,13 @@ class AutoSyncService {
         return
       }
 
-      const pendingIoCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs').get() as { count: number }).count
+      // Only ACTIVE (un-parked) rows gate the pull. Parked rows (DeadLettered=1)
+      // are writes the cloud PERMANENTLY rejected — they will never sync, so
+      // counting them here would block cloud→field propagation FOREVER: a tablet
+      // with a single SPARE-Passed mistake (or any parked row) would stop pulling
+      // coordinator/other-tablet changes indefinitely. The per-IO no-clobber set
+      // below still preserves each parked IO's local value during the merge.
+      const pendingIoCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 0').get() as { count: number }).count
       const pendingL2Count = (db.prepare('SELECT COUNT(*) as count FROM L2PendingSyncs').get() as { count: number }).count
       if (pendingIoCount > 0 || pendingL2Count > 0) {
         this._lastPullResult = `skipped (local pending syncs: io=${pendingIoCount}, l2=${pendingL2Count})`
