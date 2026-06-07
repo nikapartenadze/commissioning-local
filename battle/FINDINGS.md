@@ -222,6 +222,36 @@ Also found:
 - SPARE-Passed rejection churn ×4 (bots × clones). Reinforces the existing
   follow-up: teach bots not to mark SPARE IOs Passed.
 
+## Central round 2 — 2026-06-07, 1 h, ALL 19 REAL CDW5 MCMs (`central-cdw5`) — data PASS, scaling FAIL
+
+Production dump (read-only): 19 subsystems / 25,418 IOs / 3,244 L2 devices /
+218 already-validated VFDs; one plc-sim per MCM serving ONLY its own tags;
+12 bots; download storm across 19 controllers + VPN-profile cloud flap.
+connect-all: **19/19 connected** in one shot.
+
+| Invariant | Result |
+|---|---|
+| **I4** | **PASS — 3,560 verified writes across 19 MCMs, 0 true wipes, 0 suspect drops**, 1,306 explained SPARE rejections, queue drained to 0 — under flaps + download storm. |
+| I3 | PASS — 4 downloads → 20 restore passes. Initial site assertion wrote ~660 flags across controllers; steady state verify-only. Mass-failure circuit breaker tripped repeatedly under saturation and backed off correctly (no freeze, no hammering). |
+| I5 | PASS — 1 server.start (the round-1 double-audit fix verified). |
+| I2 | PASS. |
+| **I1** | **FAIL — p50 649 ms / p95 3.2 s / p99 3.9 s / max 8.3 s, 5 gaps >10 s.** Event-loop saturation: 19 concurrent PlcClients each run full-rate read cycles (~25k tags continuously) as if alone. CPU had headroom (tool ~204% of a 400% budget) — the bottleneck is the JS event loop. Scaling curve: p50 18 ms @ 4 MCMs → ~650 ms @ 19. Host caveat (same laptop ran 19 sims + cloud + bots) makes absolutes pessimistic, but the trend is the tool's own. **Action: per-MCM read-cycle stagger / adaptive cadence (scale cycle interval with connected-MCM count) or a shared read scheduler with a global CIP/FFI budget.** |
+
+New findings:
+- **Guard vs auto-pull tension (product decision needed):** the scoped pull's
+  result-loss guard REFUSES the (never-forced) auto-pull for any MCM whose
+  local holds values the cloud lacks. Two sources seen: (a) SPARE-Passed
+  business rejections — local keeps the value forever, so that MCM stops
+  auto-pulling cloud changes permanently (B9-shaped, one layer deeper);
+  (b) harness comment asymmetry (fixed: cloud seed now mirrors Comments,
+  same F3 class as results).
+- **Sim fidelity:** MCM11/12/16-19 show 40-75% failed tags — real CDW5 tag
+  name formats (FIOM `…_X3.PIN2_DI` style) don't match the patched ab_server's
+  symbolic parser even though the tags are loaded. Tool handles it gracefully
+  (connected, failed counted). Follow-up: extend patch_ab_server.py matching.
+- Flap-count blind spot from round 1 still open (registry clients invisible to
+  the observer's flap regex; I5 flap budget vacuous in central mode).
+
 ### B10 (open — surfaced once B9 was fixed): cloud ADDITIONS don't reach the field
 
 With B9 fixed and the active queue draining to 0 (#662: queue_end=0), I7 finally

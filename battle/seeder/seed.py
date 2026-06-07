@@ -310,7 +310,7 @@ def gen_cloud_seed(cur, names: dict[int, str] | None = None) -> None:
     # permanent version conflict (discovered in battle, 2026-06-06). In the
     # field this is aligned because local pulled its versions FROM cloud.
     ios = cur.execute(
-        "SELECT id, SubsystemId, Name, Description, \"Order\", COALESCE(Version, 0), Result FROM Ios "
+        "SELECT id, SubsystemId, Name, Description, \"Order\", COALESCE(Version, 0), Result, Comments FROM Ios "
         "WHERE Name IS NOT NULL AND Name <> ''"
     ).fetchall()
 
