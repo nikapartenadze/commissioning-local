@@ -218,11 +218,39 @@ services:
     mem_limit: 256m
     cpus: 1
 
+  # ── split deployment (Phase 1.1): the plc-gateway owns every PLC connection;
+  # the tool runs PLC_MODE=remote and routes all PLC ops here over :3200. The
+  # gateway broadcasts events (tag changes, McmReconnected → validation
+  # restore) to the tool's :3102 seam. Same image, different command — exactly
+  # the production split (frontend/docker-compose.split.yml).
+  gateway:
+    image: ${TOOL_IMAGE:-battle/tool:local}
+    profiles: ["split"]
+    command: ["node", "gateway-server.js"]
+    environment:
+      NODE_ENV: production
+      GATEWAY_PORT: "3200"
+      GATEWAY_HOST: 0.0.0.0
+      WS_BROADCAST_URL: http://tool:3102/broadcast
+      SENTRY_DISABLED: "true"
+    networks: [battle]
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+      plc-sim:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 2
+
   tool:
     image: ${TOOL_IMAGE:-battle/tool:local}
     environment:
       # daily file logs, 14d retention — observer scrapes them
       LOG_RETENTION_DAYS: "14"
+      # split deployment knobs (empty = embedded monolith, the default)
+      PLC_MODE: ${TOOL_PLC_MODE:-}
+      GATEWAY_URL: ${TOOL_GATEWAY_URL:-}
       # battle errors must NOT pollute the real GlitchTip (the tool ships an
       # embedded DSN; observer judges stability from logs/audit instead)
       SENTRY_DISABLED: "true"
