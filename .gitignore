@@ -89,3 +89,5 @@ frontend/logs-*/
 *.L5X
 check-polarity.js
 battle/docker-compose.cdw5-sims.yml
+battle/battle-artifacts/
+battle/**/__pycache__/
