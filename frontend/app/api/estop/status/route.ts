@@ -17,9 +17,9 @@ let lastConnectedState = false
 
 export async function GET(req: Request, res: Response) {
   try {
-    const connected = hasPlcClient() && getPlcClient().isConnected
+    const singletonConnected = hasPlcClient() && getPlcClient().isConnected
 
-    if (!connected) { lastConnectedState = false }
+    if (!singletonConnected) { lastConnectedState = false }
     else if (!lastConnectedState) {
       createdTags = new Set<string>(); failedTags = new Set<string>(); lastConnectedState = true
       console.log('[EStopStatus] PLC (re)connected, resetting tag handles')
@@ -43,11 +43,29 @@ export async function GET(req: Request, res: Response) {
           } catch { epc.relatedEpcs = [] }
         }
       }
-    } catch { return res.json({ success: true, connected, zones: [] }) }
+    } catch { return res.json({ success: true, connected: singletonConnected, zones: [] }) }
 
-    if (zones.length === 0) return res.json({ success: true, connected, zones: [] })
+    if (zones.length === 0) return res.json({ success: true, connected: singletonConnected, zones: [] })
 
     const allTags = new Set<string>()
+    // Per-zone owning subsystem — zones whose subsystem is a registry MCM
+    // read through the mode-aware typed batch (embedded in-process, or the
+    // plc-gateway in PLC_MODE=remote); everything else keeps the legacy
+    // singleton cached-read path (field tablets).
+    const registryTagsBySid = new Map<string, Set<string>>()
+    const legacyTags = new Set<string>()
+    const { hasMcm, readTypedTagsForMcm } = await import('@/lib/mcm-registry')
+    const addZoneTag = (zone: any, tag: string) => {
+      allTags.add(tag)
+      const sid = zone.SubsystemId != null ? String(zone.SubsystemId) : ''
+      if (sid && hasMcm(sid)) {
+        const set = registryTagsBySid.get(sid) ?? new Set<string>()
+        set.add(tag)
+        registryTagsBySid.set(sid, set)
+      } else {
+        legacyTags.add(tag)
+      }
+    }
     for (const zone of zones) {
       // <ZONE_NAME>_Nominal_OK — drives the yellow fault blink on zone cards.
       // The DB zone.Name includes the MCM prefix (e.g. MCM02_ZONE_01_01) for
@@ -59,21 +77,39 @@ export async function GET(req: Request, res: Response) {
       const m = /^([A-Z]+\d+)_(.+)$/.exec(zone.Name)
       const zoneLabel = m ? m[2] : zone.Name
       zone.nominalOkTag = `${zoneLabel}_Nominal_OK`
-      allTags.add(zone.nominalOkTag)
+      addZoneTag(zone, zone.nominalOkTag)
       for (const epc of zone.epcs) {
-        allTags.add(epc.CheckTag)
-        for (const io of epc.ioPoints) allTags.add(io.Tag)
-        for (const vfd of epc.vfds) allTags.add(vfd.StoTag)
-        for (const rel of (epc.relatedEpcs || [])) allTags.add(rel.Tag)
+        addZoneTag(zone, epc.CheckTag)
+        for (const io of epc.ioPoints) addZoneTag(zone, io.Tag)
+        for (const vfd of epc.vfds) addZoneTag(zone, vfd.StoTag)
+        for (const rel of (epc.relatedEpcs || [])) addZoneTag(zone, rel.Tag)
       }
     }
 
     const tagValues: Record<string, boolean | null> = {}
+    let anyConnected = false
 
-    if (connected) {
+    // Registry MCM zones: one typed batch per subsystem, mode-aware (works
+    // identically embedded and via the gateway in PLC_MODE=remote). Tag
+    // names are flattened into one map — they're controller-scoped and
+    // unique per zone on real sites.
+    for (const [sid, tags] of Array.from(registryTagsBySid.entries())) {
+      try {
+        const batch = await readTypedTagsForMcm(sid, Array.from(tags).map((name) => ({ name, dataType: 'BOOL' as const })))
+        if (!batch.connected) continue
+        anyConnected = true
+        for (const r of batch.results) {
+          tagValues[r.name] = r.success ? (r.value === true || r.value === 1) : null
+        }
+      } catch { /* MCM read failed — its zones read as unknown */ }
+    }
+
+    // Legacy singleton zones (field tablets / unregistered subsystems).
+    if (singletonConnected && legacyTags.size > 0) {
+      anyConnected = true
       const client = getPlcClient()
       const tagsToCreate: string[] = []
-      for (const tagName of Array.from(allTags)) {
+      for (const tagName of Array.from(legacyTags)) {
         if (!createdTags.has(tagName) && !failedTags.has(tagName) && !client.hasTag(tagName)) tagsToCreate.push(tagName)
       }
       if (tagsToCreate.length > 0) {
@@ -84,11 +120,13 @@ export async function GET(req: Request, res: Response) {
           for (const f of result.failed) failedTags.add(f.name)
         }
       }
-      for (const tagName of Array.from(allTags)) {
+      for (const tagName of Array.from(legacyTags)) {
         if (failedTags.has(tagName)) { tagValues[tagName] = null; continue }
         tagValues[tagName] = client.readTagCached(tagName)
       }
     }
+
+    const connected = anyConnected || singletonConnected
 
     // Build a per-(ZoneName, CheckTag) lookup of recorded check results. We
     // index by zoneName+checkTag (not epc.id) so results survive when the

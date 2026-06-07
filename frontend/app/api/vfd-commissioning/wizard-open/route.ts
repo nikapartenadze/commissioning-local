@@ -23,11 +23,19 @@ export async function POST(req: Request, res: Response) {
     if (!deviceName) return res.status(400).json({ error: 'deviceName required' })
 
     if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
+      // Split deployment (Phase 1.1): the gateway hosts the reader — it owns
+      // the FFI and resolves the MCM's ip/path itself; VfdTagUpdate events
+      // flow back over the :3102 seam exactly as in embedded mode.
+      if (process.env.PLC_MODE === 'remote') {
+        const { gatewayClient } = await import('@/lib/plc/gateway-client')
+        const result = await gatewayClient.wizardOpen(String(subsystemId), deviceName)
+        if (!result.ok) {
+          return res.status(503).json({ error: result.error || 'Failed to open reader (gateway)' })
+        }
+        return res.json({ success: true, tagCount: result.tagCount })
+      }
       const mcm = getEmbeddedMcmConnection(String(subsystemId))
       if (!mcm) {
-        // Known MCM but no embedded connection: either disconnected, or
-        // PLC_MODE=remote — the wizard reader's direct FFI cannot run in this
-        // process there (gateway routing is Phase 1.1).
         return res.status(503).json({ error: `PLC for MCM ${subsystemId} not connected` })
       }
       const result = await openWizardReader(deviceName, mcm.ip, mcm.path)

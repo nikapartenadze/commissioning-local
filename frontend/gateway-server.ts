@@ -217,6 +217,40 @@ app.post('/mcm/:subsystemId/tags/hammer-write', (req: Request, res: Response) =>
   res.json(hammerWriteTagsForMcmLocal(subsystemId, String(deviceName), writes));
 });
 
+// ── VFD wizard reader (Phase 1.1) ────────────────────────────────────────────
+// The reader is pure FFI (no DB/config), so the gateway hosts it in split
+// mode: ~50 ms polling of one VFD's STS/keypad tags with persistent handles,
+// broadcasting VfdTagUpdate to WS_BROADCAST_URL (the app's :3102 receiver →
+// browsers). The app's wizard-open/close routes proxy here when
+// PLC_MODE=remote. ip/path resolve from THIS process's registry entry, so a
+// wizard can never read a different controller than the MCM it names.
+app.post('/mcm/:subsystemId/wizard/open', async (req: Request, res: Response) => {
+  const subsystemId = String(req.params.subsystemId);
+  const deviceName = String(req.body?.deviceName ?? '');
+  if (!deviceName) {
+    return res.status(400).json({ ok: false, error: 'deviceName required' });
+  }
+  const status = getMcmStatus(subsystemId);
+  if (!status || !status.connected) {
+    return res.status(503).json({ ok: false, error: `MCM ${subsystemId} not connected` });
+  }
+  const { openWizardReader } = await import('@/lib/vfd-wizard-reader');
+  const result = await openWizardReader(deviceName, status.ip, status.path);
+  res.status(result.ok ? 200 : 500).json(result);
+});
+
+app.post('/mcm/:subsystemId/wizard/close', async (req: Request, res: Response) => {
+  const subsystemId = String(req.params.subsystemId);
+  const deviceName = String(req.body?.deviceName ?? '');
+  if (!deviceName) {
+    return res.status(400).json({ ok: false, error: 'deviceName required' });
+  }
+  const status = getMcmStatus(subsystemId);
+  const { closeWizardReader } = await import('@/lib/vfd-wizard-reader');
+  if (status) closeWizardReader(deviceName, status.ip, status.path);
+  res.json({ ok: true });
+});
+
 // ── Startup ───────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, HOST, () => {
   console.log('');

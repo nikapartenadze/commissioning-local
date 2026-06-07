@@ -32,12 +32,14 @@ interface IoRow {
   InstallationPercent: number | null
 }
 
-/** Live PLC tag cache — best-effort, never throws into the snapshot. */
+/** Live PLC tag cache — best-effort, never throws into the snapshot.
+ *  Mode-aware (Phase 1.1): unions across registry MCMs (embedded or via the
+ *  gateway-state cache in PLC_MODE=remote); singleton fallback on tablets. */
 function liveTags(): { name?: string; state?: string }[] {
   try {
     // Lazy require so unit tests / non-PLC contexts don't pull the FFI stack.
-    const { getPlcTags } = require('@/lib/plc-client-manager') as typeof import('@/lib/plc-client-manager')
-    return getPlcTags().tags as { name?: string; state?: string }[]
+    const { getLiveTagsUnion } = require('@/lib/plc-live-tags') as typeof import('@/lib/plc-live-tags')
+    return getLiveTagsUnion()
   } catch {
     return []
   }

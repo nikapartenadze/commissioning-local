@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
-import { getPlcTags, getWsBroadcastUrl } from '@/lib/plc-client-manager'
+import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import { sanitizeComment, createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
@@ -60,10 +60,12 @@ export async function POST(req: Request, res: Response) {
     }
 
     // Best-effort PLC state for the history row — null if PLC isn't connected.
+    // Mode-aware union (Phase 1.1): registry MCMs (embedded or gateway cache
+    // in PLC_MODE=remote), singleton fallback on tablets.
     let plcState: string | null = null
     try {
-      const { tags } = getPlcTags()
-      plcState = tags.find(t => t.id === ioId)?.state ?? null
+      const { getLiveTagsUnion } = await import('@/lib/plc-live-tags')
+      plcState = getLiveTagsUnion().find(t => t.id === ioId)?.state ?? null
     } catch { /* PLC not available — leave null */ }
 
     const sanitizedComments = sanitizeComment(comments)
