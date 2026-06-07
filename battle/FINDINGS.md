@@ -198,6 +198,30 @@ low (77 successful row-pushes in 8h, cloud-flap-dominated); worth confirming the
 tool catches up cleanly once cloud is stable. Also consider teaching bots to not
 mark SPARE IOs Passed (reduces unrealistic rejection churn).
 
+## Central (multi-MCM) round 1 — 2026-06-07, 1 h, 4 MCMs — data PASS, one merge bug caught
+
+First soak of the CENTRALIZED tool (branch `central-tool-latest`, registry-only:
+4 cloned MCM02 subsystems, one plc-sim each, 8 partitioned bots, download storm
+across random sims, no cloud flap). `SCENARIO=central`.
+
+| Invariant | Result |
+|---|---|
+| I1 | PASS — p50 18 ms / p95 283 / p99 539, 0 stalls. NOTE: ~60× heavier than single-MCM (p95 4.7 ms on the 7.5 h soak); 4 concurrent PlcClients cost real CPU. Scaling signal for the 19-MCM round. |
+| I2 | PASS |
+| I3 | PASS — 3 downloads → 4 restore passes via the NEW per-MCM `mcm-<id>-reconnect` hook; owning-PLC download restored all 209 flags in 1.05 s; non-owning downloads correctly verify-only. |
+| I4 | **PASS — 4,164 single-writer writes, 0 true wipes, 0 suspect drops**, 2,047 explained SPARE rejections, queue drained to 0. |
+| I5 | FAIL → **real merge bug**: `server.start` audited TWICE per boot (main and the central branch each added the audit line; the merge kept both, `server-express.ts` listen callback). Every boot read as a crash-loop. Fixed same day (removed the duplicate). |
+
+Also found:
+- **Flap-count blind spot (harness):** `plc_flaps=0` despite 3 downloads — the
+  observer's `Connection status: error` regex doesn't match the registry
+  clients' log lines, so the I5 flap budget is vacuous in central mode. Open.
+- **Clone artifact:** cloned subsystems share device names, so the VFD writer's
+  deviceName→subsystem map routes all 72 drives to ONE MCM. Harness artifact
+  (real sites have unique names per MCM) — fixed by the CDW5 real-dump round.
+- SPARE-Passed rejection churn ×4 (bots × clones). Reinforces the existing
+  follow-up: teach bots not to mark SPARE IOs Passed.
+
 ### B10 (open — surfaced once B9 was fixed): cloud ADDITIONS don't reach the field
 
 With B9 fixed and the active queue draining to 0 (#662: queue_end=0), I7 finally
