@@ -43,6 +43,25 @@ case "$SCENARIO" in
         # Hot-set OFF: it's a B7 stress knob that bloats the queue and blocks
         # the propagation (I7) this scenario verifies (see FINDINGS F2).
         export HOT_FRACTION=0 ;;
+    central)                                          # multi-MCM central server
+        # The CENTRAL tool holds MCM_COUNT concurrent registry PLC connections
+        # (one plc-sim each, same tag set) with bots writing across ALL of
+        # them and the download storm restarting a RANDOM sim each time —
+        # per-MCM reconnect restores (I3), cross-MCM sync (I4), and the scoped
+        # per-MCM auto-pull all under simultaneous load. No cloud flap on the
+        # first runs: keep the verdict attributable to multi-MCM behavior.
+        export COMPOSE_PROFILES=central
+        export MCM_COUNT="${MCM_COUNT:-4}"
+        export PLC_SIM_CONTAINERS="battle-plc-sim-1,battle-plc-sim-2-1,battle-plc-sim-3-1,battle-plc-sim-4-1"
+        # Subsystems the seeder creates: base 38 + clones at +1000 strides.
+        export OBS_SUBSYSTEM_IDS="38,1038,2038,3038"
+        export DOWNLOAD_STORM="12,25"
+        export BOTS="${BOTS:-8}"
+        export HOT_FRACTION=0
+        export THINK_MIN_MS=700; export THINK_MAX_MS=3000
+        # 4 PLC clients: every download flaps its own client; generous organic
+        # budget for first runs (we're here to SEE what breaks, not to gate).
+        export FLAP_BUDGET=60 ;;
     all)                                              # EVERYTHING at once (nightly)
         # PLC program downloads + cloud connectivity flap + cloud-side data
         # mutations + realistic tester load, all together — the harshest run.
@@ -75,6 +94,25 @@ if [ "${BATTLE_PULL:-0}" = "1" ]; then
 else
     # Local path: build everything.
     docker compose -f docker-compose.battle.yml -p battle up --build -d
+fi
+
+# central: registry MCMs do NOT auto-connect at boot (by design — the operator
+# presses Connect All). Wait for the tool, then connect every configured MCM.
+# Runs from inside the chaos container (python + battle network, same pattern
+# as the /delay call below).
+if [ "$SCENARIO" = "central" ]; then
+    echo "central: waiting for tool boot, then POST /api/mcm/connect-all (${MCM_COUNT} MCMs)"
+    sleep 40
+    CONNECT_OUT=""
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        CONNECT_OUT="$(docker exec battle-chaos-1 python -c "
+import urllib.request
+req = urllib.request.Request('http://tool:3000/api/mcm/connect-all', method='POST')
+print(urllib.request.urlopen(req, timeout=240).read().decode())" 2>&1)" && break
+        echo "central: connect-all attempt $i failed, retrying in 15s"
+        sleep 15
+    done
+    echo "central: connect-all -> $CONNECT_OUT"
 fi
 
 # CIP-saturation profile: write the delay file into the gen volume and bounce

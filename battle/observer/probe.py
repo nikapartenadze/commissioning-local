@@ -76,7 +76,11 @@ def scrape_logs() -> dict:
     health_re = re.compile(
         r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[HEALTH\] Memory: heap=(\d+)MB, rss=(\d+)MB")
     flap_re = re.compile(r"Connection status: error")
-    restore_re = re.compile(r"Sync done \(plc-reconnect\).*?(\d+) written")
+    # Restore evidence: the legacy singleton logs reason `plc-reconnect`; the
+    # central multi-MCM tool logs `mcm-<subsystemId>-reconnect` (per-MCM
+    # registry hook). Either counts — what matters is that a reconnect ran a
+    # validation convergence pass.
+    restore_re = re.compile(r"Sync done \((?:plc|mcm-[\w.]+)-reconnect.*?(\d+) written")
 
     for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "app-*.log"))):
         try:
@@ -169,18 +173,22 @@ def journaled_results() -> dict[int, str]:
 
 def cloud_results() -> dict[int, str | None] | None:
     """Pull every IO's result from cloud-stage via the REAL pull endpoint the
-    field tool uses. None => cloud unreachable."""
-    url = f"{CLOUD_URL}/api/sync/subsystem/{SUBSYSTEM_ID}"
-    req = urllib.request.Request(url, headers={"X-API-Key": CLOUD_API_KEY})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read())
-    except Exception as e:
-        print(f"observer: cloud read failed: {e}")
-        return None
+    field tool uses. SUBSYSTEM_ID may be a comma-separated list (central
+    multi-MCM scenario) — results merge across all of them. None => cloud
+    unreachable (any subsystem failing fails the read; a partial map would
+    make every missing IO look wiped)."""
     out: dict[int, str | None] = {}
-    for io in data.get("ios", []):
-        out[int(io["id"])] = io.get("result")
+    for sid in [s.strip() for s in SUBSYSTEM_ID.split(",") if s.strip()]:
+        url = f"{CLOUD_URL}/api/sync/subsystem/{sid}"
+        req = urllib.request.Request(url, headers={"X-API-Key": CLOUD_API_KEY})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read())
+        except Exception as e:
+            print(f"observer: cloud read failed (subsystem {sid}): {e}")
+            return None
+        for io in data.get("ios", []):
+            out[int(io["id"])] = io.get("result")
     return out
 
 

@@ -30,6 +30,11 @@ from urllib.parse import parse_qs, urlparse
 
 DOCKER_SOCK = "/var/run/docker.sock"
 PLC_SIM = os.environ.get("PLC_SIM_CONTAINER", "battle-plc-sim-1")
+# Multi-MCM (central scenario): comma-separated sim containers. Downloads and
+# power cuts pick a RANDOM one each time, so chaos rotates across MCMs the way
+# real per-belt program downloads hit one controller at a time. Empty => the
+# single legacy PLC_SIM.
+PLC_SIMS = [c.strip() for c in os.environ.get("PLC_SIM_CONTAINERS", "").split(",") if c.strip()] or [PLC_SIM]
 TOOL = os.environ.get("TOOL_CONTAINER", "battle-tool-1")
 CLOUD = os.environ.get("CLOUD_CONTAINER", "battle-cloud-1")
 NETWORK = os.environ.get("NETWORK_NAME", "battle_battle")
@@ -83,27 +88,30 @@ def do_download(down_seconds: int = 25) -> tuple[int, str]:
     """Simulate a PLC program download: stop, stay DOWN long enough for the
     tool to notice (real downloads take 30s+; a 1s docker restart heals the
     CIP session in place and the tool never fires its reconnect-restore path
-    — observed on the very first smoke run), then start with zeroed tags."""
-    status, _ = docker("POST", f"/containers/{PLC_SIM}/stop?t=1")
-    journal({"type": "download", "docker_status": status, "down_seconds": down_seconds})
+    — observed on the very first smoke run), then start with zeroed tags.
+    Multi-MCM: targets a random sim each time (one controller per download)."""
+    target = random.choice(PLC_SIMS)
+    status, _ = docker("POST", f"/containers/{target}/stop?t=1")
+    journal({"type": "download", "target": target, "docker_status": status, "down_seconds": down_seconds})
 
     def up_later():
         time.sleep(down_seconds)
-        docker("POST", f"/containers/{PLC_SIM}/start")
-        journal({"type": "download-complete"})
+        docker("POST", f"/containers/{target}/start")
+        journal({"type": "download-complete", "target": target})
 
     threading.Thread(target=up_later, daemon=True).start()
     return status, ""
 
 
 def do_power(sec: int) -> tuple[int, str]:
-    docker("POST", f"/containers/{PLC_SIM}/stop?t=1")
-    journal({"type": "power", "down_seconds": sec})
+    target = random.choice(PLC_SIMS)
+    docker("POST", f"/containers/{target}/stop?t=1")
+    journal({"type": "power", "target": target, "down_seconds": sec})
 
     def up_later():
         time.sleep(sec)
-        docker("POST", f"/containers/{PLC_SIM}/start")
-        journal({"type": "power-restored"})
+        docker("POST", f"/containers/{target}/start")
+        journal({"type": "power-restored", "target": target})
 
     threading.Thread(target=up_later, daemon=True).start()
     return 204, ""
@@ -238,5 +246,5 @@ if __name__ == "__main__":
     flap = os.environ.get("CLOUD_FLAP")
     if flap:
         threading.Thread(target=cloud_flap, args=(flap,), daemon=True).start()
-    print(f"chaos: listening :8666 (plc-sim={PLC_SIM}, tool={TOOL}, cloud={CLOUD})", flush=True)
+    print(f"chaos: listening :8666 (plc-sims={PLC_SIMS}, tool={TOOL}, cloud={CLOUD})", flush=True)
     ThreadingHTTPServer(("0.0.0.0", 8666), Handler).serve_forever()
