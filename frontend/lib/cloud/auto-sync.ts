@@ -253,8 +253,8 @@ class AutoSyncService {
 
         if (toDrop.length > 0) {
           console.warn(
-            `[AutoSync] DROPPING ${toDrop.length} IO pending sync row(s) that exceeded ` +
-            `retry cap (${IO_PENDING_RETRY_CAP}). ` +
+            `[AutoSync] PARKING ${toDrop.length} IO pending sync row(s) that exceeded ` +
+            `retry cap (${IO_PENDING_RETRY_CAP}) — kept for attention, NOT deleted. ` +
             `Cloud likely already has the values or the IO does not exist on cloud — ` +
             `Pull IOs to verify; re-pass/fail/clear in the grid if any result is missing.`
           )
