@@ -90,7 +90,8 @@ refresh-cloud-image:
 nightly-battle:
   extends: .battle-base
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    # CENTRAL=1 schedules belong to central-battle below, not the nightly.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CENTRAL != "1"'
   # 8 h soak (02:00→10:00) + /calm settle + verdict + artifact export needs
   # headroom beyond the soak itself. Project build_timeout is 9 h.
   timeout: 9h
@@ -109,5 +110,44 @@ battle-smoke:
   variables:
     SCENARIO: s2
     SOAK_MINUTES: "15"
+  script:
+    - sh battle/ci/run_scenario.sh
+
+# ── central-battle ────────────────────────────────────────────────────────────
+# Centralized-server scenarios (central / central-cdw5 / central-cdw5-split)
+# on the central-tool-latest branch ref. Pulls the BRANCH-built tool image
+# (tool:central — push it from a dev box: docker tag battle/tool:local
+# $REG/tool:central && docker push) so main's nightly tool:latest is never
+# tested against branch scenarios or vice versa. Triggered by schedules or
+# API runs carrying CENTRAL=1; SCENARIO/SOAK_MINUTES come from the trigger.
+# Needs BOTH seeds: the MCM02 single-site one and the 19-MCM CDW5 dump
+# (battle-seed/1/database-cdw5.db in the generic package registry; refresh
+# with battle/tools/prepare_cdw5_seed.py + the curl from the header above).
+central-battle:
+  extends: .battle-base
+  rules:
+    - if: '$CENTRAL == "1"'
+  timeout: 2h
+  variables:
+    TOOL_IMAGE: $CI_REGISTRY_IMAGE/tool:central
+    SCENARIO: central-cdw5-split
+    SOAK_MINUTES: "60"
+  before_script:
+    - docker info >/dev/null
+    - apk add --no-cache curl
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - mkdir -p battle/seed
+    - >
+      curl --fail --silent --show-error
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --output battle/seed/database.db
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/battle-seed/1/database.db"
+    - >
+      curl --fail --silent --show-error
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --output battle/seed/database-cdw5.db
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/battle-seed/1/database-cdw5.db"
+    - test -s battle/seed/database.db
+    - test -s battle/seed/database-cdw5.db
   script:
     - sh battle/ci/run_scenario.sh
