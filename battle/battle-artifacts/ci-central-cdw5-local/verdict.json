@@ -1,0 +1,56 @@
+{
+  "run": "ci-central-cdw5-local",
+  "ended": "2026-06-07T13:56:57",
+  "soak_minutes": 60.0,
+  "pass": false,
+  "report_only": [],
+  "invariants": {
+    "I1_responsiveness": {
+      "pass": false,
+      "p50": 318.25049401959404,
+      "p95": 921.0098740004469,
+      "p99": 1455.592999001965,
+      "max": 4899.515437020455,
+      "samples": 3204,
+      "gaps_over_10s": 6
+    },
+    "I2_no_leak": {
+      "pass": true,
+      "rss_slope_mb_per_h": null,
+      "rss_samples": 59
+    },
+    "I5_stability": {
+      "pass": true,
+      "server_starts": 1,
+      "plc_flaps": 0,
+      "allowed_flaps": 404
+    },
+    "I3_restore_evidence": {
+      "pass": true,
+      "injected_downloads": 4,
+      "reconnect_restores_seen": 16,
+      "samples": [
+        "2026-06-07 12:49:25 [INFO]  [VfdValidationWriter] Sync done (mcm-53-reconnect, mcm-37): 36 device(s) (36 map, 36 hp, 34 dir), 132 written, 32 already-correct, 8 failed, 0 skipped (known-missing), 0 skipped-faulted, 6767 ms",
+        "2026-06-07 12:49:33 [INFO]  [VfdValidationWriter] Sync done (mcm-53-reconnect, mcm-38): 72 device(s) (72 map, 72 hp, 69 dir), 282 written, 69 already-correct, 0 failed, 0 skipped (known-missing), 0 skipped-faulted, 8801 ms",
+        "2026-06-07 12:49:42 [INFO]  [VfdValidationWriter] Sync done (mcm-53-reconnect, mcm-39): 72 device(s) (72 map, 72 hp, 70 dir), 284 written, 70 already-correct, 0 failed, 0 skipped (known-missing), 0 skipped-faulted, 8337 ms",
+        "2026-06-07 12:49:45 [INFO]  [VfdValidationWriter] Sync done (mcm-53-reconnect, mcm-45): 38 device(s) (38 map, 38 hp, 38 dir), 114 written, 0 already-correct, 0 failed, 0 skipped (known-missing), 0 skipped-faulted, 2829 ms",
+        "2026-06-07 13:02:52 [INFO]  [VfdValidationWriter] Sync done (mcm-51-reconnect, mcm-37): 36 device(s) (36 map, 36 hp, 34 dir), 0 written, 172 already-correct, 0 failed, 0 skipped (known-missing), 0 skipped-faulted, 2007 ms"
+      ]
+    },
+    "I4_no_data_loss": {
+      "pass": true,
+      "soak_writes": 7596,
+      "true_wipes": 0,
+      "divergence_lww_or_business": 0,
+      "still_queued_safe": 91,
+      "suspect_silent_drops": 0,
+      "suspect_drop_reasons": {},
+      "explained_business_rejections": 0,
+      "pending_queue_at_end": 0,
+      "true_wipe_detail": [],
+      "wiped_samples": [],
+      "unsynced_samples": [],
+      "suspect_drop_samples": []
+    }
+  }
+}

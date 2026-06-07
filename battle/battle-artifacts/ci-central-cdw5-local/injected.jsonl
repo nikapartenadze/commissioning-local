@@ -1,0 +1,21 @@
+{"ts": "2026-06-07T12:55:54", "type": "cloudcut", "down_seconds": 180, "disconnect_status": 200}
+{"ts": "2026-06-07T12:59:07", "type": "cloudcut-restored", "connect_status": 200}
+{"ts": "2026-06-07T13:02:16", "type": "download", "target": "battle-plc-sim-15-1", "docker_status": 204, "down_seconds": 25}
+{"ts": "2026-06-07T13:02:41", "type": "download-complete", "target": "battle-plc-sim-15-1"}
+{"ts": "2026-06-07T13:06:41", "type": "cloudcut", "down_seconds": 180, "disconnect_status": 200}
+{"ts": "2026-06-07T13:09:54", "type": "cloudcut-restored", "connect_status": 200}
+{"ts": "2026-06-07T13:15:01", "type": "download", "target": "battle-plc-sim-12-1", "docker_status": 204, "down_seconds": 25}
+{"ts": "2026-06-07T13:15:29", "type": "download-complete", "target": "battle-plc-sim-12-1"}
+{"ts": "2026-06-07T13:17:29", "type": "cloudcut", "down_seconds": 180, "disconnect_status": 200}
+{"ts": "2026-06-07T13:20:39", "type": "cloudcut-restored", "connect_status": 200}
+{"ts": "2026-06-07T13:28:14", "type": "cloudcut", "down_seconds": 180, "disconnect_status": 200}
+{"ts": "2026-06-07T13:31:26", "type": "cloudcut-restored", "connect_status": 200}
+{"ts": "2026-06-07T13:32:43", "type": "download", "target": "battle-plc-sim-16-1", "docker_status": 204, "down_seconds": 25}
+{"ts": "2026-06-07T13:33:11", "type": "download-complete", "target": "battle-plc-sim-16-1"}
+{"ts": "2026-06-07T13:38:59", "type": "cloudcut", "down_seconds": 180, "disconnect_status": 200}
+{"ts": "2026-06-07T13:42:10", "type": "cloudcut-restored", "connect_status": 200}
+{"ts": "2026-06-07T13:49:45", "type": "cloudcut", "down_seconds": 180, "disconnect_status": 200}
+{"ts": "2026-06-07T13:49:49", "type": "download", "target": "battle-plc-sim-7-1", "docker_status": 204, "down_seconds": 25}
+{"ts": "2026-06-07T13:50:17", "type": "download-complete", "target": "battle-plc-sim-7-1"}
+{"ts": "2026-06-07T13:52:55", "type": "cloudcut-restored", "connect_status": 200}
+{"ts": "2026-06-07T13:53:45", "type": "calm", "reconnect_status": 403}
