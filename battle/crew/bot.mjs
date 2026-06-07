@@ -67,13 +67,36 @@ async function bot(n) {
   await sleep(rand(0, 5000));
   console.log(`[crew] ${name} starting`);
 
+  // Realistic client behavior: a real tablet / browser grid fetches ONE
+  // MCM's IO list (?subsystemId=), never the whole site. On the 19-MCM
+  // central seed an unscoped /api/ios serializes 25k rows — 12 bots doing
+  // that every think-cycle was ~8 site-wide JSON builds/sec, which saturated
+  // the tool's event loop ALL BY ITSELF and drowned the real signal
+  // (2026-06-07 central-cdw5 round 3). Discover the subsystem list once,
+  // then work one randomly-chosen subsystem per iteration.
+  let subsystems = [];
+  while (subsystems.length === 0) {
+    if (existsSync(STOP_FILE)) return;
+    try {
+      const { status, body } = await api('/api/mcm');
+      const mcms = Array.isArray(body) ? body : (body?.mcms ?? []);
+      subsystems = mcms.map((m) => String(m.subsystemId)).filter(Boolean);
+      if (subsystems.length === 0) {
+        // single-MCM / legacy stack: fall back to the unscoped list below
+        break;
+      }
+    } catch { /* tool still booting */ }
+    if (subsystems.length === 0) await sleep(3000);
+  }
+
   for (;;) {
     if (existsSync(STOP_FILE)) {
       console.log(`[crew] ${name} stopping (soak ended)`);
       return;
     }
     try {
-      const { status, body } = await api('/api/ios');
+      const scoped = subsystems.length > 0 ? pick(subsystems) : null;
+      const { status, body } = await api(scoped ? `/api/ios?subsystemId=${scoped}` : '/api/ios');
       const ios = Array.isArray(body) ? body : (body?.ios ?? []);
       if (status !== 200 || ios.length === 0) {
         log({ action: 'list', status, count: ios.length ?? 0, error: status !== 200 });
@@ -104,7 +127,14 @@ async function bot(n) {
         if (mine.length === 0) { await sleep(2000); continue; }
         io = pick(mine);
         const roll = Math.random();
-        result = roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared';
+        // Real techs don't mark SPARE points Passed (the cloud refuses it,
+        // each refusal parks a row, and parked rows block the scoped
+        // auto-pull at the result-loss guard — see FINDINGS, central rounds
+        // 1-2). SPAREs legally take Failed/Cleared only.
+        const isSpare = /spare/i.test(`${io.description ?? ''} ${io.name ?? ''}`);
+        result = isSpare
+          ? (roll < 0.7 ? 'Failed' : 'Cleared')
+          : (roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared');
       }
       const comments =
         result === 'Failed' ? `battle-bot${n}: simulated failure ${Date.now()}` : undefined;
