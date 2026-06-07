@@ -2,8 +2,10 @@ import { Request, Response } from 'express';
 import { db, extractDeviceName } from '@/lib/db-sqlite';
 import { configService } from '@/lib/config';
 import { EMBEDDED_REMOTE_URL } from '@/lib/config/types';
-import { invalidateIoSubsystemCache } from '@/lib/mcm-registry';
+import { invalidateIoSubsystemCache, getMcmStatus } from '@/lib/mcm-registry';
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager';
+import { createBackup } from '@/lib/db/backup';
+import { computeAtRiskResults, computeAtRiskComments } from '@/lib/cloud/pull-guard';
 
 /**
  * POST /api/mcm/:subsystemId/pull
@@ -26,11 +28,27 @@ export async function POST(req: Request, res: Response) {
     return res.status(400).json({ success: false, error: 'subsystemId must be a positive integer' });
   }
 
+  const force = req.body?.force === true;
+
   try {
     const cfg = await configService.getConfig();
     const mcm = await configService.getMcm(subsystemIdStr);
     if (!mcm) {
       return res.status(404).json({ success: false, error: `MCM ${subsystemIdStr} not configured` });
+    }
+
+    // Refuse to pull while THIS MCM's PLC is connected (mirrors the legacy
+    // route's guard): the pull rewrites this subsystem's Ios rows, and live
+    // tag handles in the per-MCM client point at row IDs that would shift
+    // mid-pull. Disconnect → Pull → Connect.
+    const mcmStatus = getMcmStatus(subsystemIdStr);
+    if (mcmStatus?.connected) {
+      return res.status(409).json({
+        success: false,
+        error:
+          `Disconnect MCM ${subsystemIdStr}'s PLC before pulling IOs — ` +
+          'switching IO definitions while connected can corrupt live tag state.',
+      });
     }
 
     const remoteUrl = (cfg.remoteUrl || EMBEDDED_REMOTE_URL).replace(/\/$/, '');
@@ -56,6 +74,23 @@ export async function POST(req: Request, res: Response) {
       return res.status(409).json({
         success: false,
         error: `Pull blocked: ${pendingIo} IO test changes for subsystem ${subsystemId} are awaiting cloud sync. Sync first.`,
+      });
+    }
+
+    // B6 (mirrors legacy /api/cloud/pull): the pull below is DESTRUCTIVE
+    // (scoped DELETE FROM Ios + reinsert cloud state). The pre-pull backup is
+    // the last line of recovery — if it fails, ABORT rather than wipe with no
+    // safety net.
+    try {
+      const backup = await createBackup(`pre-pull-mcm${subsystemId}`);
+      console.log(`[MCM ${subsystemIdStr} Pull] Auto-backup created: ${backup.filename}`);
+    } catch (backupErr) {
+      console.error(`[MCM ${subsystemIdStr} Pull] Pre-pull backup FAILED — aborting to protect local data:`, backupErr);
+      return res.status(500).json({
+        success: false,
+        error:
+          'Pre-pull safety backup failed, so the pull was aborted to protect your local data. ' +
+          'Check disk space / backups folder permissions and try again.',
       });
     }
 
@@ -113,6 +148,53 @@ export async function POST(req: Request, res: Response) {
         iosCount: 0,
         subsystemId,
       });
+    }
+
+    // ── Result-loss guard (2026-06-04 TPA8/MCM08 incident) ──────────────
+    // Same second line of defense as the legacy /api/cloud/pull, scoped to
+    // this subsystem: the pending-queue check above failed catastrophically
+    // when the retry cap silently emptied the queue, so this guard ignores
+    // the queue and compares actual local results/comments against the
+    // actual cloud payload. Override requires an explicit body.force after
+    // user confirmation in the UI.
+    const localWithResults = db.prepare(
+      `SELECT id, Name, Result FROM Ios WHERE SubsystemId = ? AND Result IS NOT NULL AND Result != ''`,
+    ).all(subsystemId) as Array<{ id: number; Name: string; Result: string }>;
+    const atRisk = computeAtRiskResults(localWithResults, cloudIos);
+    const localWithComments = db.prepare(
+      `SELECT id, Name, Comments FROM Ios WHERE SubsystemId = ? AND Comments IS NOT NULL AND TRIM(Comments) != ''`,
+    ).all(subsystemId) as Array<{ id: number; Name: string; Comments: string }>;
+    const atRiskComments = computeAtRiskComments(localWithComments, cloudIos);
+
+    if ((atRisk.length > 0 || atRiskComments.length > 0) && !force) {
+      console.warn(
+        `[MCM ${subsystemIdStr} Pull] REFUSED: pull would erase ${atRisk.length} local result(s) ` +
+        `and ${atRiskComments.length} local comment(s) the cloud does not have ` +
+        `(e.g. ${atRisk.slice(0, 5).map((r) => `${r.name}=${r.result}`).join(', ')}). ` +
+        'Resend with force=true to override.',
+      );
+      const parts = [
+        atRisk.length > 0 ? `${atRisk.length} test result(s)` : null,
+        atRiskComments.length > 0 ? `${atRiskComments.length} comment(s)` : null,
+      ].filter(Boolean).join(' and ');
+      return res.status(409).json({
+        success: false,
+        requiresForce: true,
+        wouldLoseResults: atRisk.length,
+        wouldLoseComments: atRiskComments.length,
+        atRiskSample: atRisk.slice(0, 10),
+        atRiskCommentSample: atRiskComments.slice(0, 10),
+        error:
+          `Pull refused: ${parts} exist locally for MCM ${subsystemId} that the cloud does not have — ` +
+          'pulling now would erase them. They are likely unsynced field work. ' +
+          'Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)',
+      });
+    }
+    if (atRisk.length > 0 || atRiskComments.length > 0) {
+      console.warn(
+        `[MCM ${subsystemIdStr} Pull] FORCE override: erasing ${atRisk.length} result(s) + ` +
+        `${atRiskComments.length} comment(s) not present on cloud (user confirmed)`,
+      );
     }
 
     // ── Scoped upsert ────────────────────────────────────────────────────

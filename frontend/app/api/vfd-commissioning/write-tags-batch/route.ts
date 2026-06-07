@@ -1,6 +1,6 @@
 import { Request, Response } from 'express'
 import { getPlcClient } from '@/lib/plc-client-manager'
-import { hammerWriteTagsForMcm, type HammerWrite } from '@/lib/mcm-registry'
+import { hammerWriteTagsForMcm, hasMcm, type HammerWrite } from '@/lib/mcm-registry'
 
 type TagWrite = HammerWrite
 
@@ -34,7 +34,9 @@ export async function POST(req: Request, res: Response) {
     // (embedded) or inside the gateway (remote). PlcClient.hammerWriteTags holds
     // the verbatim loop.
     let result
-    if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '') {
+    // hasMcm gate (same convention as /api/ios): a legacy single-PLC tablet
+    // sends its active subsystemId too — fall through to the singleton, not 503.
+    if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
       const r = await hammerWriteTagsForMcm(String(subsystemId), deviceName, writes)
       if (!r.connected) return res.status(503).json({ error: `PLC for MCM ${subsystemId} not connected` })
       result = r

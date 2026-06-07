@@ -1595,7 +1595,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     const openReader = () => fetch('/api/vfd-commissioning/wizard-open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceName: device.deviceName }),
+      body: JSON.stringify({ deviceName: device.deviceName, subsystemId }),
     }).then(r => r.json()).then(result => {
       if (cancelled) return
       if (!result?.success) {
@@ -1631,7 +1631,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       fetch('/api/vfd-commissioning/wizard-open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceName: device.deviceName }),
+        body: JSON.stringify({ deviceName: device.deviceName, subsystemId }),
       }).catch(() => { /* ignore */ })
     }, 60_000)
 
@@ -1742,6 +1742,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
           sheetName,
           clearPlc: plcConnected,
           updatedBy: userName,
+          subsystemId,
         }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

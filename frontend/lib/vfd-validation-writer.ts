@@ -316,6 +316,28 @@ function getValidatedDevices(): ValidatedDevice[] {
   }
 }
 
+/**
+ * deviceName (uppercased) → owning SubsystemId, derived from the Ios table's
+ * NetworkDeviceName column. Used to route each validated VFD's flag writes to
+ * the PLC that actually owns the drive in multi-MCM deployments. Devices that
+ * don't resolve here keep the legacy behavior (active singleton PLC).
+ */
+function getDeviceSubsystemMap(): Map<string, string> {
+  try {
+    const rows = db.prepare(`
+      SELECT DISTINCT NetworkDeviceName AS deviceName, SubsystemId AS subsystemId
+      FROM Ios
+      WHERE NetworkDeviceName IS NOT NULL AND NetworkDeviceName != '' AND SubsystemId IS NOT NULL
+    `).all() as Array<{ deviceName: string; subsystemId: number }>
+    const map = new Map<string, string>()
+    for (const row of rows) map.set(row.deviceName.toUpperCase(), String(row.subsystemId))
+    return map
+  } catch (err) {
+    console.error('[VfdValidationWriter] device→subsystem query failed:', err)
+    return new Map()
+  }
+}
+
 // Devices last reported as "validated but no polarity stamp" — used to log the
 // list only when it CHANGES, not every 10 s cycle. These drives get
 // Valid_Direction force-set while their Normal/Reverse_Polarity bits are left
@@ -598,16 +620,63 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
     // Lazy import to break circular dep (plc-client-manager → us is fine,
     // but we also need to reach back into it for connection info).
     const { getPlcClient, getPlcStatus } = await import('@/lib/plc-client-manager')
+    const { getConnectedEmbeddedMcms } = await import('@/lib/mcm-registry')
 
-    const client = getPlcClient()
-    if (!client.isConnected) {
-      console.log('[VfdValidationWriter] Skipped: PLC not connected')
-      return
+    // ── Write targets: the legacy singleton + every connected embedded MCM ──
+    // The central tool holds N concurrent per-MCM PLC connections in the
+    // registry; the legacy field tablet has only the singleton. Each target
+    // gets its own convergence pass against its own controller — writing a
+    // device's flags to a PLC that doesn't own it is at best wasted CIP
+    // traffic and at worst a wrong-controller write.
+    interface WriteTarget {
+      label: string
+      ip: string
+      path: string
+      isConnected: () => boolean
+      readTagCached: (name: string) => boolean | null
+      devices: ValidatedDevice[]
+    }
+    const targets: WriteTarget[] = []
+
+    let singletonTarget: WriteTarget | null = null
+    try {
+      const client = getPlcClient()
+      const { connectionConfig } = getPlcStatus()
+      if (client.isConnected && connectionConfig) {
+        singletonTarget = {
+          label: 'active-plc',
+          ip: connectionConfig.ip,
+          path: connectionConfig.path,
+          isConnected: () => client.isConnected,
+          readTagCached: (name) => client.readTagCached(name),
+          devices: [],
+        }
+        targets.push(singletonTarget)
+      }
+    } catch { /* singleton not initialized — registry-only deployment */ }
+
+    const mcmTargetById = new Map<string, WriteTarget>()
+    for (const mcm of getConnectedEmbeddedMcms()) {
+      // An MCM pointing at the same controller as the active singleton would
+      // run every job twice — route its devices through the singleton pass.
+      if (singletonTarget && mcm.ip === singletonTarget.ip && mcm.path === singletonTarget.path) {
+        mcmTargetById.set(mcm.subsystemId, singletonTarget)
+        continue
+      }
+      const target: WriteTarget = {
+        label: `mcm-${mcm.subsystemId}`,
+        ip: mcm.ip,
+        path: mcm.path,
+        isConnected: () => mcm.client.isConnected,
+        readTagCached: (name) => mcm.client.readTagCached(name),
+        devices: [],
+      }
+      mcmTargetById.set(mcm.subsystemId, target)
+      targets.push(target)
     }
 
-    const { connectionConfig } = getPlcStatus()
-    if (!connectionConfig) {
-      console.log('[VfdValidationWriter] Skipped: no connection config')
+    if (targets.length === 0) {
+      console.log('[VfdValidationWriter] Skipped: no PLC connected (neither active singleton nor registry MCMs)')
       return
     }
 
@@ -617,62 +686,98 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
       return
     }
 
-    // Build the set of currently-faulted device names from the cached
-    // tag state. This is the guard that prevents the writer from flooding
-    // the CIP queue with doomed handle creations during a ring break or
-    // controller hiccup. `:I.ConnectionFaulted` tags are loaded by the
-    // network-status endpoint and refreshed continuously by the IO
-    // reader's main poll loop (~75 ms), so the lookup is O(1) per device
-    // and the data is at most a fraction of a second stale.
-    const faultedDevices = buildFaultedDeviceSet(
-      (name) => client.readTagCached(name),
-      devices,
-    )
+    // ── Partition devices among targets ──────────────────────────────
+    // Registry MCMs own the devices of their subsystem (deviceName →
+    // subsystem via Ios.NetworkDeviceName). Everything else — unmapped
+    // devices, or devices whose owning MCM isn't a connected registry
+    // entry — keeps the legacy behavior and goes through the active
+    // singleton PLC when one is connected.
+    if (mcmTargetById.size === 0) {
+      // Legacy single-PLC deployment: exact pre-multi-MCM behavior.
+      singletonTarget!.devices = devices
+    } else {
+      const subsystemByDevice = getDeviceSubsystemMap()
+      let unrouted = 0
+      for (const device of devices) {
+        const owner = subsystemByDevice.get(device.deviceName.toUpperCase())
+        const target = (owner !== undefined ? mcmTargetById.get(owner) : undefined) ?? singletonTarget
+        if (target) target.devices.push(device)
+        else unrouted++
+      }
+      if (unrouted > 0) {
+        console.log(
+          `[VfdValidationWriter] ${unrouted} device(s) not converged this pass — ` +
+          'owning MCM not connected and no active singleton PLC to fall back to',
+        )
+      }
+    }
 
-    const t0 = Date.now()
-    const { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected } = await batchWriteFlags(
-      connectionConfig.ip,
-      connectionConfig.path,
-      devices,
-      faultedDevices,
-      () => client.isConnected,
-    )
-    const elapsed = Date.now() - t0
+    // ── One convergence pass per target, sequential ──────────────────
+    // Sequential on purpose: each pass already runs WRITE_CONCURRENCY
+    // outstanding FFI ops; stacking passes across controllers would multiply
+    // pressure on the shared FFI thread pool for little latency win (a
+    // reconnect trigger typically only has real work on ONE controller —
+    // the others verify-only in a few seconds).
+    for (const target of targets) {
+      if (target.devices.length === 0) continue
 
-    // Single structured log line per cycle. Critical for diagnosing what
-    // the writer is doing in the field — operators / cloud heartbeat can
-    // grep for `[VfdValidationWriter] Sync done` and see at a glance
-    // whether the system is healthy (all ok), partially degraded (some
-    // skipped-faulted), or short-circuited (aborted-mass-failure).
-    const abortNote = abortedAt != null
-      ? `, ABORTED at device ${abortedAt + 1}/${devices.length} after ${MAX_CONSECUTIVE_CREATE_FAILURES} consecutive createTag failures (CIP queue likely saturated; will retry next trigger)`
-      : ''
-    const disconnectNote = disconnected
-      ? ', STOPPED — PLC disconnected mid-pass (reconnect trigger will redo the full pass)'
-      : ''
+      // Build the set of currently-faulted device names from this target's
+      // cached tag state. This is the guard that prevents the writer from
+      // flooding the CIP queue with doomed handle creations during a ring
+      // break or controller hiccup. `:I.ConnectionFaulted` tags are loaded by
+      // the network-status endpoint and refreshed continuously by the IO
+      // reader's main poll loop (~75 ms), so the lookup is O(1) per device
+      // and the data is at most a fraction of a second stale.
+      const faultedDevices = buildFaultedDeviceSet(target.readTagCached, target.devices)
+
+      const t0 = Date.now()
+      const { ok, verified, fail, skipped, skippedFaulted, abortedAt, disconnected } = await batchWriteFlags(
+        target.ip,
+        target.path,
+        target.devices,
+        faultedDevices,
+        target.isConnected,
+      )
+      const elapsed = Date.now() - t0
+
+      // Single structured log line per target per cycle. Critical for
+      // diagnosing what the writer is doing in the field — operators / cloud
+      // heartbeat can grep for `[VfdValidationWriter] Sync done` and see at a
+      // glance whether the system is healthy (all ok), partially degraded
+      // (some skipped-faulted), or short-circuited (aborted-mass-failure).
+      const abortNote = abortedAt != null
+        ? `, ABORTED at device ${abortedAt + 1}/${target.devices.length} after ${MAX_CONSECUTIVE_CREATE_FAILURES} consecutive createTag failures (CIP queue likely saturated; will retry next trigger)`
+        : ''
+      const disconnectNote = disconnected
+        ? ', STOPPED — PLC disconnected mid-pass (reconnect trigger will redo the full pass)'
+        : ''
+      // Per-flag device counts — with per-flag assertion a device may earn only
+      // some flags, so this shows how far the fleet has progressed at a glance.
+      const mapN = target.devices.filter(d => d.writes.some(w => w.field === 'Valid_Map')).length
+      const hpN = target.devices.filter(d => d.writes.some(w => w.field === 'Valid_HP')).length
+      const dirN = target.devices.filter(d => d.writes.some(w => w.field === 'Valid_Direction')).length
+      console.log(
+        `[VfdValidationWriter] Sync done (${reason}, ${target.label}): ${target.devices.length} device(s) ` +
+        `(${mapN} map, ${hpN} hp, ${dirN} dir), ` +
+        `${ok} written, ${verified} already-correct, ${fail} failed, ` +
+        `${skipped} skipped (known-missing), ` +
+        `${skippedFaulted} skipped-faulted, ` +
+        `${elapsed} ms${abortNote}${disconnectNote}`,
+      )
+    }
+
     // Direction-checked drives with no parseable Polarity stamp: their
     // Normal/Reverse_Polarity bits CANNOT be restored after a program
     // download — the recorded fact doesn't exist. Surface them loudly so
     // field logs / cloud heartbeat show exactly which belts are exposed.
     // Only direction-checked drives are flagged — identity/HP-only drives
-    // legitimately have no polarity yet and are not "exposed".
+    // legitimately have no polarity yet and are not "exposed". Computed over
+    // ALL validated devices, not per target — exposure doesn't depend on
+    // which controller the drive lives on.
     const noPolarity = devices
       .filter(d => d.hasDirection && parsePolarity(d.polarityRaw) === null)
       .map(d => d.deviceName)
       .sort()
-    // Per-flag device counts — with per-flag assertion a device may earn only
-    // some flags, so this shows how far the fleet has progressed at a glance.
-    const mapN = devices.filter(d => d.writes.some(w => w.field === 'Valid_Map')).length
-    const hpN = devices.filter(d => d.writes.some(w => w.field === 'Valid_HP')).length
-    const dirN = devices.filter(d => d.writes.some(w => w.field === 'Valid_Direction')).length
-    console.log(
-      `[VfdValidationWriter] Sync done (${reason}): ${devices.length} device(s) ` +
-      `(${mapN} map, ${hpN} hp, ${dirN} dir), ` +
-      `${ok} written, ${verified} already-correct, ${fail} failed, ` +
-      `${skipped} skipped (known-missing), ` +
-      `${skippedFaulted} skipped-faulted, ${noPolarity.length} without-polarity-stamp, ` +
-      `${elapsed} ms${abortNote}${disconnectNote}`,
-    )
     const noPolarityKey = noPolarity.join(',')
     if (noPolarityKey !== lastNoPolarityKey) {
       lastNoPolarityKey = noPolarityKey
