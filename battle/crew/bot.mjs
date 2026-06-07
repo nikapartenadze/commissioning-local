@@ -108,7 +108,7 @@ async function bot(n) {
       // multiple bots write the same row near-simultaneously (version races).
       // Hot writes use Failed/Cleared (legal on SPARE too) to avoid SPARE
       // noise and keep the race signal clean.
-      let io, result, hot = false;
+      let io, result, hot = false, wiringFault = false;
       if (ios.length > HOT_SET && Math.random() < HOT_FRACTION) {
         io = ios[Math.floor(Math.random() * HOT_SET)];
         result = Math.random() < 0.5 ? 'Failed' : 'Cleared';
@@ -123,21 +123,35 @@ async function bot(n) {
         // collision (which the observer must exclude, leaving 0 checkable IOs
         // over an 8 h soak). Real techs don't both test the same point either;
         // concurrent-write stress stays in the (separate) hot-set branch.
-        const mine = ios.filter((io) => (io.id % BOTS) === (n - 1));
-        if (mine.length === 0) { await sleep(2000); continue; }
-        io = pick(mine);
-        const roll = Math.random();
-        // Real techs don't mark SPARE points Passed (the cloud refuses it,
-        // each refusal parks a row, and parked rows block the scoped
-        // auto-pull at the result-loss guard — see FINDINGS, central rounds
-        // 1-2). SPAREs legally take Failed/Cleared only.
-        const isSpare = /spare/i.test(`${io.description ?? ''} ${io.name ?? ''}`);
-        result = isSpare
-          ? (roll < 0.7 ? 'Failed' : 'Cleared')
-          : (roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared');
+        // SPARE semantics (field reality): a SPARE point is left ALONE — it
+        // is never Passed (the cloud refuses it; each refusal parks a row and
+        // jams the scoped auto-pull at the result-loss guard, see FINDINGS
+        // central rounds 1-2), and it is Failed ONLY when it unexpectedly
+        // shows live state — a bit flipping on a spare point means wrong
+        // wiring. Anything else a tech wouldn't touch.
+        const isSpare = (io) => /spare/i.test(`${io.description ?? ''} ${io.name ?? ''}`);
+        const mine = ios.filter((io) => (io.id % BOTS) === (n - 1) && !isSpare(io));
+        const miswired = ios.filter(
+          (io) => (io.id % BOTS) === (n - 1) && isSpare(io) && io.state === true,
+        );
+        if (mine.length === 0 && miswired.length === 0) { await sleep(2000); continue; }
+        if (miswired.length > 0) {
+          // Unexpected state on a SPARE → fail it (wrong-wiring catch).
+          io = pick(miswired);
+          result = 'Failed';
+          wiringFault = true;
+        } else {
+          io = pick(mine);
+          const roll = Math.random();
+          result = roll < 0.75 ? 'Passed' : roll < 0.95 ? 'Failed' : 'Cleared';
+        }
       }
       const comments =
-        result === 'Failed' ? `battle-bot${n}: simulated failure ${Date.now()}` : undefined;
+        result === 'Failed'
+          ? (wiringFault
+              ? `battle-bot${n}: SPARE showed state — check wiring ${Date.now()}`
+              : `battle-bot${n}: simulated failure ${Date.now()}`)
+          : undefined;
 
       const t0 = Date.now();
       const r = await api(`/api/ios/${io.id}`, {
