@@ -237,6 +237,25 @@ class AutoSyncService {
       // rejections; the user's next pass/fail/clear creates a fresh row at
       // the current version.
       const IO_PENDING_RETRY_CAP = 10
+
+      // ── B7 reconcile: version-conflicted rows vs cloud truth ─────────
+      // `updatedCount=0` rows are usually AT-LEAST-ONCE GHOSTS: the push
+      // landed cloud-side but the ack was lost (cloud-flap timeout), so
+      // every retry re-sends a stale base version, burns strikes toward the
+      // park cap, and eventually wedges as a parked row — while the value
+      // is ALREADY safely on the cloud (reproduced at scale by the battle
+      // central-cdw5 soaks, 2026-06-07: 85 parked rows, all this class).
+      // Resolve them against cloud truth instead of retrying blind:
+      //   cloud value == row value          → already applied → delete row
+      //   newer pending row for the same IO → superseded      → delete row
+      //   else → REBASE the base version to cloud's, clear strikes and
+      //          un-park (local is the result authority; next push wins).
+      try {
+        await this.reconcileVersionConflicts()
+      } catch (e) {
+        console.warn('[AutoSync] B7 reconcile failed (non-fatal):', e)
+      }
+
       try {
         // Before deleting, log each row in detail. The 2026-05-21 incident
         // showed that the previous "Dropped N rows" summary was useless for
@@ -739,6 +758,113 @@ class AutoSyncService {
    * Falls back to the legacy single-subsystem pull when no MCMs are configured
    * (field-tablet deployments are unchanged).
    */
+  /**
+   * B7 reconcile — resolve `updatedCount=0` (version-conflict) pending rows
+   * against CLOUD TRUTH instead of blind retries. See the call site in the
+   * push loop for the full story (at-least-once ghosts under cloud-flap).
+   * Includes already-PARKED rows of this class so historical ghosts heal too.
+   * Throttled; fetches each affected subsystem's payload at most once per run.
+   */
+  private _lastB7ReconcileAt = 0
+  private async reconcileVersionConflicts(): Promise<void> {
+    const THROTTLE_MS = 5 * 60_000
+    if (Date.now() - this._lastB7ReconcileAt < THROTTLE_MS) return
+
+    interface ConflictRow {
+      id: number; IoId: number; TestResult: string | null; Comments: string | null
+      Version: number; DeadLettered: number; SubsystemId: number | null
+    }
+    const rows = db.prepare(
+      `SELECT ps.id, ps.IoId, ps.TestResult, ps.Comments, ps.Version, ps.DeadLettered, i.SubsystemId
+         FROM PendingSyncs ps JOIN Ios i ON i.id = ps.IoId
+        WHERE ps.LastError LIKE '%updatedCount=0%'
+          AND (ps.DeadLettered = 1 OR ps.RetryCount >= 3)`
+    ).all() as ConflictRow[]
+    if (rows.length === 0) return
+    this._lastB7ReconcileAt = Date.now()
+
+    const config = await configService.getConfig()
+    if (!config.remoteUrl || !config.apiPassword) return
+
+    // One cloud fetch per affected subsystem (bounded).
+    const subsystems = Array.from(new Set(rows.map(r => r.SubsystemId).filter((s): s is number => s != null))).slice(0, 6)
+    const cloudByIo = new Map<number, { result: string | null; comments: string | null; version: number }>()
+    for (const sid of subsystems) {
+      try {
+        const resp = await fetch(`${config.remoteUrl.replace(/\/$/, '')}/api/sync/subsystem/${sid}`, {
+          headers: { 'X-API-Key': config.apiPassword },
+          signal: AbortSignal.timeout(25_000),
+        })
+        if (!resp.ok) continue
+        const data = await resp.json() as { ios?: Array<{ id: number; result?: string | null; comments?: string | null; version?: number }> }
+        for (const io of data.ios ?? []) {
+          cloudByIo.set(Number(io.id), {
+            result: io.result ?? null,
+            comments: io.comments ?? null,
+            version: Number(io.version) || 0,
+          })
+        }
+      } catch { /* unreachable cloud — try again next throttle window */ }
+    }
+    if (cloudByIo.size === 0) return
+
+    // A cleared result lands as NULL in both stores.
+    const norm = (v: string | null | undefined) => (v == null || v === '' || v === 'Cleared') ? null : v
+
+    let applied = 0, superseded = 0, rebased = 0
+    const delStmt = db.prepare('DELETE FROM PendingSyncs WHERE id = ?')
+    const rebaseStmt = db.prepare(
+      'UPDATE PendingSyncs SET Version = ?, RetryCount = 0, DeadLettered = 0, LastError = ? WHERE id = ?'
+    )
+    const newerStmt = db.prepare(
+      'SELECT COUNT(*) AS cnt FROM PendingSyncs WHERE IoId = ? AND id > ? AND DeadLettered = 0'
+    )
+    for (const row of rows) {
+      const cloud = cloudByIo.get(row.IoId)
+      if (!cloud) continue
+      if (norm(cloud.result) === norm(row.TestResult)) {
+        // The push already landed (ack was lost) — nothing unsynced here.
+        auditLog({
+          type: 'sync.push.drop', ioId: row.IoId, version: row.Version,
+          result: row.TestResult, user: null,
+          reason: 'b7-reconcile: cloud already has this value (at-least-once ghost)',
+          detail: { pendingId: row.id, cloudVersion: cloud.version },
+        })
+        delStmt.run(row.id)
+        applied++
+      } else if ((newerStmt.get(row.IoId, row.id) as { cnt: number }).cnt > 0) {
+        // A newer local write supersedes this row — it carries the newer value.
+        auditLog({
+          type: 'sync.push.drop', ioId: row.IoId, version: row.Version,
+          result: row.TestResult, user: null,
+          reason: 'b7-reconcile: superseded by a newer pending row',
+          detail: { pendingId: row.id },
+        })
+        delStmt.run(row.id)
+        superseded++
+      } else {
+        // Cloud holds a DIFFERENT value at a newer version. Local is the
+        // result authority — rebase to cloud's version so the next push
+        // applies last-write-wins, and clear strikes/park.
+        rebaseStmt.run(cloud.version, `b7-rebased from v${row.Version} to cloud v${cloud.version}`, row.id)
+        auditLog({
+          type: 'sync.push.drop', ioId: row.IoId, version: row.Version,
+          result: row.TestResult, user: null,
+          reason: `b7-reconcile: rebased to cloud v${cloud.version} (will re-push, local wins)`,
+          detail: { pendingId: row.id, cloudResult: cloud.result },
+        })
+        rebased++
+      }
+    }
+    if (applied + superseded + rebased > 0) {
+      console.log(
+        `[AutoSync] B7 reconcile: ${applied} already-applied ghost(s) cleared, ` +
+        `${superseded} superseded row(s) cleared, ${rebased} rebased for re-push ` +
+        `(${rows.length} conflicted row(s) examined across ${subsystems.length} subsystem(s))`
+      )
+    }
+  }
+
   private async pullAllConfiguredMcms(trigger: string): Promise<void> {
     if (this.isPullingMcms) return
     const MIN_CATCHUP_GAP = 30_000

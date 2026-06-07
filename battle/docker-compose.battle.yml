@@ -227,6 +227,14 @@ services:
     image: ${TOOL_IMAGE:-battle/tool:local}
     profiles: ["split"]
     command: ["node", "gateway-server.js"]
+    # The image's baked-in HEALTHCHECK probes the APP port (:3000) — wrong for
+    # the gateway process. Probe its own /health on :3200 instead.
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:3200/health',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     environment:
       NODE_ENV: production
       GATEWAY_PORT: "3200"
