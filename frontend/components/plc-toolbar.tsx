@@ -72,6 +72,11 @@ interface PlcToolbarProps {
   pendingIoSyncCount?: number
   pendingL2SyncCount?: number
   pendingChangeRequestCount?: number
+  /** Results the cloud rejected / that exhausted retries — stuck, need
+   *  attention. Shown as a distinct red marker (NOT "pending, will sync"). */
+  attentionCount?: number
+  /** Status read failed — counts unreliable; never render "all synced" (B8). */
+  statusUnknown?: boolean
   pullBlocked?: boolean
 }
 
@@ -105,6 +110,8 @@ export function PlcToolbar({
   pendingIoSyncCount = 0,
   pendingL2SyncCount = 0,
   pendingChangeRequestCount = 0,
+  attentionCount = 0,
+  statusUnknown = false,
   pullBlocked = false,
   punchlists = [],
   activePunchlistId = null,
@@ -116,11 +123,16 @@ export function PlcToolbar({
   const progressPercent = totalIos > 0 ? ((passedIos + failedIos) / totalIos) * 100 : 0
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
   const totalPendingSyncs = pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount
-  const cloudTitle = totalPendingSyncs > 0
-    ? `Local queue pending: ${pendingIoSyncCount} IO, ${pendingL2SyncCount} Functional Validation, ${pendingChangeRequestCount} change request${pendingChangeRequestCount === 1 ? '' : 's'}. Pull is blocked until sync completes.`
-    : isCloudConnected
-      ? 'Cloud Connected'
-      : 'Offline Mode'
+  const cloudTitle = attentionCount > 0
+    ? `⚠ ${attentionCount} result${attentionCount === 1 ? '' : 's'} the cloud REJECTED or could not sync after repeated tries — open Cloud Sync to review. These are NOT on cloud. ` +
+      (totalPendingSyncs > 0 ? `Plus ${totalPendingSyncs} still queued.` : '')
+    : statusUnknown
+      ? 'Sync status unknown — could not read local sync state.'
+      : totalPendingSyncs > 0
+        ? `Local queue pending: ${pendingIoSyncCount} IO, ${pendingL2SyncCount} Functional Validation, ${pendingChangeRequestCount} change request${pendingChangeRequestCount === 1 ? '' : 's'}. Pull is blocked until sync completes.`
+        : isCloudConnected
+          ? 'Cloud Connected — all synced'
+          : 'Offline Mode'
 
   return (
     <div className="bg-card border-y border-[#C6941A]/20">
@@ -522,11 +534,17 @@ export function PlcToolbar({
               size="lg"
               className={cn(
                 "relative h-10 w-10 sm:h-12 sm:w-auto sm:px-3 p-0 sm:p-auto gap-2",
-                totalPendingSyncs > 0
-                  ? "text-amber-600"
-                  : isCloudConnected
-                    ? "text-green-600"
-                    : "text-amber-600"
+                // Red = results stuck/rejected and NOT on cloud — needs action.
+                // Amber = pending (will sync) or offline. Green = all synced.
+                attentionCount > 0
+                  ? "text-red-600"
+                  : totalPendingSyncs > 0
+                    ? "text-amber-600"
+                    : statusUnknown
+                      ? "text-amber-600"
+                      : isCloudConnected
+                        ? "text-green-600"
+                        : "text-amber-600"
               )}
               onClick={onCloudSync}
               title={cloudTitle}
@@ -537,16 +555,22 @@ export function PlcToolbar({
                 ) : (
                   <CloudOff className="w-5 h-5" />
                 )}
-                {totalPendingSyncs > 0 && (
+                {/* Red attention badge takes precedence over the amber pending
+                    count — stuck/rejected results are not "just pending". */}
+                {attentionCount > 0 ? (
+                  <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-[10px] leading-[18px] font-bold text-white text-center">
+                    {attentionCount > 99 ? '99+' : attentionCount}
+                  </span>
+                ) : totalPendingSyncs > 0 ? (
                   <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-[10px] leading-[18px] font-bold text-black text-center">
                     {totalPendingSyncs > 99 ? '99+' : totalPendingSyncs}
                   </span>
-                )}
+                ) : null}
               </div>
               <span className="text-xs uppercase hidden lg:inline">
-                {pullBlocked ? "QUEUE" : isCloudConnected ? "CLOUD" : "OFFLINE"}
+                {attentionCount > 0 ? "CHECK" : pullBlocked ? "QUEUE" : statusUnknown ? "SYNC?" : isCloudConnected ? "CLOUD" : "OFFLINE"}
               </span>
-              {pullBlocked && <AlertTriangle className="hidden lg:inline w-4 h-4" />}
+              {(pullBlocked || attentionCount > 0 || statusUnknown) && <AlertTriangle className="hidden lg:inline w-4 h-4" />}
             </Button>
           )}
 

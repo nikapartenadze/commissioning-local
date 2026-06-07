@@ -50,6 +50,14 @@ export interface HeartbeatPayload {
   // falls back to its hostname-based guess (see lib/heartbeat/rustdesk-id.ts).
   rustDeskId?: string
   commandResults?: CommandResult[]
+  // B4: sync-queue depth so the fleet dashboard can spot a tablet silently
+  // accumulating or PARKING unsynced field work — the MCM11 incident was
+  // centrally invisible for days because the heartbeat carried no such signal.
+  //   pendingSyncCount   — active retryable rows (IO + L2 queues)
+  //   attentionSyncCount — PARKED rows (cloud-rejected / retry-cap): stuck,
+  //                        not on cloud, needs a human. The number to alert on.
+  pendingSyncCount?: number
+  attentionSyncCount?: number
 }
 
 interface HeartbeatResponseBody {
@@ -74,10 +82,24 @@ export async function buildHeartbeatPayload(): Promise<HeartbeatPayload> {
 
   const rustDeskId = getRustDeskId()
 
+  // B4 sync-queue depth (best-effort; never let it break the heartbeat).
+  let pendingSyncCount: number | undefined
+  let attentionSyncCount: number | undefined
+  try {
+    const { db } = await import('@/lib/db-sqlite')
+    const io = (db.prepare('SELECT COUNT(*) c FROM PendingSyncs WHERE DeadLettered = 0').get() as { c: number }).c
+    let l2 = 0
+    try { l2 = (db.prepare('SELECT COUNT(*) c FROM L2PendingSyncs').get() as { c: number }).c } catch { /* table may not exist */ }
+    pendingSyncCount = io + l2
+    attentionSyncCount = (db.prepare('SELECT COUNT(*) c FROM PendingSyncs WHERE DeadLettered = 1').get() as { c: number }).c
+  } catch { /* DB not ready — omit, cloud keeps prior value */ }
+
   return {
     machineId: getMachineId(),
     hostname: os.hostname() || null,
     version: getCurrentAppVersion() || null,
+    pendingSyncCount,
+    attentionSyncCount,
     // TODO: server-side has no clean read on the active operator. The
     // JWT (lib/auth/jwt.ts) carries fullName but not email, and the
     // canonical identity lives in browser localStorage via

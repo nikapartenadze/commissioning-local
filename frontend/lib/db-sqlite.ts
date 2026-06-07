@@ -67,10 +67,35 @@ try {
     'ALTER TABLE PendingSyncs ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE Ios ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE TestHistories ADD COLUMN BlockerDescription TEXT',
+    // Dead-letter flag: a pending row that the cloud permanently rejected, or
+    // that exhausted the retry cap, is PARKED (DeadLettered=1) instead of
+    // DELETEd. Deleting it left zero trace — the queue count hit 0 and the UI
+    // read "synced" while the result never reached cloud (the MCM11 silent-
+    // loss class: B3/B5/B7). Parked rows keep the local result + reason, are
+    // excluded from the active push loop, and are surfaced as "needs attention".
+    'ALTER TABLE PendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
+  // PendingSyncs coalesce trigger + active-queue index — created AFTER the
+  // migrations so the DeadLettered column is guaranteed to exist (added above
+  // on a pre-existing DB, or present in CREATE TABLE on a fresh one). It must
+  // NOT live in initializeSchema(): that runs BEFORE the ALTER, so referencing
+  // DeadLettered there threw "no such column", aborting the whole schema init
+  // and silently skipping every migration (caught in battle pre-release).
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_pendingsyncs_active ON PendingSyncs(DeadLettered, IoId)')
+    // F2 coalesce: keep only the LATEST active pending row per IO so rapid
+    // repeated edits don't pile up thousands of version-conflicting rows.
+    // Parked (DeadLettered=1) rows are left alone (the attention surface).
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_pendingsyncs_coalesce
+      AFTER INSERT ON PendingSyncs
+      WHEN NEW.DeadLettered = 0
+      BEGIN
+        DELETE FROM PendingSyncs WHERE IoId = NEW.IoId AND DeadLettered = 0 AND id < NEW.id;
+      END`)
+  } catch (e) { console.warn('[DB] coalesce trigger/index setup failed:', e) }
   try {
     db.exec(`
       UPDATE L2Columns
@@ -175,7 +200,11 @@ export function initializeSchema() {
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT,
-      Version INTEGER DEFAULT 0
+      Version INTEGER DEFAULT 0,
+      -- Parked-sync flag (also added by ALTER for pre-existing DBs). Declared
+      -- here so a FRESH DB has it immediately and the coalesce trigger/index
+      -- below can reference it. See the dead-letter design in auto-sync.ts.
+      DeadLettered INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_ioid ON PendingSyncs(IoId);
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_createdat ON PendingSyncs(CreatedAt);
@@ -469,6 +498,31 @@ export function initializeSchema() {
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT
     );
+
+    -- Device-level blocker sync queue (VFD bump-test failures).
+    -- Unlike L2PendingSyncs (per IO-cell), this propagates a Party→Description
+    -- blocker to the SHARED Devices.Blocker* columns on cloud (resolved there
+    -- by ios(subsystem) ⨝ Devices on device_id WHERE Devices.Name = DeviceName).
+    -- 'set' writes both columns; 'clear' conditionally nulls them only if the
+    -- current cloud values still match the Expected* pair (so a blocker set by
+    -- the tracker/coordinator meanwhile is never wiped). See
+    -- frontend/specs/2026-06-04-vfd-bump-blocker-design.md.
+    CREATE TABLE IF NOT EXISTS DeviceBlockerPendingSyncs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      DeviceName TEXT NOT NULL,
+      Op TEXT NOT NULL,                  -- 'set' | 'clear'
+      BlockerResponsibleParty TEXT,
+      BlockerDescription TEXT,
+      ExpectedParty TEXT,
+      ExpectedDescription TEXT,
+      UpdatedBy TEXT,
+      Timestamp TEXT,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      RetryCount INTEGER DEFAULT 0,
+      LastError TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
 
   `)
 

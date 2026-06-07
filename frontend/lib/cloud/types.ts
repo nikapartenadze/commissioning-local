@@ -108,6 +108,8 @@ export interface CloudPullRequest {
   remoteUrl: string
   subsystemId: number
   apiPassword: string
+  /** Acknowledge the result-loss guard and pull anyway (see CloudPullResponse.requiresForce). */
+  force?: boolean
 }
 
 export interface CloudPullResponse {
@@ -115,6 +117,20 @@ export interface CloudPullResponse {
   message?: string
   iosCount?: number
   error?: string
+  /**
+   * Result-loss guard (2026-06-04 TPA8/MCM08 incident): set when the pull
+   * was refused because local IOs have results that the cloud payload lacks.
+   * Re-send the pull with body.force === true to proceed anyway.
+   */
+  requiresForce?: boolean
+  /** Local results the pull would erase (cloud has no result for these IOs). */
+  wouldLoseResults?: number
+  /** Local comments the pull would erase (cloud has no comment for these IOs). */
+  wouldLoseComments?: number
+  /** Sample of at-risk IOs for display: id, name, local result. */
+  atRiskSample?: Array<{ id: number; name: string; result: string }>
+  /** Sample of at-risk comment IOs for display: id, name. */
+  atRiskCommentSample?: Array<{ id: number; name: string }>
 }
 
 export interface CloudSyncStatusResponse {
@@ -124,6 +140,12 @@ export interface CloudSyncStatusResponse {
   pendingL2SyncCount?: number
   pendingChangeRequestCount?: number
   totalPendingCount?: number
+  /** Rows the cloud REJECTED or that exhausted retries — left the active queue
+   *  but are NOT on cloud. The "needs attention" surface (B3/B5). */
+  attentionCount?: number
+  /** True when the status read itself failed — the counts are not reliable and
+   *  the UI must NOT render "all synced" (B8). */
+  statusUnknown?: boolean
   failedIoSyncCount?: number
   failedL2SyncCount?: number
   oldestPendingIoSync?: string

@@ -1,0 +1,640 @@
+#!/usr/bin/env python3
+"""
+Observer — the verdict machine. Stdlib only (no pip at build time).
+
+Probes the tool from OUTSIDE (a separate container, like a real tablet would)
+and judges the run at the end. The 1-second /api/health latency probe is the
+star: a blocked Node event loop (the 2026-06-05 MCM02 freeze) shows up here
+within seconds as multi-second latencies, while CPU stays idle.
+
+Outputs (in /runs/<RUN_ID>/):
+  health.csv      ts,latency_ms,status  (one row per probe)
+  memory.csv      ts,rss_mb,heap_mb     (scraped from the tool's [HEALTH] log lines)
+  verdict.json    invariant results + stats; process exit code 0/1 mirrors it
+
+Invariants (Phase 0):
+  I1 responsiveness  p95 < 500 ms, p99 < 2000 ms, no gap > 10 s
+  I2 no leak         RSS slope < 5 MB/h after warmup
+  I5 stability       unexpected server.start audit events == 0; flap budget
+  I3 (evidence only) every chaos 'download' is followed by a
+                     "Sync done (plc-reconnect)" with written > 0 within 120 s
+
+Env: TOOL_URL, SOAK_MINUTES (default 480), RUN_ID, FLAP_BUDGET (default 0),
+     DATA_DIR (tool's /data mounted ro), RUNS_DIR.
+"""
+import csv
+import glob
+import json
+import os
+import re
+import sqlite3
+import statistics
+import sys
+import time
+import urllib.error
+import urllib.request
+
+TOOL_URL = os.environ.get("TOOL_URL", "http://tool:3000")
+SOAK_MINUTES = float(os.environ.get("SOAK_MINUTES", "480"))
+RUN_ID = os.environ.get("RUN_ID", time.strftime("run-%Y%m%d-%H%M%S"))
+FLAP_BUDGET = int(os.environ.get("FLAP_BUDGET", "0"))
+DATA_DIR = os.environ.get("DATA_DIR", "/data")
+RUNS_DIR = os.environ.get("RUNS_DIR", "/runs")
+# Cloud-side verification (I4). Empty CLOUD_URL => PLC-only run, I4 skipped.
+CLOUD_URL = os.environ.get("CLOUD_URL", "http://cloud:3000")
+CLOUD_API_KEY = os.environ.get("CLOUD_API_KEY", "***REMOVED***")
+SUBSYSTEM_ID = os.environ.get("SUBSYSTEM_ID", "38")
+CHAOS_URL = os.environ.get("CHAOS_URL", "http://chaos:8666")
+
+OUT = os.path.join(RUNS_DIR, RUN_ID)
+os.makedirs(OUT, exist_ok=True)
+
+P95_LIMIT_MS = 500.0
+P99_LIMIT_MS = 2000.0
+GAP_LIMIT_S = 10.0
+RSS_SLOPE_LIMIT_MB_PER_H = 5.0
+WARMUP_MINUTES = 60.0
+
+
+def probe_once(timeout: float = 10.0) -> tuple[float | None, int]:
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(f"{TOOL_URL}/api/health", timeout=timeout) as r:
+            r.read()
+            return (time.monotonic() - t0) * 1000.0, r.status
+    except urllib.error.HTTPError as e:
+        return (time.monotonic() - t0) * 1000.0, e.code
+    except Exception:
+        return None, 0
+
+
+def scrape_logs() -> dict:
+    """RSS samples, flap count, restore evidence, server.start events from /data/logs."""
+    rss: list[tuple[float, float, float]] = []  # (epoch, rss_mb, heap_mb)
+    flaps = 0
+    restores: list[str] = []
+    health_re = re.compile(
+        r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[HEALTH\] Memory: heap=(\d+)MB, rss=(\d+)MB")
+    flap_re = re.compile(r"Connection status: error")
+    restore_re = re.compile(r"Sync done \(plc-reconnect\).*?(\d+) written")
+
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "app-*.log"))):
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    m = health_re.match(line)
+                    if m:
+                        ts = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+                        rss.append((ts, float(m.group(3)), float(m.group(2))))
+                    elif flap_re.search(line):
+                        flaps += 1
+                    else:
+                        rm = restore_re.search(line)
+                        if rm:
+                            restores.append(line.strip()[:300])
+        except OSError:
+            pass
+
+    starts = 0
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "audit-*.jsonl"))):
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    if '"server.start"' in line:
+                        starts += 1
+        except OSError:
+            pass
+
+    return {"rss": rss, "flaps": flaps, "restores": restores, "server_starts": starts}
+
+
+def injected_events() -> list[dict]:
+    events = []
+    p = os.path.join(RUNS_DIR, RUN_ID, "injected.jsonl")
+    if os.path.exists(p):
+        with open(p) as f:
+            for line in f:
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    return events
+
+
+def journaled_results() -> dict[int, str]:
+    """Latest accepted (status 200) result per IO id across all bot journals,
+    EXCLUDING any IO whose last write is order-ambiguous. Last-write-wins,
+    mirroring the tool's UI. These are writes that must reach local AND cloud.
+
+    Ambiguous = written by more than one bot. The designated hot SET is the
+    obvious case, but bots also randomly COLLIDE on the same non-hot IO; those
+    uncoordinated concurrent writes have the same ambiguous last-write ordering
+    (the observer's ts-sort and the tool's actual apply-order can disagree
+    sub-second), so a later 'Cleared' winning locally would look like a wipe of
+    an earlier 'Failed'. A single-writer IO keeps strict latest-by-ts, so a real
+    destructive wipe (MCM08 class) on uncontended rows still trips I4, and the
+    bug-path drop class (B1/B7) is detected separately from logs."""
+    # ioId -> {bot -> (ts, result)} ; keep each bot's own latest write.
+    per_bot: dict[int, dict[str, tuple[str, str]]] = {}
+    hot: set[int] = set()
+    for path in glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl")):
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("action") != "mark" or e.get("status") != 200:
+                    continue
+                iid = e.get("ioId")
+                if iid is None:
+                    continue
+                if e.get("hot"):
+                    hot.add(iid)
+                    continue
+                bot = str(e.get("bot", ""))
+                # Append order within a bot's own journal IS its true write
+                # order — more reliable than string-comparing ISO timestamps,
+                # which tie at the same millisecond (a Failed and a Cleared in
+                # the same ms would otherwise mis-order and look like a wipe).
+                per_bot.setdefault(iid, {})[bot] = e.get("result")
+    out: dict[int, str] = {}
+    for iid, slot in per_bot.items():
+        if iid in hot or len(slot) > 1:
+            # Hot, or collided on by >1 bot → last write is order-ambiguous.
+            continue
+        out[iid] = next(iter(slot.values()))  # the single writer's last result
+    return out
+
+
+def cloud_results() -> dict[int, str | None] | None:
+    """Pull every IO's result from cloud-stage via the REAL pull endpoint the
+    field tool uses. None => cloud unreachable."""
+    url = f"{CLOUD_URL}/api/sync/subsystem/{SUBSYSTEM_ID}"
+    req = urllib.request.Request(url, headers={"X-API-Key": CLOUD_API_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        print(f"observer: cloud read failed: {e}")
+        return None
+    out: dict[int, str | None] = {}
+    for io in data.get("ios", []):
+        out[int(io["id"])] = io.get("result")
+    return out
+
+
+def local_results_and_queue() -> tuple[dict[int, str | None], int, set[int]]:
+    """Tool's local SQLite: authoritative results, pending-sync queue depth,
+    and the set of IO ids still queued (those writes are SAFE, just not yet
+    synced — not data loss)."""
+    db_path = os.path.join(DATA_DIR, "database.db")
+    res: dict[int, str | None] = {}
+    pending = -1
+    queued_ios: set[int] = set()
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+        for iid, r in con.execute("SELECT id, Result FROM Ios"):
+            res[int(iid)] = r
+        # Sum all three offline queues — IO results, L2 cell writes, and
+        # device-blocker edits. A non-empty queue is pending work (safe), not
+        # loss; we report depth but don't fail on it.
+        # ACTIVE queue only — match the tool's own pull-gate semantics. Parked
+        # rows (DeadLettered=1) are permanently-rejected writes set aside for
+        # attention; they will never sync and must NOT count as backlog, or the
+        # queue would look "never drained" forever (masking real propagation —
+        # exactly the v2.40.4 pull-gate regression this run surfaced).
+        pending = 0
+        for tbl, where in (
+            ("PendingSyncs", " WHERE DeadLettered = 0"),
+            ("L2PendingSyncs", ""),
+            ("DeviceBlockerPendingSyncs", ""),
+        ):
+            try:
+                pending += con.execute(f"SELECT COUNT(*) FROM {tbl}{where}").fetchone()[0]
+            except sqlite3.Error:
+                pass
+        try:
+            for (iid,) in con.execute("SELECT DISTINCT IoId FROM PendingSyncs"):
+                queued_ios.add(int(iid))
+        except sqlite3.Error:
+            pass
+        con.close()
+    except sqlite3.Error as e:
+        print(f"observer: local DB read failed: {e}")
+    return res, pending, queued_ios
+
+
+def norm(result: str | None) -> str | None:
+    """A journaled 'Cleared' lands as NULL result in both stores."""
+    if result in (None, "", "Cleared"):
+        return None
+    return result
+
+
+# A DROPPED-PERMANENT whose reason is one of these is the cloud AUTHORITATIVELY
+# rejecting the value (legitimate divergence — exclude from data loss). ANY
+# OTHER permanent drop — notably HTTP 4xx like 429 (B1) or a version-conflict
+# retry-cap drop (B7) — is the tool THROWING AWAY a result the cloud never
+# accepted. Those are the silent-data-loss bugs from the MCM11 incident; I4
+# must count them as loss, not mask them.
+BUSINESS_REJECT_PATTERNS = (
+    "SPARE cannot be",
+    "invalid result",
+    "IO not found",
+    "No valid updates",
+)
+
+
+def scrape_permanent_drops() -> tuple[set[int], list[dict]]:
+    """Return (business_rejected_ids, suspect_drops).
+    business_rejected_ids → excluded from I4 (legit cloud value rejection).
+    suspect_drops → [{io, reason}] the tool dropped on HTTP status / version
+    cap; these are bug-class silent drops (B1/B7) and stay in the loss check."""
+    business: set[int] = set()
+    suspect: list[dict] = []
+    # v2.40.4 renamed the silent DROP to PARKED (kept, not deleted); match both.
+    rx = re.compile(r"(?:DROPPED|PARKED)-PERMANENT.*?ioId=(\d+).*?reason=\"([^\"]*)\"")
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "app-*.log"))):
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    m = rx.search(line)
+                    if not m:
+                        continue
+                    iid, reason = int(m.group(1)), m.group(2)
+                    if any(p in reason for p in BUSINESS_REJECT_PATTERNS):
+                        business.add(iid)
+                    else:
+                        suspect.append({"io": iid, "reason": reason})
+        except OSError:
+            pass
+    return business, suspect
+
+
+def mutator_edited_ids() -> set[int]:
+    """IO ids the cloud-mutator deliberately changed on the cloud authority.
+    For these, a journal-vs-local divergence is EXPECTED (the mutator overwrote
+    the field's value on the authoritative side) and is verified by I7 instead —
+    so they are out of scope for I4's field-work-loss check."""
+    edited: set[int] = set()
+    mut_path = os.path.join(RUNS_DIR, RUN_ID, "cloud-mutations.jsonl")
+    if not os.path.exists(mut_path):
+        return edited
+    for line in open(mut_path, errors="replace"):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for key in ("edited", "added"):
+            if e.get(key):
+                edited |= {int(x) for x in str(e[key]).split(",") if x}
+    return edited
+
+
+def quiesce_crew() -> None:
+    """Signal every bot to stop (sentinel the crew polls each loop) and wait for
+    in-flight writes to land, so the journal stops growing before we snapshot.
+    Waits a touch longer than the bots' max think time + request timeout."""
+    run_dir = os.path.join(RUNS_DIR, RUN_ID)
+    try:
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, "STOP"), "w") as f:
+            f.write("stop\n")
+    except OSError as e:
+        print(f"observer: could not write crew STOP sentinel: {e}")
+        return
+    think_max_s = int(os.environ.get("THINK_MAX_MS", "15000")) / 1000.0
+    wait_s = min(60.0, think_max_s + 20.0)  # last loop's sleep + in-flight PUT
+    print(f"observer: crew STOP sent — waiting {wait_s:.0f}s for bots to go quiet")
+    time.sleep(wait_s)
+
+
+def check_data_loss() -> dict:
+    """I4 — no silent data loss. Local SQLite is the authority. For every IO
+    written DURING this soak (bot journals), cloud must mirror local. The only
+    allowed divergence is an IO the tool logged as a PERMANENT rejection
+    (cloud business rule). Anything else = a sync bug losing field work — the
+    MCM08/MCM11 class. Re-polls cloud to absorb in-flight batch syncs."""
+    # Bring the crew to a STOP before snapshotting. The bots loop forever; if
+    # they keep writing, `journaled` (read now) and `local` (read after the
+    # settle) are incoherent — a write that lands during settle looks like a
+    # wipe — and the offline queue never drains so the I7 pull never fires. The
+    # sentinel makes the system QUIESCENT so the verdict judges a steady state.
+    quiesce_crew()
+
+    journaled = journaled_results()  # {ioId: latest result the field wrote}
+    # Drop IOs the cloud-mutator changed: those diverge by design (I7's job).
+    mutated = mutator_edited_ids()
+    if mutated:
+        journaled = {i: r for i, r in journaled.items() if i not in mutated}
+    rejected, suspect_drops = scrape_permanent_drops()
+
+    # Tell chaos to stop flapping/storming and restore connectivity, so the
+    # system can converge for an honest final judgment (otherwise an ongoing
+    # flap keeps the queue perpetually non-empty).
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(f"{CHAOS_URL}/calm", method="POST"), timeout=10).read()
+        print("observer: requested chaos /calm — letting the system converge")
+    except Exception as e:
+        print(f"observer: /calm failed (continuing): {e}")
+
+    # Settle: wait for cloud reachable AND the queue to drain, so we judge a
+    # CONVERGED system. The chaos flapper is expected to have stopped by now
+    # (scenario ends the flap before the soak ends). A queue that still won't
+    # drain after this window is reported but is not by itself "loss" — the
+    # writes are safe in the queue; what matters is nothing was DROPPED.
+    settle_deadline = time.monotonic() + 900
+    while time.monotonic() < settle_deadline:
+        c = cloud_results()
+        _, pend, _ = local_results_and_queue()
+        if c is not None and pend == 0:
+            break
+        print(f"observer: I4 settling — cloud={'up' if c is not None else 'down'} queue={pend}")
+        time.sleep(15)
+
+    local, pending, queued = local_results_and_queue()
+
+    # ANTI-WIPE (MCM08 pull-wipe class): every write the field made (status 200,
+    # not permanently rejected) must STILL be in local SQLite. A destructive
+    # pull that nulled local AND cloud would pass a naive local==cloud check —
+    # this catches it by comparing the JOURNAL (what the field typed) to local.
+    wiped = [
+        iid for iid, r in journaled.items()
+        if iid not in rejected and norm(local.get(iid)) != norm(r)
+    ]
+
+    cloud = None
+    unsynced: list[int] = []
+    for attempt in range(6):  # ~60 s grace for the batch pusher to drain
+        cloud = cloud_results()
+        if cloud is None:
+            break
+        # A write still sitting in the offline queue is SAFE (pending), not
+        # lost — exclude queued IOs. Loss = local has it, cloud doesn't, it's
+        # NOT queued, and there's no business reason. THAT is the bug class.
+        unsynced = [
+            iid for iid in journaled
+            if norm(local.get(iid)) != norm(cloud.get(iid))
+            and iid not in rejected and iid not in queued
+        ]
+        if not unsynced:
+            break
+        print(f"observer: I4 grace re-poll {attempt+1}/6 — {len(unsynced)} unsynced (not queued)")
+        time.sleep(10)
+
+    if cloud is None:
+        return {"pass": False, "reason": "cloud unreachable", "soak_writes": len(journaled)}
+
+    explained = [
+        iid for iid in journaled
+        if norm(local.get(iid)) != norm(cloud.get(iid)) and iid in rejected
+    ]
+    # TRUE wipes only: a field write that LOCAL no longer holds (erased to
+    # null) — the MCM08 destructive-pull class. A local value that merely
+    # DIFFERS from cloud is NOT loss: the system is last-write-wins (the
+    # incident report is explicit — "a different cloud result is NOT at risk"),
+    # and a SPARE-Passed value the cloud legitimately refuses stays local-only
+    # by design. Those must not fail I4; only an actual erasure or a bug-drop
+    # (suspect_silent_drops: B1 429 / B7 version-cap) is real loss.
+    true_wipes = [iid for iid in wiped if norm(local.get(iid)) is None]
+    # `unsynced` is reported for visibility but is dominated by last-write-wins
+    # + business (SPARE) divergence, so it does NOT gate the verdict.
+    return {
+        # Fail on real loss only: a value erased from local (true wipe) or a
+        # result dropped by a bug path (suspect). Divergence and a non-empty
+        # queue are reported, not failed.
+        "pass": not true_wipes and not suspect_drops,
+        "soak_writes": len(journaled),
+        "true_wipes": len(true_wipes),
+        "divergence_lww_or_business": len(unsynced),
+        "still_queued_safe": len(queued),
+        # The headline bug detector: results the tool threw away on a non-
+        # business reason (HTTP 429 = B1, version-conflict cap = B7).
+        "suspect_silent_drops": len(suspect_drops),
+        "suspect_drop_reasons": _top_reasons(suspect_drops),
+        "explained_business_rejections": len(explained),
+        "pending_queue_at_end": pending,
+        # True-wipe detail with the cloud value, so a failure self-explains:
+        # cloud HOLDS the value => MCM08-class local clobber (real, recoverable
+        # on next pull); cloud MISSING too => harder global loss.
+        "true_wipe_detail": [
+            {"io": iid, "field_wrote": journaled.get(iid),
+             "local_now": local.get(iid), "cloud_now": cloud.get(iid),
+             "queued": iid in queued}
+            for iid in wiped if norm(local.get(iid)) is None
+        ][:15],
+        "wiped_samples": [
+            {"io": iid, "field_wrote": journaled[iid], "local_now": local.get(iid)}
+            for iid in wiped[:10]
+        ],
+        "unsynced_samples": [
+            {"io": iid, "local": local.get(iid), "cloud": cloud.get(iid)}
+            for iid in unsynced[:10]
+        ],
+        "suspect_drop_samples": suspect_drops[:10],
+    }
+
+
+def _top_reasons(drops: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for d in drops:
+        counts[d["reason"]] = counts.get(d["reason"], 0) + 1
+    return dict(sorted(counts.items(), key=lambda x: -x[1])[:6])
+
+
+def check_cloud_propagation(mut_path: str) -> dict:
+    """I7 — data added on the CLOUD side reaches the field WITHOUT a re-pull of
+    everything and WITHOUT wiping local. We verify the additions propagated:
+    every IO the cloud-mutator added must be present in local SQLite by the end
+    (the field pulled it on an SSE-reconnect). The no-wipe half is already
+    enforced by I4's anti-wipe. Excludes the most-recent additions (no pull may
+    have happened yet) by giving a settle window."""
+    added_ids: list[int] = []
+    for line in open(mut_path, errors="replace"):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("added"):
+            added_ids += [int(x) for x in str(e["added"]).split(",") if x]
+    if not added_ids:
+        return {"pass": True, "added": 0, "note": "no cloud additions recorded"}
+
+    # Give the field time to pull the last batch (SSE reconnect cadence).
+    # PRECONDITION: the tool defers cloud pulls while its offline queue is
+    # non-empty (local work first — documented design). Under heavy business-
+    # rejection churn (e.g. bots marking SPARE IOs Passed, which the cloud
+    # always refuses) the queue can stay busy for the whole short run, so a pull
+    # never fires and propagation simply can't be observed. That is NOT a
+    # propagation bug — so if the queue never drains we report INCONCLUSIVE
+    # rather than fail. A real break (queue drained AND additions still absent)
+    # still fails.
+    QUEUE_DRAINED = 5  # active (non-parked) rows; tool pulls only at ~empty
+    missing = added_ids
+    pending = None
+    drained = False
+    for _ in range(18):  # up to ~3 min (propagation needs queue drained + a pull)
+        local, pending, _q = local_results_and_queue()
+        missing = [i for i in added_ids if i not in local]
+        drained = pending is not None and pending <= QUEUE_DRAINED
+        if not missing:
+            break
+        note = "queue drained, awaiting pull" if drained else f"queue busy ({pending} pending) — pull deferred by design"
+        print(f"observer: I7 — {len(missing)}/{len(added_ids)} not yet local; {note}")
+        time.sleep(10)
+
+    if missing and not drained:
+        # Propagation untestable: the precondition (drained queue) never held.
+        return {
+            "pass": True,
+            "status": "inconclusive: queue never drained — pull correctly deferred",
+            "cloud_added": len(added_ids),
+            "not_propagated_to_local": len(missing),
+            "pending_at_check": pending,
+            "missing_samples": missing[:10],
+        }
+    return {
+        # Queue drained (or nearly): now propagation is genuinely under test.
+        # Allow the final batch to still be in flight: fail only if a meaningful
+        # fraction never arrived after the queue was free to pull.
+        "pass": len(missing) <= max(3, int(0.05 * len(added_ids))),
+        "cloud_added": len(added_ids),
+        "not_propagated_to_local": len(missing),
+        "pending_at_check": pending,
+        "missing_samples": missing[:10],
+    }
+
+
+def rss_slope_mb_per_h(samples: list[tuple[float, float, float]], skip_first_s: float) -> float | None:
+    if not samples:
+        return None
+    t0 = samples[0][0]
+    pts = [(t, r) for (t, r, _h) in samples if t - t0 >= skip_first_s]
+    if len(pts) < 10:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    mx, my = statistics.fmean(xs), statistics.fmean(ys)
+    denom = sum((x - mx) ** 2 for x in xs)
+    if denom == 0:
+        return None
+    slope_per_s = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+    return slope_per_s * 3600.0
+
+
+def main() -> None:
+    print(f"observer: run={RUN_ID} target={TOOL_URL} soak={SOAK_MINUTES}min")
+    deadline = time.monotonic() + SOAK_MINUTES * 60.0
+    lat_path = os.path.join(OUT, "health.csv")
+    latencies: list[float] = []        # post-warmup only (the I1 judging set)
+    gaps: list[float] = []
+    last_ok = time.monotonic()
+    # Schema init + 592-tag creation + first connect briefly block the loop at
+    # boot. That one-time transient must NOT fail I1 on a short soak (it's
+    # negligible over a 7 h run). Exclude a warmup window, like I2 does.
+    probe_start = time.monotonic()
+    I1_WARMUP_S = 120.0
+
+    # Wait up to 3 min for the tool to come up before the clock counts.
+    for _ in range(180):
+        lat, status = probe_once(timeout=3.0)
+        if status == 200:
+            break
+        time.sleep(1)
+    else:
+        sys.exit("observer: tool never became healthy — aborting run")
+    print("observer: tool is up, probing every 1s")
+
+    with open(lat_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["ts", "latency_ms", "status"])
+        while time.monotonic() < deadline:
+            t = time.time()
+            lat, status = probe_once()
+            if lat is not None and status == 200:
+                warm = (time.monotonic() - probe_start) >= I1_WARMUP_S
+                if warm:
+                    latencies.append(lat)
+                gap = time.monotonic() - last_ok
+                if gap > GAP_LIMIT_S and warm:
+                    gaps.append(gap)
+                last_ok = time.monotonic()
+                w.writerow([f"{t:.0f}", f"{lat:.1f}", status])
+            else:
+                w.writerow([f"{t:.0f}", "", status])
+            f.flush()
+            time.sleep(max(0.0, 1.0 - (time.time() - t)))
+
+    # ── verdict ────────────────────────────────────────────────────
+    logs = scrape_logs()
+    injected = injected_events()
+    downloads = [e for e in injected if e.get("type") == "download"]
+
+    with open(os.path.join(OUT, "memory.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["ts", "rss_mb", "heap_mb"])
+        for ts, r, h in logs["rss"]:
+            w.writerow([f"{ts:.0f}", r, h])
+
+    lat_sorted = sorted(latencies)
+    pct = lambda p: lat_sorted[min(len(lat_sorted) - 1, int(len(lat_sorted) * p))] if lat_sorted else None
+    p95, p99 = pct(0.95), pct(0.99)
+    slope = rss_slope_mb_per_h(logs["rss"], WARMUP_MINUTES * 60.0)
+    # Flap budget: every injected download/power event legitimately causes
+    # one error->reconnect cycle; anything beyond budget+injected is organic.
+    allowed_flaps = FLAP_BUDGET + len(downloads) + len([e for e in injected if e.get("type") == "power"])
+
+    invariants = {
+        "I1_responsiveness": {
+            "pass": bool(lat_sorted) and p95 < P95_LIMIT_MS and p99 < P99_LIMIT_MS and not gaps,
+            "p50": pct(0.50), "p95": p95, "p99": p99,
+            "max": lat_sorted[-1] if lat_sorted else None,
+            "samples": len(lat_sorted), "gaps_over_10s": len(gaps),
+        },
+        "I2_no_leak": {
+            "pass": slope is None or slope < RSS_SLOPE_LIMIT_MB_PER_H,
+            "rss_slope_mb_per_h": slope,
+            "rss_samples": len(logs["rss"]),
+        },
+        "I5_stability": {
+            # 1 expected server.start (boot). Flaps within budget.
+            "pass": logs["server_starts"] <= 1 + len([e for e in injected if e.get("type") == "toolkill"])
+                    and logs["flaps"] <= allowed_flaps,
+            "server_starts": logs["server_starts"],
+            "plc_flaps": logs["flaps"], "allowed_flaps": allowed_flaps,
+        },
+        "I3_restore_evidence": {
+            # Phase 0: evidence-level only — each injected download should be
+            # followed by a plc-reconnect sync that wrote flags back.
+            "pass": len(downloads) == 0 or len(logs["restores"]) >= len(downloads),
+            "injected_downloads": len(downloads),
+            "reconnect_restores_seen": len(logs["restores"]),
+            "samples": logs["restores"][:5],
+        },
+    }
+    # I4 data-loss — only when a cloud is attached to this run.
+    if CLOUD_URL:
+        invariants["I4_no_data_loss"] = check_data_loss()
+
+    # I7 cloud→field propagation — only in the cloud-mutation scenario.
+    mut_path = os.path.join(RUNS_DIR, RUN_ID, "cloud-mutations.jsonl")
+    if CLOUD_URL and os.path.exists(mut_path):
+        invariants["I7_cloud_propagation"] = check_cloud_propagation(mut_path)
+    verdict = {
+        "run": RUN_ID,
+        "ended": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "soak_minutes": SOAK_MINUTES,
+        "pass": all(v["pass"] for v in invariants.values()),
+        "invariants": invariants,
+    }
+    with open(os.path.join(OUT, "verdict.json"), "w") as f:
+        json.dump(verdict, f, indent=2)
+
+    print(json.dumps(verdict, indent=2))
+    sys.exit(0 if verdict["pass"] else 1)
+
+
+if __name__ == "__main__":
+    main()

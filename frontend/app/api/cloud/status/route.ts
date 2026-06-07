@@ -9,10 +9,15 @@ import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
 export async function GET(req: Request, res: Response) {
   try {
-    const pendingIoSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs').get() as { cnt: number }).cnt
+    // Active queue = retryable work still owed to cloud (DeadLettered = 0).
+    const pendingIoSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 0').get() as { cnt: number }).cnt
     const pendingL2SyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs').get() as { cnt: number }).cnt
     const pendingChangeRequestCount = (db.prepare("SELECT COUNT(*) as cnt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL").get() as { cnt: number }).cnt
     const totalPendingCount = pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount
+    // Parked rows: results the cloud REJECTED or that exhausted retries — they
+    // left the active queue but are NOT on cloud. Surfaced so the indicator
+    // never reads "all synced" while field work is actually stuck (B3/B5).
+    const attentionCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
 
     const cloudSyncService = getCloudSyncService()
     const config = await cloudSyncService.getConfig()
@@ -60,6 +65,7 @@ export async function GET(req: Request, res: Response) {
       pendingL2SyncCount,
       pendingChangeRequestCount,
       totalPendingCount,
+      attentionCount,
       failedIoSyncCount,
       failedL2SyncCount,
       oldestPendingIoSync: oldestIoRow?.CreatedAt ?? undefined,
@@ -81,7 +87,9 @@ export async function GET(req: Request, res: Response) {
   } catch (error) {
     console.error('[CloudStatus] Error getting cloud status:', error)
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-    return res.json({ connected: false, pendingSyncCount: 0, error: errorMessage } as CloudSyncStatusResponse)
+    // B8: do NOT assert "0 pending" when we failed to read status — that reads
+    // as "all synced". Mark the count unknown so the UI shows an error state.
+    return res.json({ connected: false, pendingSyncCount: 0, statusUnknown: true, error: errorMessage } as CloudSyncStatusResponse)
   }
 }
 
