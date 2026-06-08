@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Activity,
@@ -17,6 +17,10 @@ import {
   LayoutGrid,
   List as ListIcon,
   ArrowUpRight,
+  Terminal,
+  RefreshCw,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -361,6 +365,8 @@ export default function McmLandingPage() {
         {!loading && !error && mcms.length > 0 && view === 'list' && (
           <McmList mcms={mcms} onChanged={refresh} />
         )}
+
+        <LogViewer />
       </main>
 
       <footer className="relative max-w-7xl mx-auto px-6 py-6 z-10 flex items-center justify-between font-mono text-[13px] uppercase tracking-[0.16em] text-muted-foreground border-t border-border/60">
@@ -368,6 +374,144 @@ export default function McmLandingPage() {
         <span>central-tool · poc</span>
       </footer>
     </div>
+  )
+}
+
+// ── Live log viewer ─────────────────────────────────────────────────────────
+// Collapsed by default (zero load). When open it tails the last N lines of a
+// log file via GET /api/logs/tail — that endpoint reads only the final ~512KB,
+// so even with Follow on (3s poll) it puts no measurable load on the server and
+// never touches the PLC/sync paths. Closing it stops all polling.
+const LOG_SOURCES: { key: string; label: string }[] = [
+  { key: 'app', label: 'App' },
+  { key: 'gateway', label: 'Gateway' },
+  { key: 'errors', label: 'Errors' },
+  { key: 'gateway-error', label: 'Gateway err' },
+]
+
+function LogViewer() {
+  const [open, setOpen] = useState(false)
+  const [source, setSource] = useState('app')
+  const [lines, setLines] = useState<string[]>([])
+  const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [follow, setFollow] = useState(true)
+  const boxRef = useRef<HTMLDivElement | null>(null)
+  const atBottomRef = useRef(true)
+
+  const load = useCallback(async () => {
+    setBusy(true)
+    try {
+      const r = await fetch(`/api/logs/tail?source=${encodeURIComponent(source)}&lines=500`)
+      const d = await r.json()
+      if (d.success) {
+        setLines(d.lines ?? [])
+        setNote(d.note ?? null)
+      } else {
+        setNote(d.error || 'failed to read log')
+      }
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : 'failed to read log')
+    } finally {
+      setBusy(false)
+    }
+  }, [source])
+
+  // Fetch on open / source change, and poll while Follow is on.
+  useEffect(() => {
+    if (!open) return
+    void load()
+    if (!follow) return
+    const id = setInterval(load, 3000)
+    return () => clearInterval(id)
+  }, [open, follow, load])
+
+  // Keep pinned to the bottom while following, unless the user scrolled up.
+  useEffect(() => {
+    const el = boxRef.current
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight
+  }, [lines])
+
+  return (
+    <section className="mt-8 border border-border bg-card rounded-sm">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 font-mono text-[12px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+          <Terminal className="w-3.5 h-3.5" />
+          Logs
+        </span>
+        <span className="text-[10px] normal-case tracking-normal opacity-70">
+          {open ? 'tails the log file — closing stops polling' : 'click to view server logs'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="border-t border-border">
+          <div className="flex items-center gap-2 px-3 py-2 flex-wrap border-b border-border/60">
+            {LOG_SOURCES.map((s) => (
+              <button
+                key={s.key}
+                onClick={() => setSource(s.key)}
+                className={cn(
+                  'font-mono text-[10px] uppercase tracking-[0.15em] px-2.5 py-1 rounded-sm border transition-colors',
+                  source === s.key
+                    ? 'border-primary text-primary bg-primary/10'
+                    : 'border-border text-muted-foreground hover:bg-muted'
+                )}
+              >
+                {s.label}
+              </button>
+            ))}
+            <div className="flex-1" />
+            <label className="font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground inline-flex items-center gap-1.5 cursor-pointer select-none">
+              <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-primary" />
+              Follow
+            </label>
+            <button
+              onClick={load}
+              disabled={busy}
+              className="font-mono text-[10px] uppercase tracking-[0.15em] px-2.5 py-1 rounded-sm border border-border text-muted-foreground hover:bg-muted inline-flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <RefreshCw className={cn('w-3 h-3', busy && 'animate-spin')} />
+              Refresh
+            </button>
+          </div>
+          <div
+            ref={boxRef}
+            onScroll={(e) => {
+              const el = e.currentTarget
+              atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+            }}
+            className="h-80 overflow-auto bg-black/90 text-[11px] leading-[1.5] font-mono px-3 py-2"
+          >
+            {lines.length === 0 ? (
+              <div className="text-muted-foreground">{note ?? 'no output'}</div>
+            ) : (
+              lines.map((l, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    'whitespace-pre-wrap break-all',
+                    /error|fatal|fail|refus|drop/i.test(l)
+                      ? 'text-red-400'
+                      : /warn|park|skip/i.test(l)
+                        ? 'text-amber-300'
+                        : /sync done|connected|written|pulled|ok/i.test(l)
+                          ? 'text-emerald-300'
+                          : 'text-zinc-300'
+                  )}
+                >
+                  {l}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 
