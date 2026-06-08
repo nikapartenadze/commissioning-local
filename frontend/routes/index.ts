@@ -54,6 +54,7 @@ import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
 // ── central-tool: multi-MCM namespace ───────────────────────────
 import * as mcmList from '@/app/api/mcm/route'
 import * as mcmImportFromCloud from '@/app/api/mcm/import-from-cloud/route'
+import * as logsTail from '@/app/api/logs/tail/route'
 import * as mcmConnectAll from '@/app/api/mcm/connect-all/route'
 import * as mcmDisconnectAll from '@/app/api/mcm/disconnect-all/route'
 import * as mcmEntry from '@/app/api/mcm/[subsystemId]/route'
@@ -207,6 +208,7 @@ export function createApiRouter(): Router {
   router.get('/api/mcm-diagram/:mcm', asyncHandler(mcmDiagram.GET))
 
   // ── MCM Registry (central-tool multi-MCM) ─────────────────────
+  router.get('/api/logs/tail', asyncHandler(logsTail.GET))
   router.get('/api/mcm', asyncHandler(mcmList.GET))
   router.post('/api/mcm', asyncHandler(mcmList.POST))
   // Must precede the ':subsystemId' routes so the literal path isn't shadowed.
