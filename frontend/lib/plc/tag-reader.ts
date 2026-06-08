@@ -27,6 +27,7 @@ import {
   readTagsBatchAsync,
 } from './libplctag';
 import { connectionVerdict } from './connection-verdict';
+import { recordTagEvent } from '@/lib/logging/tag-events';
 
 // Tag state interface
 export interface TagState {
@@ -808,6 +809,7 @@ export class TagReaderService extends EventEmitter {
 
       // Emit value change event if value changed
       if (oldValue !== newValue) {
+        recordTagEvent(tagState.name, oldValue, newValue);
         const event: TagValueChangeEvent = {
           name: tagState.name,
           oldValue: Boolean(oldValue),
@@ -845,6 +847,7 @@ export class TagReaderService extends EventEmitter {
         tagState.lastReadStatus = PlcTagStatus.PLCTAG_STATUS_OK;
 
         if (oldValue !== newValue) {
+          recordTagEvent(tagName, oldValue, newValue);
           this.emit('tagValueChanged', {
             name: tagName,
             oldValue: Boolean(oldValue),

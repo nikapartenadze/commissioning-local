@@ -384,6 +384,7 @@ export default function McmLandingPage() {
 // never touches the PLC/sync paths. Closing it stops all polling.
 const LOG_SOURCES: { key: string; label: string }[] = [
   { key: 'app', label: 'App' },
+  { key: 'tags', label: 'Tag changes' },
   { key: 'gateway', label: 'Gateway' },
   { key: 'errors', label: 'Errors' },
   { key: 'gateway-error', label: 'Gateway err' },

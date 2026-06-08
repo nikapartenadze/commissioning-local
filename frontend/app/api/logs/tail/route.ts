@@ -37,6 +37,8 @@ function resolveSource(dir: string, source: string): { file: string | null; labe
       return { file: path.join(dir, 'gateway.log'), label: 'gateway.log' }
     case 'gateway-error':
       return { file: path.join(dir, 'gateway-error.log'), label: 'gateway-error.log' }
+    case 'tags':
+      return { file: todaysDated(dir, 'tag-events'), label: 'tag changes (today)' }
     case 'errors':
       return { file: todaysDated(dir, 'errors'), label: 'errors (today)' }
     case 'app':
