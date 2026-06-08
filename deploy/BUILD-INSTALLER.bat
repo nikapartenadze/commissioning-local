@@ -89,15 +89,25 @@ if exist "%VCREDIST%" (
     echo   WARNING: vc_redist.x64.exe not bundled ^(download failed^); relying on app-local vcruntime140.dll.
 )
 
+REM ── CENTRAL (multi-MCM split) build flag ──
+REM  Set CENTRAL=1 to build the centralized-server installer (two services:
+REM  plc-gateway + app in PLC_MODE=remote). Output: CommissioningTool-Central-
+REM  Setup-vX.exe. Unset → the standard single-process field-tablet installer.
+set "CENTRAL_DEF="
+if "%CENTRAL%"=="1" (
+    set "CENTRAL_DEF=/DCENTRAL=1"
+    echo   CENTRAL build: two-service split ^(plc-gateway + app remote^)
+)
+
 REM ── Step 2: Compile NSIS installer ──
 echo.
 echo [2/2] Compiling installer...
 echo.
 
 if defined VCREDIST_DEF (
-    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" "!VCREDIST_DEF!" "%DEPLOY_DIR%installer.nsi"
+    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" !CENTRAL_DEF! "!VCREDIST_DEF!" "%DEPLOY_DIR%installer.nsi"
 ) else (
-    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" "%DEPLOY_DIR%installer.nsi"
+    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" !CENTRAL_DEF! "%DEPLOY_DIR%installer.nsi"
 )
 
 if %errorlevel% neq 0 (
