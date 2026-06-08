@@ -98,3 +98,9 @@ battle/Dockerfile._*
 CommissioningTool*Setup*.exe
 FIX-CENTRAL-GATEWAY.bat
 CENTRAL-SERVER-SPLIT-REPORT.*
+
+# Root-level one-off scratch/investigation artifacts (anchored to repo root)
+/_*.js
+/_*_work/
+/logs.zip
+/_mcm02_cells_BACKUP.txt
