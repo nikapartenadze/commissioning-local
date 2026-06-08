@@ -93,3 +93,5 @@ battle/battle-artifacts/
 battle/**/__pycache__/
 battle/_live_*
 battle/Dockerfile._probe
+battle/_*
+battle/Dockerfile._*

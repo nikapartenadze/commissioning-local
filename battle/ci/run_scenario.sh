@@ -158,10 +158,15 @@ case "$SCENARIO" in
         # by read-only signature probe). Map each to its real controller;
         # MCM_ONLY + MCM_GATEWAY_IPS align positionally.
         #   MCM01 (sid37)->.101  MCM03 (sid39)->.105  MCM05 (sid41)->.114  MCM09 (sid45)->.109
-        export MCM_ONLY="37,39,41,45"
-        export MCM_GATEWAY_IPS="192.168.5.101,192.168.5.105,192.168.5.114,192.168.5.109"
-        export OBS_SUBSYSTEM_IDS="37,39,41,45"
-        export MCM_COUNT=4
+        # Defaults target the 4-program bench; override any of MCM_ONLY /
+        # MCM_GATEWAY_IPS / OBS_SUBSYSTEM_IDS / PLC_PATH to point at a specific
+        # controller (e.g. the MCM02 unit with the full belt-tracking AOI at
+        # 192.168.20.40 path 1,1 for the polarity write-back proof).
+        export MCM_ONLY="${MCM_ONLY:-37,39,41,45}"
+        export MCM_GATEWAY_IPS="${MCM_GATEWAY_IPS:-192.168.5.101,192.168.5.105,192.168.5.114,192.168.5.109}"
+        export OBS_SUBSYSTEM_IDS="${OBS_SUBSYSTEM_IDS:-37,39,41,45}"
+        export PLC_PATH="${PLC_PATH:-1,0}"
+        export MCM_COUNT="$(printf '%s' "$MCM_ONLY" | awk -F, '{print NF}')"
         export DOWNLOAD_STORM=""                       # no sim to restart
         export CLOUD_FLAP="3,10"; export FLAP_BUDGET=400
         export BOTS="${BOTS:-12}"

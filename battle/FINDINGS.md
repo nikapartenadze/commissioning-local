@@ -4,6 +4,26 @@ Living log of what the battle environment has found. The environment's job is
 to **reproduce, in an automated soak, the bug classes that have hit the field**
 — and then catch their regressions forever.
 
+## REAL polarity/Valid_* WRITE-BACK proof (2026-06-08) — MCM02 @ 192.168.20.40 path 1,1 ✅
+
+The .5.x bench emulators lacked the belt-tracking AOI CMD tags, so the write
+path couldn't be exercised there. A second controller at **192.168.20.40
+(path `1,1`, NOT the `0,1` first given — path sweep found the CPU at
+backplane/slot 1,1)** runs the full MCM02 program WITH the belt-tracking AOI.
+
+- Connect: **1184/1184 tags (100%)** — full MCM02 program on real CIP.
+- Validation writer (split, via the gateway typed-batch path):
+  `Sync done (mcm-38-reconnect): 72 devices, 282 written, 69 already-correct,
+  0 failed, 2982 ms` — 282 CMD.Valid_*/polarity writes ACK'd OK on real CIP.
+- **Direct write→read-back round trip** (definitive): `CBT_UL21_3_VFD.CTRL.CMD.
+  Valid_Map` before=0 → write OK → **after=1**; restored to 0. Same for
+  `Invalidate_Map`. **The tool writes tag values back to the real controller
+  and they land.**
+- `CTRL.STS.Valid_*` stayed 0: the AOI only *latches* persistent status given
+  real drive-identity feedback, which an equipment-less Emulate instance can't
+  provide. That's AOI/emulator behavior downstream of the write — the write
+  itself is proven. On a real drive the same CMD pulse latches STS.
+
 ## REAL-hardware validation (2026-06-08) — split deployment vs live Logix Emulate — PASS ✅
 
 `SCENARIO=central-cdw5-live`: the Phase-1.1 split stack pointed at the lab-bench
