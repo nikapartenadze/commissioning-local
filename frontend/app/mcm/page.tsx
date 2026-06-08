@@ -21,6 +21,8 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
+  Save,
+  Pencil,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -699,6 +701,172 @@ function effectiveStatus(mcm: McmRow): string {
   return mcm.status
 }
 
+// Inline IP/path editor — opened from the per-station "Set IP" button so the
+// operator types the PLC IP right here instead of bouncing to /settings/mcms.
+// Save persists via PUT /api/mcm/:id; "Save & Connect" then pulls IOs + connects.
+function SetIpModal({
+  mcm,
+  onClose,
+  onSaved,
+}: {
+  mcm: McmRow
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [ip, setIp] = useState(mcm.ip || '')
+  const [path, setPath] = useState(mcm.path || '1,0')
+  const [busy, setBusy] = useState<null | 'save' | 'connect'>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function persist(): Promise<boolean> {
+    const r = await fetch(`/api/mcm/${mcm.subsystemId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip: ip.trim(), path: path.trim() || '1,0' }),
+    })
+    const data = await r.json()
+    if (!data.success) {
+      setErr(data.error || 'Save failed')
+      return false
+    }
+    return true
+  }
+
+  async function save(thenConnect: boolean) {
+    if (!ip.trim()) {
+      setErr('Enter an IP address')
+      return
+    }
+    setBusy(thenConnect ? 'connect' : 'save')
+    setErr(null)
+    try {
+      if (!(await persist())) return
+      if (thenConnect) {
+        const r = await fetch(`/api/mcm/${mcm.subsystemId}/plc/connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+        const data = await r.json()
+        if (!data.success) {
+          setErr(data.error || 'Connect failed')
+          onSaved()
+          return
+        }
+      }
+      onSaved()
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-md border border-primary/30 bg-card rounded-sm"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <CornerBrackets />
+        <div className="h-[3px] bg-primary/60" />
+        <div className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Settings className="w-4 h-4 text-primary" />
+              <h3 className="font-mono text-sm uppercase tracking-[0.3em] text-foreground">
+                {mcm.name} · #{mcm.subsystemId}
+              </h3>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <label className="block sm:col-span-2">
+              <span className="block font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground mb-1.5">
+                IP Address
+              </span>
+              <input
+                autoFocus
+                type="text"
+                value={ip}
+                onChange={(e) => setIp(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') save(true)
+                }}
+                placeholder="192.168.20.40"
+                className="w-full bg-background border border-border rounded-sm px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30"
+              />
+            </label>
+            <label className="block">
+              <span className="block font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground mb-1.5">
+                Path
+              </span>
+              <input
+                type="text"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') save(true)
+                }}
+                placeholder="1,0"
+                className="w-full bg-background border border-border rounded-sm px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30"
+              />
+            </label>
+          </div>
+
+          <p className="font-mono text-[10px] leading-relaxed text-muted-foreground">
+            Path is the Ethernet/IP route to the CPU (commonly{' '}
+            <span className="text-foreground">1,0</span>). “Save &amp; Connect”
+            pulls this station's IOs from the cloud, then connects to the PLC.
+          </p>
+
+          {err && (
+            <div className="font-mono text-[11px] text-destructive border border-destructive/30 bg-destructive/5 px-3 py-2 rounded-sm">
+              {err}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/60">
+            <button
+              onClick={onClose}
+              className="font-mono text-[11px] uppercase tracking-[0.2em] px-3 py-1.5 border border-border hover:bg-muted transition-colors rounded-sm"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => save(false)}
+              disabled={busy !== null}
+              className="font-mono text-[11px] uppercase tracking-[0.2em] px-3 py-1.5 border border-border hover:bg-muted transition-colors disabled:opacity-50 rounded-sm inline-flex items-center gap-1.5"
+            >
+              <Save className="w-3 h-3" />
+              {busy === 'save' ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              onClick={() => save(true)}
+              disabled={busy !== null}
+              className="font-mono text-[11px] uppercase tracking-[0.2em] px-4 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 rounded-sm inline-flex items-center gap-1.5"
+            >
+              <PlugZap className="w-3 h-3" />
+              {busy === 'connect' ? 'Connecting…' : 'Save & Connect'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function McmCard({
   mcm,
   index,
@@ -709,6 +877,7 @@ function McmCard({
   onChanged: () => void
 }) {
   const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
+  const [editIp, setEditIp] = useState(false)
   const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
 
   return (
@@ -767,13 +936,13 @@ function McmCard({
 
         <div className="flex items-center gap-2 pt-3 border-t border-border/60">
           {!mcm.ip ? (
-            <Link
-              to="/settings/mcms"
+            <button
+              onClick={() => setEditIp(true)}
               className="font-mono text-sm uppercase tracking-[0.16em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary transition-colors inline-flex items-center gap-1.5 rounded-sm"
             >
               <Settings className="w-3.5 h-3.5" />
               Set IP
-            </Link>
+            </button>
           ) : mcm.connected ? (
             <button
               disabled={busy !== null}
@@ -794,6 +963,16 @@ function McmCard({
             </button>
           )}
 
+          {mcm.ip && (
+            <button
+              onClick={() => setEditIp(true)}
+              title="Edit IP / path"
+              className="font-mono text-sm uppercase tracking-[0.16em] px-2.5 py-1.5 border border-border bg-background text-muted-foreground hover:border-primary/60 hover:text-primary transition-colors inline-flex items-center gap-1.5 rounded-sm"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          )}
+
           <Link
             to={`/commissioning/${mcm.subsystemId}`}
             title="Open this subsystem's commissioning screen"
@@ -804,6 +983,14 @@ function McmCard({
           </Link>
         </div>
       </div>
+
+      {editIp && (
+        <SetIpModal
+          mcm={mcm}
+          onClose={() => setEditIp(false)}
+          onSaved={onChanged}
+        />
+      )}
     </div>
   )
 }
@@ -837,6 +1024,7 @@ function McmList({
 
 function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) {
   const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
+  const [editIp, setEditIp] = useState(false)
   const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
 
   const btnBase =
@@ -877,13 +1065,13 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
 
         <div className="flex items-center justify-end gap-2 w-[15.5rem] shrink-0">
           {!mcm.ip ? (
-            <Link
-              to="/settings/mcms"
+            <button
+              onClick={() => setEditIp(true)}
               className={cn(btnBase, 'border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary')}
             >
               <Settings className="w-3.5 h-3.5" />
               Set IP
-            </Link>
+            </button>
           ) : mcm.connected ? (
             <button
               disabled={busy !== null}
@@ -904,6 +1092,16 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
             </button>
           )}
 
+          {mcm.ip && (
+            <button
+              onClick={() => setEditIp(true)}
+              title="Edit IP / path"
+              className={cn(btnBase, 'border border-border bg-background text-muted-foreground hover:border-primary/60 hover:text-primary')}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          )}
+
           <Link
             to={`/commissioning/${mcm.subsystemId}`}
             title="Open this subsystem's commissioning screen"
@@ -919,6 +1117,14 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
         <div className="mt-2 ml-32 font-mono text-[13px] text-destructive normal-case">
           {actionError}
         </div>
+      )}
+
+      {editIp && (
+        <SetIpModal
+          mcm={mcm}
+          onClose={() => setEditIp(false)}
+          onSaved={onChanged}
+        />
       )}
     </li>
   )
