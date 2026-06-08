@@ -24,11 +24,27 @@
 !define SERVICE_NAME "CommissioningTool"
 !define SERVICE_DISPLAY "Commissioning Tool"
 
+; ── CENTRAL (multi-MCM split) build ─────────────────────────
+; Define CENTRAL on the makensis command line (/DCENTRAL=1) to build the
+; centralized-server installer: TWO services — a plc-gateway that owns every
+; PLC connection (PLC_MODE unset, libplctag, :3200) and the app in
+; PLC_MODE=remote that routes all PLC I/O to the gateway. This is the
+; production architecture for a single box driving many MCMs (the app event
+; loop never blocks on tag I/O). Without CENTRAL the installer builds the
+; unchanged single-process embedded field-tablet service.
+!define GATEWAY_SERVICE_NAME "CommissioningGateway"
+!define GATEWAY_SERVICE_DISPLAY "Commissioning PLC Gateway"
+
 Var DATA_DIR
 
 ; ── Installer Settings ──────────────────────────────────────
+!ifdef CENTRAL
+Name "${APP_NAME} (Central) ${APP_VERSION}"
+OutFile "..\CommissioningTool-Central-Setup-v${APP_VERSION}.exe"
+!else
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "..\CommissioningTool-Setup-v${APP_VERSION}.exe"
+!endif
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKLM "Software\${APP_SHORT}" "InstallDir"
 RequestExecutionLevel admin
@@ -130,6 +146,16 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; tree on remove). If the service didn't exist, this no-ops.
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
   Sleep 1000
+
+!ifdef CENTRAL
+  ; Central build also runs the plc-gateway service — stop + remove it too
+  ; before touching files (the Step-4/5 node-kill below already covers BOTH
+  ; processes since it filters by $INSTDIR, not service name).
+  nsExec::ExecToLog 'sc.exe stop ${GATEWAY_SERVICE_NAME}'
+  Sleep 2000
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${GATEWAY_SERVICE_NAME} confirm'
+  Sleep 1000
+!endif
 
   ; Step 4: last-resort process kill. WMIC / PowerShell can filter
   ; node.exe by ExecutablePath, which taskkill cannot do. The earlier
@@ -242,6 +268,11 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   FileWrite $0 "NODE_ENV=production$\r$\n"
   FileWrite $0 "APP_VERSION=${APP_VERSION}$\r$\n"
   FileWrite $0 "UPDATE_MANIFEST_URL=$\r$\n"
+!ifdef CENTRAL
+  ; Split deployment: the app routes all PLC I/O to the local plc-gateway.
+  FileWrite $0 "PLC_MODE=remote$\r$\n"
+  FileWrite $0 "GATEWAY_URL=http://127.0.0.1:3200$\r$\n"
+!endif
   FileClose $0
 
   ; ── Database initialization ──
@@ -288,6 +319,40 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; Service was already removed at the top of this section (before the
   ; file copies, so node.exe couldn't keep locks on the new binaries).
   ; Just install fresh below — no second remove needed.
+
+!ifdef CENTRAL
+  ; ════════════════════════════════════════════════════════════════════
+  ; PLC GATEWAY SERVICE (central build). Owns libplctag + every PLC
+  ; connection (PLC_MODE unset = embedded owner), listens on 127.0.0.1:3200,
+  ; and POSTs tag/connection events to the app's :3102 broadcast seam. Same
+  ; lifecycle hardening as the app service. Must be up before the app's
+  ; first gateway poll — the app retries, and we also set a service
+  ; dependency + start the gateway first.
+  ; ════════════════════════════════════════════════════════════════════
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" install ${GATEWAY_SERVICE_NAME} "$INSTDIR\node.exe" "--max-old-space-size=512 --optimize-for-size dist-server\gateway-server.js"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppDirectory "$INSTDIR\app"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} DisplayName "${GATEWAY_SERVICE_DISPLAY}"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} Description "Owns PLC (libplctag) connections for the central commissioning server"'
+  ; GATEWAY_HOST 127.0.0.1: only the local app talks to it (never exposed).
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppEnvironmentExtra GATEWAY_PORT=3200 GATEWAY_HOST=127.0.0.1 WS_BROADCAST_URL=http://127.0.0.1:3102/broadcast NODE_ENV=production'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} ObjectName LocalSystem'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} Type SERVICE_WIN32_OWN_PROCESS'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} Start SERVICE_DELAYED_AUTO_START'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppNoConsole 1'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppExit Default Restart'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppThrottle 1500'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppRestartDelay 5000'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppKillProcessTree 1'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppStdout "$DATA_DIR\logs\gateway.log"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppStderr "$DATA_DIR\logs\gateway-error.log"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppStdoutCreationDisposition 4'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppStderrCreationDisposition 4'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppRotateFiles 1'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppRotateOnline 1'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppRotateBytes 10485760'
+  nsExec::ExecToLog 'sc.exe failure ${GATEWAY_SERVICE_NAME} reset= 86400 actions= restart/5000/restart/5000/restart/30000'
+  nsExec::ExecToLog 'sc.exe failureflag ${GATEWAY_SERVICE_NAME} 1'
+!endif
 
   ; Install service — node runs the Express server with a 512MB heap budget.
   ; Heap was 256MB but tight on laptops doing concurrent WAL + sync queue
@@ -348,6 +413,18 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
 
   ; Trigger restart on any failure type (not just non-zero exit code).
   nsExec::ExecToLog 'sc.exe failureflag ${SERVICE_NAME} 1'
+
+!ifdef CENTRAL
+  ; App runs in remote mode and depends on the gateway. PLC_MODE/GATEWAY_URL
+  ; are also in .env (belt-and-suspenders), but set them on the service env
+  ; too so they apply regardless of dotenv load order. DependOnService makes
+  ; the SCM start the gateway before the app.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} AppEnvironmentExtra PLC_MODE=remote GATEWAY_URL=http://127.0.0.1:3200'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE_NAME} DependOnService ${GATEWAY_SERVICE_NAME}'
+  ; Start the gateway first so it owns the PLC connections before the app polls.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${GATEWAY_SERVICE_NAME}'
+  Sleep 3000
+!endif
 
   ; ── Firewall Rules ──
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - App"'
@@ -426,6 +503,13 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE_NAME}'
   Sleep 2000
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
+
+!ifdef CENTRAL
+  ; Central build also has the plc-gateway service.
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${GATEWAY_SERVICE_NAME}'
+  Sleep 2000
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${GATEWAY_SERVICE_NAME} confirm'
+!endif
 
   ; Remove firewall rules
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Commissioning Tool - App"'
