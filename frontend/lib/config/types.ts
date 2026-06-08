@@ -180,7 +180,14 @@ export interface PlcConnectRequest {
  * internet-less internal docker network, so even a missing override cannot
  * leak a test write to prod.
  */
-export const EMBEDDED_REMOTE_URL = process.env.CLOUD_URL_OVERRIDE || 'https://commissioning.autstand.com';
+// `typeof process` guard: this module is imported by CLIENT components (e.g.
+// the PLC config dialog), and the browser has no `process` global — an
+// unguarded `process.env` here is a ReferenceError that white-screens any page
+// importing it (the /commissioning/:id view). The override is server-only
+// anyway; in the browser the embedded production URL stands.
+export const EMBEDDED_REMOTE_URL =
+  (typeof process !== 'undefined' && process.env && process.env.CLOUD_URL_OVERRIDE) ||
+  'https://commissioning.autstand.com';
 
 /**
  * Default configuration values.
