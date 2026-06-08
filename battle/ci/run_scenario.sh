@@ -138,6 +138,36 @@ case "$SCENARIO" in
         export TOOL_GATEWAY_URL=http://gateway:3200
         setup_cdw5_site
         export TOOL_MEM=2g; export TOOL_CPUS=3 ;;
+    central-cdw5-live)                                # CDW5 site on REAL emulator controllers
+        # The Phase-1.1 split deployment pointed at the LIVE Logix Emulate
+        # controllers on the lab LAN (192.168.5.10X = MCM N, N=1..19), NOT the
+        # plc-sims. Real CIP / real latency / real multi-controller connection
+        # stability — the hardware-fidelity gate the sim can't give. The
+        # emulators drive no physical equipment, so the validation writer's
+        # polarity/Valid_* write-back on connect is exercised safely on real
+        # CIP. NO PLC-download chaos (can't restart a real controller); the
+        # idle plc-sim containers are unused (gateway connects to the LAN IPs).
+        # Cloud-flap stays on for the zero-loss (I4) bar. Bots write pass/fail
+        # to the tool DB + cloud only (never to the PLC).
+        export COMPOSE_PROFILES=central,split
+        export TOOL_PLC_MODE=remote
+        export TOOL_GATEWAY_URL=http://gateway:3200
+        export MCM_MODE=real
+        export SEED_DB=database-cdw5.db
+        # Only 4 distinct CDW5 programs are loaded on the lab bench (confirmed
+        # by read-only signature probe). Map each to its real controller;
+        # MCM_ONLY + MCM_GATEWAY_IPS align positionally.
+        #   MCM01 (sid37)->.101  MCM03 (sid39)->.105  MCM05 (sid41)->.114  MCM09 (sid45)->.109
+        export MCM_ONLY="37,39,41,45"
+        export MCM_GATEWAY_IPS="192.168.5.101,192.168.5.105,192.168.5.114,192.168.5.109"
+        export OBS_SUBSYSTEM_IDS="37,39,41,45"
+        export MCM_COUNT=4
+        export DOWNLOAD_STORM=""                       # no sim to restart
+        export CLOUD_FLAP="3,10"; export FLAP_BUDGET=400
+        export BOTS="${BOTS:-12}"
+        export HOT_FRACTION=0
+        export THINK_MIN_MS=500; export THINK_MAX_MS=2500
+        export TOOL_MEM=2g; export TOOL_CPUS=3 ;;
     all)                                              # EVERYTHING at once (nightly)
         # PLC program downloads + cloud connectivity flap + cloud-side data
         # mutations + realistic tester load, all together — the harshest run.

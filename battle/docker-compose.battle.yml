@@ -51,6 +51,13 @@ services:
       # 19-MCM CDW5 production dump, real subsystems, per-MCM tag files
       MCM_MODE: ${MCM_MODE:-clone}
       SEED_DB: ${SEED_DB:-database.db}
+      # central-cdw5-live: per-MCM PLC IPs (real Logix Emulate controllers on
+      # the lab LAN). Default empties → seeder falls back to the 172.28.0.10+
+      # sim addresses. Subsystem-sorted, one IP per MCM.
+      MCM_GATEWAY_IPS: ${MCM_GATEWAY_IPS:-}
+      # central-cdw5-live: restrict to the MCMs actually loaded on the bench
+      # (positional match with MCM_GATEWAY_IPS). Empty → all subsystems.
+      MCM_ONLY: ${MCM_ONLY:-}
       KEEP_DATA: ${KEEP_DATA:-0}
       # Tool↔cloud auth: this key is written into config.json (apiPassword) AND
       # into the cloud-stage project's api_key, so pushes validate.

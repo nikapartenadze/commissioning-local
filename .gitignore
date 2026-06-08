@@ -91,3 +91,5 @@ check-polarity.js
 battle/docker-compose.cdw5-sims.yml
 battle/battle-artifacts/
 battle/**/__pycache__/
+battle/_live_*
+battle/Dockerfile._probe

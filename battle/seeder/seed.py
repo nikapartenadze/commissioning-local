@@ -66,26 +66,37 @@ KEEP_DATA = os.environ.get("KEEP_DATA") == "1"
 # everything runs through the mcm-registry, which is exactly what we're testing.
 MCM_MODE = os.environ.get("MCM_MODE", "clone")  # clone | real
 MCM_COUNT = int(os.environ.get("MCM_COUNT", "1"))
+# Empty / unset → the sim addresses (.10 + one per additional sim, matching
+# the generated compose override). A non-empty list (central-cdw5-live) points
+# each MCM at a real Logix Emulate controller on the lab LAN.
+_default_ips = ",".join(f"172.28.0.{10 + i}" for i in range(24))
 MCM_GATEWAY_IPS = [
-    ip.strip() for ip in os.environ.get(
-        "MCM_GATEWAY_IPS",
-        # .10 + one per additional sim, matching the generated compose override
-        ",".join(f"172.28.0.{10 + i}" for i in range(24)),
-    ).split(",") if ip.strip()
+    ip.strip() for ip in (os.environ.get("MCM_GATEWAY_IPS", "").strip() or _default_ips).split(",") if ip.strip()
 ]
 SUBSYSTEM_STRIDE = 1000
 IO_ID_STRIDE = 10_000_000
 
 
+# MCM_ONLY: comma-separated subsystem ids to KEEP (in this exact order), used
+# when only a subset of MCMs is available on real hardware. When set, the
+# kept subsystems align positionally with MCM_GATEWAY_IPS so each maps to its
+# real controller. Empty/unset → all subsystems with IOs, id-sorted.
+MCM_ONLY = [s.strip() for s in os.environ.get("MCM_ONLY", "").split(",") if s.strip()]
+
+
 def real_subsystems(db: sqlite3.Connection) -> list[tuple[str, str]]:
-    """MCM_MODE=real: every subsystem that actually has IOs, ordered by id —
-    [(subsystemId, name), …]. Sim i (compose override) serves entry i."""
+    """MCM_MODE=real: subsystems with IOs. MCM_ONLY (if set) restricts to those
+    ids IN THE GIVEN ORDER (positional match with MCM_GATEWAY_IPS); otherwise
+    every subsystem with IOs, id-sorted. [(subsystemId, name), …]."""
     rows = db.execute(
         """SELECT s.id, s.Name FROM Subsystems s
            WHERE EXISTS (SELECT 1 FROM Ios i WHERE i.SubsystemId = s.id)
            ORDER BY s.id"""
     ).fetchall()
-    return [(str(sid), name or f"Subsystem {sid}") for sid, name in rows]
+    by_id = {str(sid): (name or f"Subsystem {sid}") for sid, name in rows}
+    if MCM_ONLY:
+        return [(sid, by_id[sid]) for sid in MCM_ONLY if sid in by_id]
+    return [(sid, name) for sid, name in ((str(s), n) for s, n in rows)]
 
 
 def clone_subsystems(db: sqlite3.Connection) -> list[tuple[str, str]]:
