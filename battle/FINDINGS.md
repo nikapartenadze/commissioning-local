@@ -4,6 +4,32 @@ Living log of what the battle environment has found. The environment's job is
 to **reproduce, in an automated soak, the bug classes that have hit the field**
 — and then catch their regressions forever.
 
+## REAL-hardware validation (2026-06-08) — split deployment vs live Logix Emulate — PASS ✅
+
+`SCENARIO=central-cdw5-live`: the Phase-1.1 split stack pointed at the lab-bench
+**Studio 5000 Logix Emulate** controllers (192.168.5.x, real EtherNet/IP, no
+physical equipment). A read-only signature probe (`battle/_live_probe.js`,
+needs `initLibrary()` first) found 4 distinct CDW5 programs loaded:
+MCM01→.101, MCM03→.105, MCM05→.114, MCM09→.109. Validation against those 4:
+
+| Invariant | Result |
+|---|---|
+| connect | 4/4 over real CIP. MCM01/MCM09 100% tags; MCM03 38% / MCM05 51% (these emulator builds lack devices the prod dump references — real program-revision drift, handled gracefully). |
+| **I1 perf** | **PASS — p50 1.8 / p95 24.6 / p99 442 ms, 0 gaps** (one 2.3 s max spike under cloud-flap). App CPU ~18%, gateway ~182% — the split keeps the app loop instant on REAL Logix CIP. |
+| **I4 loss** | **PASS — 1486 writes, 0 wipes, 0 suspect drops, 0 business rej**; 75 safely queued at end (cloud-flap backlog, draining). |
+| I5 | PASS — 1 start, 0 unexpected flaps. |
+| I2 | PASS — no leak. |
+
+Confirmed on real CIP: the split deployment connects real Logix controllers,
+the app event loop stays instant while the gateway carries the CIP load, and
+the validation writer runs via the gateway typed-batch path (`mcm-37-reconnect`,
+~100 ms, non-blocking) and handles absent CMD tags gracefully (these emulator
+programs lack the `CBT_<dev>.CTRL.CMD.Valid_*`/polarity tags, so the polarity
+*write* itself is only exercisable on the sim, where those tags exist —
+documented limitation of this bench, not a tool gap). NO PLC-download chaos
+(can't restart a real controller); the prod site PLCs live at 11.200.1.1 and
+were never touched.
+
 ## Phase 1.1 SPLIT deployment — overnight verdict (2026-06-07/08) — ALL GREEN ✅
 
 Six consecutive 1-hour `central-cdw5-split` soaks on the GitLab runner (every
