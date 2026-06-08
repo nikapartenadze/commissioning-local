@@ -23,6 +23,61 @@ export interface ImportSubsystemsResult {
   updated?: string[];
 }
 
+export interface CloudProjectInfo {
+  ok: boolean;
+  error?: string;
+  projectId?: number;
+  projectName?: string;
+  subsystemCount?: number;
+  subsystems?: Array<{ id: number; name: string }>;
+}
+
+/**
+ * Read-only probe: which cloud project does the configured API key resolve to?
+ * Hits GET {remoteUrl}/api/sync/subsystems with the X-API-Key and reports the
+ * project + station count WITHOUT mutating the local MCM list. Used by the
+ * cloud-config settings UI so the operator can confirm the key is valid and
+ * see exactly which project (and how many stations) it unlocks before importing.
+ */
+export async function fetchCloudProjectInfo(): Promise<CloudProjectInfo> {
+  const cfg = await configService.getConfig();
+  const remoteUrl = (cfg.remoteUrl || '').replace(/\/+$/, '');
+  const apiPassword = cfg.apiPassword || '';
+
+  if (!remoteUrl) return { ok: false, error: 'Cloud URL not configured' };
+  if (!apiPassword) return { ok: false, error: 'API key not set' };
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    let res: Response;
+    try {
+      res = await fetch(`${remoteUrl}/api/sync/subsystems`, {
+        method: 'GET',
+        headers: { 'X-API-Key': apiPassword },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: 'Cloud rejected the API key (wrong project key?)' };
+    }
+    if (!res.ok) return { ok: false, error: `Cloud returned ${res.status}` };
+    const data = await res.json();
+    const subs = Array.isArray(data?.subsystems) ? data.subsystems : [];
+    return {
+      ok: true,
+      projectId: data.projectId,
+      projectName: data.projectName,
+      subsystemCount: subs.length,
+      subsystems: subs,
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Cloud request failed' };
+  }
+}
+
 export async function importSubsystemsFromCloud(): Promise<ImportSubsystemsResult> {
   const cfg = await configService.getConfig();
   const remoteUrl = (cfg.remoteUrl || '').replace(/\/+$/, '');

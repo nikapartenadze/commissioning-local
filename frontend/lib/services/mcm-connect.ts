@@ -47,18 +47,32 @@ export interface ConnectMcmOptions {
   ensureIos?: boolean;
 }
 
-/** Pull a subsystem's IOs by calling this server's own pull endpoint. */
-async function pullIosViaSelf(subsystemId: string): Promise<void> {
+/**
+ * Pull a subsystem's IOs by calling this server's own pull endpoint. Returns the
+ * pull's own reason (e.g. a 403 "API key not authorized for this subsystem") so
+ * the caller can give an accurate error instead of a generic "cloud returned
+ * none" when the real cause is a wrong project / API-key mismatch.
+ */
+async function pullIosViaSelf(subsystemId: string): Promise<{ ok: boolean; reason?: string }> {
   const port = process.env.PORT || '3000';
   try {
-    await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(subsystemId)}/pull`, {
+    const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(subsystemId)}/pull`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
       signal: AbortSignal.timeout(90_000),
     });
-  } catch {
+    let reason: string | undefined;
+    try {
+      const data: any = await r.json();
+      reason = data?.error || data?.message;
+    } catch {
+      /* non-JSON body */
+    }
+    return { ok: r.ok, reason };
+  } catch (e) {
     // Best-effort — the IO re-count below surfaces a still-empty result.
+    return { ok: false, reason: e instanceof Error ? e.message : 'pull request failed' };
   }
 }
 
@@ -89,22 +103,29 @@ export async function connectConfiguredMcm(
   );
   let ios = ioQuery.all(subsystemIdNum) as IoRow[];
   let pulledIos = 0;
+  let pullReason: string | undefined;
 
   // Auto-pull on first connect: a just-imported station has an IP but no IOs.
   if (ios.length === 0 && opts?.ensureIos) {
-    await pullIosViaSelf(subsystemId);
+    const pull = await pullIosViaSelf(subsystemId);
+    pullReason = pull.reason;
     ios = ioQuery.all(subsystemIdNum) as IoRow[];
     pulledIos = ios.length;
   }
 
   if (ios.length === 0) {
+    // Prefer the pull's own reason (e.g. 403 wrong-project/API-key) over a
+    // generic message — that's the difference between "no data" and "this key
+    // can't see this subsystem".
     return {
       subsystemId,
       name,
       success: false,
-      error: opts?.ensureIos
-        ? `No IOs for subsystem ${subsystemId} after cloud pull (cloud returned none for this subsystem)`
-        : `No IOs for subsystem ${subsystemId} — pull IOs from cloud first`,
+      error: pullReason
+        ? `Could not load IOs for subsystem ${subsystemId}: ${pullReason}`
+        : opts?.ensureIos
+          ? `No IOs for subsystem ${subsystemId} after cloud pull (cloud returned none for this subsystem)`
+          : `No IOs for subsystem ${subsystemId} — pull IOs from cloud first`,
     };
   }
 
