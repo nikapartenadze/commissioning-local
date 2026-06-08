@@ -1228,8 +1228,15 @@ export default function CommissioningPage() {
     try {
       // Only show full-page loading spinner on very first load, never on pull/refresh
       if (!hasLoadedOnce.current && ios.length === 0) setLoading(true)
-      // Load IOs from backend (real PLC data) - retry on failure
-      const response = await fetchWithRetry(API_ENDPOINTS.ios, { signal: AbortSignal.timeout(15000) })
+      // Load IOs from backend (real PLC data) - retry on failure.
+      // Scope to THIS page's subsystem (the URL :id). Without it, /api/ios
+      // returns every subsystem's IOs unioned and labels the header from the
+      // lowest-Order row — so every MCM page showed the same "project / MCM01".
+      const iosUrl =
+        paramId && paramId !== '0'
+          ? `${API_ENDPOINTS.ios}?subsystemId=${encodeURIComponent(paramId)}`
+          : API_ENDPOINTS.ios
+      const response = await fetchWithRetry(iosUrl, { signal: AbortSignal.timeout(15000) })
       if (response.ok) {
         const json = await response.json()
         // API returns { ios, projectName, subsystemName } or plain array (backwards compat)
