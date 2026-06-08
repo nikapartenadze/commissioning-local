@@ -4,6 +4,42 @@ Living log of what the battle environment has found. The environment's job is
 to **reproduce, in an automated soak, the bug classes that have hit the field**
 — and then catch their regressions forever.
 
+## Phase 1.1 SPLIT deployment — overnight verdict (2026-06-07/08) — ALL GREEN ✅
+
+Six consecutive 1-hour `central-cdw5-split` soaks on the GitLab runner (every
+2h, 18:00→04:00, schedule on the branch ref, `tool:central` image with the
+B7 fix). The full 19-MCM CDW5 production-dump site, app in `PLC_MODE=remote`,
+all PLC I/O owned by the plc-gateway process, under download storm + cloud flap.
+
+| Run | I1 p50/p95/p99/max (ms) | I3 dl/restore | I4 writes/wipes/suspect | I5 |
+|---|---|---|---|---|
+| 688 | 3.5 / 134 / 263 / 604 · 0 gaps | 3 / 20 | 7177 / 0 / 0 | 1 start, 0 flap |
+| 690 | 3.5 / 141 / 273 / 527 · 0 gaps | 3 / 12 | 7225 / 0 / 0 | 1 start, 0 flap |
+| 692 | 3.4 / 119 / 239 / 522 · 0 gaps | 4 / 24 | 7126 / 0 / 0 | 1 start, 0 flap |
+
+(687/689/691 likewise PASS.) **Every invariant green on every run.** The two
+goals are proven:
+
+1. **Performance solved by the split.** App health p95 ~130 ms / p99 ~250 ms
+   under the full 19-MCM load — vs embedded `central-cdw5` p95 921 ms / p99
+   1456 ms (FAIL). The app event loop is never blocked by tag I/O; the gateway
+   owns it on its own cores. I1 now passes with large margin.
+2. **B7 fixed and held.** `suspect_silent_drops = 0` on all runs (the pre-fix
+   local split run had 389 parked rows of the `updatedCount=0` ghost class).
+   The reconcile-against-cloud-truth pass (clear ghosts / clear superseded /
+   rebase divergent) + the 2× cap for version-conflict rows kept the queue
+   draining cleanly (53–142 safely queued at snapshot, 0 parked-as-suspect).
+
+Also confirmed in split mode: I3 polarity/Valid_* restore fires via the
+gateway→`McmReconnected`→app-writer→gateway-write-back seam after every
+injected program download (12–24 restore passes/run); the safety-critical
+write-back path works identically to embedded. I5 = 1 server.start (the
+double-audit merge fix held), 0 unexpected flaps.
+
+Net: the centralized server is production-grade on the split deployment —
+no data loss, no leak, no stalls, polarity write-back intact, at full CDW5
+scale under chaos, for six straight hours.
+
 ## Target bug catalog (from the MCM11 sync incident, 2026-06-05)
 
 `2026-06-05-mcm11-sync-incident.md` §5 lists 8 bugs (B1–B8) that make silent
