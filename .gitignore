@@ -96,3 +96,5 @@ battle/Dockerfile._probe
 battle/_*
 battle/Dockerfile._*
 CommissioningTool*Setup*.exe
+FIX-CENTRAL-GATEWAY.bat
+CENTRAL-SERVER-SPLIT-REPORT.*

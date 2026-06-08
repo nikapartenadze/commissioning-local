@@ -268,11 +268,12 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   FileWrite $0 "NODE_ENV=production$\r$\n"
   FileWrite $0 "APP_VERSION=${APP_VERSION}$\r$\n"
   FileWrite $0 "UPDATE_MANIFEST_URL=$\r$\n"
-!ifdef CENTRAL
-  ; Split deployment: the app routes all PLC I/O to the local plc-gateway.
-  FileWrite $0 "PLC_MODE=remote$\r$\n"
-  FileWrite $0 "GATEWAY_URL=http://127.0.0.1:3200$\r$\n"
-!endif
+  ; NOTE: PLC_MODE is deliberately NOT written to this shared .env. The app AND
+  ; the gateway both run from $INSTDIR\app and load THIS file — writing
+  ; PLC_MODE=remote here makes the GATEWAY read it too and fatally exit
+  ; ("PLC_MODE=remote is invalid for the gateway process"). The app gets
+  ; PLC_MODE/GATEWAY_URL from its own service env only (AppEnvironmentExtra,
+  ; below); the gateway is pinned to embedded there too. .env stays mode-agnostic.
   FileClose $0
 
   ; ── Database initialization ──
@@ -334,7 +335,10 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} DisplayName "${GATEWAY_SERVICE_DISPLAY}"'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} Description "Owns PLC (libplctag) connections for the central commissioning server"'
   ; GATEWAY_HOST 127.0.0.1: only the local app talks to it (never exposed).
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppEnvironmentExtra GATEWAY_PORT=3200 GATEWAY_HOST=127.0.0.1 WS_BROADCAST_URL=http://127.0.0.1:3102/broadcast NODE_ENV=production'
+  ; PLC_MODE=embedded pins this process to owner mode — defensive belt so a
+  ; stray PLC_MODE in the machine/user env or a shared .env can never flip the
+  ; gateway into remote (which it rejects as fatal).
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} AppEnvironmentExtra PLC_MODE=embedded GATEWAY_PORT=3200 GATEWAY_HOST=127.0.0.1 WS_BROADCAST_URL=http://127.0.0.1:3102/broadcast NODE_ENV=production'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} ObjectName LocalSystem'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} Type SERVICE_WIN32_OWN_PROCESS'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${GATEWAY_SERVICE_NAME} Start SERVICE_DELAYED_AUTO_START'
