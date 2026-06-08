@@ -3,7 +3,12 @@ import { Link } from 'react-router-dom'
 import {
   ArrowLeft,
   Check,
+  Cloud,
+  Download,
+  Eye,
+  EyeOff,
   Hexagon,
+  KeyRound,
   Pencil,
   Plus,
   Save,
@@ -99,6 +104,8 @@ export default function McmSettingsPage() {
       </header>
 
       <main className="relative max-w-5xl mx-auto px-6 py-10 z-10 space-y-10">
+        <CloudConnectionPanel onImported={refresh} />
+
         <AddMcmForm onAdded={refresh} />
 
         <section>
@@ -132,6 +139,252 @@ export default function McmSettingsPage() {
         </section>
       </main>
     </div>
+  )
+}
+
+// ── cloud connection (project API key) ─────────────────────────────────────
+
+interface CloudProject {
+  ok: boolean
+  error?: string
+  projectId?: number
+  projectName?: string
+  subsystemCount?: number
+}
+
+function CloudConnectionPanel({ onImported }: { onImported: () => void }) {
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [apiKeySet, setApiKeySet] = useState(false)
+  const [showKey, setShowKey] = useState(false)
+  const [project, setProject] = useState<CloudProject | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [pulling, setPulling] = useState(false)
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/api/mcm/cloud-config')
+      const d = await r.json()
+      if (d?.success) {
+        setRemoteUrl(d.remoteUrl || '')
+        setApiKeySet(Boolean(d.apiKeySet))
+        setProject(d.project || null)
+      }
+    } catch {
+      /* leave fields blank on load error */
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  async function save() {
+    setSaving(true)
+    setMsg(null)
+    try {
+      const body: Record<string, string> = {}
+      if (remoteUrl.trim()) body.remoteUrl = remoteUrl.trim()
+      if (apiKey.trim()) body.apiPassword = apiKey.trim()
+      if (!body.apiPassword && !apiKeySet) {
+        setMsg({ kind: 'err', text: 'Enter the project API key first' })
+        return
+      }
+      const r = await fetch('/api/mcm/cloud-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const d = await r.json()
+      if (!d?.success) {
+        setMsg({ kind: 'err', text: d?.error || 'Save failed' })
+        return
+      }
+      setProject(d.project || null)
+      if (apiKey.trim()) setApiKeySet(true)
+      setApiKey('')
+      if (d.project?.ok) {
+        setMsg({ kind: 'ok', text: `Connected to ${d.project.projectName} — ${d.project.subsystemCount} station(s) available` })
+      } else {
+        setMsg({ kind: 'err', text: d.project?.error || 'Key saved but cloud could not be verified' })
+      }
+    } catch (e) {
+      setMsg({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function importStations() {
+    setImporting(true)
+    setMsg(null)
+    try {
+      const r = await fetch('/api/mcm/import-from-cloud', { method: 'POST' })
+      const d = await r.json()
+      if (!d?.success) {
+        setMsg({ kind: 'err', text: d?.error || 'Import failed' })
+        return
+      }
+      const added = (d.added || []).length
+      const updated = (d.updated || []).length
+      setMsg({
+        kind: 'ok',
+        text: `Imported ${d.projectName ?? 'project'}: ${added} added, ${updated} updated (${d.total} total stations). Fill each station's PLC IP, then Connect.`,
+      })
+      onImported()
+      load()
+    } catch (e) {
+      setMsg({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  async function pullAll() {
+    setPulling(true)
+    setMsg(null)
+    try {
+      const r = await fetch('/api/mcm/pull-all', { method: 'POST' })
+      const d = await r.json()
+      if (!d?.success) {
+        setMsg({ kind: 'err', text: d?.error || 'Pull failed' })
+        return
+      }
+      const failed = (d.results || []).filter((x: { ok: boolean }) => !x.ok)
+      setMsg({
+        kind: failed.length ? 'err' : 'ok',
+        text:
+          `Pulled IOs for ${d.pulled}/${d.total} stations` +
+          (failed.length ? ` — failed: ${failed.map((x: { name: string }) => x.name).join(', ')}` : ''),
+      })
+      onImported()
+    } catch (e) {
+      setMsg({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setPulling(false)
+    }
+  }
+
+  return (
+    <section className="border border-primary/30 bg-card rounded-sm relative">
+      <CornerBrackets />
+      <div className="h-[3px] bg-primary/60" />
+      <div className="p-5 space-y-5">
+        <div className="flex items-center gap-2">
+          <Cloud className="w-4 h-4 text-primary" />
+          <h2 className="font-mono text-sm uppercase tracking-[0.35em] text-foreground">
+            Cloud Connection
+          </h2>
+        </div>
+
+        <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
+          The central tool serves ONE cloud project. The project is chosen by its
+          API key — paste it below and Save. Then <strong className="text-foreground">Import stations</strong> to
+          fetch that project's MCM list, and <strong className="text-foreground">Pull all IOs</strong> to download
+          every station's IO data into this laptop.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <label className="block sm:col-span-2">
+            <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground mb-1.5 inline-flex items-center gap-1.5">
+              <KeyRound className="w-3 h-3" /> Project API Key
+              {apiKeySet && (
+                <span className="text-success">· a key is currently saved</span>
+              )}
+            </span>
+            <div className="relative">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={apiKeySet ? '•••••••• (leave blank to keep current)' : 'paste project API key'}
+                className="w-full bg-background border border-border rounded-sm px-3 py-2 pr-10 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30 transition-colors"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((s) => !s)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label={showKey ? 'Hide key' : 'Show key'}
+              >
+                {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </label>
+
+          <label className="block sm:col-span-2">
+            <span className="block font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground mb-1.5">
+              Cloud URL
+            </span>
+            <input
+              type="text"
+              value={remoteUrl}
+              onChange={(e) => setRemoteUrl(e.target.value)}
+              placeholder="https://commissioning.autstand.com"
+              className="w-full bg-background border border-border rounded-sm px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30 transition-colors"
+            />
+          </label>
+        </div>
+
+        {project && (
+          <div
+            className={cn(
+              'font-mono text-[11px] px-3 py-2 rounded-sm border',
+              project.ok
+                ? 'border-success/40 bg-success/5 text-success'
+                : 'border-destructive/30 bg-destructive/5 text-destructive'
+            )}
+          >
+            {project.ok
+              ? `Active project: ${project.projectName} (#${project.projectId}) · ${project.subsystemCount} station(s)`
+              : `Cloud: ${project.error}`}
+          </div>
+        )}
+
+        {msg && (
+          <div
+            className={cn(
+              'font-mono text-[11px] px-3 py-2 rounded-sm border',
+              msg.kind === 'ok'
+                ? 'border-success/40 bg-success/5 text-success'
+                : 'border-destructive/30 bg-destructive/5 text-destructive'
+            )}
+          >
+            {msg.text}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/60">
+          <button
+            onClick={save}
+            disabled={saving}
+            className="font-mono text-[11px] uppercase tracking-[0.2em] px-4 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 rounded-sm"
+          >
+            <Save className="w-3 h-3" />
+            {saving ? 'Saving…' : 'Save & Verify Key'}
+          </button>
+          <button
+            onClick={importStations}
+            disabled={importing || !apiKeySet}
+            title={apiKeySet ? '' : 'Save a valid API key first'}
+            className="font-mono text-[11px] uppercase tracking-[0.2em] px-4 py-1.5 border border-border hover:bg-muted transition-colors disabled:opacity-40 inline-flex items-center gap-1.5 rounded-sm"
+          >
+            <Download className="w-3 h-3" />
+            {importing ? 'Importing…' : 'Import stations'}
+          </button>
+          <button
+            onClick={pullAll}
+            disabled={pulling || !apiKeySet}
+            title={apiKeySet ? '' : 'Save a valid API key first'}
+            className="font-mono text-[11px] uppercase tracking-[0.2em] px-4 py-1.5 border border-border hover:bg-muted transition-colors disabled:opacity-40 inline-flex items-center gap-1.5 rounded-sm"
+          >
+            <Cloud className="w-3 h-3" />
+            {pulling ? 'Pulling all IOs…' : 'Pull all IOs'}
+          </button>
+        </div>
+      </div>
+    </section>
   )
 }
 
