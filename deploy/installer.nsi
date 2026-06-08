@@ -145,15 +145,37 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; Step 3: drop the service config (NSSM kills the wrapped process
   ; tree on remove). If the service didn't exist, this no-ops.
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
+  ; Hard fallback in case nssm.exe is itself missing/locked.
+  nsExec::ExecToLog 'sc.exe delete ${SERVICE_NAME}'
   Sleep 1000
 
 !ifdef CENTRAL
   ; Central build also runs the plc-gateway service — stop + remove it too
-  ; before touching files (the Step-4/5 node-kill below already covers BOTH
-  ; processes since it filters by $INSTDIR, not service name).
+  ; before touching files. CRITICAL: poll for STOPPED exactly like the app
+  ; service above. A fixed Sleep was too short — if the gateway took >2s to
+  ; die, `nssm remove` ran while node.exe was still live and the file copy
+  ; below failed with "cannot write node.exe". Poll up to 30s instead.
+  DetailPrint "Stopping ${GATEWAY_SERVICE_NAME} service before upgrade..."
   nsExec::ExecToLog 'sc.exe stop ${GATEWAY_SERVICE_NAME}'
-  Sleep 2000
+  StrCpy $1 0
+  poll_gw_stopped_loop:
+    IntCmp $1 15 poll_gw_stopped_done
+    nsExec::ExecToStack 'cmd.exe /c sc query ${GATEWAY_SERVICE_NAME} ^| findstr /C:"STATE"'
+    Pop $2  ; exit code (0 = found)
+    Pop $3  ; output line
+    StrCmp $2 "0" 0 poll_gw_stopped_done   ; service missing → done
+    Push $3
+    Push "STOPPED"
+    Call StrContains
+    Pop $4
+    StrCmp $4 "1" poll_gw_stopped_done
+    Sleep 2000
+    IntOp $1 $1 + 1
+    Goto poll_gw_stopped_loop
+  poll_gw_stopped_done:
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${GATEWAY_SERVICE_NAME} confirm'
+  ; Hard fallback in case nssm.exe is itself missing/locked.
+  nsExec::ExecToLog 'sc.exe delete ${GATEWAY_SERVICE_NAME}'
   Sleep 1000
 !endif
 
@@ -166,7 +188,7 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; node.exe instances whose binary lives under $INSTDIR, leaving any
   ; other node.exe the user might be running alone.
   DetailPrint "Killing any leftover node.exe under $INSTDIR..."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name = ''node.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"'
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name = ''node.exe'' OR Name = ''nssm.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   Sleep 2000
 
   ; Step 5: belt-and-suspenders retry on the process kill. Even if
@@ -178,7 +200,7 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   StrCpy $1 0
   process_kill_loop:
     IntCmp $1 3 process_kill_done
-    nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$found = Get-CimInstance Win32_Process -Filter \"Name = ''node.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) }; if ($found) { $found | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; exit 1 } else { exit 0 }"'
+    nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$found = Get-CimInstance Win32_Process -Filter \"Name = ''node.exe'' OR Name = ''nssm.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) }; if ($found) { $found | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; exit 1 } else { exit 0 }"'
     Pop $2  ; exit code: 0 = no processes left, 1 = had to kill some
     Pop $3  ; (output, ignored)
     StrCmp $2 "0" process_kill_done
