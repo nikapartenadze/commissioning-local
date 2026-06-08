@@ -44,6 +44,7 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       GATEWAY_IP: ${GATEWAY_IP:-172.28.0.10}
+      PLC_PATH: ${PLC_PATH:-1,0}
       SUBSYSTEM_ID: ${SUBSYSTEM_ID:-38}
       # central scenario: clone the subsystem into N MCMs, one plc-sim each
       MCM_COUNT: ${MCM_COUNT:-1}
