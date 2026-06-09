@@ -833,7 +833,11 @@ class AutoSyncService {
             checks: [{
               zoneName: p.ZoneName,
               checkTag: p.CheckTag,
-              result: latest ? latest.Result : p.Result,
+              // Cloud /api/sync/estop-checks validates result ∈ {Passed,Failed};
+              // the local EStop tables store lowercase pass/fail — normalize here.
+              result: ((latest ? latest.Result : p.Result) === 'pass' ? 'Passed'
+                : (latest ? latest.Result : p.Result) === 'fail' ? 'Failed'
+                : (latest ? latest.Result : p.Result)),
               comments: latest ? latest.Comments : p.Comments,
               failureMode: latest ? latest.FailureMode : p.FailureMode,
               testedBy: latest ? latest.TestedBy : p.TestedBy,

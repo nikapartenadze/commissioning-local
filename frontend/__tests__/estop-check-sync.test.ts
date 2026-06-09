@@ -124,7 +124,9 @@ describe('enqueueEstopCheckSync', () => {
     expect(body.checks[0]).toMatchObject({
       zoneName: 'Zone A',
       checkTag: 'EPC_01_Check',
-      result: 'pass',
+      // local stores lowercase 'pass'; the push normalizes to the cloud's
+      // required 'Passed'/'Failed' (cloud 400s otherwise).
+      result: 'Passed',
       testedBy: 'ASH',
       version: 0,
     })
@@ -180,7 +182,7 @@ describe('enqueueEstopCheckSync', () => {
     const lastCall = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit]
     const body = JSON.parse(lastCall[1].body as string)
     expect(body.subsystemId).toBe(16)
-    expect(body.checks[0].result).toBe('fail')
+    expect(body.checks[0].result).toBe('Failed') // normalized from local 'fail'
     expect(body.checks[0].failureMode).toBe('Needs proper tension')
     // base version = pre-increment = 1
     expect(body.checks[0].version).toBe(1)
