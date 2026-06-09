@@ -181,11 +181,21 @@ def cloud_results() -> dict[int, str | None] | None:
     for sid in [s.strip() for s in SUBSYSTEM_ID.split(",") if s.strip()]:
         url = f"{CLOUD_URL}/api/sync/subsystem/{sid}"
         req = urllib.request.Request(url, headers={"X-API-Key": CLOUD_API_KEY})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                data = json.loads(r.read())
-        except Exception as e:
-            print(f"observer: cloud read failed (subsystem {sid}): {e}")
+        # Large MCMs (e.g. MCM11/12 ~3800 IOs) pull slowly, and the cloud-stage
+        # can be briefly restarting right after the chaos quiesce — so retry per
+        # subsystem with a generous timeout. Only a PERSISTENT failure → None
+        # (a partial map would make every missing IO look wiped, a false I4 fail).
+        data = None
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    data = json.loads(r.read())
+                break
+            except Exception as e:
+                print(f"observer: cloud read failed (subsystem {sid}, attempt {attempt + 1}/4): {e}")
+                time.sleep(5)
+        if data is None:
+            print(f"observer: cloud read GAVE UP for subsystem {sid} after 4 attempts")
             return None
         for io in data.get("ios", []):
             out[int(io["id"])] = io.get("result")
