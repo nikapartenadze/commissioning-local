@@ -8,7 +8,7 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check, ChevronUp, ChevronDown, ChevronsUpDown, Wifi, WifiOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
@@ -1531,9 +1531,13 @@ export function EnhancedIoDataGrid({
                     style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
                   >
                     {rowDeviceName ? (() => {
-                      if (deviceStatus === 'red') return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.6)]" title={`${rowDeviceName} — FAULTED`} />
-                      if (deviceStatus === 'green') return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]" title={`${rowDeviceName} — OK`} />
-                      return <div className="w-4 h-4 min-w-[16px] rounded-sm bg-gray-300 dark:bg-gray-600" title={`${rowDeviceName} — No PLC data`} />
+                      // Symbol-based network status so technicians can read state at a
+                      // glance: a connected Wifi glyph for healthy/online devices, a
+                      // crossed-out WifiOff glyph for faulted/offline, and a muted Wifi
+                      // when the device exists in topology but the PLC has no live data.
+                      if (deviceStatus === 'red') return <span className="inline-flex" title={`${rowDeviceName} — FAULTED / offline`}><WifiOff className="w-4 h-4 text-red-500 drop-shadow-[0_0_4px_rgba(239,68,68,0.6)]" /></span>
+                      if (deviceStatus === 'green') return <span className="inline-flex" title={`${rowDeviceName} — online / OK`}><Wifi className="w-4 h-4 text-green-500 drop-shadow-[0_0_4px_rgba(34,197,94,0.6)]" /></span>
+                      return <span className="inline-flex" title={`${rowDeviceName} — no PLC data`}><Wifi className="w-4 h-4 text-muted-foreground/40" /></span>
                     })() : (
                       // Faint em-dash placeholder for IOs with no parent network device.
                       // Without it the cell looks like missing data; with it operators see
