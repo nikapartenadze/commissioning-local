@@ -1,5 +1,9 @@
 import type { Step, Task } from './types'
-import { classifyIoCircuit } from '@/lib/guided/io-check-sequence'
+import {
+  classifyIoCircuit,
+  classifyIoDeviceClass,
+  deviceProcedure,
+} from '@/lib/guided/io-check-sequence'
 
 /**
  * Minimal IO shape the step-builder needs. Matches the `IoSummary` returned by
@@ -10,6 +14,20 @@ export interface StepIo {
   name: string
   description: string | null
   result: 'Passed' | 'Failed' | null
+  /**
+   * True for OUTPUT points (beacons, horns, solenoids). Outputs can't be
+   * verified by an input round-trip — they get a fire-and-confirm step.
+   * Optional so existing callers/tests default to inputs.
+   */
+  isOutput?: boolean
+}
+
+/** Optional live context the runner bakes into certain steps (network loop). */
+export interface BuildStepsContext {
+  /** Live DLR ring verdict for the Network Loop auto-verify assist. */
+  ringVerdict?: 'healthy' | 'degraded' | 'unknown' | null
+  /** All networked DPMs communicating (null = unknown, never auto-pass). */
+  dpmsCommunicating?: boolean | null
 }
 
 /**
@@ -23,7 +41,7 @@ export interface StepIo {
  * @param task  the task to expand
  * @param ios   the device's IO rows (for io-check tasks); ignored otherwise
  */
-export function buildSteps(task: Task, ios: StepIo[] = []): Step[] {
+export function buildSteps(task: Task, ios: StepIo[] = [], ctx: BuildStepsContext = {}): Step[] {
   const steps: Step[] = []
   const dev = task.deviceName
 
@@ -39,22 +57,39 @@ export function buildSteps(task: Task, ios: StepIo[] = []): Step[] {
           deviceName: dev,
         })
       }
-      // One io_check step per *untested* IO. Already-tested IOs are skipped so
+      // One step per *untested* IO. Already-tested IOs are skipped so
       // re-entering a half-finished task resumes where the tester left off.
       const pending = ios.filter((io) => io.result == null)
       const list = pending.length > 0 ? pending : ios
       for (const io of list) {
-        // D6: the full round-trip is required — actuate AND return to rest.
+        const label = shortLabel(io, dev)
+        if (io.isOutput) {
+          // OUTPUTS (beacons, horns, solenoids) can't be checked by an input
+          // round-trip. Fire them and visually confirm, then pass/fail via the
+          // acknowledgment popup. The runner's "Fire" button POSTs to
+          // /api/ios/:id/fire-output for `fireOutputIoId`.
+          steps.push({
+            id: `${task.id}:io:${io.id}`,
+            kind: 'manual_confirm',
+            title: `STEP ${steps.length + 1}: FIRE ${label}`,
+            instruction: `Fire ${label} and confirm it activates (look/listen for the beacon, horn or solenoid). Use "Fire" to drive the output, watch it, then mark Pass or Fail.`,
+            deviceName: dev,
+            ioId: io.id,
+            ioName: io.name,
+            isOutput: true,
+            fireOutputIoId: io.id,
+          })
+          continue
+        }
+        // INPUTS: D6 full round-trip required — actuate AND return to rest.
         const circuit = classifyIoCircuit(io.name, io.description)
-        const action =
-          circuit === 'NC'
-            ? 'block / pull it, then clear / reset it'
-            : 'press / actuate it, then release it'
+        const cls = classifyIoDeviceClass(io.name, io.description)
+        const proc = deviceProcedure(cls, circuit)
         steps.push({
           id: `${task.id}:io:${io.id}`,
           kind: 'io_check',
-          title: `STEP ${steps.length + 1}: CHECK ${shortLabel(io, dev)}`,
-          instruction: `Actuate ${shortLabel(io, dev)} through its full sequence — ${action}. The tool watches the PLC and passes once both transitions are seen. If nothing happens, use "Nothing Happened".`,
+          title: `STEP ${steps.length + 1}: CHECK ${label}`,
+          instruction: `${proc.full} (${label}) through its full sequence. The tool watches the PLC and passes once both transitions are seen. If nothing happens, use "Nothing Happened".`,
           deviceName: dev,
           ioId: io.id,
           ioName: io.name,
@@ -109,12 +144,28 @@ export function buildSteps(task: Task, ios: StepIo[] = []): Step[] {
     }
 
     case 'network_loop': {
+      const ringVerdict = ctx.ringVerdict ?? null
+      const dpmsCommunicating = ctx.dpmsCommunicating ?? null
+      // Auto-verify assist: when the DLR ring reads 'healthy' AND every DPM is
+      // communicating, surface the live verdict and let the runner auto-pass.
+      // 'unknown'/null never blocks — the tester can always confirm manually.
+      const autoOk = ringVerdict === 'healthy' && dpmsCommunicating === true
+      const verdictLine =
+        ringVerdict === 'healthy'
+          ? autoOk
+            ? 'Live check: ring HEALTHY and all DPMs communicating — you may auto-pass.'
+            : 'Live check: ring HEALTHY (DPM comms not yet confirmed).'
+          : ringVerdict === 'degraded'
+            ? 'Live check: ring FAULTED — resolve the ring before passing.'
+            : 'Live ring status unknown (no DLR probe yet) — verify manually.'
       steps.push({
         id: `${task.id}:verify`,
         kind: 'manual_confirm',
         title: 'STEP 1: VERIFY NETWORK LOOP',
         instruction:
-          'Confirm every DPM is communicating and the ring topology is healthy (no ring fault). Use the Network view for live link status, then mark this step done.',
+          `Confirm every DPM is communicating and the ring topology is healthy (no ring fault). ${verdictLine} Use the Network view for live link status, then mark this step done.`,
+        ringVerdict,
+        dpmsCommunicating,
       })
       break
     }
@@ -289,11 +340,26 @@ export function buildEstopSteps(task: Task, zoneName: string, epcs: EstopEpcStep
   const pending = epcs.filter((e) => e.result == null)
   const list = pending.length > 0 ? pending : epcs
   for (const e of list) {
+    // KK's worked example: "Zone nominal, walk to EPC1 (I'm There)" → verify →
+    // "walk to EPC2 (I'm There)" → verify. Each EPC gets an explicit navigate
+    // step carrying its deviceName so the map zooms to it, then the
+    // auto-detect verify step.
+    steps.push({
+      id: `${task.id}:nav:${e.checkTag}`,
+      kind: 'navigate',
+      title: `STEP ${steps.length + 1}: WALK TO ${e.name.toUpperCase()}`,
+      instruction: `Zone nominal — walk to ${e.name}. Tap "I'm There" when you reach it.`,
+      deviceName: e.name,
+      estopZone: zoneName,
+      estopCheckTag: e.checkTag,
+      estopEpcName: e.name,
+    })
     steps.push({
       id: `${task.id}:epc:${e.checkTag}`,
       kind: 'auto_detect',
       title: `STEP ${steps.length + 1}: PULL ${e.name.toUpperCase()}`,
-      instruction: `Walk to ${e.name} and pull the cord. The tool watches the safe-torque-off signals and shows the verdict; confirm to record it.`,
+      instruction: `Pull the cord at ${e.name}. The tool watches the safe-torque-off signals and shows the verdict; confirm to record it.`,
+      deviceName: e.name,
       estopZone: zoneName,
       estopCheckTag: e.checkTag,
       estopEpcName: e.name,

@@ -743,12 +743,188 @@ class AutoSyncService {
         console.warn('[AutoSync] Device blocker sync error:', err instanceof Error ? err.message : err)
       }
 
+      // Drain EStop EPC check results that never reached the cloud (offline at
+      // the time of the write, or the immediate push failed). Subsystem-scoped,
+      // version-aware; mirrors the L2 cell drain above.
+      try {
+        await this.pushEstopCheckSyncs(remoteUrl, apiPassword)
+      } catch (err) {
+        console.warn('[AutoSync] EStop check sync error:', err instanceof Error ? err.message : err)
+      }
+
+      // Drain Guided-Mode task-state overrides (skip / mark-done) that never
+      // reached the cloud. Identity is (SubsystemId, TaskId); last-write-wins.
+      try {
+        await this.pushGuidedTaskStateSyncs(remoteUrl, apiPassword)
+      } catch (err) {
+        console.warn('[AutoSync] Guided task-state sync error:', err instanceof Error ? err.message : err)
+      }
+
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       this._lastPushResult = `error: ${msg}`
       console.warn(`[AutoSync] Push error: ${msg}`)
     } finally {
       this.isPushing = false
+    }
+  }
+
+  /**
+   * Background drain for EStop EPC check results (EStopCheckPendingSyncs).
+   * Subsystem-scoped, version-aware. Dedupes to the OLDEST-version pending row
+   * per (SubsystemId, ZoneName, CheckTag) — that's the base version the cloud
+   * actually has — and pushes the LATEST local value. On success, drops all
+   * pending rows for the check; on failure, leaves them for the next cycle and
+   * applies a retry cap so an unrecoverable row can't wedge the queue forever.
+   */
+  private async pushEstopCheckSyncs(remoteUrl: string, apiPassword: string | undefined): Promise<void> {
+    const PENDING_RETRY_CAP = 10
+
+    const pending = db.prepare(
+      'SELECT * FROM EStopCheckPendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+    ).all() as Array<{
+      id: number; SubsystemId: number; ZoneName: string; CheckTag: string
+      Result: string | null; Comments: string | null; FailureMode: string | null
+      TestedBy: string | null; TestedAt: string | null; Version: number; RetryCount: number
+    }>
+    if (pending.length === 0) return
+
+    // Dedupe per check — keep the lowest Version (closest to cloud's real version).
+    const byCheck = new Map<string, typeof pending[number]>()
+    const stale: number[] = []
+    for (const p of pending) {
+      const key = `${p.SubsystemId}|${p.ZoneName}|${p.CheckTag}`
+      const existing = byCheck.get(key)
+      if (!existing) byCheck.set(key, p)
+      else if (p.Version < existing.Version) { stale.push(existing.id); byCheck.set(key, p) }
+      else stale.push(p.id)
+    }
+    if (stale.length > 0) {
+      const ph = stale.map(() => '?').join(',')
+      try { db.prepare(`DELETE FROM EStopCheckPendingSyncs WHERE id IN (${ph})`).run(...stale) } catch { /* best-effort */ }
+    }
+
+    const readLatest = db.prepare(
+      'SELECT Result, Comments, FailureMode, TestedBy, TestedAt, Version FROM EStopEpcChecks WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?'
+    )
+    const deleteAllForCheck = db.prepare(
+      'DELETE FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?'
+    )
+    const bumpRetry = db.prepare(
+      'UPDATE EStopCheckPendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
+    )
+
+    for (const p of Array.from(byCheck.values())) {
+      if (p.RetryCount >= PENDING_RETRY_CAP) {
+        try { db.prepare('DELETE FROM EStopCheckPendingSyncs WHERE id = ?').run(p.id) } catch { /* best-effort */ }
+        console.warn(`[AutoSync] Dropped EStop check pending row id=${p.id} (${p.ZoneName}/${p.CheckTag}) — exceeded retry cap`)
+        continue
+      }
+      const latest = readLatest.get(p.SubsystemId, p.ZoneName, p.CheckTag) as
+        { Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null; Version: number } | undefined
+
+      let resp: globalThis.Response
+      try {
+        resp = await fetch(`${remoteUrl}/api/sync/estop-checks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+          body: JSON.stringify({
+            subsystemId: p.SubsystemId,
+            checks: [{
+              zoneName: p.ZoneName,
+              checkTag: p.CheckTag,
+              result: latest ? latest.Result : p.Result,
+              comments: latest ? latest.Comments : p.Comments,
+              failureMode: latest ? latest.FailureMode : p.FailureMode,
+              testedBy: latest ? latest.TestedBy : p.TestedBy,
+              testedAt: latest ? latest.TestedAt : p.TestedAt,
+              version: p.Version,
+            }],
+          }),
+          signal: AbortSignal.timeout(15000),
+        })
+      } catch {
+        // Offline / timeout — keep the row, no strike (next cycle retries).
+        break
+      }
+      if (resp.ok) {
+        try { deleteAllForCheck.run(p.SubsystemId, p.ZoneName, p.CheckTag) } catch { /* best-effort */ }
+      } else {
+        try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  /**
+   * Background drain for Guided-Mode task-state overrides
+   * (GuidedTaskStatePendingSyncs). Identity is (SubsystemId, TaskId); last-write
+   * wins, so only the NEWEST pending row per task is pushed and the rest dropped.
+   */
+  private async pushGuidedTaskStateSyncs(remoteUrl: string, apiPassword: string | undefined): Promise<void> {
+    const PENDING_RETRY_CAP = 10
+
+    const pending = db.prepare(
+      'SELECT * FROM GuidedTaskStatePendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+    ).all() as Array<{
+      id: number; SubsystemId: number; TaskId: string; Status: string
+      Reason: string | null; ActorName: string | null; UpdatedAt: string | null; RetryCount: number
+    }>
+    if (pending.length === 0) return
+
+    // Dedupe per task — keep the NEWEST row (highest id), drop older ones.
+    const byTask = new Map<string, typeof pending[number]>()
+    const stale: number[] = []
+    for (const p of pending) {
+      const key = `${p.SubsystemId}|${p.TaskId}`
+      const existing = byTask.get(key)
+      if (!existing) byTask.set(key, p)
+      else if (p.id > existing.id) { stale.push(existing.id); byTask.set(key, p) }
+      else stale.push(p.id)
+    }
+    if (stale.length > 0) {
+      const ph = stale.map(() => '?').join(',')
+      try { db.prepare(`DELETE FROM GuidedTaskStatePendingSyncs WHERE id IN (${ph})`).run(...stale) } catch { /* best-effort */ }
+    }
+
+    const deleteAllForTask = db.prepare(
+      'DELETE FROM GuidedTaskStatePendingSyncs WHERE SubsystemId = ? AND TaskId = ?'
+    )
+    const bumpRetry = db.prepare(
+      'UPDATE GuidedTaskStatePendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
+    )
+
+    for (const p of Array.from(byTask.values())) {
+      if (p.RetryCount >= PENDING_RETRY_CAP) {
+        try { db.prepare('DELETE FROM GuidedTaskStatePendingSyncs WHERE id = ?').run(p.id) } catch { /* best-effort */ }
+        console.warn(`[AutoSync] Dropped guided task-state pending row id=${p.id} (task ${p.TaskId}) — exceeded retry cap`)
+        continue
+      }
+
+      let resp: globalThis.Response
+      try {
+        resp = await fetch(`${remoteUrl}/api/sync/guided-task-state`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
+          body: JSON.stringify({
+            subsystemId: p.SubsystemId,
+            states: [{
+              taskId: p.TaskId,
+              status: p.Status,
+              reason: p.Reason,
+              actorName: p.ActorName,
+              updatedAt: p.UpdatedAt,
+            }],
+          }),
+          signal: AbortSignal.timeout(15000),
+        })
+      } catch {
+        break
+      }
+      if (resp.ok) {
+        try { deleteAllForTask.run(p.SubsystemId, p.TaskId) } catch { /* best-effort */ }
+      } else {
+        try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
+      }
     }
   }
 

@@ -1,7 +1,7 @@
 import { db } from '@/lib/db-sqlite'
 import { parseDeviceIdsFromSvg } from '@/lib/guided/svg-parser'
 import { readBundledSvg } from '@/app/api/maps/subsystem/[id]/route'
-import { isSafetyOutput } from '@/lib/io-classification'
+import { isOutputIo, isSafetyOutput } from '@/lib/io-classification'
 import { classifyIoCircuit } from '@/lib/guided/io-check-sequence'
 import { deriveSystemRunning } from '@/lib/guided/system-running'
 import type {
@@ -165,7 +165,7 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
         description: r.Description,
         result: r.Result === 'Passed' ? 'Passed' : r.Result === 'Failed' ? 'Failed' : null,
         tagType: r.TagType,
-        isOutput: false,
+        isOutput: isOutputIo(r.Name, r.Description),
         isSafety: safety,
         circuit: classifyIoCircuit(r.Name, r.Description),
         liveState: r.Name ? liveStateByName.get(r.Name) ?? null : null,

@@ -126,3 +126,102 @@ export function sequenceHint(circuit: Circuit): { actuate: string; release: stri
     ? { actuate: 'Block / pull the device (signal drops)', release: 'Clear / reset it (signal returns)' }
     : { actuate: 'Press / actuate the device (signal rises)', release: 'Release it (signal returns)' }
 }
+
+// ── device-specific IO-check procedures ─────────────────────────────────────
+
+/**
+ * Field device classes recognised for guided IO-check wording. The circuit
+ * type (NC/NO) still drives the auto-pass round-trip; this only sharpens the
+ * *instruction* the tester reads so generic "actuate/release" becomes a real,
+ * field-correct procedure (KK: "we still need to define quite a few of these
+ * IO-check procedures").
+ */
+export type IoDeviceClass =
+  | 'photoeye' // PE / TPE / JPE / FPE — block then clear
+  | 'pull_cord' // EPC pull cord — pull then reset
+  | 'estop' // generic e-stop button — press then reset/release
+  | 'pushbutton' // PB / JR jam-reset — press then release
+  | 'interlock' // OEM interlock / door / gate switch — open then close
+  | 'generic'
+
+/**
+ * Classify the physical device class from the tag name + description. This is
+ * orthogonal to the NC/NO circuit type — it picks the right *words* for the
+ * tester. Order matters: more specific tokens first.
+ */
+export function classifyIoDeviceClass(
+  name?: string | null,
+  description?: string | null,
+): IoDeviceClass {
+  const txt = `${name ?? ''} ${description ?? ''}`
+  // Photoeyes: PE / TPE / JPE / FPE tokens or the words PHOTO EYE / PHOTOEYE.
+  if (/(^|[_:.\s])(J|T|F)?PE\d/i.test(txt) || /PHOTO\s*-?\s*EYE/i.test(txt)) return 'photoeye'
+  // Pull cords: EPC tokens or the words PULL CORD.
+  if (/(^|[_:.\s])EPC\d?/i.test(txt) || /PULL\s*-?\s*CORD/i.test(txt)) return 'pull_cord'
+  // OEM interlock / door / gate switch — before the generic E-STOP catch so
+  // an "interlock" wins over a bare "stop" in the same string.
+  if (/INTERLOCK|\bDOOR\b|\bGATE\b/i.test(txt)) return 'interlock'
+  // Generic e-stop button (mushroom), distinct from a pull cord.
+  if (/E\s*-?\s*STOP/i.test(txt) || /(^|[_:.\s])ES\d/i.test(txt)) return 'estop'
+  // Jam-reset / pushbuttons.
+  if (/(^|[_:.\s])JR\d/i.test(txt) || /JAM\s*RESET/i.test(txt)) return 'pushbutton'
+  if (/(^|[_:.\s])PB\d/i.test(txt) || /PUSH\s*-?\s*BUTTON|PUSHBUTTON/i.test(txt)) return 'pushbutton'
+  return 'generic'
+}
+
+/**
+ * The field-correct, device-specific actuate/release procedure for an IO
+ * check. `cls` picks the verbs; `circuit` is the fallback wording for generic
+ * devices. The two transitions returned map 1:1 onto the D6 round-trip
+ * (actuate = first transition away from idle, release = return to idle).
+ */
+export function deviceProcedure(
+  cls: IoDeviceClass,
+  circuit: Circuit,
+): { actuate: string; release: string; full: string } {
+  switch (cls) {
+    case 'photoeye':
+      return {
+        actuate: 'Block the photoeye',
+        release: 'then clear it',
+        full: 'Block the photoeye, then clear it',
+      }
+    case 'pull_cord':
+      return {
+        actuate: 'Pull the cord',
+        release: 'then reset it',
+        full: 'Pull the cord, then reset it',
+      }
+    case 'estop':
+      return {
+        actuate: 'Press the e-stop',
+        release: 'then twist/pull to release and reset it',
+        full: 'Press the e-stop, then twist/pull to release and reset it',
+      }
+    case 'pushbutton':
+      return {
+        actuate: 'Press the button',
+        release: 'then release it',
+        full: 'Press the button, then release it',
+      }
+    case 'interlock':
+      return {
+        actuate: 'Open the door / interlock',
+        release: 'then close it',
+        full: 'Open the door / interlock, then close it',
+      }
+    default:
+      // Fall back to the circuit-typed generic wording.
+      return circuit === 'NC'
+        ? {
+            actuate: 'Block / pull it',
+            release: 'then clear / reset it',
+            full: 'Block / pull it, then clear / reset it',
+          }
+        : {
+            actuate: 'Press / actuate it',
+            release: 'then release it',
+            full: 'Press / actuate it, then release it',
+          }
+  }
+}

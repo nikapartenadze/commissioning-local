@@ -6,6 +6,8 @@ import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import { sanitizeComment, createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
 import { checkInstallGate } from '@/lib/services/install-gate'
+import { getMcmIdForIo } from '@/lib/mcm-registry'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * POST /api/guided/test
@@ -92,6 +94,33 @@ export async function POST(req: Request, res: Response) {
       testHistoryId = histResult.lastInsertRowid
     })
     txn()
+
+    // MCM-aware subsystem id for attribution (registry MCM tag, fallback to the
+    // IO's SubsystemId) — same resolution the manual route uses.
+    const subsystemId = getMcmIdForIo(ioId) ?? String(io.SubsystemId)
+    // Failure reason only applies to a Fail result (parity with the manual route,
+    // where newFailureMode is null on Pass).
+    const auditFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (failureMode || null)
+      : null
+
+    // Recovery audit — durable JSONL record of every result, independent of the
+    // SQLite row and the cloud push. Guided IO results now get the same 2-week
+    // recovery trail + MCM attribution as the manual route (app/api/ios/:id/test).
+    auditLog({
+      type: 'io.test',
+      subsystemId,
+      ioId,
+      user: currentUser ?? null,
+      result: normalizedResult,
+      version: newVersion,
+      reason: auditFailureMode ?? undefined,
+      detail: {
+        comments: combinedComment || undefined,
+        state: plcState ?? undefined,
+        source: 'guided',
+      },
+    })
 
     const updatedIo = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io
 

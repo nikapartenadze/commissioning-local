@@ -65,6 +65,17 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const [svgMarkup, setSvgMarkup] = useState<string | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
   const mapRef = useRef<GuidedTestingMapHandle | null>(null)
+  // Lightweight, auto-dismissing hint shown when a locked device is tapped.
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showToast = useCallback((msg: string) => {
+    setToast(msg)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 2600)
+  }, [])
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+  }, [])
 
   const effectiveTask: Task | null = useMemo(() => {
     if (!pool) return null
@@ -435,9 +446,21 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           <div className="gt-context-title">GUIDED MODE</div>
           {effectiveTask ? (
             <div className="gt-context-lines">
-              <span>Phase: {effectiveTask.phase}</span>
-              <span>Segment: {effectiveTask.segment}</span>
-              <span>Task: {effectiveTask.title}</span>
+              {/* Phase→Segment→Task are the dim breadcrumb; the Step is the
+                  dominant line (spec: most emphasis on the current Step). */}
+              <span className="gt-context-crumb">Phase: {effectiveTask.phase}</span>
+              <span className="gt-context-crumb">Segment: {effectiveTask.segment}</span>
+              <span className="gt-context-crumb">Task: {effectiveTask.title}</span>
+              {currentStep && (
+                <span className="gt-context-step">
+                  Step: {currentStep.title}
+                  {steps.length > 0 && (
+                    <span className="gt-context-stepcount">
+                      Step {stepIndex + 1} of {steps.length}
+                    </span>
+                  )}
+                </span>
+              )}
             </div>
           ) : (
             <div className="gt-context-lines">
@@ -483,7 +506,15 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
                 if (t) {
                   setSelectedTaskId(t.id)
                   setStepIndex(0)
+                  return
                 }
+                // Locked / not part of the current task → non-blocking hint
+                // instead of a silent no-op.
+                showToast(
+                  focusName && name === focusName
+                    ? 'This device belongs to the current step — use the controls below.'
+                    : 'Not part of this task — finish the current step first.',
+                )
               }}
               lockedDevices={lockedDevices}
             />
@@ -494,6 +525,11 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 
         {effectiveTask && currentStep && (
           <div className={`gt-hud gt-hud-${currentStep.kind}`}>
+            {steps.length > 0 && (
+              <div className="gt-hud-stepcount">
+                Step {stepIndex + 1} of {steps.length}
+              </div>
+            )}
             <div className="gt-hud-step">{currentStep.title}</div>
             {currentStep.instruction && <p className="gt-hud-instruction">{currentStep.instruction}</p>}
             {effectiveTask.type === 'functional_check' &&
@@ -564,6 +600,14 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           >
             SKIP TASK
           </button>
+        )}
+
+        {/* Locked-device tap feedback — brief, non-blocking, auto-dismiss. */}
+        {toast && (
+          <div className="gt-toast" role="status" aria-live="polite">
+            <span className="gt-toast-icon">🔒</span>
+            <span>{toast}</span>
+          </div>
         )}
       </div>
 
@@ -728,18 +772,27 @@ function SequenceProgress({
   const returned = seqPhase === 'complete'
   const idleMismatch =
     circuit === 'NC' && seqPhase === 'arming' && liveState === 'FALSE'
+  // Plain-language explanation of the circuit type for non-engineers.
+  const circuitPlain =
+    circuit === 'NC'
+      ? 'Normally-closed: sits ON (TRUE) at rest. Block / pull it so the signal drops, then release so it returns.'
+      : 'Normally-open: sits OFF (FALSE) at rest. Press / actuate it so the signal rises, then release.'
   return (
     <div className="gt-seq">
       <div className="gt-seq-row">
-        <span className={`gt-seq-stage${actuated ? ' gt-seq-done' : ''}`}>
+        <span className={`gt-seq-stage${actuated ? ' gt-seq-done' : ''}`} title={hint.actuate}>
           {actuated ? '✓' : '1'} {hint.actuate}
         </span>
-        <span className={`gt-seq-stage${returned ? ' gt-seq-done' : ''}`}>
+        <span className={`gt-seq-stage${returned ? ' gt-seq-done' : ''}`} title={hint.release}>
           {returned ? '✓' : '2'} {hint.release}
         </span>
       </div>
       <div className="gt-seq-meta">
-        <span className="gt-seq-circuit">{circuit} · rests {circuit === 'NC' ? 'TRUE' : 'FALSE'}</span>
+        <span className="gt-seq-circuit" title={circuitPlain}>
+          {circuit === 'NC' ? 'NC (normally-closed)' : 'NO (normally-open)'} · rests{' '}
+          {circuit === 'NC' ? 'TRUE' : 'FALSE'}
+        </span>
+        <span className="gt-seq-plain">{circuitPlain}</span>
       </div>
       {idleMismatch && (
         <div className="gt-seq-warn" role="alert">
@@ -805,6 +858,39 @@ function renderStepBody(p: BodyProps) {
   }
 
   // 4) manual_confirm variants
+
+  // Output device (beacon / horn / solenoid): can't be input-round-tripped.
+  // Fire the output, visually/audibly confirm, then Pass/Fail (records against
+  // step.ioId via /api/guided/test, same as any IO result).
+  if (step.isOutput && step.fireOutputIoId) {
+    const fireId = step.fireOutputIoId
+    return (
+      <div className="gt-actions-center gt-actions-stack">
+        <button
+          className="gt-btn gt-btn-primary gt-btn-lg"
+          disabled={p.busy}
+          onClick={() => {
+            void fetch(`/api/ios/${fireId}/fire-output`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'toggle' }),
+            }).catch(() => {})
+          }}
+        >
+          FIRE OUTPUT
+        </button>
+        <div className="gt-actions-center">
+          <button className="gt-btn gt-btn-pass gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Passed')}>
+            PASS
+          </button>
+          <button className="gt-btn gt-btn-warn gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Failed', 'No Response')}>
+            FAIL
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   if (step.vfdControls) {
     return (
       <div className="gt-actions-center">

@@ -127,6 +127,25 @@ export interface Step {
    * The step auto-passes when the full D6 round-trip sequence is seen.
    */
   watchIoIds?: number[]
+
+  // ── output devices (beacons, horns, solenoids, …) ─────────────────
+  /**
+   * This step verifies an OUTPUT, which can't be checked by an input
+   * round-trip. The runner offers a "Fire" button (POST /api/ios/:id/fire-output)
+   * driving `fireOutputIoId`, the tester visually confirms, then passes/fails
+   * via the acknowledgment popup.
+   */
+  isOutput?: boolean
+  fireOutputIoId?: number
+
+  // ── network-loop auto-verify assist (D5-adjacent) ─────────────────
+  /**
+   * Live DLR ring verdict surfaced on the Network Loop step. When 'healthy'
+   * AND `dpmsCommunicating` the runner may auto-pass; 'unknown'/null never
+   * blocks and the tester can always confirm manually.
+   */
+  ringVerdict?: 'healthy' | 'degraded' | 'unknown' | null
+  dpmsCommunicating?: boolean | null
 }
 
 export interface Task {
