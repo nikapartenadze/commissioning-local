@@ -30,6 +30,8 @@ interface RelatedTag {
 
 type AutoVerdict = 'ready' | 'pass' | 'fail' | 'unknown'
 
+type CheckType = 'preliminary' | 'final'
+
 interface Epc {
   id: number
   name: string
@@ -40,12 +42,20 @@ interface Epc {
   keepRunningVfds: Vfd[]
   mustDropTags?: RelatedTag[]
   mustStayOkTags?: RelatedTag[]
-  autoVerdict?: AutoVerdict
-  result: 'pass' | 'fail' | null
-  comments: string | null
-  failureMode: string | null
-  testedBy: string | null
-  testedAt: string | null
+  // Split live auto-suggested verdicts (positive zone-stop vs negative selectivity).
+  preliminaryVerdict?: AutoVerdict
+  finalVerdict?: AutoVerdict
+  // Recorded results per check type.
+  preliminaryResult: 'pass' | 'fail' | null
+  preliminaryComments: string | null
+  preliminaryFailureMode: string | null
+  preliminaryTestedBy: string | null
+  preliminaryTestedAt: string | null
+  finalResult: 'pass' | 'fail' | null
+  finalComments: string | null
+  finalFailureMode: string | null
+  finalTestedBy: string | null
+  finalTestedAt: string | null
 }
 
 interface Zone {
@@ -150,6 +160,27 @@ function RelatedTagBadge({ tag, value, expectedTrue }: { tag: string; value: boo
   )
 }
 
+// Compact per-check result chip for the zone-card grid — letter ("P"/"F" for
+// the check type) + colored icon. Lets both Preliminary and Final results show
+// side-by-side at a glance. Renders nothing when the check has no result yet.
+function MiniResultChip({ label, result }: { label: string; result: 'pass' | 'fail' | null }) {
+  if (!result) return null
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-0.5 shrink-0 text-[9px] font-bold',
+        result === 'pass' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400',
+      )}
+      title={`${label === 'P' ? 'Preliminary' : 'Final'}: ${result === 'pass' ? 'Passed' : 'Failed'}`}
+    >
+      {label}
+      {result === 'pass'
+        ? <CheckCircle2 className="w-3 h-3" aria-label="Passed" />
+        : <XCircle className="w-3 h-3" aria-label="Failed" />}
+    </span>
+  )
+}
+
 // Short EPC label for compact lists inside zone cards — drops the redundant
 // ZONE_xx_xx prefix that's already shown by the parent card.
 function shortEpcLabel(epcName: string, zoneName: string): string {
@@ -183,10 +214,12 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedZoneId, setSelectedZoneId] = useState<number | null>(null)
   const [pulling, setPulling] = useState(false)
-  const [submittingResult, setSubmittingResult] = useState<{ epcId: number; kind: 'pass' | 'fail' | 'reset' } | null>(null)
+  const [submittingResult, setSubmittingResult] = useState<{ epcId: number; checkType: CheckType; kind: 'pass' | 'fail' | 'reset' } | null>(null)
   const [resultError, setResultError] = useState<string | null>(null)
   const [failDialogOpen, setFailDialogOpen] = useState(false)
-  const [pendingFailEpc, setPendingFailEpc] = useState<{ epc: Epc; zoneName: string } | null>(null)
+  const [pendingFailEpc, setPendingFailEpc] = useState<{ epc: Epc; zoneName: string; checkType: CheckType } | null>(null)
+  // Per-EPC active check-type tab. Defaults to 'preliminary'. Keyed by epc.id.
+  const [activeCheckType, setActiveCheckType] = useState<Record<number, CheckType>>({})
   const abortRef = useRef<AbortController | null>(null)
   const lastDataRef = useRef<string>('')
   const triedCloudPull = useRef(false)
@@ -252,6 +285,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const submitEpcResult = useCallback(async (
     epc: Epc,
     zoneName: string,
+    checkType: CheckType,
     action:
       | { result: 'pass' }
       | { result: 'fail'; failureMode?: string; comments?: string }
@@ -262,13 +296,14 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
       return
     }
     const kind: 'pass' | 'fail' | 'reset' = 'reset' in action ? 'reset' : action.result
-    setSubmittingResult({ epcId: epc.id, kind })
+    setSubmittingResult({ epcId: epc.id, checkType, kind })
     setResultError(null)
     try {
       const body: Record<string, unknown> = {
         subsystemId,
         zoneName,
         checkTag: epc.checkTag,
+        checkType,
         testedBy: currentUser?.fullName ?? null,
       }
       if ('reset' in action) {
@@ -298,16 +333,30 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           ...z,
           epcs: z.epcs.map(e => {
             if (e.checkTag !== epc.checkTag) return e
+            // Update only the fields for the check type that was committed.
+            if (checkType === 'preliminary') {
+              if ('reset' in action) {
+                return { ...e, preliminaryResult: null, preliminaryComments: null, preliminaryFailureMode: null, preliminaryTestedBy: null, preliminaryTestedAt: null }
+              }
+              return {
+                ...e,
+                preliminaryResult: action.result,
+                preliminaryTestedBy: currentUser?.fullName ?? null,
+                preliminaryTestedAt: new Date().toISOString(),
+                preliminaryFailureMode: action.result === 'fail' ? (action.failureMode ?? null) : null,
+                preliminaryComments: action.result === 'fail' ? (action.comments ?? null) : e.preliminaryComments,
+              }
+            }
             if ('reset' in action) {
-              return { ...e, result: null, comments: null, failureMode: null, testedBy: null, testedAt: null }
+              return { ...e, finalResult: null, finalComments: null, finalFailureMode: null, finalTestedBy: null, finalTestedAt: null }
             }
             return {
               ...e,
-              result: action.result,
-              testedBy: currentUser?.fullName ?? null,
-              testedAt: new Date().toISOString(),
-              failureMode: action.result === 'fail' ? (action.failureMode ?? null) : null,
-              comments: action.result === 'fail' ? (action.comments ?? null) : e.comments,
+              finalResult: action.result,
+              finalTestedBy: currentUser?.fullName ?? null,
+              finalTestedAt: new Date().toISOString(),
+              finalFailureMode: action.result === 'fail' ? (action.failureMode ?? null) : null,
+              finalComments: action.result === 'fail' ? (action.comments ?? null) : e.finalComments,
             }
           }),
         }),
@@ -576,12 +625,8 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                             Checked
                           </span>
                         )}
-                        {epc.result === 'pass' && (
-                          <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" aria-label="Passed" />
-                        )}
-                        {epc.result === 'fail' && (
-                          <XCircle className="w-3 h-3 text-red-500 shrink-0" aria-label="Failed" />
-                        )}
+                        <MiniResultChip label="P" result={epc.preliminaryResult} />
+                        <MiniResultChip label="F" result={epc.finalResult} />
                       </div>
                     ))}
                     {/* Empty annunciator slots — render a faded socket to keep
@@ -611,7 +656,17 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           </div>
 
           {selectedZone.epcs.map(epc => {
-            const submitting = submittingResult?.epcId === epc.id ? submittingResult.kind : null
+            const ct: CheckType = activeCheckType[epc.id] ?? 'preliminary'
+            // submitting state only lights the active type's buttons.
+            const submitting = submittingResult?.epcId === epc.id && submittingResult.checkType === ct ? submittingResult.kind : null
+            // Active-type recorded result + live auto-suggested verdict.
+            const activeResult = ct === 'preliminary' ? epc.preliminaryResult : epc.finalResult
+            const activeTestedBy = ct === 'preliminary' ? epc.preliminaryTestedBy : epc.finalTestedBy
+            const activeTestedAt = ct === 'preliminary' ? epc.preliminaryTestedAt : epc.finalTestedAt
+            const activeVerdict: AutoVerdict | undefined = ct === 'preliminary' ? epc.preliminaryVerdict : epc.finalVerdict
+            // Pre-select the suggested verdict (the tester still must tap to commit).
+            const suggestedPass = activeVerdict === 'pass'
+            const suggestedFail = activeVerdict === 'fail'
             const mustDrop = epc.mustDropTags ?? []
             const mustStayOk = epc.mustStayOkTags ?? []
             // search-filtered sub-lists (only inside the selected zone)
@@ -637,44 +692,101 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                       <p className="text-[11px] text-muted-foreground font-mono truncate">{epc.checkTag}</p>
                     </div>
                   </div>
+                  <CheckedPill value={epc.checkTagValue} />
+                </div>
+
+                {/* Dual-check control bar: select Preliminary ("Zone Stop") or
+                    Final ("Selectivity"), see that type's recorded result + the
+                    live auto-suggested verdict, and commit Pass/Fail. */}
+                <div className="px-4 py-3 border-b bg-muted/30 space-y-3">
+                  {/* Check-type selector — each row shows its own recorded result. */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {([
+                      { key: 'preliminary' as const, title: 'Zone Stop', sub: 'Preliminary', result: epc.preliminaryResult, testedBy: epc.preliminaryTestedBy },
+                      { key: 'final' as const, title: 'Selectivity', sub: 'Final', result: epc.finalResult, testedBy: epc.finalTestedBy },
+                    ]).map(tab => {
+                      const isActive = ct === tab.key
+                      return (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          onClick={() => setActiveCheckType(prev => ({ ...prev, [epc.id]: tab.key }))}
+                          className={cn(
+                            'flex flex-col items-start gap-1 rounded-md border px-3 py-2 text-left transition-colors',
+                            isActive ? 'border-primary bg-primary/10 ring-1 ring-primary/40' : 'border-border bg-background hover:bg-muted/60',
+                          )}
+                        >
+                          <div className="flex items-center gap-2 w-full">
+                            <span className="text-xs font-semibold">{tab.title}</span>
+                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{tab.sub}</span>
+                            <span className="ml-auto">
+                              {tab.result === 'pass' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" aria-label="Passed" />}
+                              {tab.result === 'fail' && <XCircle className="w-3.5 h-3.5 text-red-500" aria-label="Failed" />}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-muted-foreground">
+                            {tab.result
+                              ? <>{tab.result === 'pass' ? 'Passed' : 'Failed'}{tab.testedBy ? ` · ${tab.testedBy}` : ''}</>
+                              : 'Not recorded'}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {/* Auto-suggested verdict + commit buttons for the active type. */}
                   <div className="flex items-center gap-2 flex-wrap">
-                    <CheckedPill value={epc.checkTagValue} />
+                    {activeVerdict && activeVerdict !== 'unknown' && (
+                      <span
+                        className={cn(
+                          'inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-md border',
+                          activeVerdict === 'pass' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-emerald-500/40'
+                            : activeVerdict === 'fail' ? 'bg-red-500/15 text-red-700 dark:text-red-400 border-red-500/40'
+                              : 'bg-muted text-muted-foreground border-border',
+                        )}
+                        title="Live verdict computed from PLC tags — confirm to commit"
+                      >
+                        Suggested: {activeVerdict === 'pass' ? 'Pass' : activeVerdict === 'fail' ? 'Fail' : activeVerdict === 'ready' ? 'Ready (pull cord)' : '—'}
+                      </span>
+                    )}
                     <Button
                       size="sm"
-                      variant={epc.result === 'pass' ? 'default' : 'outline'}
+                      variant={activeResult === 'pass' ? 'default' : 'outline'}
                       className={cn(
                         'gap-1',
-                        epc.result === 'pass' && 'bg-emerald-600 hover:bg-emerald-700 text-white',
+                        activeResult === 'pass' && 'bg-emerald-600 hover:bg-emerald-700 text-white',
+                        activeResult !== 'pass' && suggestedPass && 'ring-2 ring-emerald-500/50',
                       )}
                       disabled={isServerDevice || submittingResult !== null}
-                      onClick={() => submitEpcResult(epc, selectedZone.name, { result: 'pass' })}
+                      onClick={() => submitEpcResult(epc, selectedZone.name, ct, { result: 'pass' })}
                     >
                       {submitting === 'pass' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
                       Pass
                     </Button>
                     <Button
                       size="sm"
-                      variant={epc.result === 'fail' ? 'default' : 'outline'}
+                      variant={activeResult === 'fail' ? 'default' : 'outline'}
                       className={cn(
                         'gap-1',
-                        epc.result === 'fail' && 'bg-red-600 hover:bg-red-700 text-white',
+                        activeResult === 'fail' && 'bg-red-600 hover:bg-red-700 text-white',
+                        activeResult !== 'fail' && suggestedFail && 'ring-2 ring-red-500/50',
                       )}
                       disabled={isServerDevice || submittingResult !== null}
                       onClick={() => {
-                        setPendingFailEpc({ epc, zoneName: selectedZone.name })
+                        setPendingFailEpc({ epc, zoneName: selectedZone.name, checkType: ct })
                         setFailDialogOpen(true)
                       }}
                     >
                       {submitting === 'fail' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
                       Fail
                     </Button>
-                    {epc.result && (
+                    {activeResult && (
                       <Button
                         size="sm"
                         variant="ghost"
                         className="gap-1 text-muted-foreground"
                         disabled={isServerDevice || submittingResult !== null}
-                        onClick={() => submitEpcResult(epc, selectedZone.name, { reset: true })}
+                        onClick={() => submitEpcResult(epc, selectedZone.name, ct, { reset: true })}
                         title="Clear this result"
                       >
                         {submitting === 'reset' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
@@ -684,11 +796,12 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                 </div>
 
                 <CardContent className="p-4 space-y-5">
-                  {epc.testedBy && (
+                  {activeTestedBy && (
                     <p className="text-xs text-muted-foreground">
-                      Manually marked <span className="font-semibold">{epc.result === 'pass' ? 'Pass' : 'Fail'}</span>
-                      {' '}by <span className="font-medium">{epc.testedBy}</span>
-                      {epc.testedAt && <> · {new Date(epc.testedAt).toLocaleString()}</>}
+                      <span className="font-semibold">{ct === 'preliminary' ? 'Preliminary' : 'Final'}</span>
+                      {' '}marked <span className="font-semibold">{activeResult === 'pass' ? 'Pass' : 'Fail'}</span>
+                      {' '}by <span className="font-medium">{activeTestedBy}</span>
+                      {activeTestedAt && <> · {new Date(activeTestedAt).toLocaleString()}</>}
                     </p>
                   )}
                   {resultError && submittingResult === null && (
@@ -810,7 +923,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         }
         onSubmit={(_io, comment, failureMode) => {
           if (!pendingFailEpc) return
-          submitEpcResult(pendingFailEpc.epc, pendingFailEpc.zoneName, {
+          submitEpcResult(pendingFailEpc.epc, pendingFailEpc.zoneName, pendingFailEpc.checkType, {
             result: 'fail',
             failureMode,
             comments: comment || undefined,

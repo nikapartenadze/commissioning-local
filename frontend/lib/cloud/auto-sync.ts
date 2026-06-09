@@ -784,16 +784,23 @@ class AutoSyncService {
       'SELECT * FROM EStopCheckPendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
     ).all() as Array<{
       id: number; SubsystemId: number; ZoneName: string; CheckTag: string
+      CheckType: string | null
       Result: string | null; Comments: string | null; FailureMode: string | null
       TestedBy: string | null; TestedAt: string | null; Version: number; RetryCount: number
     }>
     if (pending.length === 0) return
 
+    // CheckType ('preliminary' | 'final') is part of the identity — a row from
+    // an old build may have it NULL/empty, treat that as 'preliminary'.
+    const ct = (p: { CheckType: string | null }) => p.CheckType || 'preliminary'
+
     // Dedupe per check — keep the lowest Version (closest to cloud's real version).
+    // Identity includes CheckType so preliminary + final for the same EPC are
+    // tracked separately and never collapse into one.
     const byCheck = new Map<string, typeof pending[number]>()
     const stale: number[] = []
     for (const p of pending) {
-      const key = `${p.SubsystemId}|${p.ZoneName}|${p.CheckTag}`
+      const key = `${p.SubsystemId}|${p.ZoneName}|${p.CheckTag}|${ct(p)}`
       const existing = byCheck.get(key)
       if (!existing) byCheck.set(key, p)
       else if (p.Version < existing.Version) { stale.push(existing.id); byCheck.set(key, p) }
@@ -805,10 +812,10 @@ class AutoSyncService {
     }
 
     const readLatest = db.prepare(
-      'SELECT Result, Comments, FailureMode, TestedBy, TestedAt, Version FROM EStopEpcChecks WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?'
+      'SELECT Result, Comments, FailureMode, TestedBy, TestedAt, Version FROM EStopEpcChecks WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?'
     )
     const deleteAllForCheck = db.prepare(
-      'DELETE FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?'
+      'DELETE FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?'
     )
     const bumpRetry = db.prepare(
       'UPDATE EStopCheckPendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
@@ -820,7 +827,7 @@ class AutoSyncService {
         console.warn(`[AutoSync] Dropped EStop check pending row id=${p.id} (${p.ZoneName}/${p.CheckTag}) — exceeded retry cap`)
         continue
       }
-      const latest = readLatest.get(p.SubsystemId, p.ZoneName, p.CheckTag) as
+      const latest = readLatest.get(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) as
         { Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null; Version: number } | undefined
 
       let resp: globalThis.Response
@@ -833,6 +840,7 @@ class AutoSyncService {
             checks: [{
               zoneName: p.ZoneName,
               checkTag: p.CheckTag,
+              checkType: ct(p),
               // Cloud /api/sync/estop-checks validates result ∈ {Passed,Failed};
               // the local EStop tables store lowercase pass/fail — normalize here.
               result: ((latest ? latest.Result : p.Result) === 'pass' ? 'Passed'
@@ -852,7 +860,7 @@ class AutoSyncService {
         break
       }
       if (resp.ok) {
-        try { deleteAllForCheck.run(p.SubsystemId, p.ZoneName, p.CheckTag) } catch { /* best-effort */ }
+        try { deleteAllForCheck.run(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) } catch { /* best-effort */ }
       } else {
         try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
       }

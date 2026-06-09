@@ -8,7 +8,7 @@ const selectIoPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?')
 const selectVfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?')
 const selectRelatedEpcs = db.prepare('SELECT * FROM EStopRelatedEpcs WHERE EpcId = ?')
 const selectEpcChecks = db.prepare(
-  'SELECT SubsystemId, ZoneName, CheckTag, Result, Comments, FailureMode, TestedBy, TestedAt FROM EStopEpcChecks WHERE SubsystemId = ?'
+  'SELECT SubsystemId, ZoneName, CheckTag, CheckType, Result, Comments, FailureMode, TestedBy, TestedAt FROM EStopEpcChecks WHERE SubsystemId = ?'
 )
 
 let createdTags = new Set<string>()
@@ -128,19 +128,23 @@ export async function GET(req: Request, res: Response) {
 
     const connected = anyConnected || singletonConnected
 
-    // Build a per-(ZoneName, CheckTag) lookup of recorded check results. We
-    // index by zoneName+checkTag (not epc.id) so results survive when the
-    // cloud-pull recreates EStopEpcs rows with new IDs.
-    const checksLookup = new Map<string, { Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null }>()
+    // Build a per-(ZoneName, CheckTag, CheckType) lookup of recorded check
+    // results. We index by zoneName+checkTag (not epc.id) so results survive
+    // when the cloud-pull recreates EStopEpcs rows with new IDs; CheckType is in
+    // the key so BOTH the Preliminary ("zone stop") and Final ("selectivity")
+    // results for the same EPC surface simultaneously instead of colliding.
+    type CheckRow = { Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null }
+    const checksLookup = new Map<string, CheckRow>()
     try {
       const subsystemIds = new Set<number>()
       for (const zone of zones) {
         if (typeof zone.SubsystemId === 'number') subsystemIds.add(zone.SubsystemId)
       }
       for (const sid of Array.from(subsystemIds)) {
-        const rows = selectEpcChecks.all(sid) as Array<{ SubsystemId: number; ZoneName: string; CheckTag: string; Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null }>
+        const rows = selectEpcChecks.all(sid) as Array<{ SubsystemId: number; ZoneName: string; CheckTag: string; CheckType: string | null; Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null }>
         for (const row of rows) {
-          checksLookup.set(`${row.ZoneName}|${row.CheckTag}`, row)
+          const ct = row.CheckType || 'preliminary'
+          checksLookup.set(`${row.ZoneName}|${row.CheckTag}|${ct}`, row)
         }
       }
     } catch { /* table may not be ready on first boot; treat as no results */ }
@@ -155,41 +159,43 @@ export async function GET(req: Request, res: Response) {
         const related: any[] = epc.relatedEpcs || []
         const mustDropTags = related.filter((r: any) => r.mustDrop)
         const mustStayOkTags = related.filter((r: any) => !r.mustDrop)
-        const check = checksLookup.get(`${zone.Name}|${epc.CheckTag}`)
+        const preliminaryCheck = checksLookup.get(`${zone.Name}|${epc.CheckTag}|preliminary`)
+        const finalCheck = checksLookup.get(`${zone.Name}|${epc.CheckTag}|final`)
         const checkTagValue = connected ? (tagValues[epc.CheckTag] ?? null) : null
 
-        // Auto verdict — only meaningful once the cord has been pulled
-        // (CheckTag reads false). Resting state is "ready".
-        let autoVerdict: 'ready' | 'pass' | 'fail' | 'unknown' = 'unknown'
-        if (!connected || checkTagValue === null) {
-          autoVerdict = 'unknown'
-        } else if (checkTagValue === true) {
-          autoVerdict = 'ready'
-        } else {
+        type Verdict = 'ready' | 'pass' | 'fail' | 'unknown'
+
+        // The two live auto-suggested verdicts are evaluated separately so the
+        // tester can confirm/commit each independently (team decision (a):
+        // auto-suggest + tester-commit). Both are only meaningful once the cord
+        // has been pulled (CheckTag reads false). Resting state is "ready".
+        //
+        //   preliminaryVerdict — the POSITIVE "zone stop" check: this EPC's own
+        //     drives (mustStopVfds) MUST be in STO (STOActive == true).
+        //   finalVerdict — the NEGATIVE "selectivity" check: other zones' drives
+        //     (keepRunningVfds) MUST keep running (STOActive == false), and the
+        //     related EPCs must behave (mustDrop → false, mustStayOk → true).
+        const evalVerdict = (
+          checks: Array<{ got: boolean | null | undefined; expect: boolean }>,
+        ): Verdict => {
+          if (!connected || checkTagValue === null) return 'unknown'
+          if (checkTagValue === true) return 'ready'
           let allPass = true
-          let anyUnknown = false
-          for (const v of mustStopVfds) {
-            const got = tagValues[v.StoTag]
-            if (got === null || got === undefined) { anyUnknown = true; break }
-            if (got !== true) allPass = false
+          for (const { got, expect } of checks) {
+            if (got === null || got === undefined) return 'unknown'
+            if (got !== expect) allPass = false
           }
-          if (!anyUnknown) for (const v of keepRunningVfds) {
-            const got = tagValues[v.StoTag]
-            if (got === null || got === undefined) { anyUnknown = true; break }
-            if (got !== false) allPass = false
-          }
-          if (!anyUnknown) for (const r of mustDropTags) {
-            const got = tagValues[r.Tag]
-            if (got === null || got === undefined) { anyUnknown = true; break }
-            if (got !== false) allPass = false
-          }
-          if (!anyUnknown) for (const r of mustStayOkTags) {
-            const got = tagValues[r.Tag]
-            if (got === null || got === undefined) { anyUnknown = true; break }
-            if (got !== true) allPass = false
-          }
-          autoVerdict = anyUnknown ? 'unknown' : (allPass ? 'pass' : 'fail')
+          return allPass ? 'pass' : 'fail'
         }
+
+        const preliminaryVerdict = evalVerdict(
+          mustStopVfds.map((v: any) => ({ got: tagValues[v.StoTag], expect: true })),
+        )
+        const finalVerdict = evalVerdict([
+          ...keepRunningVfds.map((v: any) => ({ got: tagValues[v.StoTag], expect: false })),
+          ...mustDropTags.map((r: any) => ({ got: tagValues[r.Tag], expect: false })),
+          ...mustStayOkTags.map((r: any) => ({ got: tagValues[r.Tag], expect: true })),
+        ])
 
         return {
           id: epc.id, name: epc.Name, checkTag: epc.CheckTag,
@@ -199,12 +205,20 @@ export async function GET(req: Request, res: Response) {
           keepRunningVfds: keepRunningVfds.map((vfd: any) => ({ id: vfd.id, tag: vfd.Tag, stoTag: vfd.StoTag, stoActive: connected ? (tagValues[vfd.StoTag] ?? null) : null })),
           mustDropTags: mustDropTags.map((r: any) => ({ id: r.id, tag: r.Tag, value: connected ? (tagValues[r.Tag] ?? null) : null })),
           mustStayOkTags: mustStayOkTags.map((r: any) => ({ id: r.id, tag: r.Tag, value: connected ? (tagValues[r.Tag] ?? null) : null })),
-          autoVerdict,
-          result: check?.Result ?? null,
-          comments: check?.Comments ?? null,
-          failureMode: check?.FailureMode ?? null,
-          testedBy: check?.TestedBy ?? null,
-          testedAt: check?.TestedAt ?? null,
+          // Split live verdicts (auto-suggested, tester commits each).
+          preliminaryVerdict,
+          finalVerdict,
+          // Recorded results per check type — both visible at once.
+          preliminaryResult: preliminaryCheck?.Result ?? null,
+          preliminaryComments: preliminaryCheck?.Comments ?? null,
+          preliminaryFailureMode: preliminaryCheck?.FailureMode ?? null,
+          preliminaryTestedBy: preliminaryCheck?.TestedBy ?? null,
+          preliminaryTestedAt: preliminaryCheck?.TestedAt ?? null,
+          finalResult: finalCheck?.Result ?? null,
+          finalComments: finalCheck?.Comments ?? null,
+          finalFailureMode: finalCheck?.FailureMode ?? null,
+          finalTestedBy: finalCheck?.TestedBy ?? null,
+          finalTestedAt: finalCheck?.TestedAt ?? null,
         }
       }),
     }))

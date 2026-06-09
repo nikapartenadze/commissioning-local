@@ -51,6 +51,13 @@ try {
     'ALTER TABLE L2Columns ADD COLUMN IncludeInProgress INTEGER DEFAULT 0',
     'ALTER TABLE TestHistories ADD COLUMN Source TEXT',
     'ALTER TABLE EStopEpcChecks ADD COLUMN FailureMode TEXT',
+    // E-Stop dual safety verification: pending-sync rows carry the CheckType
+    // discriminator ('preliminary' | 'final') so a final-check result syncs to
+    // cloud without colliding with the preliminary one. (EStopEpcChecks itself
+    // gets CheckType via the recreate-migration guard below — its inline UNIQUE
+    // can't be ALTERed; this pending-sync table has no UNIQUE so a plain ADD
+    // COLUMN suffices.)
+    "ALTER TABLE EStopCheckPendingSyncs ADD COLUMN CheckType TEXT NOT NULL DEFAULT 'preliminary'",
     // The pending-sync row needs to carry the failure mode so it lands on
     // cloud alongside the rest of the IO update — without this column the
     // cloud sidebar filter has nothing to filter on.
@@ -78,6 +85,65 @@ try {
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
+
+  // E-Stop dual safety verification — widen EStopEpcChecks' UNIQUE key to
+  // include CheckType. SQLite CANNOT ALTER an inline UNIQUE constraint, so a
+  // pre-existing table must be RECREATED. This runs on EVERY startup, so it is
+  // guarded to be IDEMPOTENT and DATA-PRESERVING:
+  //   - Fresh DBs already get the new schema (with CheckType + 4-col UNIQUE)
+  //     from initializeSchema() above → the guard finds CheckType and skips.
+  //   - Old DBs have EStopEpcChecks WITHOUT CheckType → recreate once: copy all
+  //     existing rows tagging them 'preliminary', drop, rename, reindex. After
+  //     this runs once CheckType exists, so the guard skips forever.
+  try {
+    const cols = db.prepare("PRAGMA table_info(EStopEpcChecks)").all() as { name: string }[]
+    const tableExists = cols.length > 0
+    const hasCheckType = cols.some(c => c.name === 'CheckType')
+    if (tableExists && !hasCheckType) {
+      console.log('[DB] Migrating EStopEpcChecks: adding CheckType + widening UNIQUE key (recreate)')
+      const migrate = db.transaction(() => {
+        db.exec(`
+          CREATE TABLE EStopEpcChecks_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            SubsystemId INTEGER NOT NULL,
+            ZoneName TEXT NOT NULL,
+            CheckTag TEXT NOT NULL,
+            Result TEXT,
+            Comments TEXT,
+            FailureMode TEXT,
+            TestedBy TEXT,
+            TestedAt TEXT,
+            Version INTEGER NOT NULL DEFAULT 1,
+            CreatedAt TEXT DEFAULT (datetime('now')),
+            UpdatedAt TEXT,
+            CheckType TEXT NOT NULL DEFAULT 'preliminary',
+            UNIQUE(SubsystemId, ZoneName, CheckTag, CheckType)
+          );
+        `)
+        // FailureMode may or may not exist on the old table depending on whether
+        // the ALTER above already ran — COALESCE via a column list is fragile,
+        // so detect it and build the copy list accordingly. All other columns
+        // are guaranteed present from the original CREATE TABLE.
+        const hadFailureMode = cols.some(c => c.name === 'FailureMode')
+        const failureModeSelect = hadFailureMode ? 'FailureMode' : 'NULL'
+        db.exec(`
+          INSERT INTO EStopEpcChecks_new
+            (id, SubsystemId, ZoneName, CheckTag, Result, Comments, FailureMode, TestedBy, TestedAt, Version, CreatedAt, UpdatedAt, CheckType)
+          SELECT
+            id, SubsystemId, ZoneName, CheckTag, Result, Comments, ${failureModeSelect}, TestedBy, TestedAt, Version, CreatedAt, UpdatedAt, 'preliminary'
+          FROM EStopEpcChecks;
+        `)
+        db.exec('DROP TABLE EStopEpcChecks;')
+        db.exec('ALTER TABLE EStopEpcChecks_new RENAME TO EStopEpcChecks;')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_estopepcchecks_subsystemid ON EStopEpcChecks(SubsystemId);')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_estopepcchecks_checktag ON EStopEpcChecks(CheckTag);')
+      })
+      migrate()
+    }
+  } catch (e) {
+    console.warn('[DB] EStopEpcChecks CheckType migration failed:', (e as Error).message)
+  }
+
   // PendingSyncs coalesce trigger + active-queue index — created AFTER the
   // migrations so the DeadLettered column is guaranteed to exist (added above
   // on a pre-existing DB, or present in CREATE TABLE on a fresh one). It must
@@ -378,6 +444,13 @@ export function initializeSchema() {
     -- all EStop* rows on every refresh, which would otherwise wipe test history.
     -- CheckTag is the stable PLC tag name; using it as the identity means results
     -- survive across pulls even if the EStopEpcs.id changes.
+    -- CheckType discriminator ('preliminary' | 'final') lets each EPC hold TWO
+    -- independent results: the Preliminary "zone stopping" (positive) check and
+    -- the Final "selectivity" (negative) check. The UNIQUE key includes
+    -- CheckType so a preliminary write and a final write never contend for the
+    -- same row/version. FailureMode is declared inline here (also added via the
+    -- ALTER list above as a harmless no-op for older DBs). See the migration
+    -- guard below — a pre-existing table without CheckType is recreated.
     CREATE TABLE IF NOT EXISTS EStopEpcChecks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       SubsystemId INTEGER NOT NULL,
@@ -385,12 +458,14 @@ export function initializeSchema() {
       CheckTag TEXT NOT NULL,
       Result TEXT,
       Comments TEXT,
+      FailureMode TEXT,
       TestedBy TEXT,
       TestedAt TEXT,
       Version INTEGER NOT NULL DEFAULT 1,
       CreatedAt TEXT DEFAULT (datetime('now')),
       UpdatedAt TEXT,
-      UNIQUE(SubsystemId, ZoneName, CheckTag)
+      CheckType TEXT NOT NULL DEFAULT 'preliminary',
+      UNIQUE(SubsystemId, ZoneName, CheckTag, CheckType)
     );
     CREATE INDEX IF NOT EXISTS idx_estopepcchecks_subsystemid ON EStopEpcChecks(SubsystemId);
     CREATE INDEX IF NOT EXISTS idx_estopepcchecks_checktag ON EStopEpcChecks(CheckTag);
@@ -415,7 +490,8 @@ export function initializeSchema() {
       Version INTEGER NOT NULL DEFAULT 0,
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
-      LastError TEXT
+      LastError TEXT,
+      CheckType TEXT NOT NULL DEFAULT 'preliminary'
     );
     CREATE INDEX IF NOT EXISTS idx_estopcheckpendingsyncs_createdat ON EStopCheckPendingSyncs(CreatedAt);
 
