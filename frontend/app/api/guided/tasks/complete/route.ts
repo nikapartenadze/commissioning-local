@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
+import { enqueueGuidedTaskStateSync } from '@/lib/cloud/guided-task-state-sync'
 
 /**
  * POST /api/guided/tasks/complete
@@ -29,6 +30,7 @@ export async function POST(req: Request, res: Response) {
       db.prepare(
         'DELETE FROM GuidedTaskState WHERE SubsystemId = ? AND TaskId = ? AND Status = ?',
       ).run(subsystemId, taskId, 'completed')
+      enqueueGuidedTaskStateSync(subsystemId, taskId, 'cleared', null, null)
       return res.json({ success: true, taskId, status: 'cleared' })
     }
 
@@ -39,6 +41,7 @@ export async function POST(req: Request, res: Response) {
        ON CONFLICT(SubsystemId, TaskId)
        DO UPDATE SET Status='completed', Reason=NULL, ActorName=excluded.ActorName, UpdatedAt=datetime('now')`,
     ).run(subsystemId, taskId, actor)
+    enqueueGuidedTaskStateSync(subsystemId, taskId, 'completed', null, actor)
 
     return res.json({ success: true, taskId, status: 'completed' })
   } catch (error) {

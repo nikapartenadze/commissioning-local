@@ -44,6 +44,7 @@ export async function GET(req: Request, res: Response) {
         name: io.name,
         description: io.description,
         result: io.result,
+        isOutput: io.isOutput,
       }))
       steps = buildSteps(task, ios)
     } else if (task.type === 'vfd_setup') {
@@ -60,6 +61,13 @@ export async function GET(req: Request, res: Response) {
       steps = zone
         ? buildEstopSteps(task, zone.zoneName, zone.epcs)
         : buildSteps(task)
+    } else if (task.type === 'network_loop') {
+      // Auto-verify assist: surface the live DLR ring verdict + DPM comms so
+      // the runner can auto-pass a healthy ring (still manual-confirmable).
+      steps = buildSteps(task, [], {
+        ringVerdict: snapshot.ringHealth,
+        dpmsCommunicating: snapshot.allNetworkedCommunicating,
+      })
     } else {
       steps = buildSteps(task)
     }

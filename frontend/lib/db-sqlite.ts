@@ -395,6 +395,50 @@ export function initializeSchema() {
     CREATE INDEX IF NOT EXISTS idx_estopepcchecks_subsystemid ON EStopEpcChecks(SubsystemId);
     CREATE INDEX IF NOT EXISTS idx_estopepcchecks_checktag ON EStopEpcChecks(CheckTag);
 
+    -- Offline push queue for EStop EPC pass/fail results. Mirrors L2PendingSyncs:
+    -- a row is enqueued on every /api/estop/check write and drained to the cloud
+    -- (POST /api/sync/estop-checks). Identity is the composite
+    -- (SubsystemId, ZoneName, CheckTag) — same key as EStopEpcChecks — and Version
+    -- carries the EStopEpcChecks.Version at the time of the write so the cloud can
+    -- apply last-write-wins. Kept retry-safe: rows survive non-OK pushes for the
+    -- periodic background drain (see lib/cloud/auto-sync.ts).
+    CREATE TABLE IF NOT EXISTS EStopCheckPendingSyncs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      ZoneName TEXT NOT NULL,
+      CheckTag TEXT NOT NULL,
+      Result TEXT,
+      Comments TEXT,
+      FailureMode TEXT,
+      TestedBy TEXT,
+      TestedAt TEXT,
+      Version INTEGER NOT NULL DEFAULT 0,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      RetryCount INTEGER DEFAULT 0,
+      LastError TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_estopcheckpendingsyncs_createdat ON EStopCheckPendingSyncs(CreatedAt);
+
+    -- Offline push queue for Guided-Mode task overrides (skip / mark-done).
+    -- A row is enqueued on every /api/guided/tasks/complete and /skip write and
+    -- drained to the cloud (POST /api/sync/guided-task-state). Identity is the
+    -- composite (SubsystemId, TaskId) — same key as GuidedTaskState — so the
+    -- newest queued state for a task supersedes earlier ones. Retry-safe like
+    -- EStopCheckPendingSyncs.
+    CREATE TABLE IF NOT EXISTS GuidedTaskStatePendingSyncs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      TaskId TEXT NOT NULL,
+      Status TEXT NOT NULL,              -- 'skipped' | 'completed' | 'cleared'
+      Reason TEXT,
+      ActorName TEXT,
+      UpdatedAt TEXT,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      RetryCount INTEGER DEFAULT 0,
+      LastError TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_guidedtaskstatependingsyncs_createdat ON GuidedTaskStatePendingSyncs(CreatedAt);
+
     CREATE TABLE IF NOT EXISTS SafetyZones (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       SubsystemId INTEGER NOT NULL REFERENCES Subsystems(id) ON DELETE CASCADE,

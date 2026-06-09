@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
+import { enqueueGuidedTaskStateSync } from '@/lib/cloud/guided-task-state-sync'
 
 /**
  * POST /api/guided/tasks/skip
@@ -31,6 +32,7 @@ export async function POST(req: Request, res: Response) {
         taskId,
         'skipped',
       )
+      enqueueGuidedTaskStateSync(subsystemId, taskId, 'cleared', null, null)
       return res.json({ success: true, taskId, status: 'cleared' })
     }
 
@@ -49,6 +51,7 @@ export async function POST(req: Request, res: Response) {
        ON CONFLICT(SubsystemId, TaskId)
        DO UPDATE SET Status='skipped', Reason=excluded.Reason, ActorName=excluded.ActorName, UpdatedAt=datetime('now')`,
     ).run(subsystemId, taskId, reason, actor)
+    enqueueGuidedTaskStateSync(subsystemId, taskId, 'skipped', reason, actor)
 
     return res.json({ success: true, taskId, status: 'skipped', reason })
   } catch (error) {
