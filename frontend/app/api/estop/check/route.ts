@@ -127,7 +127,9 @@ export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, che
           checks: [{
             zoneName,
             checkTag,
-            result: latest.Result,
+            // Cloud /api/sync/estop-checks validates result ∈ {Passed,Failed};
+            // local EStop tables store lowercase pass/fail — normalize here.
+            result: latest.Result === 'pass' ? 'Passed' : latest.Result === 'fail' ? 'Failed' : latest.Result,
             comments: latest.Comments,
             failureMode: latest.FailureMode,
             testedBy: latest.TestedBy,
