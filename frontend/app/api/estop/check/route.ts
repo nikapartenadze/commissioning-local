@@ -14,19 +14,25 @@ import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
  *
  * Body: { subsystemId, zoneName, checkTag, result: 'pass' | 'fail',
  *         comments?: string, failureMode?: string,
+ *         checkType?: 'preliminary' | 'final',
  *         testedBy?: string, reset?: boolean }
  *
  * If `reset: true`, the row is cleared back to null (Result, Comments,
  * FailureMode, TestedBy, TestedAt all NULL) but the row itself stays so
  * Version keeps incrementing.
  *
- * Identity is the composite (SubsystemId, ZoneName, CheckTag).
+ * Identity is the composite (SubsystemId, ZoneName, CheckTag, CheckType) —
+ * CheckType ('preliminary' = zone-stop / positive, 'final' = selectivity /
+ * negative) lets one EPC hold two independent results. Omitting checkType
+ * defaults to 'preliminary' for backward-compat with old tool builds.
  */
 
+type CheckType = 'preliminary' | 'final'
+
 const upsertStmt = db.prepare(`
-  INSERT INTO EStopEpcChecks (SubsystemId, ZoneName, CheckTag, Result, Comments, FailureMode, TestedBy, TestedAt, Version, CreatedAt, UpdatedAt)
-  VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 1, datetime('now'), datetime('now'))
-  ON CONFLICT(SubsystemId, ZoneName, CheckTag) DO UPDATE SET
+  INSERT INTO EStopEpcChecks (SubsystemId, ZoneName, CheckTag, CheckType, Result, Comments, FailureMode, TestedBy, TestedAt, Version, CreatedAt, UpdatedAt)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 1, datetime('now'), datetime('now'))
+  ON CONFLICT(SubsystemId, ZoneName, CheckTag, CheckType) DO UPDATE SET
     Result = excluded.Result,
     Comments = excluded.Comments,
     FailureMode = excluded.FailureMode,
@@ -37,9 +43,9 @@ const upsertStmt = db.prepare(`
 `)
 
 const resetStmt = db.prepare(`
-  INSERT INTO EStopEpcChecks (SubsystemId, ZoneName, CheckTag, Result, Comments, FailureMode, TestedBy, TestedAt, Version, CreatedAt, UpdatedAt)
-  VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 1, datetime('now'), datetime('now'))
-  ON CONFLICT(SubsystemId, ZoneName, CheckTag) DO UPDATE SET
+  INSERT INTO EStopEpcChecks (SubsystemId, ZoneName, CheckTag, CheckType, Result, Comments, FailureMode, TestedBy, TestedAt, Version, CreatedAt, UpdatedAt)
+  VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 1, datetime('now'), datetime('now'))
+  ON CONFLICT(SubsystemId, ZoneName, CheckTag, CheckType) DO UPDATE SET
     Result = NULL,
     Comments = NULL,
     FailureMode = NULL,
@@ -55,22 +61,23 @@ const resetStmt = db.prepare(`
 // pending row in place for the periodic background drain (auto-sync.ts) —
 // the local write is never blocked.
 const readCheck = db.prepare(
-  'SELECT Result, Comments, FailureMode, TestedBy, TestedAt, Version FROM EStopEpcChecks WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?',
+  'SELECT Result, Comments, FailureMode, TestedBy, TestedAt, Version FROM EStopEpcChecks WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?',
 )
 const insertPendingSync = db.prepare(
-  `INSERT INTO EStopCheckPendingSyncs (SubsystemId, ZoneName, CheckTag, Result, Comments, FailureMode, TestedBy, TestedAt, Version)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  `INSERT INTO EStopCheckPendingSyncs (SubsystemId, ZoneName, CheckTag, CheckType, Result, Comments, FailureMode, TestedBy, TestedAt, Version)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 )
 // Drop ALL pending rows for this check once the cloud accepts the latest —
-// intermediate rows are stale (same dedupe semantics as the L2 path).
+// intermediate rows are stale (same dedupe semantics as the L2 path). Scoped by
+// CheckType so a preliminary push never clears a pending final row (or vice versa).
 const deleteAllPendingForCheck = db.prepare(
-  'DELETE FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?',
+  'DELETE FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?',
 )
 const getOldestPendingVersion = db.prepare(
-  'SELECT MIN(Version) as version FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?',
+  'SELECT MIN(Version) as version FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?',
 )
 const incrementPendingRetry = db.prepare(
-  'UPDATE EStopCheckPendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ?',
+  'UPDATE EStopCheckPendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?',
 )
 
 interface CheckRow {
@@ -86,8 +93,8 @@ interface CheckRow {
  * Enqueue a pending-sync row for the just-written EPC check and fire an
  * immediate, version-aware push to the cloud. Subsystem-scoped; retry-safe.
  */
-export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, checkTag: string): void {
-  const row = readCheck.get(subsystemId, zoneName, checkTag) as CheckRow | undefined
+export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, checkTag: string, checkType: CheckType = 'preliminary'): void {
+  const row = readCheck.get(subsystemId, zoneName, checkTag, checkType) as CheckRow | undefined
   if (!row) return
 
   // Base version the cloud last had = the row's Version BEFORE this write.
@@ -95,6 +102,7 @@ export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, che
     subsystemId,
     zoneName,
     checkTag,
+    checkType,
     row.Result,
     row.Comments,
     row.FailureMode,
@@ -103,15 +111,15 @@ export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, che
     row.Version - 1,
   )
 
-  const key = `estopcheck:${subsystemId}-${zoneName}-${checkTag}`
+  const key = `estopcheck:${subsystemId}-${zoneName}-${checkTag}-${checkType}`
   enqueueSyncPush(key, async () => {
     // Always push the LATEST local row (handles rapid edits).
-    const latest = readCheck.get(subsystemId, zoneName, checkTag) as CheckRow | undefined
+    const latest = readCheck.get(subsystemId, zoneName, checkTag, checkType) as CheckRow | undefined
     if (!latest) return
 
     // Use the OLDEST pending version as the base — that's what the cloud
     // actually has (see the L2 path for the rationale).
-    const oldest = getOldestPendingVersion.get(subsystemId, zoneName, checkTag) as { version: number | null } | undefined
+    const oldest = getOldestPendingVersion.get(subsystemId, zoneName, checkTag, checkType) as { version: number | null } | undefined
     const baseVersion = oldest?.version ?? (latest.Version - 1)
 
     const config = await configService.getConfig()
@@ -127,6 +135,7 @@ export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, che
           checks: [{
             zoneName,
             checkTag,
+            checkType,
             // Cloud /api/sync/estop-checks validates result ∈ {Passed,Failed};
             // local EStop tables store lowercase pass/fail — normalize here.
             result: latest.Result === 'pass' ? 'Passed' : latest.Result === 'fail' ? 'Failed' : latest.Result,
@@ -141,35 +150,36 @@ export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, che
       })
     } catch (err) {
       // Network error / timeout — leave the pending row for background retry.
-      console.warn(`[EStopCheck Sync] Network error pushing ${zoneName}/${checkTag}:`, err instanceof Error ? err.message : err)
+      console.warn(`[EStopCheck Sync] Network error pushing ${zoneName}/${checkTag} (${checkType}):`, err instanceof Error ? err.message : err)
       return
     }
 
     if (!resp.ok) {
       // Cloud/proxy did not accept — keep the pending row; background drain retries.
-      console.warn(`[EStopCheck Sync] HTTP ${resp.status} pushing ${zoneName}/${checkTag} — leaving pending for background retry`)
-      try { incrementPendingRetry.run(`HTTP ${resp.status}`, subsystemId, zoneName, checkTag) } catch { /* best-effort */ }
+      console.warn(`[EStopCheck Sync] HTTP ${resp.status} pushing ${zoneName}/${checkTag} (${checkType}) — leaving pending for background retry`)
+      try { incrementPendingRetry.run(`HTTP ${resp.status}`, subsystemId, zoneName, checkTag, checkType) } catch { /* best-effort */ }
       return
     }
 
     // Accepted — drop all pending rows for this check.
     try {
-      deleteAllPendingForCheck.run(subsystemId, zoneName, checkTag)
+      deleteAllPendingForCheck.run(subsystemId, zoneName, checkTag, checkType)
     } catch (err) {
-      console.warn(`[EStopCheck Sync] Failed to clear pending for ${zoneName}/${checkTag}:`, err instanceof Error ? err.message : err)
+      console.warn(`[EStopCheck Sync] Failed to clear pending for ${zoneName}/${checkTag} (${checkType}):`, err instanceof Error ? err.message : err)
     }
   })
 }
 
 export async function POST(req: Request, res: Response) {
   try {
-    const { subsystemId, zoneName, checkTag, result, comments, failureMode, testedBy, reset } = req.body as {
+    const { subsystemId, zoneName, checkTag, result, comments, failureMode, checkType, testedBy, reset } = req.body as {
       subsystemId?: number
       zoneName?: string
       checkTag?: string
       result?: 'pass' | 'fail'
       comments?: string
       failureMode?: string
+      checkType?: string
       testedBy?: string
       reset?: boolean
     }
@@ -183,11 +193,16 @@ export async function POST(req: Request, res: Response) {
     if (!checkTag || typeof checkTag !== 'string') {
       return res.status(400).json({ error: 'checkTag required (string)' })
     }
+    // checkType defaults to 'preliminary' (backward-compat with old builds).
+    if (checkType !== undefined && checkType !== 'preliminary' && checkType !== 'final') {
+      return res.status(400).json({ error: "checkType must be 'preliminary' or 'final'" })
+    }
+    const resolvedCheckType: CheckType = checkType === 'final' ? 'final' : 'preliminary'
 
     if (reset) {
-      resetStmt.run(subsystemId, zoneName, checkTag)
-      enqueueEstopCheckSync(subsystemId, zoneName, checkTag)
-      return res.json({ success: true, reset: true })
+      resetStmt.run(subsystemId, zoneName, checkTag, resolvedCheckType)
+      enqueueEstopCheckSync(subsystemId, zoneName, checkTag, resolvedCheckType)
+      return res.json({ success: true, reset: true, checkType: resolvedCheckType })
     }
 
     if (result !== 'pass' && result !== 'fail') {
@@ -201,13 +216,14 @@ export async function POST(req: Request, res: Response) {
       subsystemId,
       zoneName,
       checkTag,
+      resolvedCheckType,
       result,
       comments ?? null,
       storedFailureMode,
       testedBy ?? null,
     )
-    enqueueEstopCheckSync(subsystemId, zoneName, checkTag)
-    return res.json({ success: true, result, failureMode: storedFailureMode, testedBy: testedBy ?? null })
+    enqueueEstopCheckSync(subsystemId, zoneName, checkTag, resolvedCheckType)
+    return res.json({ success: true, result, checkType: resolvedCheckType, failureMode: storedFailureMode, testedBy: testedBy ?? null })
   } catch (error) {
     console.error('[EStopCheck] Error:', error)
     return res.status(500).json({
