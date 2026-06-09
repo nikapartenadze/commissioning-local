@@ -5,6 +5,7 @@ import { useParams, useNavigate, Link } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { useUser } from "@/lib/user-context"
 import { PlcToolbar } from "@/components/plc-toolbar"
+import { AutstandLogo } from "@/components/autstand-logo"
 import { EnhancedIoDataGrid } from "@/components/enhanced-io-data-grid"
 import { PlcConfigDialog } from "@/components/plc-config-dialog"
 import { TestResultsChart } from "@/components/test-results-chart"
@@ -2039,8 +2040,7 @@ export default function CommissioningPage() {
         {/* Top row: title + tabs + actions */}
         <div className="flex items-center justify-between px-2 sm:px-4 h-12 sm:h-10 bg-card border-b border-[#C6941A]/20 border-t-2 border-t-[#C6941A]">
           <div className="flex items-center gap-1.5 sm:gap-3 min-w-0 overflow-visible md:overflow-hidden">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo_autstand.svg" alt="Autstand" className="h-4 sm:h-5 shrink-0" />
+            <AutstandLogo className="h-4 sm:h-5 shrink-0" />
             {/* central-tool: back to the multi-MCM dashboard */}
             <Link
               to="/mcm"
