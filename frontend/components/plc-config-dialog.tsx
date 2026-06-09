@@ -65,6 +65,16 @@ export function PlcConfigDialog({
 }: PlcConfigDialogProps) {
   const scoped =
     typeof scopedSubsystemId === 'number' && Number.isFinite(scopedSubsystemId) && scopedSubsystemId > 0
+  // On a per-MCM page, read the SCOPED status so tag/IO counts are for THIS
+  // subsystem only. The global /api/plc/status reports totalIos across every
+  // subsystem in the DB, which made a single-MCM connect look like "1184/1814,
+  // 630 failed" (the 630 were another MCM's tags). The scoped route counts
+  // WHERE SubsystemId = :id, and reports `connected` instead of `plcConnected`.
+  const statusEndpoint = scoped
+    ? `/api/mcm/${scopedSubsystemId}/plc/status`
+    : API_ENDPOINTS.status
+  const readConnected = (s: any): boolean =>
+    scoped ? (s?.connected ?? false) : (s?.plcConnected ?? false)
   const [activeTab, setActiveTab] = useState<'cloud' | 'plc'>('cloud')
   const [profiles, setProfiles] = useState<PlcProfile[]>([])
   const [isSwitching, setIsSwitching] = useState(false)
@@ -207,9 +217,10 @@ export function PlcConfigDialog({
     if (isLoadingConfig) return
     try {
       setIsLoadingConfig(true)
-      const response = await authFetch(API_ENDPOINTS.status)
+      const response = await authFetch(statusEndpoint)
       if (response.ok) {
         const status = await response.json()
+        const connected = readConnected(status)
         setLocalConfig({
           ip: status.plcIp || "",
           path: status.plcPath || "1,0",
@@ -219,12 +230,12 @@ export function PlcConfigDialog({
         })
         // Set live status for showing connection state
         setLiveStatus({
-          plcConnected: status.plcConnected || false,
+          plcConnected: connected,
           tagCount: status.tagCount || 0,
           plcIp: status.plcIp || ""
         })
         // If already connected, set success status
-        if (status.plcConnected) {
+        if (connected) {
           setPlcStatus({ type: 'success', message: `Connected to ${status.plcIp} (${status.tagCount} tags)` })
         }
         // Load PLC profiles (tab stays on 'cloud' by default)
@@ -274,9 +285,30 @@ export function PlcConfigDialog({
       }
     }
 
+    const wasConnected = !!liveStatus?.plcConnected
     try {
       setIsPulling(true)
       setPullLog([])
+      // A pull rewrites this subsystem's IO rows; live tag handles point at the
+      // OLD row IDs, so the server refuses a pull while the PLC is connected.
+      // Rather than make the operator do it by hand, auto disconnect → pull →
+      // reconnect. The PLC drops for a few seconds while the IO table is rebuilt.
+      if (wasConnected) {
+        addPullLog('PLC connected — disconnecting before pull…')
+        setPullStatus({ type: 'loading', message: 'Disconnecting PLC…' })
+        try {
+          await authFetch(`/api/mcm/${scopedSubsystemId}/plc/disconnect`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+          })
+          addPullLog('PLC disconnected')
+          setLiveStatus(prev => (prev ? { ...prev, plcConnected: false } : prev))
+        } catch {
+          addPullLog('Could not disconnect PLC — aborting to protect live tag state')
+          setPullStatus({ type: 'error', message: 'Could not disconnect PLC before pull' })
+          setIsPulling(false)
+          return
+        }
+      }
       addPullLog(`Pull IOs for MCM ${scopedSubsystemId} (scoped — active subsystem unchanged)`)
       setPullStatus({ type: 'loading', message: `Pulling IOs for subsystem ${scopedSubsystemId}...` })
 
@@ -321,6 +353,20 @@ export function PlcConfigDialog({
       addPullLog(`ERROR: ${err.message}`)
       setPullStatus({ type: 'error', message: err.name === 'AbortError' ? 'Pull timed out' : err.message })
     } finally {
+      // Restore the PLC session we dropped for the pull (whether it succeeded or not).
+      if (wasConnected) {
+        addPullLog('Reconnecting PLC…')
+        try {
+          await authFetch(`/api/mcm/${scopedSubsystemId}/plc/connect`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip: localConfig.ip, path: localConfig.path }),
+          })
+          addPullLog('PLC reconnected')
+          setLiveStatus(prev => (prev ? { ...prev, plcConnected: true } : prev))
+        } catch {
+          addPullLog('Reconnect failed — reconnect from the PLC Connection tab')
+        }
+      }
       setIsPulling(false)
     }
   }
@@ -751,11 +797,11 @@ export function PlcConfigDialog({
           } catch { /* ignore log fetch errors */ }
 
           // Check PLC status
-          const statusRes = await authFetch(API_ENDPOINTS.status)
+          const statusRes = await authFetch(statusEndpoint)
           if (statusRes.ok) {
             const status = await statusRes.json()
 
-            if (status.plcConnected) {
+            if (readConnected(status)) {
               if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
               addPlcLog(`PLC connected!`)
               if (status.tagCount > 0 && status.totalIos > 0) {
@@ -920,47 +966,59 @@ export function PlcConfigDialog({
           {activeTab === 'cloud' && (
             <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
               <div className="space-y-3">
-                <div className="space-y-1">
-                  <Label htmlFor="subsystemId" className="text-xs">
-                    Subsystem ID{scoped && <span className="ml-1 text-muted-foreground normal-case">(locked — switch from the station list)</span>}
-                  </Label>
-                  <Input
-                    id="subsystemId"
-                    value={scoped ? String(scopedSubsystemId) : localConfig.subsystemId}
-                    onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
-                    placeholder="16"
-                    disabled={busy || scoped}
-                    readOnly={scoped}
-                    className="h-8 text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="apiPassword" className="text-xs">API Password</Label>
-                  <Input
-                    id="apiPassword"
-                    type="text"
-                    value={localConfig.apiPassword || ""}
-                    onChange={(e) => setLocalConfig({ ...localConfig, apiPassword: e.target.value })}
-                    placeholder="Project API password"
-                    disabled={busy}
-                    className="h-8 text-sm"
-                  />
-                </div>
+                {/* On a per-MCM page the subsystem is fixed by the URL and the
+                    project API key is set once in Settings → Cloud Connection,
+                    so neither field is shown here — only Pull IOs is needed.
+                    The legacy single-MCM setup flow still shows both. */}
+                {scoped ? (
+                  <div className="text-[11px] text-muted-foreground">
+                    MCM {scopedSubsystemId} · API key set in Settings → Cloud Connection
+                  </div>
+                ) : (
+                  <>
+                    <div className="space-y-1">
+                      <Label htmlFor="subsystemId" className="text-xs">Subsystem ID</Label>
+                      <Input
+                        id="subsystemId"
+                        value={localConfig.subsystemId}
+                        onChange={(e) => setLocalConfig({ ...localConfig, subsystemId: e.target.value })}
+                        placeholder="16"
+                        disabled={busy}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="apiPassword" className="text-xs">API Password</Label>
+                      <Input
+                        id="apiPassword"
+                        type="text"
+                        value={localConfig.apiPassword || ""}
+                        onChange={(e) => setLocalConfig({ ...localConfig, apiPassword: e.target.value })}
+                        placeholder="Project API password"
+                        disabled={busy}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                  </>
+                )}
 
                 {liveStatus?.plcConnected && (
-                  <div className="text-sm px-3 py-2 rounded-md bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300 border border-amber-200 dark:border-amber-900/50">
-                    <div className="flex items-start gap-2">
-                      <WifiOff className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                      <div className="text-xs">
-                        PLC is connected. Disconnect from the <span className="font-semibold">PLC Connection</span> tab before pulling — the pull rewrites the IO table and a live PLC session can't safely span that change.
-                      </div>
+                  scoped ? (
+                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <WifiOff className="w-3.5 h-3.5 flex-shrink-0" />
+                      Pulling briefly disconnects &amp; reconnects the PLC (the IO table is rebuilt).
                     </div>
-                  </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-300">
+                      <WifiOff className="w-3.5 h-3.5 flex-shrink-0" />
+                      Disconnect the PLC (PLC Connection tab) before pulling — pull rewrites the IO table.
+                    </div>
+                  )
                 )}
 
                 <Button
                   onClick={handlePullIos}
-                  disabled={busy || !localConfig.subsystemId || !!liveStatus?.plcConnected}
+                  disabled={busy || (!scoped && !localConfig.subsystemId) || (!scoped && !!liveStatus?.plcConnected)}
                   className="w-full bg-primary hover:bg-primary/90 text-white h-10"
                 >
                   <CloudDownload className="w-4 h-4 mr-2" />
