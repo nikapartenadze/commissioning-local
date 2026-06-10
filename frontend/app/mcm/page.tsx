@@ -388,7 +388,8 @@ export default function McmLandingPage() {
           <McmList mcms={mcms} onChanged={refresh} />
         )}
 
-        <LogViewer />
+        {/* Raw server/gateway log tailing is a diagnostic surface — admins only. */}
+        {canConfigure && <LogViewer />}
       </main>
 
       <footer className="relative max-w-7xl mx-auto px-6 py-6 z-10 flex items-center justify-between font-mono text-[13px] uppercase tracking-[0.16em] text-muted-foreground border-t border-border/60">
