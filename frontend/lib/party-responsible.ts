@@ -21,38 +21,45 @@ export type PartyResponsible = 'Electrical' | 'Mechanical' | 'Controls' | '3rd P
  *  Responsible column stays blank.
  */
 export function getPartyResponsible(failureMode?: string | null): PartyResponsible | null {
-  switch (failureMode) {
+  // Normalise casing/whitespace before matching. Field data drifts ('Not
+  // Installed' with a capital I, stray spaces), and an exact-case switch sent
+  // those to null → a blank Party Responsible column. Since this is derived at
+  // read time, normalising here retroactively fixes every existing row with no
+  // backfill. Mirrors commissioning-cloud/lib/party-responsible.ts.
+  const key = failureMode?.trim().toLowerCase()
+  if (!key) return null
+  switch (key) {
     // Legacy party-name vocabulary.
-    case '3rd Party': return '3rd Party'
-    case 'Mech': return 'Mechanical'
-    case 'Mechanical': return 'Mechanical'
+    case '3rd party': return '3rd Party'
+    case 'mech': return 'Mechanical'
+    case 'mechanical': return 'Mechanical'
     // Mechanical descriptive vocabulary (re-added v2.39.19 / 2026-06-03).
-    case 'Guard rail missing':
-    case 'Side guard not installed':
-    case 'Not aligned (mechanical)':
+    case 'guard rail missing':
+    case 'side guard not installed':
+    case 'not aligned (mechanical)':
       return 'Mechanical'
-    case 'Electrical': return 'Electrical'
-    case 'Controls': return 'Controls'
+    case 'electrical': return 'Electrical'
+    case 'controls': return 'Controls'
 
     // Current descriptive vocabulary — Electrical bucket.
-    case 'Not installed':
-    case 'Not powered':
-    case 'Not aligned':
-    case 'Wrong wiring':
-    case 'Damaged':
-    case 'Temp install':
+    case 'not installed':
+    case 'not powered':
+    case 'not aligned':
+    case 'wrong wiring':
+    case 'damaged':
+    case 'temp install':
       return 'Electrical'
 
     // Current descriptive vocabulary — Controls bucket.
-    case 'Not programmed':
-    case 'Missing drawings':
-    case 'Config error':
-    case 'Wrong tag':
+    case 'not programmed':
+    case 'missing drawings':
+    case 'config error':
+    case 'wrong tag':
       return 'Controls'
 
     // Current descriptive vocabulary — 3rd Party bucket.
-    case 'Vendor blocked':
-    case 'Awaiting vendor':
+    case 'vendor blocked':
+    case 'awaiting vendor':
       return '3rd Party'
 
     // Other / unknown → null. Comments column carries the detail.

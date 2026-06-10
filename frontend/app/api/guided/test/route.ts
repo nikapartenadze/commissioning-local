@@ -73,12 +73,15 @@ export async function POST(req: Request, res: Response) {
     const sanitizedComments = sanitizeComment(comments)
     const timestamp = createTimestamp()
 
-    let combinedComment = ''
-    if (failureMode && failureMode !== 'Other') {
-      combinedComment = sanitizedComments ? `${failureMode} — ${sanitizedComments}` : failureMode
-    } else {
-      combinedComment = sanitizedComments || ''
-    }
+    // Failure reason rides in its OWN column (FailureMode) — parity with the
+    // manual route (app/api/ios/:id/test). Previously guided mode folded the
+    // reason INTO the comment and never wrote FailureMode anywhere that synced,
+    // so every guided Fail reached cloud with ios.failure_mode = NULL and a
+    // blank Party Responsible (the 27-NULL CDW5 rows). Comment = free text only.
+    const combinedComment = sanitizedComments || ''
+    const newFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (failureMode || null)
+      : null
 
     const oldComment = io.Comments
     const newVersion = (io.Version ?? 0) + 1
@@ -86,11 +89,11 @@ export async function POST(req: Request, res: Response) {
 
     const txn = db.transaction(() => {
       db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ? WHERE id = ?'
-      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, ioId)
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ? WHERE id = ?'
+      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, ioId)
       const histResult = db.prepare(
         'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(ioId, normalizedResult, timestamp, oldComment, plcState, currentUser ?? 'Unknown', failureMode || null, 'guided')
+      ).run(ioId, normalizedResult, timestamp, oldComment, plcState, currentUser ?? 'Unknown', newFailureMode, 'guided')
       testHistoryId = histResult.lastInsertRowid
     })
     txn()
@@ -127,8 +130,8 @@ export async function POST(req: Request, res: Response) {
     // Cloud sync — best-effort, never block the response
     try {
       const info = db.prepare(
-        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(ioId, currentUser || null, normalizedResult, combinedComment || null, plcState, new Date().toISOString(), newVersion - 1)
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(ioId, currentUser || null, normalizedResult, combinedComment || null, plcState, new Date().toISOString(), newVersion - 1, newFailureMode)
       console.log(
         `[Guided test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
         `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
