@@ -369,6 +369,16 @@ def check_data_loss() -> dict:
         _, pend, _ = local_results_and_queue()
         if c is not None and pend == 0:
             break
+        # If the cloud is still unreachable, the one-shot /calm above may have
+        # raced an in-flight flap cut (or the reconnect didn't hold). Keep
+        # re-requesting /calm every iteration so we force the cloud back onto the
+        # network until it's actually reachable — don't just wait out 15 min.
+        if c is None:
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(f"{CHAOS_URL}/calm", method="POST"), timeout=10).read()
+            except Exception as e:
+                print(f"observer: re-/calm failed (continuing): {e}")
         print(f"observer: I4 settling — cloud={'up' if c is not None else 'down'} queue={pend}")
         time.sleep(15)
 
