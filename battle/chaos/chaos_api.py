@@ -239,6 +239,23 @@ def cloud_flap(spec: str) -> None:
     print("chaos: cloud-flap stopped (calm)", flush=True)
 
 
+def power_storm(spec: str) -> None:
+    """Controller-disconnect profile: power-cycle a RANDOM controller every
+    `lo`-`hi` minutes. Distinct from a program download — the controller is
+    OFFLINE for POWER_DOWN_SEC (a sustained outage, not a quick re-flash), so
+    this exercises the tool's handling of a long per-MCM PLC disconnect + clean
+    reconnect while the OTHER MCMs stay up. spec = "lo_min,hi_min"."""
+    lo, hi = (float(x) for x in spec.split(","))
+    down = int(os.environ.get("POWER_DOWN_SEC", "90"))
+    print(f"chaos: power storm armed — a controller down {down}s every {lo}-{hi} min", flush=True)
+    while not CALM.is_set():
+        time.sleep(random.uniform(lo * 60, hi * 60))
+        if CALM.is_set():
+            break
+        do_power(down)
+    print("chaos: power storm stopped (calm)", flush=True)
+
+
 if __name__ == "__main__":
     storm = os.environ.get("DOWNLOAD_STORM")
     if storm:
@@ -246,5 +263,8 @@ if __name__ == "__main__":
     flap = os.environ.get("CLOUD_FLAP")
     if flap:
         threading.Thread(target=cloud_flap, args=(flap,), daemon=True).start()
+    power = os.environ.get("POWER_STORM")
+    if power:
+        threading.Thread(target=power_storm, args=(power,), daemon=True).start()
     print(f"chaos: listening :8666 (plc-sims={PLC_SIMS}, tool={TOOL}, cloud={CLOUD})", flush=True)
     ThreadingHTTPServer(("0.0.0.0", 8666), Handler).serve_forever()

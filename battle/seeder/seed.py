@@ -246,6 +246,21 @@ def main() -> None:
     if len(tags) < 100:
         sys.exit("seeder: suspiciously few tags — wrong seed DB?")
 
+    # ── 3c. ambient CIP-saturation delay (SIM_DELAY_MS) ────────────
+    # Write /gen/delay so EVERY plc-sim boots with a per-request delay (a site
+    # of sluggish controllers). The sim entrypoint reads this file at start, so
+    # no restart is needed — all MCMs come up slow, layered under the storms.
+    # A fresh run with no delay set must clear any stale file from a prior run.
+    delay_path = os.path.join(os.path.dirname(TAGS_OUT), "delay")
+    delay_ms = os.environ.get("SIM_DELAY_MS", "").strip()
+    if delay_ms.isdigit() and int(delay_ms) > 0:
+        with open(delay_path, "w") as f:
+            f.write(delay_ms)
+        print(f"seeder: wrote {delay_path}: CIP-saturation {delay_ms}ms (all sims boot slow)")
+    elif os.path.exists(delay_path):
+        os.remove(delay_path)
+        print(f"seeder: cleared stale {delay_path} (no SIM_DELAY_MS this run)")
+
     # ── 3b. per-MCM tag files (MCM_MODE=real) ──────────────────────
     # Each sim serves ONLY its subsystem's tags: that controller's IO tags,
     # its devices' ConnectionFaulted bits, and the CMD validation flags of the

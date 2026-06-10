@@ -78,8 +78,15 @@ setup_cdw5_site() {
     export MCM_MODE=real
     export SEED_DB=database-cdw5.db
     export MCM_COUNT=19
+    # All four field failure modes at once, on every MCM, while they're all up:
+    #   program write  → DOWNLOAD_STORM  (random controller re-flash, tags zeroed)
+    #   disconnect     → POWER_STORM     (random controller offline 90s, others up)
+    #   network fail   → CLOUD_FLAP      (tool↔cloud link cut, queue must not drop)
+    #   slow           → SIM_DELAY_MS    (every controller boots CIP-saturated)
     export DOWNLOAD_STORM="10,20"
+    export POWER_STORM="${POWER_STORM:-15,30}"; export POWER_DOWN_SEC="${POWER_DOWN_SEC:-90}"
     export CLOUD_FLAP="3,10"; export FLAP_BUDGET=400
+    export SIM_DELAY_MS="${SIM_DELAY_MS:-40}"
     export BOTS="${BOTS:-12}"
     export HOT_FRACTION=0
     export THINK_MIN_MS=500; export THINK_MAX_MS=2500
@@ -108,13 +115,20 @@ case "$SCENARIO" in
         export PLC_SIM_CONTAINERS="battle-plc-sim-1,battle-plc-sim-2-1,battle-plc-sim-3-1,battle-plc-sim-4-1"
         # Subsystems the seeder creates: base 38 + clones at +1000 strides.
         export OBS_SUBSYSTEM_IDS="38,1038,2038,3038"
+        # All four field failure modes at once across the 4 MCMs (see the CDW5
+        # site setup for the mapping): program write + disconnect + slow + the
+        # cloud flap is added here too so the small central run is a faithful
+        # fast preview of the full central-cdw5-split soak.
         export DOWNLOAD_STORM="12,25"
+        export POWER_STORM="${POWER_STORM:-18,35}"; export POWER_DOWN_SEC="${POWER_DOWN_SEC:-90}"
+        export CLOUD_FLAP="${CLOUD_FLAP:-4,12}"
+        export SIM_DELAY_MS="${SIM_DELAY_MS:-40}"
         export BOTS="${BOTS:-8}"
         export HOT_FRACTION=0
         export THINK_MIN_MS=700; export THINK_MAX_MS=3000
-        # 4 PLC clients: every download flaps its own client; generous organic
-        # budget for first runs (we're here to SEE what breaks, not to gate).
-        export FLAP_BUDGET=60 ;;
+        # 4 PLC clients: every download/power-cut flaps its own client; generous
+        # organic budget for first runs (we're here to SEE what breaks, not gate).
+        export FLAP_BUDGET=80 ;;
     central-cdw5)                                     # the FULL CDW5 site, central server
         # All 19 real CDW5 MCMs (production dump, 25,418 IOs / 3,244 L2
         # devices) on one central tool: 19 registry PLC connections, each sim
