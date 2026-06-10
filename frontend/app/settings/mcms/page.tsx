@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 import {
   ArrowLeft,
   Check,
@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { useUser } from '@/lib/user-context'
+import { authFetch } from '@/lib/api-config'
 
 /**
  * MCM connection management.
@@ -24,6 +26,10 @@ import { ThemeToggle } from '@/components/theme-toggle'
  * Add, edit, and remove the controllers the central-tool serves. Lives at
  * /settings/mcms; reachable from the landing-page header. Mutations go
  * through /api/mcm and /api/mcm/:subsystemId.
+ *
+ * Admin-only under enforced auth: testers who navigate here directly are
+ * redirected to the MCM landing page. In open mode (auth not required) everyone
+ * is an admin, so this is fully accessible exactly as before.
  */
 
 interface McmRow {
@@ -40,13 +46,14 @@ interface McmRow {
 const POLL_MS = 3000
 
 export default function McmSettingsPage() {
+  const { authRequired, currentUser, isLoading } = useUser()
   const [mcms, setMcms] = useState<McmRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch('/api/mcm')
+      const r = await authFetch('/api/mcm')
       const data = await r.json()
       if (Array.isArray(data?.mcms)) {
         setMcms(data.mcms as McmRow[])
@@ -64,6 +71,12 @@ export default function McmSettingsPage() {
     const id = setInterval(refresh, POLL_MS)
     return () => clearInterval(id)
   }, [refresh])
+
+  // Enforced-auth gate: redirect non-admins away from the config surface.
+  // Wait for the mode/identity probe to settle to avoid a redirect flash.
+  if (!isLoading && authRequired && currentUser && !currentUser.isAdmin) {
+    return <Navigate to="/mcm" replace />
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans relative">
@@ -165,7 +178,7 @@ function CloudConnectionPanel({ onImported }: { onImported: () => void }) {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/api/mcm/cloud-config')
+      const r = await authFetch('/api/mcm/cloud-config')
       const d = await r.json()
       if (d?.success) {
         setRemoteUrl(d.remoteUrl || '')
@@ -192,7 +205,7 @@ function CloudConnectionPanel({ onImported }: { onImported: () => void }) {
         setMsg({ kind: 'err', text: 'Enter the project API key first' })
         return
       }
-      const r = await fetch('/api/mcm/cloud-config', {
+      const r = await authFetch('/api/mcm/cloud-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -221,7 +234,7 @@ function CloudConnectionPanel({ onImported }: { onImported: () => void }) {
     setImporting(true)
     setMsg(null)
     try {
-      const r = await fetch('/api/mcm/import-from-cloud', { method: 'POST' })
+      const r = await authFetch('/api/mcm/import-from-cloud', { method: 'POST' })
       const d = await r.json()
       if (!d?.success) {
         setMsg({ kind: 'err', text: d?.error || 'Import failed' })
@@ -246,7 +259,7 @@ function CloudConnectionPanel({ onImported }: { onImported: () => void }) {
     setPulling(true)
     setMsg(null)
     try {
-      const r = await fetch('/api/mcm/pull-all', { method: 'POST' })
+      const r = await authFetch('/api/mcm/pull-all', { method: 'POST' })
       const d = await r.json()
       if (!d?.success) {
         setMsg({ kind: 'err', text: d?.error || 'Pull failed' })
@@ -412,7 +425,7 @@ function AddMcmForm({ onAdded }: { onAdded: () => void }) {
     setErr(null)
     setSubmitting(true)
     try {
-      const r = await fetch('/api/mcm', {
+      const r = await authFetch('/api/mcm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -561,7 +574,7 @@ function McmEditableRow({
     setSubmitting(true)
     setErr(null)
     try {
-      const r = await fetch(`/api/mcm/${mcm.subsystemId}`, {
+      const r = await authFetch(`/api/mcm/${mcm.subsystemId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), ip: ip.trim(), path: path.trim() }),
@@ -584,7 +597,7 @@ function McmEditableRow({
     setSubmitting(true)
     setErr(null)
     try {
-      const r = await fetch(`/api/mcm/${mcm.subsystemId}`, { method: 'DELETE' })
+      const r = await authFetch(`/api/mcm/${mcm.subsystemId}`, { method: 'DELETE' })
       const data = await r.json()
       if (!data.success) {
         setErr(data.error || 'Delete failed')

@@ -255,7 +255,17 @@ export async function authFetch(
     headers,
   })
 
-  // Auth disabled — no 401 redirect needed
+  // When auth is enforced and the token is missing/expired/invalid, the server
+  // replies 401. Clear the stored token and signal the app shell to return to
+  // the login screen. We only act when a token was actually present so the
+  // open-mode (AUTH_REQUIRED off) flow — which never sets a token and never
+  // gets 401s on gated reads — is completely untouched.
+  if (response.status === 401 && token && typeof window !== 'undefined') {
+    localStorage.removeItem('authToken')
+    // The UserProvider listens for this to drop back to the login screen
+    // without a hard reload (avoids losing in-flight component state elsewhere).
+    window.dispatchEvent(new CustomEvent('auth:unauthorized'))
+  }
 
   return response
 }

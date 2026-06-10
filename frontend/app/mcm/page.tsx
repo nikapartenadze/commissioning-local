@@ -26,6 +26,21 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { useUser } from '@/lib/user-context'
+import { authFetch } from '@/lib/api-config'
+
+/**
+ * Whether to expose admin-only configuration controls.
+ *
+ * - Open mode (auth not required): everyone is an admin → always show, exactly
+ *   like before.
+ * - Enforced auth: show only to admins. Testers see the list + connect + Open.
+ */
+function useCanConfigure(): boolean {
+  const { authRequired, currentUser } = useUser()
+  if (!authRequired) return true
+  return currentUser?.isAdmin === true
+}
 
 /**
  * Multi-MCM landing page (central-tool).
@@ -80,6 +95,7 @@ interface ConnectAllReport {
 const POLL_MS = 2000
 
 export default function McmLandingPage() {
+  const canConfigure = useCanConfigure()
   const [mcms, setMcms] = useState<McmRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -108,7 +124,7 @@ export default function McmLandingPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch('/api/mcm')
+      const r = await authFetch('/api/mcm')
       const data = await r.json()
       if (data && Array.isArray(data.mcms)) {
         setMcms(data.mcms as McmRow[])
@@ -127,7 +143,7 @@ export default function McmLandingPage() {
     setImporting(true)
     setImportMsg(null)
     try {
-      const r = await fetch('/api/mcm/import-from-cloud', { method: 'POST' })
+      const r = await authFetch('/api/mcm/import-from-cloud', { method: 'POST' })
       const data = await r.json()
       if (data.success) {
         const added = data.added?.length ?? 0
@@ -151,7 +167,7 @@ export default function McmLandingPage() {
     setConnectingAll(true)
     setConnectReport(null)
     try {
-      const r = await fetch('/api/mcm/connect-all', { method: 'POST' })
+      const r = await authFetch('/api/mcm/connect-all', { method: 'POST' })
       const data = await r.json()
       if (data && data.success) {
         setConnectReport({ ...data, kind: 'connect' } as ConnectAllReport)
@@ -176,7 +192,7 @@ export default function McmLandingPage() {
     setDisconnectingAll(true)
     setConnectReport(null)
     try {
-      const r = await fetch('/api/mcm/disconnect-all', { method: 'POST' })
+      const r = await authFetch('/api/mcm/disconnect-all', { method: 'POST' })
       const data = await r.json()
       if (data && data.success) {
         setConnectReport({
@@ -311,22 +327,26 @@ export default function McmLandingPage() {
               <Plug className={cn('w-3.5 h-3.5', disconnectingAll && 'animate-pulse')} />
               {disconnectingAll ? 'Disconnecting…' : 'Disconnect All'}
             </button>
-            <button
-              onClick={importFromCloud}
-              disabled={importing}
-              title="Pull this project's subsystems from the cloud into the station list"
-              className="font-mono text-sm uppercase tracking-[0.14em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5 disabled:opacity-50"
-            >
-              <DownloadCloud className={cn('w-3.5 h-3.5', importing && 'animate-pulse')} />
-              {importing ? 'Importing…' : 'Import from cloud'}
-            </button>
-            <Link
-              to="/settings/mcms"
-              className="font-mono text-sm uppercase tracking-[0.14em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5"
-            >
-              <Settings className="w-3.5 h-3.5" />
-              Configure
-            </Link>
+            {canConfigure && (
+              <button
+                onClick={importFromCloud}
+                disabled={importing}
+                title="Pull this project's subsystems from the cloud into the station list"
+                className="font-mono text-sm uppercase tracking-[0.14em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <DownloadCloud className={cn('w-3.5 h-3.5', importing && 'animate-pulse')} />
+                {importing ? 'Importing…' : 'Import from cloud'}
+              </button>
+            )}
+            {canConfigure && (
+              <Link
+                to="/settings/mcms"
+                className="font-mono text-sm uppercase tracking-[0.14em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                Configure
+              </Link>
+            )}
           </div>
         </div>
 
@@ -405,7 +425,7 @@ function LogViewer() {
   const load = useCallback(async () => {
     setBusy(true)
     try {
-      const r = await fetch(`/api/logs/tail?source=${encodeURIComponent(source)}&lines=500`)
+      const r = await authFetch(`/api/logs/tail?source=${encodeURIComponent(source)}&lines=500`)
       const d = await r.json()
       if (d.success) {
         setLines(d.lines ?? [])
@@ -674,9 +694,8 @@ function useMcmAction(subsystemId: string, onChanged: () => void) {
       setBusy(kind)
       setActionError(null)
       try {
-        const r = await fetch(`/api/mcm/${subsystemId}/plc/${kind}`, {
+        const r = await authFetch(`/api/mcm/${subsystemId}/plc/${kind}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),
         })
         const data = await r.json()
@@ -719,9 +738,8 @@ function SetIpModal({
   const [err, setErr] = useState<string | null>(null)
 
   async function persist(): Promise<boolean> {
-    const r = await fetch(`/api/mcm/${mcm.subsystemId}`, {
+    const r = await authFetch(`/api/mcm/${mcm.subsystemId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ip: ip.trim(), path: path.trim() || '1,0' }),
     })
     const data = await r.json()
@@ -742,9 +760,8 @@ function SetIpModal({
     try {
       if (!(await persist())) return
       if (thenConnect) {
-        const r = await fetch(`/api/mcm/${mcm.subsystemId}/plc/connect`, {
+        const r = await authFetch(`/api/mcm/${mcm.subsystemId}/plc/connect`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: '{}',
         })
         const data = await r.json()
@@ -878,6 +895,7 @@ function McmCard({
 }) {
   const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
   const [editIp, setEditIp] = useState(false)
+  const canConfigure = useCanConfigure()
   const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
 
   return (
@@ -936,13 +954,19 @@ function McmCard({
 
         <div className="flex items-center gap-2 pt-3 border-t border-border/60">
           {!mcm.ip ? (
-            <button
-              onClick={() => setEditIp(true)}
-              className="font-mono text-sm uppercase tracking-[0.16em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary transition-colors inline-flex items-center gap-1.5 rounded-sm"
-            >
-              <Settings className="w-3.5 h-3.5" />
-              Set IP
-            </button>
+            canConfigure ? (
+              <button
+                onClick={() => setEditIp(true)}
+                className="font-mono text-sm uppercase tracking-[0.16em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary transition-colors inline-flex items-center gap-1.5 rounded-sm"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                Set IP
+              </button>
+            ) : (
+              <span className="font-mono text-sm uppercase tracking-[0.16em] px-3 py-1.5 text-muted-foreground inline-flex items-center gap-1.5">
+                No IP set
+              </span>
+            )
           ) : mcm.connected ? (
             <button
               disabled={busy !== null}
@@ -963,7 +987,7 @@ function McmCard({
             </button>
           )}
 
-          {mcm.ip && (
+          {mcm.ip && canConfigure && (
             <button
               onClick={() => setEditIp(true)}
               title="Edit IP / path"
@@ -1025,6 +1049,7 @@ function McmList({
 function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) {
   const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
   const [editIp, setEditIp] = useState(false)
+  const canConfigure = useCanConfigure()
   const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
 
   const btnBase =
@@ -1065,13 +1090,17 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
 
         <div className="flex items-center justify-end gap-2 w-[15.5rem] shrink-0">
           {!mcm.ip ? (
-            <button
-              onClick={() => setEditIp(true)}
-              className={cn(btnBase, 'border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary')}
-            >
-              <Settings className="w-3.5 h-3.5" />
-              Set IP
-            </button>
+            canConfigure ? (
+              <button
+                onClick={() => setEditIp(true)}
+                className={cn(btnBase, 'border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary')}
+              >
+                <Settings className="w-3.5 h-3.5" />
+                Set IP
+              </button>
+            ) : (
+              <span className={cn(btnBase, 'text-muted-foreground')}>No IP set</span>
+            )
           ) : mcm.connected ? (
             <button
               disabled={busy !== null}
@@ -1092,7 +1121,7 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
             </button>
           )}
 
-          {mcm.ip && (
+          {mcm.ip && canConfigure && (
             <button
               onClick={() => setEditIp(true)}
               title="Edit IP / path"

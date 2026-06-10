@@ -81,6 +81,10 @@ try {
     // loss class: B3/B5/B7). Parked rows keep the local result + reason, are
     // excluded from the active push loop, and are surfaced as "needs attention".
     'ALTER TABLE PendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
+    // First-run hardening: the seeded default admin (Admin/111111) is flagged
+    // MustChangePin=1 so the UI forces a new PIN on first admin login under
+    // enforced auth. Additive + backward-safe: existing users default to 0.
+    'ALTER TABLE Users ADD COLUMN MustChangePin INTEGER NOT NULL DEFAULT 0',
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
@@ -252,7 +256,9 @@ export function initializeSchema() {
       IsAdmin INTEGER DEFAULT 0,
       IsActive INTEGER DEFAULT 1,
       CreatedAt TEXT NOT NULL,
-      LastUsedAt TEXT
+      LastUsedAt TEXT,
+      -- First-run hardening: forces a PIN change on first login (seeded admin).
+      MustChangePin INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS PendingSyncs (
@@ -718,6 +724,7 @@ export interface User {
   IsActive: number
   CreatedAt: string
   LastUsedAt: string | null
+  MustChangePin?: number
 }
 
 export interface PendingSync {

@@ -4,6 +4,8 @@ import { authMiddleware, adminMiddleware, noTestingOnServerLaptop } from './midd
 // Import route handlers
 import * as authLogin from '@/app/api/auth/login/route'
 import * as authVerify from '@/app/api/auth/verify/route'
+import * as authMode from '@/app/api/auth/mode/route'
+import * as authChangePin from '@/app/api/auth/change-pin/route'
 import * as health from '@/app/api/health/route'
 import * as configuration from '@/app/api/configuration/route'
 import * as configConnect from '@/app/api/configuration/connect/route'
@@ -136,9 +138,13 @@ function asyncHandler(fn: Function) {
 export function createApiRouter(): Router {
   const router = Router()
 
-  // ── Auth (no middleware — login is public) ─────────────────────
+  // ── Auth (no middleware — login + mode probe are public) ───────
   router.post('/api/auth/login', asyncHandler(authLogin.POST))
   router.get('/api/auth/verify', asyncHandler(authVerify.GET))
+  // Open mode probe: client fetches this on boot to decide whether to show login.
+  router.get('/api/auth/mode', asyncHandler(authMode.GET))
+  // Self-service PIN change (first-run must-change + routine). Requires a valid token.
+  router.post('/api/auth/change-pin', authMiddleware, asyncHandler(authChangePin.POST))
 
   // ── Health ─────────────────────────────────────────────────────
   router.get('/api/health', asyncHandler(health.GET))
@@ -211,18 +217,22 @@ export function createApiRouter(): Router {
 
   // ── MCM Registry (central-tool multi-MCM) ─────────────────────
   router.get('/api/logs/tail', asyncHandler(logsTail.GET))
+  // Reads + connect/test/pull are open to any logged-in user; configuration
+  // writes (add/edit/remove MCM, cloud config, bulk import/pull) are admin-only.
+  // NOTE: when AUTH_REQUIRED is off, adminMiddleware passes everyone (anon-admin),
+  // so this gating is a no-op for the single-laptop / dev case.
   router.get('/api/mcm', asyncHandler(mcmList.GET))
-  router.post('/api/mcm', asyncHandler(mcmList.POST))
+  router.post('/api/mcm', adminMiddleware, asyncHandler(mcmList.POST))
   // Must precede the ':subsystemId' routes so the literal path isn't shadowed.
-  router.post('/api/mcm/import-from-cloud', asyncHandler(mcmImportFromCloud.POST))
+  router.post('/api/mcm/import-from-cloud', adminMiddleware, asyncHandler(mcmImportFromCloud.POST))
   router.get('/api/mcm/cloud-config', asyncHandler(mcmCloudConfig.GET))
-  router.post('/api/mcm/cloud-config', asyncHandler(mcmCloudConfig.POST))
-  router.post('/api/mcm/pull-all', asyncHandler(mcmPullAll.POST))
+  router.post('/api/mcm/cloud-config', adminMiddleware, asyncHandler(mcmCloudConfig.POST))
+  router.post('/api/mcm/pull-all', adminMiddleware, asyncHandler(mcmPullAll.POST))
   router.post('/api/mcm/connect-all', asyncHandler(mcmConnectAll.POST))
   router.post('/api/mcm/disconnect-all', asyncHandler(mcmDisconnectAll.POST))
   router.get('/api/mcm/:subsystemId', asyncHandler(mcmEntry.GET))
-  router.put('/api/mcm/:subsystemId', asyncHandler(mcmEntry.PUT))
-  router.delete('/api/mcm/:subsystemId', asyncHandler(mcmEntry.DELETE))
+  router.put('/api/mcm/:subsystemId', adminMiddleware, asyncHandler(mcmEntry.PUT))
+  router.delete('/api/mcm/:subsystemId', adminMiddleware, asyncHandler(mcmEntry.DELETE))
   router.get('/api/mcm/:subsystemId/plc/status', asyncHandler(mcmPlcStatus.GET))
   router.post('/api/mcm/:subsystemId/plc/connect', asyncHandler(mcmPlcConnect.POST))
   router.post('/api/mcm/:subsystemId/plc/disconnect', asyncHandler(mcmPlcDisconnect.POST))

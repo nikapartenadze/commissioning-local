@@ -70,6 +70,7 @@ interface UserRow {
   IsActive: number;
   CreatedAt: string | null;
   LastUsedAt: string | null;
+  MustChangePin?: number;
 }
 
 export async function POST(req: Request, res: Response) {
@@ -110,7 +111,7 @@ export async function POST(req: Request, res: Response) {
     await ensureDiagnosticData();
     ensureRequiredDiagnosticRows();
 
-    let user: { id: number; fullName: string; isAdmin: boolean; isActive: boolean; pin: string } | undefined;
+    let user: { id: number; fullName: string; isAdmin: boolean; isActive: boolean; pin: string; mustChangePin: boolean } | undefined;
 
     if (fullName?.trim()) {
       // Named login: find by fullName and verify PIN
@@ -125,7 +126,7 @@ export async function POST(req: Request, res: Response) {
         return res.status(401).json({ message: 'Invalid PIN' });
       }
 
-      user = { id: row.id, fullName: row.FullName, isAdmin: !!row.IsAdmin, isActive: !!row.IsActive, pin: row.Pin };
+      user = { id: row.id, fullName: row.FullName, isAdmin: !!row.IsAdmin, isActive: !!row.IsActive, pin: row.Pin, mustChangePin: !!row.MustChangePin };
     } else {
       // PIN-only login: iterate users server-side
       const activeUsers = db.prepare('SELECT * FROM Users WHERE IsActive = 1').all() as UserRow[];
@@ -133,7 +134,7 @@ export async function POST(req: Request, res: Response) {
       for (const candidate of activeUsers) {
         const isMatch = await verifyPin(pin, candidate.Pin);
         if (isMatch) {
-          user = { id: candidate.id, fullName: candidate.FullName, isAdmin: !!candidate.IsAdmin, isActive: !!candidate.IsActive, pin: candidate.Pin };
+          user = { id: candidate.id, fullName: candidate.FullName, isAdmin: !!candidate.IsAdmin, isActive: !!candidate.IsActive, pin: candidate.Pin, mustChangePin: !!candidate.MustChangePin };
           break;
         }
       }
@@ -167,6 +168,7 @@ export async function POST(req: Request, res: Response) {
       .json({
         fullName: user.fullName,
         isAdmin: user.isAdmin,
+        mustChangePin: user.mustChangePin,
         loginTime: new Date().toISOString().replace('T', ' ').substring(0, 19),
         token,
       });

@@ -245,16 +245,37 @@ export const userRepository = {
   },
 
   /**
-   * Create default admin user if no users exist
+   * Clear the must-change-PIN flag for a user (called after they set a new PIN).
+   */
+  clearMustChangePin(id: number): void {
+    try {
+      db.prepare('UPDATE Users SET MustChangePin = 0 WHERE id = ?').run(id)
+    } catch {
+      // Column may not exist on a very old DB that hasn't migrated yet — ignore.
+    }
+  },
+
+  /**
+   * Create default admin user if no users exist.
+   *
+   * The seeded admin is flagged MustChangePin=1 so the UI forces a new PIN on
+   * first admin login under enforced auth. The flag write is best-effort: a DB
+   * that predates the column migration simply keeps the column absent (treated
+   * as 0), which is backward-safe.
    */
   async ensureDefaultAdmin(): Promise<void> {
     const count = (db.prepare('SELECT COUNT(*) as count FROM Users').get() as any).count
     if (count === 0) {
-      await this.create({
+      const user = await this.create({
         fullName: 'Admin',
         pin: '111111',
         isAdmin: true,
       })
+      try {
+        db.prepare('UPDATE Users SET MustChangePin = 1 WHERE id = ?').run(user.id)
+      } catch {
+        // Column missing on a not-yet-migrated DB — ignore (defaults to 0).
+      }
     }
   },
 }
