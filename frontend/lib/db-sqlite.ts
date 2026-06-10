@@ -81,6 +81,12 @@ try {
     // loss class: B3/B5/B7). Parked rows keep the local result + reason, are
     // excluded from the active push loop, and are surfaced as "needs attention".
     'ALTER TABLE PendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
+    // L2/FV cell sync queue — same dead-letter parity as IO PendingSyncs above.
+    // A capped L2 row used to be DELETEd ("cloud probably has it"), silently
+    // losing genuinely-unsynced wizard cell values. Park it (DeadLettered=1)
+    // instead so the local value + reason survive and the row is excluded from
+    // the active push loop and the pull gate.
+    'ALTER TABLE L2PendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
     // First-run hardening: the seeded default admin (Admin/111111) is flagged
     // MustChangePin=1 so the UI forces a new PIN on first admin login under
     // enforced auth. Additive + backward-safe: existing users default to 0.
@@ -622,7 +628,8 @@ export function initializeSchema() {
       Version INTEGER DEFAULT 0,
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
-      LastError TEXT
+      LastError TEXT,
+      DeadLettered INTEGER NOT NULL DEFAULT 0
     );
 
     -- Device-level blocker sync queue (VFD bump-test failures).

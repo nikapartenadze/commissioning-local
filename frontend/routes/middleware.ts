@@ -14,6 +14,12 @@ declare global {
   }
 }
 
+/** The only endpoint a must-change-PIN session may reach. */
+function isChangePinPath(req: Request): boolean {
+  const p = (req.path || req.originalUrl || '').replace(/\/+$/, '')
+  return p.endsWith('/auth/change-pin')
+}
+
 /** Express middleware: verify auth token, attach user to req */
 export const authMiddleware: RequestHandler = (req, res, next) => {
   const result = verifyAuth(req as any)
@@ -22,6 +28,15 @@ export const authMiddleware: RequestHandler = (req, res, next) => {
     return
   }
   req.user = result.user!
+  // First-run hardening: a session still flagged must-change-PIN (the seeded
+  // default admin) may ONLY call the change-PIN endpoint. Every other route is
+  // refused so a client that ignores the mustChangePin login response can't
+  // operate on the default PIN. Open mode never sets the claim, so this is a
+  // no-op there.
+  if (req.user?.mustChangePin === true && !isChangePinPath(req)) {
+    res.status(403).json({ error: 'PIN change required', code: 'must-change-pin' })
+    return
+  }
   next()
 }
 

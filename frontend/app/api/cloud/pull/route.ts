@@ -17,7 +17,7 @@ function getPullStmts() {
 function createPullStmts() {
   return {
     pendingIoCount: db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs'),
-    pendingL2Count: db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs'),
+    pendingL2Count: db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE DeadLettered = 0'),
     pendingChangeRequestCount: db.prepare("SELECT COUNT(*) as cnt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL"),
     ioCount: db.prepare('SELECT COUNT(*) as cnt FROM Ios'),
     getProject: db.prepare('SELECT id FROM Projects WHERE id = ?'),

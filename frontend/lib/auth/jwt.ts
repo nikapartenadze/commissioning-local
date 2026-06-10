@@ -4,12 +4,16 @@ export interface UserTokenPayload {
   sub: string;
   fullName: string;
   isAdmin: boolean;
+  mustChangePin?: boolean;
 }
 
 export interface DecodedToken extends JwtPayload {
   sub: string;
   fullName: string;
   isAdmin: boolean;
+  // When true, the token is only valid for the change-PIN endpoint — the
+  // account is still on the seeded default PIN and must replace it first.
+  mustChangePin?: boolean;
   jti?: string;
 }
 
@@ -129,15 +133,20 @@ export function generateToken(user: {
   id: number;
   fullName: string;
   isAdmin: boolean;
+  mustChangePin?: boolean;
 }): string {
   const config = getJwtConfig();
 
-  const payload = {
+  const jti = crypto.randomUUID();
+  const payload: Record<string, unknown> = {
     sub: user.id.toString(),
     fullName: user.fullName,
     isAdmin: user.isAdmin,
-    jti: crypto.randomUUID(),
+    jti,
   };
+  // Only carry the flag when set — a normal token stays clean. A token minted
+  // with this claim is rejected everywhere except /api/auth/change-pin.
+  if (user.mustChangePin) payload.mustChangePin = true;
 
   const options: SignOptions = {
     algorithm: 'HS256',
@@ -147,7 +156,7 @@ export function generateToken(user: {
   };
 
   const token = jwt.sign(payload, config.secretKey, options);
-  trackToken(payload.jti, user.id.toString(), config.expirationHours * 3600 * 1000);
+  trackToken(jti, user.id.toString(), config.expirationHours * 3600 * 1000);
   return token;
 }
 
