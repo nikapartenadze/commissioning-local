@@ -211,6 +211,17 @@ relocated verbatim), gateway batch RPCs (`/tags/write|read|hammer-write`), and
 
 **All validation/verification steps: see [CENTRAL-SERVER-VALIDATION.md](CENTRAL-SERVER-VALIDATION.md)** — incl. the hard rule to **not push test data to the production cloud** while testing.
 
+## Access control & roles
+
+The central server holds many testers' work over the LAN, so it ships **PIN login + JWT + a `Users` table** (`FullName`, bcrypt `Pin`, `IsAdmin`, `IsActive`) with two roles:
+
+- **Tester** — log in, see the MCM list, pick their MCM, connect, and record results. Cannot change configuration.
+- **Admin / supervisor** — everything a tester can do, **plus** config: PLC IP/path, the cloud API key, and add/edit/remove MCMs.
+
+Endpoints split accordingly: read + connect/disconnect + test/record are open to any logged-in user; config writes (`POST/PUT/DELETE /api/mcm`, `/api/mcm/cloud-config`, `import-from-cloud`, `pull-all`, `PUT /api/configuration`) require **admin**. The **server laptop itself is blocked from authoring results** (`noTestingOnServerLaptop`, loopback-IP) — it's the PLC broker; testers work from client browsers.
+
+> Status: the auth stack is built (`lib/auth/*`, `Users` table, `POST /api/auth/login`); open-access mode (everyone admin) is the historical default. Role enforcement on the centralized server is being switched on (`central-tool-latest`). DNS/host-name discovery for clients is **deferred pending discussion** (backlog TSK-2196 — clients reach the server by `<laptop-ip>:3000` today).
+
 ## 10. Not doing (yet)
 - Delta sync (the catch-up pull is a full per-subsystem delete+reinsert; ~6–8s
   ×N on reconnect — correct and pending-guarded, but heavier than a since-version

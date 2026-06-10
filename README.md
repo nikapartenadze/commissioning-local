@@ -1,6 +1,6 @@
 # Commissioning Tool
 
-Field commissioning tool for industrial PLC systems. Used by technicians on tablets and laptops to test, validate, and commission conveyor and VFD systems on-site.
+Field commissioning tool for industrial PLC systems. Used by technicians on tablets and laptops to test, validate, and commission conveyor and VFD systems on-site. Runs either as a **single-laptop field tool** or as a **centralized server** that drives many MCMs from one machine over the site LAN.
 
 ## What It Does
 
@@ -9,10 +9,24 @@ Field commissioning tool for industrial PLC systems. Used by technicians on tabl
 - VFD commissioning wizard (identity, HP, bump test, controls, speed calibration)
 - L2 Functional Validation spreadsheet with pass/fail tracking
 - I/O point testing with live state monitoring
-- Offline-first with local SQLite database
-- Syncs results to cloud when connected
+- **Guided Mode** — a priority-driven task pool that walks the tester one step at a time on the live SCADA SVG map (navigate → check → auto-pass/fail → next task)
+- **E-Stop dual safety verification** — Preliminary (zone-stop / positive) + Final (selectivity / negative) per pull cord
+- Offline-first with local SQLite database; **queue-and-retry sync** to the cloud (local is authoritative — no data loss)
 - Safety zone and E-Stop verification
-- Network topology visualization
+- Network topology + DLR ring-health visualization
+
+## Deployment modes
+
+- **Single-MCM field laptop** — the classic one-laptop-per-MCM flow (embedded, single process).
+- **Centralized multi-MCM server** — one laptop runs the server; each MCM is an entry at `/api/mcm/:subsystemId/…`, listed on the `/mcm` landing page. For scale it runs **split** (an `app` process + a `plc-gateway` process owning all PLC connections, `PLC_MODE=remote`) so the app event loop never blocks. A single subsystem is just the N=1 case — the centralized build is a superset of the single-laptop one.
+
+## Access & roles (rolling out)
+
+The tool ships a built-in **PIN login + JWT + `Users` table** with two roles:
+- **Tester** — log in, pick their MCM, connect, and record results.
+- **Admin/supervisor** — everything testers can do, plus configuration (PLC IP/path, cloud API key, add/edit/remove MCMs).
+
+> Note: open-access mode (everyone effectively admin) is the historical default; role enforcement on the centralized server is being switched on (see the auth/RBAC work on `central-tool-latest`).
 
 ## Tech Stack
 
