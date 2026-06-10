@@ -248,9 +248,18 @@ mkdir -p "$OUT"
 docker cp "battle-observer-1:/runs/$RUN_ID" "$OUT/" || true
 docker cp battle-tool-1:/data/logs "$OUT/tool-logs" || true
 docker logs battle-tool-1 > "$OUT/tool-console.log" 2>&1 || true
+# Capture the observer's + cloud-stage's console too — the observer prints the
+# EXACT cloud-read error (e.g. which subsystem / timeout / refused), and the
+# cloud log shows OOM/crash. Without these a failed I4 is undiagnosable.
+docker logs battle-observer-1 > "$OUT/observer-console.log" 2>&1 || true
+docker logs battle-cloud-1 > "$OUT/cloud-console.log" 2>&1 || true
 
 echo "=== verdict ==="
 cat "$OUT/$RUN_ID/verdict.json" 2>/dev/null || echo "(no verdict written)"
+
+# Surface the tails in the CI job log so a failure is diagnosable inline.
+echo "=== observer console (tail) ==="; tail -n 50 "$OUT/observer-console.log" 2>/dev/null || true
+echo "=== cloud-stage console (tail) ==="; tail -n 30 "$OUT/cloud-console.log" 2>/dev/null || true
 
 docker compose -p battle down -v || true
 exit "$EXIT_CODE"
