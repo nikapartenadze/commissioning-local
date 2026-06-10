@@ -220,7 +220,16 @@ The central server holds many testers' work over the LAN, so it ships **PIN logi
 
 Endpoints split accordingly: read + connect/disconnect + test/record are open to any logged-in user; config writes (`POST/PUT/DELETE /api/mcm`, `/api/mcm/cloud-config`, `import-from-cloud`, `pull-all`, `PUT /api/configuration`) require **admin**. The **server laptop itself is blocked from authoring results** (`noTestingOnServerLaptop`, loopback-IP) — it's the PLC broker; testers work from client browsers.
 
-> Status: the auth stack is built (`lib/auth/*`, `Users` table, `POST /api/auth/login`); open-access mode (everyone admin) is the historical default. Role enforcement on the centralized server is being switched on (`central-tool-latest`). DNS/host-name discovery for clients is **deferred pending discussion** (backlog TSK-2196 — clients reach the server by `<laptop-ip>:3000` today).
+### Turning it on (`AUTH_REQUIRED`)
+
+Auth is **opt-in via the `AUTH_REQUIRED` env var** so the single-laptop field tablet and dev runs stay open-access with zero change:
+
+- **Unset / `0` / `false` / `off` / `no`** → open-access (historical default): no login, every request is treated as admin. Single-subsystem field use and `npm run dev` are unaffected.
+- **Set (e.g. `AUTH_REQUIRED=1`)** → enforced: clients must log in with a PIN; `verifyAuth` fails closed (401) on a missing/invalid Bearer token, and the config endpoints above return 403 to non-admins. **Set this in the centralized installer's service environment.**
+
+First run seeds an admin **`Admin` / `111111`** flagged `MustChangePin`, so the first admin login is forced to set a new PIN before anything else. Add the rest of the testers/admins via the Users screen. The client discovers the mode at boot via open `GET /api/auth/mode → { required }` and only shows the login/change-PIN gate when enforced.
+
+> Status: **shipped on `central-tool-latest`** (commit `a548394`) — built, both modes unit-tested (397 pass), client build + server typecheck clean. DNS/host-name discovery for clients is **deferred pending discussion** (backlog TSK-2196 — clients reach the server by `<laptop-ip>:3000` today).
 
 ## 10. Not doing (yet)
 - Delta sync (the catch-up pull is a full per-subsystem delete+reinsert; ~6–8s
