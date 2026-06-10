@@ -60,6 +60,9 @@ services:
       # (positional match with MCM_GATEWAY_IPS). Empty → all subsystems.
       MCM_ONLY: ${MCM_ONLY:-}
       KEEP_DATA: ${KEEP_DATA:-0}
+      # Ambient CIP-saturation: write /gen/delay so EVERY sim boots slow (a site
+      # of sluggish controllers), layered under the storms. 0/unset = no delay.
+      SIM_DELAY_MS: ${SIM_DELAY_MS:-}
       # Tool↔cloud auth: this key is written into config.json (apiPassword) AND
       # into the cloud-stage project's api_key, so pushes validate.
       API_PASSWORD: ${CLOUD_API_KEY:-battle-key-mcm02}
@@ -331,6 +334,11 @@ services:
       PYTHONUNBUFFERED: "1"
       DOWNLOAD_STORM: ${DOWNLOAD_STORM:-}
       CLOUD_FLAP: ${CLOUD_FLAP:-}
+      # central scenario: continuous controller-disconnect (power-cut) storm —
+      # a RANDOM controller goes offline POWER_DOWN_SEC each cycle while the
+      # others stay up. "lo,hi" minutes between cuts; empty = off.
+      POWER_STORM: ${POWER_STORM:-}
+      POWER_DOWN_SEC: ${POWER_DOWN_SEC:-90}
       NETWORK_NAME: battle_battle
     volumes:
       - runs:/runs

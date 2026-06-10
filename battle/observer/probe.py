@@ -53,7 +53,12 @@ P95_LIMIT_MS = 500.0
 P99_LIMIT_MS = 2000.0
 GAP_LIMIT_S = 10.0
 RSS_SLOPE_LIMIT_MB_PER_H = 5.0
-WARMUP_MINUTES = 60.0
+# Skip the boot-warmup window before measuring the RSS slope (I2). On a long
+# overnight soak that's the full first hour; on a short soak a fixed 60 min
+# would skip the ENTIRE run and make I2 pass vacuously (zero post-warmup
+# samples → slope None → "pass"). Scale it to the soak (~1/3, capped at 60 min)
+# so a 60-min run still yields ~40 min of leak data and a REAL leak verdict.
+WARMUP_MINUTES = min(60.0, SOAK_MINUTES / 3.0)
 
 
 def probe_once(timeout: float = 10.0) -> tuple[float | None, int]:
@@ -225,7 +230,7 @@ def local_results_and_queue() -> tuple[dict[int, str | None], int, set[int]]:
         pending = 0
         for tbl, where in (
             ("PendingSyncs", " WHERE DeadLettered = 0"),
-            ("L2PendingSyncs", ""),
+            ("L2PendingSyncs", " WHERE DeadLettered = 0"),
             ("DeviceBlockerPendingSyncs", ""),
         ):
             try:
