@@ -540,7 +540,7 @@ class AutoSyncService {
         // in the recovery audit log (parallel to the IO drop above).
         const l2ToDrop = db.prepare(
           `SELECT id, CloudDeviceId, CloudColumnId, Value, Version, UpdatedBy, RetryCount, CreatedAt
-             FROM L2PendingSyncs WHERE RetryCount >= ?`
+             FROM L2PendingSyncs WHERE DeadLettered = 0 AND RetryCount >= ?`
         ).all(PENDING_RETRY_CAP) as any[]
         for (const p of l2ToDrop) {
           auditLog({
@@ -559,13 +559,21 @@ class AutoSyncService {
             },
           })
         }
+        // B7 parity (L2): PARK rows that exhausted the retry cap — do NOT delete
+        // them. A capped row is one the cloud kept rejecting; deleting it on the
+        // assumption "cloud already has it" silently loses genuinely-unsynced
+        // wizard cell values. Dead-lettering keeps the local value + reason and
+        // surfaces it as "needs attention" instead, and excludes it from the
+        // active push loop and the pull gate (so it can't livelock the pull).
         const dropped = db.prepare(
-          `DELETE FROM L2PendingSyncs WHERE RetryCount >= ?`
+          `UPDATE L2PendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'L2 retry cap exhausted')
+            WHERE DeadLettered = 0 AND RetryCount >= ?`
         ).run(PENDING_RETRY_CAP)
         if (dropped.changes > 0) {
           console.warn(
-            `[AutoSync] Dropped ${dropped.changes} L2 pending sync row(s) that exceeded ` +
-            `retry cap (${PENDING_RETRY_CAP}). Cloud likely already has the values — ` +
+            `[AutoSync] PARKED ${dropped.changes} L2 pending sync row(s) that exceeded ` +
+            `retry cap (${PENDING_RETRY_CAP}) — kept for attention, not deleted. ` +
+            `Cloud likely already has the values — ` +
             `Pull L2 to verify; click Confirm again in the wizard if any cell is missing.`
           )
           // Visible alert in every connected browser (see IO drop block above).
@@ -588,7 +596,7 @@ class AutoSyncService {
         }
 
         const l2Pending = db.prepare(
-          'SELECT * FROM L2PendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+          'SELECT * FROM L2PendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT 50'
         ).all() as any[]
 
         if (l2Pending.length > 0) {
@@ -658,7 +666,7 @@ class AutoSyncService {
 
             // Delete ALL pendingSyncs for cells that succeeded — not just the one
             // we pushed, but any that accumulated while this push was in flight.
-            const deleteAllForCell = db.prepare('DELETE FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ?')
+            const deleteAllForCell = db.prepare('DELETE FROM L2PendingSyncs WHERE CloudDeviceId = ? AND CloudColumnId = ? AND DeadLettered = 0')
             let successCount = 0
             for (const u of l2Updates) {
               if (updatedKeys.has(`${u.deviceId}-${u.columnId}`)) {
@@ -686,7 +694,7 @@ class AutoSyncService {
             // blocked /api/cloud/pull (totalPendingCount > 0 → 409). See v2.27
             // regression notes.
             const rebaseStmt = db.prepare(
-              `UPDATE L2PendingSyncs SET Version = ?, RetryCount = RetryCount + 1, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ?`
+              `UPDATE L2PendingSyncs SET Version = ?, RetryCount = RetryCount + 1, LastError = ? WHERE CloudDeviceId = ? AND CloudColumnId = ? AND DeadLettered = 0`
             )
             const incrementStmt = db.prepare(
               'UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
@@ -1165,7 +1173,7 @@ class AutoSyncService {
       // coordinator/other-tablet changes indefinitely. The per-IO no-clobber set
       // below still preserves each parked IO's local value during the merge.
       const pendingIoCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 0').get() as { count: number }).count
-      const pendingL2Count = (db.prepare('SELECT COUNT(*) as count FROM L2PendingSyncs').get() as { count: number }).count
+      const pendingL2Count = (db.prepare('SELECT COUNT(*) as count FROM L2PendingSyncs WHERE DeadLettered = 0').get() as { count: number }).count
       if (pendingIoCount > 0 || pendingL2Count > 0) {
         this._lastPullResult = `skipped (local pending syncs: io=${pendingIoCount}, l2=${pendingL2Count})`
         return

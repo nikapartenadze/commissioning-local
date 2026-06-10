@@ -93,3 +93,49 @@ describe('Express auth middleware — AUTH ON', () => {
     expect(req.user?.isAdmin).toBe(true)
   })
 })
+
+describe('Express auth middleware — must-change-PIN gate (AUTH ON)', () => {
+  beforeEach(() => { process.env.AUTH_REQUIRED = '1' })
+  afterEach(() => { delete process.env.AUTH_REQUIRED })
+
+  const mustChangeToken = () =>
+    generateToken({ id: 1, fullName: 'Admin', isAdmin: true, mustChangePin: true })
+
+  function makeReqPath(token: string, path: string): any {
+    return { headers: { authorization: `Bearer ${token}` }, path }
+  }
+
+  it('refuses a normal route (403 must-change-pin) while the PIN is unchanged', () => {
+    const res = makeRes()
+    const next = vi.fn()
+    authMiddleware(makeReqPath(mustChangeToken(), '/api/mcm'), res, next)
+    expect(next).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(403)
+    expect(res.body?.code).toBe('must-change-pin')
+  })
+
+  it('blocks even admin config routes until the PIN is changed', () => {
+    const res = makeRes()
+    const next = vi.fn()
+    adminMiddleware(makeReqPath(mustChangeToken(), '/api/mcm/cloud-config'), res, next)
+    expect(next).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('allows the change-PIN endpoint through', () => {
+    const req = makeReqPath(mustChangeToken(), '/api/auth/change-pin')
+    const res = makeRes()
+    const next = vi.fn()
+    authMiddleware(req, res, next)
+    expect(next).toHaveBeenCalledOnce()
+    expect(req.user?.mustChangePin).toBe(true)
+  })
+
+  it('a normal token (no flag) is unaffected by the gate', () => {
+    const req = makeReqPath(adminToken(), '/api/mcm')
+    const res = makeRes()
+    const next = vi.fn()
+    authMiddleware(req, res, next)
+    expect(next).toHaveBeenCalledOnce()
+  })
+})

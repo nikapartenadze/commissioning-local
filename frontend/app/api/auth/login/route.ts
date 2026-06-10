@@ -154,6 +154,10 @@ export async function POST(req: Request, res: Response) {
       id: user.id,
       fullName: user.fullName,
       isAdmin: user.isAdmin,
+      // Carry the must-change flag into the token so the server can refuse
+      // every route except change-PIN until the default PIN is replaced —
+      // a client that ignores the mustChangePin response can't operate.
+      mustChangePin: user.mustChangePin,
     });
 
     console.info(`User logged in: ${user.fullName}`);
