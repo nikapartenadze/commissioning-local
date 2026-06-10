@@ -24,7 +24,13 @@ export async function PUT(req: Request, res: Response) {
 
   const hashedPin = await hashPin(newPin)
 
-  db.prepare('UPDATE Users SET Pin = ? WHERE id = ?').run(hashedPin, id)
+  // Setting a fresh PIN clears the first-run must-change flag.
+  try {
+    db.prepare('UPDATE Users SET Pin = ?, MustChangePin = 0 WHERE id = ?').run(hashedPin, id)
+  } catch {
+    // Column missing on a not-yet-migrated DB — fall back to PIN-only update.
+    db.prepare('UPDATE Users SET Pin = ? WHERE id = ?').run(hashedPin, id)
+  }
 
   revokeTokensForUser(id.toString())
 
