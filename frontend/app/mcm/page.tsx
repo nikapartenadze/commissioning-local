@@ -7,6 +7,7 @@ import {
   PlugZap,
   Plus,
   Settings,
+  Users,
   Hexagon,
   DownloadCloud,
   Zap,
@@ -337,6 +338,15 @@ export default function McmLandingPage() {
                 <DownloadCloud className={cn('w-3.5 h-3.5', importing && 'animate-pulse')} />
                 {importing ? 'Importing…' : 'Import from cloud'}
               </button>
+            )}
+            {canConfigure && (
+              <Link
+                to="/settings/users"
+                className="font-mono text-sm uppercase tracking-[0.14em] text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1.5"
+              >
+                <Users className="w-3.5 h-3.5" />
+                Accounts
+              </Link>
             )}
             {canConfigure && (
               <Link
