@@ -6,11 +6,12 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AlertCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
 import { BLOCKER_PARTIES, BLOCKER_VOCAB, type BlockerParty } from "@/lib/blockers"
+import { FAILURE_REASON_GROUPS } from "@/lib/failure-reasons"
 
 // Minimal shape the dialog needs. Callers may pass any object extending it —
 // the IO grid passes IoItem; the EPC view passes an EPC-shaped object.
@@ -59,21 +60,9 @@ interface FailCommentDialogProps<T extends FailCommentDialogIo> {
 // the mechanical context reassigns to Mechanical). Picking one of these
 // writes ONLY to Io.failure_mode; it does NOT auto-populate the Blocker
 // (responsible-party) columns on Devices.
-const FAILURE_REASONS = [
-  'Not installed',
-  'Not powered',
-  'Not aligned',
-  'Wrong wiring',
-  'Damaged',
-  'Temp install',
-  'Not programmed',
-  'Missing drawings',
-  'Config error',
-  'Wrong tag',
-  'Vendor blocked',
-  'Awaiting vendor',
-  'Other',
-]
+// Failure reasons live in lib/failure-reasons.ts, grouped by responsible party
+// (Electrical / Mechanical / Controls / 3rd Party / Other) and rendered with
+// headers below. Each reason derives Party Responsible via getPartyResponsible.
 
 // Blocker assignment vocabulary — only shown in unpass mode. These map directly
 // to the two install-tracker columns on Devices. The list now INCLUDES Mechanical
@@ -213,8 +202,13 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
                 <SelectValue placeholder="Select a failure reason..." />
               </SelectTrigger>
               <SelectContent>
-                {FAILURE_REASONS.map((r) => (
-                  <SelectItem key={r} value={r}>{r}</SelectItem>
+                {FAILURE_REASON_GROUPS.map((g) => (
+                  <SelectGroup key={g.party}>
+                    <SelectLabel>{g.party}</SelectLabel>
+                    {g.reasons.map((r) => (
+                      <SelectItem key={r} value={r}>{r}</SelectItem>
+                    ))}
+                  </SelectGroup>
                 ))}
               </SelectContent>
             </Select>
