@@ -11,6 +11,7 @@ const GuidedPage = lazy(() => import('../app/commissioning/[id]/guided/page'))
 // central-tool: multi-MCM landing + settings
 const McmLandingPage = lazy(() => import('../app/mcm/page'))
 const McmSettingsPage = lazy(() => import('../app/settings/mcms/page'))
+const UsersSettingsPage = lazy(() => import('../app/settings/users/page'))
 
 function Loading() {
   return (
@@ -42,4 +43,5 @@ export const router = createBrowserRouter([
   // central-tool: multi-MCM landing + settings
   { path: '/mcm', element: <LazyPage Component={McmLandingPage} /> },
   { path: '/settings/mcms', element: <LazyPage Component={McmSettingsPage} /> },
+  { path: '/settings/users', element: <LazyPage Component={UsersSettingsPage} /> },
 ])
