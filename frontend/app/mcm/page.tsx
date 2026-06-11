@@ -8,6 +8,7 @@ import {
   Plus,
   Settings,
   Users,
+  Download,
   Hexagon,
   DownloadCloud,
   Zap,
@@ -27,6 +28,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { ControllerDownloadModal } from '@/components/controller-download-modal'
 import { useUser } from '@/lib/user-context'
 import { authFetch } from '@/lib/api-config'
 
@@ -906,6 +908,7 @@ function McmCard({
 }) {
   const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
   const [editIp, setEditIp] = useState(false)
+  const [showDl, setShowDl] = useState(false)
   const canConfigure = useCanConfigure()
   const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
 
@@ -1008,6 +1011,17 @@ function McmCard({
             </button>
           )}
 
+          {mcm.ip && canConfigure && (
+            <button
+              onClick={() => setShowDl(true)}
+              title="Download a program to this controller"
+              className="font-mono text-sm uppercase tracking-[0.16em] px-3 py-1.5 border border-border bg-background text-foreground hover:border-primary/60 hover:text-primary transition-colors inline-flex items-center gap-1.5 rounded-sm"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Program
+            </button>
+          )}
+
           <Link
             to={`/commissioning/${mcm.subsystemId}`}
             title="Open this subsystem's commissioning screen"
@@ -1026,6 +1040,7 @@ function McmCard({
           onSaved={onChanged}
         />
       )}
+      {showDl && <ControllerDownloadModal mcm={mcm} onClose={() => setShowDl(false)} />}
     </div>
   )
 }
@@ -1060,6 +1075,7 @@ function McmList({
 function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) {
   const { busy, actionError, action } = useMcmAction(mcm.subsystemId, onChanged)
   const [editIp, setEditIp] = useState(false)
+  const [showDl, setShowDl] = useState(false)
   const canConfigure = useCanConfigure()
   const tone = STATUS_TONES[effectiveStatus(mcm)] ?? STATUS_TONES.disconnected
 
@@ -1099,7 +1115,7 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
           {mcm.tagCount > 0 ? mcm.tagCount : '—'}
         </span>
 
-        <div className="flex items-center justify-end gap-2 w-[15.5rem] shrink-0">
+        <div className="flex items-center justify-end gap-2 w-[18rem] shrink-0">
           {!mcm.ip ? (
             canConfigure ? (
               <button
@@ -1142,6 +1158,16 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
             </button>
           )}
 
+          {mcm.ip && canConfigure && (
+            <button
+              onClick={() => setShowDl(true)}
+              title="Download a program to this controller"
+              className={cn(btnBase, 'border border-border bg-background text-muted-foreground hover:border-primary/60 hover:text-primary')}
+            >
+              <Download className="w-3.5 h-3.5" />
+            </button>
+          )}
+
           <Link
             to={`/commissioning/${mcm.subsystemId}`}
             title="Open this subsystem's commissioning screen"
@@ -1166,6 +1192,7 @@ function McmListRow({ mcm, onChanged }: { mcm: McmRow; onChanged: () => void }) 
           onSaved={onChanged}
         />
       )}
+      {showDl && <ControllerDownloadModal mcm={mcm} onClose={() => setShowDl(false)} />}
     </li>
   )
 }

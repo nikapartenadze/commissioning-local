@@ -281,8 +281,10 @@ export async function apiCall<T = unknown>(
   const response = await authFetch(endpoint, options)
 
   if (!response.ok) {
-    const error = await response.text()
-    throw new Error(error || `API call failed: ${response.status}`)
+    const raw = await response.text()
+    let msg = raw
+    try { const j = JSON.parse(raw); if (j?.error) msg = j.error } catch { /* not JSON */ }
+    throw new Error(msg || `API call failed: ${response.status}`)
   }
 
   // Check if response has content

@@ -125,6 +125,14 @@ import * as guidedTasksComplete from '@/app/api/guided/tasks/complete/route'
 import * as guidedSystemStatus from '@/app/api/guided/system-status/route'
 import * as roadmap from '@/app/api/roadmap/route'
 import * as subsystemsList from '@/app/api/subsystems/list/route'
+// Controller management (Logix Designer SDK: program download / mode control)
+import * as ctrlMgmtHealth from '@/app/api/controller-management/health/route'
+import * as ctrlMgmtProjects from '@/app/api/controller-management/projects/route'
+import * as ctrlMgmtCommPath from '@/app/api/controller-management/comm-path/route'
+import * as ctrlMgmtStatus from '@/app/api/controller-management/status/route'
+import * as ctrlMgmtMode from '@/app/api/controller-management/mode/route'
+import * as ctrlMgmtDownload from '@/app/api/controller-management/download/route'
+import * as ctrlMgmtJob from '@/app/api/controller-management/job/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -148,6 +156,21 @@ export function createApiRouter(): Router {
 
   // ── Health ─────────────────────────────────────────────────────
   router.get('/api/health', asyncHandler(health.GET))
+
+  // ── Controller management (program download / mode via Logix SDK) ─
+  // reads require a logged-in user; controller writes require admin and are
+  // blocked on the server laptop. (Anon-admin in open mode, enforced once
+  // AUTH_REQUIRED is on — same model as the MCM/config write routes.)
+  router.get('/api/controller-management/health', asyncHandler(ctrlMgmtHealth.GET))
+  router.get('/api/controller-management/projects', authMiddleware, asyncHandler(ctrlMgmtProjects.GET))
+  router.post('/api/controller-management/comm-path', authMiddleware, asyncHandler(ctrlMgmtCommPath.POST))
+  router.post('/api/controller-management/status', authMiddleware, asyncHandler(ctrlMgmtStatus.POST))
+  // NOTE: not gated by noTestingOnServerLaptop — a program download is inherently a
+  // server-side op (the Logix SDK lives on this node), and the single-device install
+  // runs the operator on the server laptop. adminMiddleware is the right gate.
+  router.post('/api/controller-management/mode', adminMiddleware, asyncHandler(ctrlMgmtMode.POST))
+  router.post('/api/controller-management/download', adminMiddleware, asyncHandler(ctrlMgmtDownload.POST))
+  router.get('/api/controller-management/job', authMiddleware, asyncHandler(ctrlMgmtJob.GET))
 
   // ── Configuration (admin for writes, open for reads) ───────────
   router.get('/api/configuration', asyncHandler(configuration.GET))
