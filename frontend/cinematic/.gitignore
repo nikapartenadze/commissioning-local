@@ -1,0 +1,6 @@
+# generated render output + intermediates (regenerable from build-cine3.mjs)
+out/
+frames2/
+frames3/
+vf/
+*.log
