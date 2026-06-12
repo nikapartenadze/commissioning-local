@@ -12,7 +12,7 @@ const FFMPEG = require('ffmpeg-static')
 const SRC = path.resolve('cinematic/src'), REAL = path.resolve('cinematic/real')
 const OUT = path.resolve('cinematic/out'), FR = path.resolve('cinematic/frames3')
 fs.mkdirSync(OUT, { recursive: true })
-const VW = 1920, VH = 1080, FPS = 30, DUR = 48, AR = 0.5625, BAR = 42
+const VW = 1920, VH = 1080, FPS = 30, DUR = 49, AR = 0.5625, BAR = 42
 const img = (p, m = 'image/png') => `data:${m};base64,${fs.readFileSync(p).toString('base64')}`
 const A = {
   hub: img(path.join(SRC, 'hub-dark.png')), prog: img(path.join(SRC, 'program-dialog.png')),
@@ -44,14 +44,16 @@ const R = {
   hubCard: erect('hub', B.hub.card), cfgBtn: erect('hub', B.hub.configure),
   progAcd: erect('prog', B.prog.acd), progIp: erect('prog', B.prog.ip), progDl: erect('prog', B.prog.download),
   netNode: erect('network', B.network.node),
-  funcTab: frect('func', 0.057, 0.122, 0.057, 0.046), funcDev: frect('func', 0.008, 0.262, 0.62, 0.052),
+  funcTab: erect('func', B.func.tab), funcDev: erect('func', B.func.row),
 }
 const C = {
   hub: HC, card: ectr('hub', B.hub.card), modal: { x: HC.x, y: HC.y + 10 },
   prog: ctr(W.prog), io: ctr(W.io), network: ctr(W.network), estop: ctr(W.estop), safety: ctr(W.safety), func: ctr(W.func), vfd: ctr(W.vfd),
   ioGrid: focus('io', 0.4, 0.52), netNode: ectr('network', B.network.node),
   estopGrid: focus('estop', 0.36, 0.42), safetyZoom: focus('safety', 0.4, 0.4),
-  funcTab: cen(R.funcTab), funcDev: cen(R.funcDev), funcTabZoom: focus('func', 0.22, 0.16), vfdZoom: focus('vfd', 0.34, 0.41),
+  funcTab: cen(R.funcTab), funcCell: ectr('func', B.func.cell), funcDev: cen(R.funcDev),
+  funcTabZoom: focus('func', 0.2, 0.18), funcDevZoom: focus('func', 0.24, 0.33),
+  vfdTop: focus('vfd', 0.19, 0.27), vfdBot: focus('vfd', 0.19, 0.55), vfdBody: focus('vfd', 0.45, 0.4), vfdZoom: focus('vfd', 0.34, 0.41),
 }
 
 const VSC = W.vfd.w / 1600
@@ -116,6 +118,16 @@ html,body{width:${VW}px;height:${VH}px;overflow:hidden;background:#070708;font-f
 #cover{position:absolute;inset:0;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:30px;background:radial-gradient(125% 105% at 50% 35%,#1c1609,#070708 62%)}
 #cover img{height:132px;filter:drop-shadow(0 8px 40px rgba(214,168,46,.55))}#cover .big{font-size:30px;font-weight:700;color:#cfc7b6}
 #low{position:absolute;left:68px;bottom:74px;z-index:8;display:flex;align-items:center;gap:18px;opacity:0}#low img{height:34px}#low span{font-size:18px;color:#cfc7b6;font-weight:600;border-left:1px solid rgba(255,255,255,.22);padding-left:18px}
+#outro{position:absolute;inset:0;z-index:10;opacity:0;display:none;background:radial-gradient(135% 115% at 26% 44%,#1d1709,#070708 60%);overflow:hidden}
+.oleft{position:absolute;left:88px;top:50%;transform:translateY(-50%);width:30%;z-index:3}
+.oleft img{height:120px;filter:drop-shadow(0 10px 44px rgba(214,168,46,.55));display:block;margin-bottom:30px}
+.oleft .ot{font-size:42px;font-weight:800;color:#fff;line-height:1.12;letter-spacing:-.6px}
+.oleft .ot b{color:#f0c84e}
+.oleft .os{font-size:20px;color:#cfc7b6;margin-top:16px;font-weight:600}
+.ostack{position:absolute;right:0;top:0;width:66%;height:100%;perspective:1900px}
+.ocard{position:absolute;width:760px;border-radius:15px;overflow:hidden;box-shadow:0 50px 120px -22px rgba(0,0,0,.88),0 0 0 1px rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);transform:rotateY(-27deg) rotateX(9deg) rotateZ(-4deg)}
+.ocard img{display:block;width:100%}
+#oc0{left:96px;top:96px;z-index:6}#oc1{left:214px;top:212px;z-index:5}#oc2{left:332px;top:328px;z-index:4}#oc3{left:450px;top:444px;z-index:3}#oc4{left:568px;top:560px;z-index:2}
 </style></head><body>
 <div id="bg"></div><div class="bokeh" style="width:560px;height:560px;left:-90px;top:-80px"></div><div class="bokeh" style="width:480px;height:480px;right:-70px;bottom:30px;background:rgba(120,90,20,.12)"></div>
 <div id="viewport"><div id="cam">
@@ -148,6 +160,16 @@ html,body{width:${VW}px;height:${VH}px;overflow:hidden;background:#070708;font-f
 <div id="click"></div>
 <div id="cap"><div class="k" id="ck"></div><div class="t" id="ct"></div></div>
 <div id="low"><img src="${A.logo}"/><span>Central Control · One address. Every controller.</span></div>
+<div id="outro">
+  <div class="oleft"><img src="${A.logo}"/><div class="ot">Commission the whole floor — <b>from one screen.</b></div><div class="os">One address · every controller · every check.</div></div>
+  <div class="ostack">
+    <div class="ocard" id="oc0"><img src="${A.hub}"/></div>
+    <div class="ocard" id="oc1"><img src="${A.network}"/></div>
+    <div class="ocard" id="oc2"><img src="${A.io}"/></div>
+    <div class="ocard" id="oc3"><img src="${A.safety}"/></div>
+    <div class="ocard" id="oc4"><img src="${A.vfd}"/></div>
+  </div>
+</div>
 <div id="cover"><img src="${A.logo}"/><div class="big" id="cbig">Commission the whole floor — from one screen.</div></div>
 <script>
 const D=${INJ}, VW=${VW},VH=${VH}
@@ -175,11 +197,11 @@ const CAM=[
  {t:27.0,c:C.estop,s:.9},{t:29.6,c:C.estopGrid,s:1.2},
  {t:30.3,c:C.safety,s:.9},{t:33.0,c:C.safetyZoom,s:1.12},
  {t:33.7,c:C.func,s:.95},{t:34.9,c:C.func,s:1.0},
- {t:35.4,c:C.funcTabZoom,s:1.46},{t:36.4,c:C.funcTabZoom,s:1.46},
- {t:37.0,c:C.funcDev,s:1.3},{t:38.5,c:C.funcDev,s:1.32},
+ {t:35.4,c:C.funcTabZoom,s:1.5},{t:36.4,c:C.funcTabZoom,s:1.5},
+ {t:37.0,c:C.funcDevZoom,s:1.3},{t:38.5,c:C.funcDevZoom,s:1.32},
  {t:39.1,c:C.func,s:1.0},
- {t:39.9,c:C.vfd,s:.92},{t:40.7,c:C.vfdZoom,s:1.16},{t:45.4,c:C.vfdZoom,s:1.24},
- {t:46.0,c:C.hub,s:.84},{t:48,c:C.hub,s:.84},
+ {t:39.9,c:C.vfd,s:.92},{t:40.9,c:C.vfdTop,s:1.22},{t:43.4,c:C.vfdBot,s:1.22},{t:45.0,c:C.vfdBody,s:1.12},
+ {t:46.0,c:C.hub,s:.9},{t:49,c:C.hub,s:.9},
 ]
 const CX=CAM.map(k=>({t:k.t,v:k.c.x})),CY=CAM.map(k=>({t:k.t,v:k.c.y})),CS=CAM.map(k=>({t:k.t,v:k.s}))
 const winApp=[['hub',2.8,3.8],['prog',13.0,13.8],['io',18.6,19.4],['network',22.8,23.6],['estop',26.6,27.4],['safety',29.9,30.7],['func',33.3,34.1],['vfd',39.5,40.3]]
@@ -190,8 +212,8 @@ const HLS=[
  {a:35.4,b:36.3,r:R.funcTab},{a:37.0,b:38.3,r:R.funcDev},
 ]
 const cfgC=ctrOf(R.cfgBtn), saveC=ctrOf(Msave), dlC=ctrOf(R.progDl)
-const CURX=[{t:6.4,v:C.card.x},{t:7.0,v:cfgC.x},{t:8.0,v:cfgC.x},{t:8.9,v:Mip.x+50},{t:10.5,v:Mip.x+50},{t:11.0,v:saveC.x},{t:12.4,v:saveC.x},{t:15.7,v:R.progIp.x+90},{t:16.2,v:dlC.x},{t:18.0,v:dlC.x},{t:24.0,v:C.network.x},{t:24.7,v:C.netNode.x},{t:26.2,v:C.netNode.x},{t:35.0,v:C.funcTab.x+70},{t:35.5,v:C.funcTab.x},{t:36.3,v:C.funcTab.x},{t:36.9,v:C.funcDev.x},{t:37.4,v:C.funcDev.x},{t:38.4,v:C.funcDev.x}]
-const CURY=[{t:6.4,v:C.card.y},{t:7.0,v:cfgC.y},{t:8.0,v:cfgC.y},{t:8.9,v:Mip.y+26},{t:10.5,v:Mip.y+26},{t:11.0,v:saveC.y},{t:12.4,v:saveC.y},{t:15.7,v:ctrOf(R.progIp).y},{t:16.2,v:dlC.y},{t:18.0,v:dlC.y},{t:24.0,v:C.network.y},{t:24.7,v:C.netNode.y},{t:26.2,v:C.netNode.y},{t:35.0,v:C.funcTab.y-30},{t:35.5,v:C.funcTab.y},{t:36.3,v:C.funcTab.y},{t:36.9,v:C.funcDev.y},{t:37.4,v:C.funcDev.y},{t:38.4,v:C.funcDev.y}]
+const CURX=[{t:6.4,v:C.card.x},{t:7.0,v:cfgC.x},{t:8.0,v:cfgC.x},{t:8.9,v:Mip.x+50},{t:10.5,v:Mip.x+50},{t:11.0,v:saveC.x},{t:12.4,v:saveC.x},{t:15.7,v:R.progIp.x+90},{t:16.2,v:dlC.x},{t:18.0,v:dlC.x},{t:24.0,v:C.network.x},{t:24.7,v:C.netNode.x},{t:26.2,v:C.netNode.x},{t:35.0,v:C.funcTab.x+70},{t:35.5,v:C.funcTab.x},{t:36.3,v:C.funcTab.x},{t:36.9,v:C.funcCell.x},{t:37.4,v:C.funcCell.x},{t:38.4,v:C.funcCell.x}]
+const CURY=[{t:6.4,v:C.card.y},{t:7.0,v:cfgC.y},{t:8.0,v:cfgC.y},{t:8.9,v:Mip.y+26},{t:10.5,v:Mip.y+26},{t:11.0,v:saveC.y},{t:12.4,v:saveC.y},{t:15.7,v:ctrOf(R.progIp).y},{t:16.2,v:dlC.y},{t:18.0,v:dlC.y},{t:24.0,v:C.network.y},{t:24.7,v:C.netNode.y},{t:26.2,v:C.netNode.y},{t:35.0,v:C.funcTab.y-30},{t:35.5,v:C.funcTab.y},{t:36.3,v:C.funcTab.y},{t:36.9,v:C.funcCell.y},{t:37.4,v:C.funcCell.y},{t:38.4,v:C.funcCell.y}]
 const CURON=[[6.2,8.1],[8.7,12.5],[15.5,18.1],[23.9,26.0],[34.9,36.4],[36.8,38.4]]
 const CLICKS=[7.2,11.15,16.4,24.9,35.7,37.5]
 const TIP={text:'192.168.20.40',a:9.0,b:9.9}, TPATH={text:'1,0',a:10.0,b:10.3}
@@ -206,7 +228,7 @@ const CAPS=[
  {a:27.0,b:29.6,k:'E-Stop',h:'<b>E-stop zones.</b>'},
  {a:30.4,b:33.0,k:'Safety',h:'<b>STO bypass zones.</b>'},
  {a:33.8,b:39.2,k:'Functional',h:'Sheets &rarr; pick <b>VFD</b> &rarr; validate.'},
- {a:40.0,b:45.4,k:'Guided VFD wizard',h:'Online &rarr; identity &rarr; HP &rarr; bump &rarr; controls &rarr; <b>speed.</b>'},
+ {a:40.0,b:44.6,k:'Guided VFD wizard',h:'Online &rarr; identity &rarr; HP &rarr; bump &rarr; controls &rarr; <b>speed.</b>'},
 ]
 const VDESC=['Confirm the drive is powered and online.','Verify the drive catalog & firmware identity.','Confirm the motor HP / FLA rating.','Bump the motor — confirm rotation direction.','Verify start / stop / speed reference.','Calibrate speed reference & feedback.']
 const VCHK=['VFD online','Identity matched','Horsepower verified','Direction correct','Controls verified','Speed calibrated']
@@ -229,11 +251,11 @@ function render(t){
   const sp=proj(SO(CURX,t),SO(CURY,t),cx,cy,cs);const cur=$('#cursor');cur.style.opacity=curon;cur.style.transform='translate('+sp.x+'px,'+sp.y+'px) scale('+press+')'
   const ck=$('#click');let clo=0,clx=0,cly=0;for(const c of CLICKS){if(t>=c&&t<=c+0.32){clo=1-(t-c)/0.32;const pp=proj(SO(CURX,c),SO(CURY,c),S(CX,c),S(CY,c),S(CS,c));clx=pp.x;cly=pp.y}}
   ck.style.opacity=clo*0.9;ck.style.left=(clx-27)+'px';ck.style.top=(cly-27)+'px';ck.style.transform='scale('+(0.4+(1-clo)*1.5)+')'
-  const vOn=clamp01((t-39.5)/0.5)*(1-clamp01((t-45.4)/0.45));$('#vfdov').style.opacity=vOn
-  if(vOn>0.01){const vt0=40.0,sd=0.82;let cont=(t-vt0)/sd;if(cont<0)cont=0;if(cont>5)cont=5;const fl=Math.floor(cont),frac=cont-fl;const slide=clamp01((frac-0.5)/0.34);const i0=Math.min(5,fl),i1=Math.min(5,fl+1);const y0=D.VFD.rows[i0].y,y1=D.VFD.rows[i1].y;$('#vactive').style.top=(y0+(y1-y0)*ease(slide))+'px';const aidx=slide>0.5?i1:i0;for(let i=0;i<6;i++){const rw=$('#vrow'+i);if(!rw)continue;const on=i===aidx;rw.querySelector('.vname').style.color=on?'#f4d978':'#7b8497';const nm=rw.querySelector('.vnum');nm.style.color=on?'#f0c84e':'#8a93a5';nm.style.borderColor=on?'#f0c84e':'#3a4150';nm.style.background=on?'rgba(240,200,78,.12)':'transparent'}const dip=1-0.6*Math.sin(slide*Math.PI);$('#vtitle').textContent='Step '+(aidx+1)+': '+D.VFD.rows[aidx].name;$('#vtitle').style.opacity=dip;$('#vdesc').textContent=VDESC[aidx];$('#vcktxt').textContent=VCHK[aidx];$('#vbody').style.opacity=dip}
+  $('#vfdov').style.opacity=0
   let kk='',tt2='',cap=0;for(const c of CAPS){if(t>=c.a-0.5&&t<=c.b+0.5){const inn=clamp01((t-c.a+0.5)/0.5),out=clamp01((t-c.b)/0.5);cap=inn*(1-out);kk=c.k;tt2=c.h}}
   $('#ck').textContent=kk;$('#ct').innerHTML=tt2;$('#cap').style.opacity=cap;$('#cap').style.transform='translateY('+((1-cap)*14)+'px)'
-  $('#low').style.opacity=clamp01((t-46.0)/0.8)
+  $('#low').style.opacity=0
+  const oo=clamp01((t-45.2)/0.8);const outro=$('#outro');outro.style.display=oo<=0?'none':'block';outro.style.opacity=oo;outro.style.transform='translateY('+((1-oo)*28)+'px)'
 }
 window.__render=render
 </script></body></html>`
