@@ -392,6 +392,33 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
   const connected = data?.connected ?? false
   const search = searchTerm.toLowerCase().trim()
 
+  // ── MCM-level rollup (answers "is the whole MCM nominal?") ──────────
+  // One tool = one connection = one MCM, so every zone shares the same
+  // MCM prefix. Derive it from the zones and roll their _Nominal_OK +
+  // checked state up into a single banner the whole crew can read at a
+  // glance, without expanding any zone.
+  const mcmLabelFromZones = (() => {
+    for (const z of allZones) {
+      const mm = /^([A-Z]+\d+)_/.exec(z.name)
+      if (mm) return mm[1]
+    }
+    return null
+  })()
+  const zonesNominal = allZones.filter(z => z.nominalOk === true).length
+  const zonesFaulted = allZones.filter(z => z.nominalOk === false).length
+  const zonesNominalKnown = allZones.filter(z => z.nominalOk === true || z.nominalOk === false).length
+  const zonesChecked = allZones.filter(z => rollupZoneStatus(z.epcs) === 'all-checked').length
+  // "Ready for checking" = nominal but not yet fully checked (req 4).
+  const zonesReady = allZones.filter(z => z.nominalOk === true && rollupZoneStatus(z.epcs) !== 'all-checked').length
+  type McmRollup = 'fault' | 'nominal' | 'partial' | 'unknown'
+  const mcmRollup: McmRollup = !connected || zonesNominalKnown === 0
+    ? 'unknown'
+    : zonesFaulted > 0
+      ? 'fault'
+      : zonesNominal === allZones.length
+        ? 'nominal'
+        : 'partial'
+
   // Filter zones+EPCs by search
   const zones = search
     ? allZones.map(zone => {
@@ -430,6 +457,65 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           PLC {connected ? 'Connected' : 'Disconnected'}
         </Badge>
       </div>
+
+      {/* MCM nominal banner — whole-MCM health at a glance (req 1). Single
+          MCM per tool/connection, so this rolls up every zone's _Nominal_OK.
+          Crew can read MCM state without expanding or selecting anything. */}
+      {allZones.length > 0 && (
+        <div
+          className={cn(
+            'flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border-2 px-4 py-3',
+            mcmRollup === 'fault' ? 'border-red-500 bg-red-500/15'
+              : mcmRollup === 'nominal' ? 'border-emerald-500 bg-emerald-500/15'
+                : mcmRollup === 'partial' ? 'border-amber-500 bg-amber-500/15'
+                  : 'border-border bg-muted',
+          )}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            {mcmRollup === 'nominal'
+              ? <ShieldCheck className="w-6 h-6 text-emerald-500 shrink-0" />
+              : mcmRollup === 'unknown'
+                ? <ShieldAlert className="w-6 h-6 text-muted-foreground shrink-0" />
+                : <OctagonX className={cn('w-6 h-6 shrink-0', mcmRollup === 'fault' ? 'text-red-500' : 'text-amber-500')} />}
+            <div className="min-w-0">
+              {mcmLabelFromZones && (
+                <div className="text-[11px] font-mono font-bold uppercase tracking-widest text-muted-foreground/80">
+                  {mcmLabelFromZones}
+                </div>
+              )}
+              <div className={cn(
+                'text-base font-bold leading-tight',
+                mcmRollup === 'fault' ? 'text-red-700 dark:text-red-300'
+                  : mcmRollup === 'nominal' ? 'text-emerald-700 dark:text-emerald-300'
+                    : mcmRollup === 'partial' ? 'text-amber-700 dark:text-amber-300'
+                      : 'text-muted-foreground',
+              )}>
+                {mcmRollup === 'fault' ? `MCM FAULT — ${zonesFaulted} zone${zonesFaulted !== 1 ? 's' : ''} not nominal`
+                  : mcmRollup === 'nominal' ? 'MCM NOMINAL — all zones healthy'
+                    : mcmRollup === 'partial' ? `${zonesNominal}/${allZones.length} zones nominal`
+                      : connected ? 'Awaiting PLC reads…' : 'PLC disconnected — no live state'}
+              </div>
+            </div>
+          </div>
+          {/* Compact rollup counts so reqs 4 & 5 also read at MCM level. */}
+          <div className="flex items-center gap-3 ml-auto text-xs font-semibold tabular-nums">
+            <span className="inline-flex items-center gap-1.5" title="Zones reading Nominal_OK = true">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+              {zonesNominal}/{allZones.length} nominal
+            </span>
+            <span className="inline-flex items-center gap-1.5" title="Zones with every EPC checked">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+              {zonesChecked}/{allZones.length} checked
+            </span>
+            {zonesReady > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-amber-600 dark:text-amber-400" title="Nominal but not yet fully checked — ready for testing">
+                <Play className="w-3.5 h-3.5" />
+                {zonesReady} ready
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative">

@@ -1471,6 +1471,17 @@ class AutoSyncService {
           const zones = db.prepare('SELECT * FROM EStopZones').all() as any[]
 
           for (const zone of zones) {
+            // Zone-level <ZONE>_Nominal_OK — the single bit the cloud needs to
+            // roll a zone (and the whole MCM) up to nominal/fault. The DB zone
+            // Name carries the MCM prefix (MCM02_ZONE_01_01) for grouping, but
+            // the PLC tag lives at controller scope as ZONE_01_01_Nominal_OK,
+            // so strip the leading MCM##_ to match what's on the PLC. Same
+            // derivation as app/api/estop/status/route.ts.
+            const zm = /^([A-Z]+\d+)_(.+)$/.exec(zone.Name)
+            const zoneLabel = zm ? zm[2] : zone.Name
+            const nominalOkTag = `${zoneLabel}_Nominal_OK`
+            tags[nominalOkTag] = getPlcClient().readTagCached(nominalOkTag)
+
             const epcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?').all(zone.id) as any[]
             for (const epc of epcs) {
               if (epc.CheckTag) tags[epc.CheckTag] = getPlcClient().readTagCached(epc.CheckTag)

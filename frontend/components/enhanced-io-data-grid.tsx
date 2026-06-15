@@ -8,7 +8,7 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check, ChevronUp, ChevronDown, ChevronsUpDown, Wifi, WifiOff } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check, ChevronUp, ChevronDown, ChevronsUpDown, Wifi, WifiOff, Network } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
@@ -1131,10 +1131,12 @@ export function EnhancedIoDataGrid({
             )}
             {COLUMN_WIDTHS.deviceStatus > 0 && (
             <div
-              className="px-2 py-3 text-center text-sm font-bold text-foreground uppercase tracking-wide flex-shrink-0 truncate"
+              className="px-2 py-3 flex items-center justify-center text-foreground flex-shrink-0 overflow-hidden"
               style={{ width: `${COLUMN_WIDTHS.deviceStatus}px` }}
+              title="Network device status"
+              aria-label="Network device status"
             >
-              Net
+              <Network className="w-4 h-4" aria-hidden="true" />
             </div>
             )}
             {COLUMN_WIDTHS.installStatus > 0 && (
