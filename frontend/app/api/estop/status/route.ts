@@ -3,6 +3,7 @@ import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
 
 const selectZones = db.prepare('SELECT * FROM EStopZones')
+const selectZonesBySubsystem = db.prepare('SELECT * FROM EStopZones WHERE SubsystemId = ?')
 const selectEpcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?')
 const selectIoPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?')
 const selectVfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?')
@@ -25,9 +26,19 @@ export async function GET(req: Request, res: Response) {
       console.log('[EStopStatus] PLC (re)connected, resetting tag handles')
     }
 
+    // Scope zones to the requested MCM. The central/multi-MCM tool's per-subsystem
+    // pull (/api/mcm/[subsystemId]/pull) deletes+inserts zones scoped BY subsystem,
+    // so the local DB can legitimately hold several MCMs' zones at once. Without
+    // this filter every MCM's E-Stop tab showed every other MCM's zones too.
+    // Falls back to all zones when no subsystemId is supplied (legacy single-MCM
+    // field tablets that don't pass the query param).
+    const sidRaw = req.query.subsystemId
+    const sid = sidRaw != null && sidRaw !== '' ? parseInt(String(sidRaw), 10) : null
+    const hasSid = sid != null && Number.isFinite(sid)
+
     let zones: any[]
     try {
-      zones = selectZones.all() as any[]
+      zones = (hasSid ? selectZonesBySubsystem.all(sid) : selectZones.all()) as any[]
       for (const zone of zones) {
         zone.epcs = selectEpcs.all(zone.id) as any[]
         for (const epc of zone.epcs) {
