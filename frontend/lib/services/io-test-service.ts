@@ -17,6 +17,7 @@ export const TEST_CONSTANTS = {
   RESULT_PASSED: 'Passed',
   RESULT_FAILED: 'Failed',
   RESULT_CLEARED: 'Cleared',
+  RESULT_ADDRESSED: 'Addressed',
   RESULT_NOT_TESTED: 'Not Tested',
   RESULT_COMMENT_ADDED: 'Comment Added',
   RESULT_COMMENT_REMOVED: 'Comment Removed',

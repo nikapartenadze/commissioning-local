@@ -32,6 +32,7 @@ const FILE_SUFFIX = '.jsonl';
 export type AuditEventType =
   | 'io.test'
   | 'io.reset'
+  | 'io.addressed'
   | 'sync.push.ok'
   | 'sync.push.defer'
   | 'sync.push.drop' // a pending push was discarded — the recovery-critical case

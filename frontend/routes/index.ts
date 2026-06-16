@@ -26,6 +26,7 @@ import * as iosAssignByKeyword from '@/app/api/ios/assign/by-keyword/route'
 import * as ioById from '@/app/api/ios/[id]/route'
 import * as ioTest from '@/app/api/ios/[id]/test/route'
 import * as ioReset from '@/app/api/ios/[id]/reset/route'
+import * as ioAddressed from '@/app/api/ios/[id]/addressed/route'
 import * as ioState from '@/app/api/ios/[id]/state/route'
 import * as ioFireOutput from '@/app/api/ios/[id]/fire-output/route'
 import * as ioPunchlist from '@/app/api/ios/[id]/punchlist/route'
@@ -204,6 +205,8 @@ export function createApiRouter(): Router {
   router.put('/api/ios/:id', asyncHandler(ioById.PUT))
   router.post('/api/ios/:id/test', noTestingOnServerLaptop, asyncHandler(ioTest.POST))
   router.post('/api/ios/:id/reset', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioReset.POST))
+  // Workflow transition (no PLC required): mark a Failed IO as Addressed / ready to re-check.
+  router.post('/api/ios/:id/addressed', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioAddressed.POST))
   router.get('/api/ios/:id/state', authMiddleware, asyncHandler(ioState.GET))
   router.post('/api/ios/:id/fire-output', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioFireOutput.POST))
   router.patch('/api/ios/:id/punchlist', authMiddleware, asyncHandler(ioPunchlist.PATCH))

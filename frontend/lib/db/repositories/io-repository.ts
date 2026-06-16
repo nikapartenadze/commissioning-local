@@ -120,6 +120,13 @@ export const ioRepository = {
   },
 
   /**
+   * Get addressed IOs (fixed, ready for a tester to re-check)
+   */
+  getAddressed(subsystemId?: number): IoWithComputed[] {
+    return this.getAll({ subsystemId, result: TestConstants.RESULT_ADDRESSED })
+  },
+
+  /**
    * Update IO test result
    */
   updateResult(params: UpdateResultParams): IoWithComputed {

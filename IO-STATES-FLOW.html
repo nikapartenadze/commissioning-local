@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>IO Testing — More States &amp; Failed-Item Feedback Loop</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #1c2330; line-height: 1.5; font-size: 13px; margin: 0;
+  }
+  h1 { font-size: 23px; margin: 0 0 4px; letter-spacing: -0.3px; }
+  h2 { font-size: 16px; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 2px solid #e6e9ef; }
+  .sub { color: #6b7689; font-size: 12px; margin: 0 0 6px; }
+  .meta { color: #8a93a6; font-size: 11px; margin-bottom: 18px; }
+  p { margin: 8px 0; }
+  .lead { background: #f4f7fb; border: 1px solid #e1e7f0; border-radius: 8px; padding: 12px 14px; margin: 14px 0; }
+
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 6px; font-weight: 600; font-size: 12px; white-space: nowrap; border: 1px solid; }
+  .nt   { background:#f1f3f6; color:#5b6577; border-color:#d4d9e2; }
+  .fail { background:#fbe1e1; color:#a12727; border-color:#f0b6b6; }
+  .addr { background:#fbf4cf; color:#876a09; border-color:#ecdc8e; }
+  .clar { background:#dde8fb; color:#2452a1; border-color:#b6ccf0; }
+  .pass { background:#d9f3df; color:#1f7a3a; border-color:#aee0bd; }
+
+  .flow { border:1px solid #e1e7f0; border-radius:10px; padding:18px 16px; background:#fcfdff; }
+  .row { display:flex; align-items:center; justify-content:center; gap:10px; margin:6px 0; flex-wrap:wrap; }
+  .node { border:1px solid #cfd6e2; border-radius:8px; padding:8px 12px; font-weight:600; background:#fff; text-align:center; min-width:96px; }
+  .node.fail { background:#fbe1e1; border-color:#f0b6b6; color:#a12727; }
+  .node.addr { background:#fbf4cf; border-color:#ecdc8e; color:#876a09; }
+  .node.clar { background:#dde8fb; border-color:#b6ccf0; color:#2452a1; }
+  .node.pass { background:#d9f3df; border-color:#aee0bd; color:#1f7a3a; }
+  .node.nt   { background:#f1f3f6; border-color:#d4d9e2; color:#5b6577; }
+  .node.dec  { background:#fff; border-style:dashed; }
+  .arrow { color:#8a93a6; font-weight:700; font-size:16px; }
+  .lbl { color:#6b7689; font-size:11px; font-style:italic; }
+  .branch { border-left:3px solid #e6e9ef; margin:8px 0 8px 18px; padding:4px 0 4px 16px; }
+  .branch .tag { font-weight:700; color:#3a4452; }
+
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:12.5px; }
+  th, td { border:1px solid #e1e7f0; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f4f7fb; font-weight:600; }
+
+  .sync { border:1px solid #e1e7f0; border-radius:10px; padding:16px; background:#fcfdff; }
+  .synrow { display:flex; align-items:center; gap:14px; margin:10px 0; }
+  .col { flex:1; }
+  .colhdr { font-weight:700; font-size:11px; letter-spacing:.5px; color:#8a93a6; text-transform:uppercase; margin-bottom:4px; }
+  .box { border:1px solid #cfd6e2; border-radius:8px; padding:8px 10px; background:#fff; font-size:12px; }
+  .updir { color:#1f7a3a; font-weight:700; }
+  .dndir { color:#a12727; font-weight:700; }
+  .new { display:inline-block; background:#a12727; color:#fff; font-size:9px; font-weight:700; padding:1px 5px; border-radius:4px; vertical-align:middle; margin-left:6px; }
+
+  .note { background:#fff8e8; border:1px solid #f0e0b0; border-radius:8px; padding:12px 14px; margin:14px 0; }
+  .note b { color:#876a09; }
+  ul { margin:8px 0; padding-left:20px; }
+  li { margin:4px 0; }
+  .foot { margin-top:26px; color:#8a93a6; font-size:10.5px; border-top:1px solid #e6e9ef; padding-top:8px; }
+</style>
+</head>
+<body>
+
+  <h1>IO Testing — More States for Failed Items</h1>
+  <p class="sub">A feedback loop so the field can tell which failed IOs are ready to re-check, and which are waiting on engineering.</p>
+  <p class="meta">Draft for review · taskboard #2233 · prepared by Nika</p>
+
+  <div class="lead">
+    <b>The problem.</b> Today an IO is <span class="pill nt">Not&nbsp;Tested</span>,
+    <span class="pill pass">Passed</span>, or <span class="pill fail">Failed</span>. A failed item just sits
+    there — there's no way to tell which failures have since been sorted out (part arrived, wiring redone)
+    and are ready to test again, versus which are still genuinely stuck. With one verifier walking 144 IOs —
+    and far more once 5 MCMs are commissioned in parallel — someone ends up dedicated full-time to re-walking
+    the failed list. We need a couple more states so the failed items carry their own status.
+  </div>
+
+  <h2>The statuses</h2>
+  <p>An IO's status is freely changeable between:</p>
+  <p style="margin:10px 0;">
+    <span class="pill nt">Not Tested</span>&nbsp;&nbsp;
+    <span class="pill fail">Failed</span>&nbsp;&nbsp;
+    <span class="pill addr">Addressed</span>&nbsp;&nbsp;
+    <span class="pill pass">Passed</span>
+  </p>
+  <p>
+    <b>Clarification is not a separate status.</b> The item stays <span class="pill fail">Failed</span> the
+    whole time — it just carries a tag: first <i>"needs clarification"</i> (the engineer's queue), then
+    <i>"Clarification Added"</i> once the engineer has answered. That way electricians only ever filter for
+    one thing — <b>Failed</b> — and never miss an item.
+  </p>
+
+  <h2>The flow</h2>
+  <div class="flow">
+    <div class="row"><span class="node nt">NOT TESTED</span></div>
+    <div class="row"><span class="lbl">tester runs the test (on the tablet)</span></div>
+    <div class="row"><span class="arrow">↓</span></div>
+    <div class="row">
+      <span class="node dec">did it work?</span>
+      <span class="arrow">— yes →</span>
+      <span class="node pass">PASSED&nbsp;✓</span>
+    </div>
+    <div class="row"><span class="lbl">no ↓</span></div>
+    <div class="row"><span class="node fail">FAILED</span></div>
+
+    <div class="branch">
+      <div><span class="tag">Path A — needs clarification?&nbsp; YES</span></div>
+      <div class="row" style="justify-content:flex-start;">
+        <span class="node fail">FAILED</span>
+        <span class="arrow">+</span>
+        <span class="node clar">needs clarification</span>
+        <span class="lbl">→ engineer's queue (cloud)</span>
+      </div>
+      <div class="row" style="justify-content:flex-start;"><span class="lbl">engineer writes direction ↓</span></div>
+      <div class="row" style="justify-content:flex-start;">
+        <span class="node fail">FAILED</span>
+        <span class="arrow">+</span>
+        <span class="node clar">Clarification&nbsp;Added</span>
+        <span class="lbl">→ comes back down to the tablet, electrician re-reviews</span>
+      </div>
+    </div>
+
+    <div class="branch">
+      <div><span class="tag">Path B — needs clarification?&nbsp; NO</span></div>
+      <div class="row" style="justify-content:flex-start;">
+        <span class="lbl">electrician fixes it →</span>
+        <span class="node addr">ADDRESSED</span>
+        <span class="lbl">(on the tablet)</span>
+      </div>
+      <div class="row" style="justify-content:flex-start;"><span class="lbl">tester re-tests ↓</span></div>
+      <div class="row" style="justify-content:flex-start;">
+        <span class="node dec">did it work?</span>
+        <span class="arrow">yes →</span>
+        <span class="node pass">PASSED&nbsp;✓</span>
+        <span class="arrow">&nbsp;&nbsp;no →</span>
+        <span class="node fail">back to FAILED</span>
+      </div>
+    </div>
+  </div>
+
+  <h2>Who does what, and where</h2>
+  <table>
+    <tr><th style="width:22%">Role</th><th style="width:18%">Works in</th><th style="width:24%">Filters for</th><th>Can do</th></tr>
+    <tr>
+      <td><b>Electrician</b></td><td>Tablet (local tool)</td>
+      <td><span class="pill fail">Failed</span></td>
+      <td>Fix it → mark <span class="pill addr">Addressed</span>; or raise <i>"needs clarification"</i></td>
+    </tr>
+    <tr>
+      <td><b>Tester</b></td><td>Tablet (local tool)</td>
+      <td><span class="pill addr">Addressed</span></td>
+      <td>Re-test → <span class="pill pass">Passed</span> or back to <span class="pill fail">Failed</span></td>
+    </tr>
+    <tr>
+      <td><b>Engineer / coordinator</b></td><td>Cloud app</td>
+      <td><span class="pill clar">needs clarification</span></td>
+      <td>Write direction → mark <i>"Clarification Added"</i></td>
+    </tr>
+  </table>
+
+  <h2>What syncs, and which way</h2>
+  <div class="sync">
+    <div class="synrow">
+      <div class="col">
+        <div class="colhdr">Tablet (local)</div>
+        <div class="box">Every status change<br><span class="pill pass" style="font-size:10px">Passed</span> <span class="pill fail" style="font-size:10px">Failed</span> <span class="pill addr" style="font-size:10px">Addressed</span> <span class="pill clar" style="font-size:10px">needs clarification</span></div>
+      </div>
+      <div style="text-align:center; min-width:120px;"><div class="updir">───── UP ─────▶</div><div class="lbl">already works today</div></div>
+      <div class="col"><div class="colhdr">Cloud</div><div class="box">receives everything the field does</div></div>
+    </div>
+    <div class="synrow">
+      <div class="col"><div class="colhdr">Tablet (local)</div><div class="box"><span class="pill clar" style="font-size:10px">Clarification Added</span> + the engineer's text shows up on the failed item</div></div>
+      <div style="text-align:center; min-width:120px;"><div class="dndir">◀───── DOWN ─────</div><div class="lbl">the new part <span class="new">NEW</span></div></div>
+      <div class="col"><div class="colhdr">Cloud</div><div class="box">engineer's clarification answer</div></div>
+    </div>
+  </div>
+  <ul>
+    <li><b>UP</b> already exists — everything the tablet does pushes to the cloud exactly like today.</li>
+    <li><b>DOWN</b> is the only new plumbing, and it's deliberately narrow: just the engineer's clarification answer + the "Clarification Added" tag coming back to the tablet. Nothing else needs to come down.</li>
+    <li>It must <b>survive the tablet being offline for days</b> and land when it reconnects — that's the whole point of the feature.</li>
+    <li>If the tablet already moved the item on (e.g. electrician marked it <span class="pill addr">Addressed</span>) while the engineer was typing in the cloud, <b>the tablet wins</b> — the cloud never stomps the field. This keeps us clear of the data-loss problems we've hit before.</li>
+  </ul>
+
+  <div class="note">
+    <b>One thing to confirm before build.</b> This whole design assumes the <b>engineer adds clarification on the cloud</b>,
+    which is why we need the DOWN sync. If your engineers actually work onsite in the tablet too, then nothing
+    needs to come back down and the feature shrinks to just the four statuses + the tag — much simpler and lower risk.
+  </div>
+
+  <div class="foot">
+    Draft — flow up for review. Not yet a build spec. Statuses, colours and the clarification tag follow the
+    state diagram discussed in the infra chat. Sync behaviour follows the existing local→cloud contract plus one
+    new narrow downward channel.
+  </div>
+
+</body>
+</html>
