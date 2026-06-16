@@ -775,6 +775,10 @@ export interface PendingSync {
 export const TestConstants = {
   RESULT_PASSED: 'Passed',
   RESULT_FAILED: 'Failed',
+  // Workflow state: a Failed IO whose underlying problem has been resolved
+  // (part arrived, wiring redone) and is now ready for a tester to re-check.
+  // Set off-PLC via /api/ios/:id/addressed; syncs up like any other result.
+  RESULT_ADDRESSED: 'Addressed',
 } as const
 
 // ── Compatibility layer (camelCase accessors for Prisma-style code) ──

@@ -1,6 +1,7 @@
 export const TEST_CONSTANTS = {
   RESULT_PASSED: "Passed",
   RESULT_FAILED: "Failed",
+  RESULT_ADDRESSED: "Addressed",
   RESULT_NOT_TESTED: "Not Tested",
   DESC_INPUT: "Input",
   DESC_OUTPUT: "Output",
@@ -9,6 +10,8 @@ export const TEST_CONSTANTS = {
 export const CHART_COLORS = {
   passed: "#22c55e",
   failed: "#ef4444",
+  // Addressed = fixed, ready to re-check (amber, matches the state-diagram).
+  addressed: "#eab308",
   notTested: "#94a3b8",
 } as const
 
