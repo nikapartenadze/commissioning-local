@@ -36,6 +36,10 @@ describe('findBaseline', () => {
     expect(findBaseline(baselines, 1, 999)).toBeUndefined()
     expect(findBaseline(baselines, 9, 166)).toBeUndefined()
   })
+  it('matches by productCode alone when vendorId is null (diagnostics-sourced)', () => {
+    expect(findBaseline(baselines, null, 166)?.modelName).toBe('1756-L85E')
+    expect(findBaseline(baselines, null, 999)).toBeUndefined()
+  })
 })
 
 describe('evaluateCompliance', () => {

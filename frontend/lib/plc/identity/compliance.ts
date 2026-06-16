@@ -43,11 +43,17 @@ export function compareRevision(
   return aMinor - bMinor
 }
 
-/** Find the baseline entry for a device by (vendorId, productCode). */
+/**
+ * Find the baseline entry for a device by productCode, optionally narrowed by
+ * vendorId. The diagnostics UDT reports only productCode (no vendor), so pass
+ * vendorId = null to match on productCode alone; the @raw controller read has a
+ * real vendorId and matches exactly.
+ */
 export function findBaseline(
-  baselines: readonly FirmwareBaseline[], vendorId: number, productCode: number,
+  baselines: readonly FirmwareBaseline[], vendorId: number | null, productCode: number,
 ): FirmwareBaseline | undefined {
-  return baselines.find((b) => b.vendorId === vendorId && b.productCode === productCode)
+  return baselines.find((b) =>
+    b.productCode === productCode && (vendorId == null || b.vendorId === vendorId))
 }
 
 /**
