@@ -89,6 +89,8 @@ import * as estopStatus from '@/app/api/estop/status/route'
 import * as estopCheck from '@/app/api/estop/check/route'
 import * as firmware from '@/app/api/firmware/route'
 import * as firmwareScan from '@/app/api/firmware/scan/route'
+import * as firmwareBaseline from '@/app/api/firmware/baseline/route'
+import * as firmwareController from '@/app/api/firmware/controller/route'
 import * as safetyZones from '@/app/api/safety/zones/route'
 import * as safetyBypass from '@/app/api/safety/bypass/route'
 import * as safetyStatus from '@/app/api/safety/status/route'
@@ -304,6 +306,8 @@ export function createApiRouter(): Router {
 
   // ── Firmware compliance ────────────────────────────────────────
   router.get('/api/firmware', asyncHandler(firmware.GET))
+  router.get('/api/firmware/baseline', asyncHandler(firmwareBaseline.GET))
+  router.get('/api/firmware/controller', asyncHandler(firmwareController.GET))
   router.post('/api/firmware/scan', asyncHandler(firmwareScan.POST))
 
   // ── Safety ─────────────────────────────────────────────────────
