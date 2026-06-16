@@ -657,6 +657,24 @@ export function initializeSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
 
+    -- Cloud-curated approved-firmware baseline, pulled from the cloud and
+    -- cached locally so firmware compliance evaluates OFFLINE. Keyed by
+    -- (VendorId, ProductCode); MinRevMajor.MinRevMinor is the MINIMUM supported
+    -- revision (live >= min ⇒ compliant). Replaced wholesale on each baseline
+    -- sync. See docs/superpowers/specs/2026-06-16-firmware-compliance-design.md.
+    CREATE TABLE IF NOT EXISTS ApprovedFirmware (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      VendorId INTEGER NOT NULL,
+      ProductCode INTEGER NOT NULL,
+      ModelName TEXT,
+      MinRevMajor INTEGER NOT NULL,
+      MinRevMinor INTEGER NOT NULL,
+      Notes TEXT,
+      UpdatedBy TEXT,
+      UpdatedAt TEXT,
+      UNIQUE(VendorId, ProductCode)
+    );
+
   `)
 
   // VFD commissioning state is now stored entirely in L2CellValues
