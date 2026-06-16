@@ -1,40 +1,41 @@
 /**
- * Firmware scan orchestrator.
+ * Firmware scan orchestrator (diagnostics-first).
  *
- * Ties together device discovery, the @raw Identity reader, the cached cloud
- * baseline, and the compliance evaluator into a single on-demand scan. Not
- * continuous — Identity reads are one-shot CIP requests, and a blind slot scan
- * would steal CIP slots from the IO tag reader if run on a timer. The "Scan"
- * button (POST /api/firmware/scan) drives it; the last result is cached for
- * GET /api/firmware.
+ * Firmware is ALREADY harvested by the network diagnostics poller: the PLC
+ * ladder MSG-populates each device's UDT_NETWORK_NODE_DATA header with
+ * Product_Code + Firmware_Major/Minor (CIP Identity Class 0x01 Attr 3/4), and
+ * getLatestNetworkDeviceSnapshots() exposes it. So for every networked device
+ * we read firmware from those snapshots with ZERO extra CIP load — no per-device
+ * probing, no blind slot scan.
  *
- * Reads are issued SEQUENTIALLY to keep CIP load low (the controller is already
- * being hammered by the IO poller). Anonymous blind-slot probes use a shorter
- * timeout and, when they don't answer, are dropped from the result so the view
- * isn't littered with empty-slot "unreachable" rows. Named targets that fail
- * are kept (a missing expected module is worth surfacing).
+ * The one device the diagnostics poller does NOT cover is the controller itself
+ * (it's not a network node). For that we do a single @raw CIP Identity read,
+ * which also gives the controller's full vendor/serial/product-name that the UDT
+ * doesn't carry.
  *
- * Pure helpers it composes are unit-tested; this IO orchestrator is verified
- * against live hardware (see identity-reader.ts).
+ * Caveats handled here:
+ *   - The UDT header is 0/0/0 until the ladder runs its Identity MSG → treat as
+ *     "not yet read" (unreachable), not a real 0.0 revision.
+ *   - The UDT carries productCode but NO vendorId, so baseline matching is by
+ *     productCode (findBaseline with vendorId = null). The controller @raw read
+ *     has a real vendorId and matches exactly.
+ *
+ * On-demand: POST /api/firmware/scan; last result cached for GET /api/firmware.
  */
 
 import { getPlcStatus, getLatestNetworkDeviceSnapshots } from '@/lib/plc-client-manager'
-import { configService } from '@/lib/config/config-service'
-import { buildProbeList } from './device-discovery'
-import { readIdentity, IDENTITY_READ_TIMEOUT_MS } from './identity-reader'
+import { readIdentity } from './identity-reader'
 import { getCachedBaselines, getLastBaselineSyncAt } from '@/lib/cloud/firmware-baseline-sync'
 import { findBaseline, evaluateCompliance, type ComplianceVerdict, type FirmwareBaseline } from './compliance'
 import type { DeviceIdentity } from './identity-parse'
 
-/** Shorter timeout for speculative blind-slot probes (empty slots just time out). */
-const SLOT_PROBE_TIMEOUT_MS = 800
-
 export interface FirmwareDeviceResult {
   label: string
-  path: string
-  /** Friendly model — the device's own Product Name, else the baseline's. */
+  /** Source identifier — controller routing path, or the diagnostics tag name. */
+  source: string
+  /** Friendly model — the device's own Product Name (@raw), else the baseline's. */
   modelName: string | null
-  /** "major.minor" live firmware, or null when unreachable. */
+  /** "major.minor" live firmware, or null when unreachable / not yet populated. */
   liveRevision: string | null
   /** "major.minor" approved minimum, or null when no baseline entry. */
   approvedMin: string | null
@@ -47,7 +48,6 @@ export interface FirmwareDeviceResult {
 export interface FirmwareScanResult {
   scannedAt: number
   connected: boolean
-  /** False when no baseline has ever synced — verdicts are then all no_baseline. */
   baselineAvailable: boolean
   baselineSyncedAt: number | null
   devices: FirmwareDeviceResult[]
@@ -65,13 +65,13 @@ const rev = (major: number, minor: number) => `${major}.${minor}`
 
 function toResult(
   label: string,
-  path: string,
+  source: string,
   identity: DeviceIdentity | null,
   baseline: FirmwareBaseline | undefined,
 ): FirmwareDeviceResult {
   return {
     label,
-    path,
+    source,
     modelName: identity?.productName || baseline?.modelName || null,
     liveRevision: identity ? rev(identity.revMajor, identity.revMinor) : null,
     approvedMin: baseline ? rev(baseline.minRevMajor, baseline.minRevMinor) : null,
@@ -83,10 +83,31 @@ function toResult(
 }
 
 /**
- * Run a full firmware scan: discover reachable CIP nodes, read each one's
- * Identity, and judge it against the cached baseline. Returns (and caches) the
- * result. When the PLC isn't connected, returns a connected:false result with
- * no devices rather than throwing.
+ * Build a synthetic DeviceIdentity from a diagnostics snapshot, or null when the
+ * UDT header hasn't been populated yet (all-zero). vendorId is left at 0 — it's
+ * unknown from diagnostics and unused in matching (we match by productCode).
+ */
+function identityFromSnapshot(
+  productCode: number, firmwareMajor: number, firmwareMinor: number,
+): DeviceIdentity | null {
+  if (productCode === 0 && firmwareMajor === 0 && firmwareMinor === 0) return null
+  return {
+    vendorId: 0,
+    deviceType: 0,
+    productCode,
+    revMajor: firmwareMajor,
+    revMinor: firmwareMinor,
+    status: 0,
+    serial: 0,
+    productName: '',
+  }
+}
+
+/**
+ * Run a firmware scan: read the controller's Identity (@raw, one request) and
+ * fold in the firmware the diagnostics poller has already captured for every
+ * networked device. Judge each against the cached baseline. Returns (and caches)
+ * the result; returns connected:false with no devices when the PLC is offline.
  */
 export async function scanFirmware(): Promise<FirmwareScanResult> {
   const status = getPlcStatus()
@@ -102,28 +123,19 @@ export async function scanFirmware(): Promise<FirmwareScanResult> {
     return lastScan
   }
 
-  const gateway = status.connectionConfig.ip
-  const controllerPath = status.connectionConfig.path
-  const discoveredDeviceNames = getLatestNetworkDeviceSnapshots().map((s) => s.deviceName)
-  const cfg = await configService.getConfig()
-
-  const targets = buildProbeList({
-    controllerPath,
-    discoveredDeviceNames,
-    dlrSupervisorPath: cfg.dlrSupervisorPath,
-  })
-
   const devices: FirmwareDeviceResult[] = []
-  for (const t of targets) {
-    const isBlindSlot = t.label.startsWith('Slot ')
-    const timeout = isBlindSlot ? SLOT_PROBE_TIMEOUT_MS : IDENTITY_READ_TIMEOUT_MS
-    const identity = await readIdentity(gateway, t.path, timeout)
 
-    // Drop anonymous empty-slot probes that didn't answer — they're noise.
-    if (!identity && isBlindSlot) continue
+  // Controller — not a network node; single @raw Identity read (full identity).
+  const ctrl = await readIdentity(status.connectionConfig.ip, status.connectionConfig.path)
+  const ctrlBaseline = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode) : undefined
+  devices.push(toResult('Controller', status.connectionConfig.path, ctrl, ctrlBaseline))
 
-    const baseline = identity ? findBaseline(baselines, identity.vendorId, identity.productCode) : undefined
-    devices.push(toResult(t.label, t.path, identity, baseline))
+  // Networked devices — firmware already in the diagnostics snapshots.
+  for (const snap of getLatestNetworkDeviceSnapshots()) {
+    const identity = identityFromSnapshot(snap.productCode, snap.firmwareMajor, snap.firmwareMinor)
+    // vendorId unknown from diagnostics → match baseline by productCode only.
+    const baseline = identity ? findBaseline(baselines, null, identity.productCode) : undefined
+    devices.push(toResult(snap.deviceName, snap.tagName, identity, baseline))
   }
 
   lastScan = { ...base, connected: true, devices }

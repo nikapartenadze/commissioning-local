@@ -25,7 +25,7 @@ type Verdict = 'compliant' | 'non_compliant' | 'no_baseline' | 'unreachable'
 
 interface DeviceRow {
   label: string
-  path: string
+  source: string
   modelName: string | null
   liveRevision: string | null
   approvedMin: string | null
@@ -186,12 +186,12 @@ export default function FirmwarePage() {
                   <TableHead>Approved min</TableHead>
                   <TableHead>Compliance</TableHead>
                   <TableHead>Serial</TableHead>
-                  <TableHead>Path</TableHead>
+                  <TableHead>Source</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {shown.map((d) => (
-                  <TableRow key={d.path}>
+                  <TableRow key={d.source}>
                     <TableCell className="font-medium">{d.label}</TableCell>
                     <TableCell>{d.modelName ?? '—'}</TableCell>
                     <TableCell className="tabular-nums">{d.liveRevision ?? '—'}</TableCell>
@@ -200,7 +200,7 @@ export default function FirmwarePage() {
                     <TableCell className="tabular-nums text-muted-foreground">
                       {d.serial != null ? d.serial.toString(16).toUpperCase() : '—'}
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{d.path}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{d.source}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
