@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage, RingStatusUpdateMessage } from '@/lib/plc/types'
 import { RingHealthBadge } from '@/components/ring-health-badge'
 import { isExcludedRackSlot } from '@/lib/plc/network/types'
+import { authFetch } from '@/lib/api-config'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
 type Port = Snapshot['ports'][number]
@@ -205,6 +206,32 @@ export function NetworkDiagnosticsView({
     return () => clearInterval(id)
   }, [active])
 
+  // Approved-firmware baseline for the per-device compliance chip. Optional —
+  // if it can't be fetched, devices simply render without a firmware verdict.
+  const [baselines, setBaselines] = useState<FwBaseline[]>([])
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    authFetch('/api/firmware/baseline')
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled && Array.isArray(d?.baselines)) setBaselines(d.baselines) })
+      .catch(() => { /* baseline optional */ })
+    return () => { cancelled = true }
+  }, [active])
+
+  // Controller firmware (not a network node → not in liveSnapshots). One @raw
+  // read on open; optional — the card hides if it can't be read.
+  const [controllerFw, setControllerFw] = useState<ControllerFw | null>(null)
+  useEffect(() => {
+    if (!active || singleDevice) return
+    let cancelled = false
+    authFetch('/api/firmware/controller')
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setControllerFw(d?.controller ?? null) })
+      .catch(() => { /* controller card optional */ })
+    return () => { cancelled = true }
+  }, [active, singleDevice])
+
   const lastSeenRef = useRef<Map<string, DeviceState>>(new Map())
   const devices = useMemo<Map<string, DeviceState>>(() => {
     const out = new Map<string, DeviceState>()
@@ -323,6 +350,7 @@ export function NetworkDiagnosticsView({
       {/* Body */}
       <div className="flex-1 overflow-auto">
         <div className="px-5 py-4">
+          {!singleDevice && <ControllerFirmwareCard controller={controllerFw} />}
           {!singleDevice && totalKnown === 0 && (
             <div className="border border-dashed border-border bg-card/50 px-5 py-10 text-center text-sm text-muted-foreground rounded">
               {active
@@ -349,7 +377,7 @@ export function NetworkDiagnosticsView({
                   <div className="space-y-3">
                     {deviceList.map((entry) =>
                       entry.live ? (
-                        <DeviceSection key={entry.deviceName} state={entry.live} now={now} defaultExpanded={!!singleDevice} />
+                        <DeviceSection key={entry.deviceName} state={entry.live} now={now} defaultExpanded={!!singleDevice} baselines={baselines} />
                       ) : (
                         <SkeletonSection key={entry.deviceName} deviceName={entry.deviceName} active={active} />
                       ),
@@ -452,7 +480,84 @@ function NavToc({
 
 // ─── Device section ──────────────────────────────────────────────────────
 
-function DeviceSection({ state, now, defaultExpanded }: { state: DeviceState; now: number; defaultExpanded?: boolean }) {
+/** Cached approved-firmware baseline entry (from GET /api/firmware/baseline). */
+export interface FwBaseline {
+  vendorId: number
+  productCode: number
+  modelName?: string
+  minRevMajor: number
+  minRevMinor: number
+}
+
+type FwVerdict = 'compliant' | 'non_compliant' | 'no_baseline' | 'unknown'
+
+/**
+ * Per-device firmware compliance from the snapshot's productCode + firmware vs
+ * the baseline (min-version rule). vendorId isn't in the diagnostics UDT, so we
+ * match by productCode. A 0/0/0 header means the ladder hasn't populated the
+ * Identity MSG yet → unknown (not a real 0.0 rev).
+ */
+function firmwareVerdict(
+  baselines: FwBaseline[], productCode: number, fwMajor: number, fwMinor: number,
+): FwVerdict {
+  if (productCode === 0 && fwMajor === 0 && fwMinor === 0) return 'unknown'
+  const b = baselines.find((x) => x.productCode === productCode)
+  if (!b) return 'no_baseline'
+  if (fwMajor !== b.minRevMajor) return fwMajor > b.minRevMajor ? 'compliant' : 'non_compliant'
+  return fwMinor >= b.minRevMinor ? 'compliant' : 'non_compliant'
+}
+
+function FirmwareComplianceChip({ verdict, min }: { verdict: FwVerdict; min?: string }) {
+  if (verdict === 'unknown') return null
+  const meta: Record<Exclude<FwVerdict, 'unknown'>, { text: string; cls: string }> = {
+    compliant: { text: 'FW OK', cls: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' },
+    non_compliant: { text: `FW < ${min ?? 'min'}`, cls: 'bg-red-500/15 text-red-600 dark:text-red-400' },
+    no_baseline: { text: 'FW no baseline', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' },
+  }
+  const m = meta[verdict]
+  return (
+    <span className={cn('font-mono text-[10px] uppercase tracking-wider rounded px-1.5 py-0.5', m.cls)}>
+      {m.text}
+    </span>
+  )
+}
+
+/** Controller firmware result from GET /api/firmware/controller. */
+export interface ControllerFw {
+  label: string
+  modelName: string | null
+  liveRevision: string | null
+  approvedMin: string | null
+  serial: number | null
+  verdict: 'compliant' | 'non_compliant' | 'no_baseline' | 'unreachable'
+}
+
+/** Compact controller-firmware card shown at the top of the full diagnostics view. */
+function ControllerFirmwareCard({ controller }: { controller: ControllerFw | null }) {
+  if (!controller) return null
+  const meta: Record<ControllerFw['verdict'], { text: string; cls: string }> = {
+    compliant: { text: 'Compliant', cls: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' },
+    non_compliant: { text: `Below min ${controller.approvedMin ?? ''}`.trim(), cls: 'bg-red-500/15 text-red-600 dark:text-red-400' },
+    no_baseline: { text: 'No baseline', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' },
+    unreachable: { text: 'Unreachable', cls: 'bg-muted text-muted-foreground' },
+  }
+  const m = meta[controller.verdict]
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-md border bg-card px-5 py-3">
+      <span className="font-mono text-sm font-bold tracking-tight">Controller</span>
+      {controller.modelName && <span className="text-sm text-muted-foreground">{controller.modelName}</span>}
+      <span className="font-mono text-sm">FW {controller.liveRevision ?? '—'}</span>
+      {controller.approvedMin && (
+        <span className="text-[11px] text-muted-foreground">min {controller.approvedMin}</span>
+      )}
+      <span className={cn('ml-auto font-mono text-[10px] uppercase tracking-wider rounded px-1.5 py-0.5', m.cls)}>
+        {m.text}
+      </span>
+    </div>
+  )
+}
+
+function DeviceSection({ state, now, defaultExpanded, baselines = [] }: { state: DeviceState; now: number; defaultExpanded?: boolean; baselines?: FwBaseline[] }) {
   const { snapshot, lastSeen } = state
   // Collapsed by default in the all-devices view. Even with memoized port rows
   // and the 2-port cap on non-switch devices, rendering every DPM's 32 ports at
@@ -489,6 +594,10 @@ function DeviceSection({ state, now, defaultExpanded }: { state: DeviceState; no
 
   const ageSec = Math.max(0, Math.floor((now - snapshot.capturedAt) / 1000))
 
+  const fwVerdict = firmwareVerdict(baselines, snapshot.productCode, snapshot.firmwareMajor, snapshot.firmwareMinor)
+  const fwBaseline = baselines.find((b) => b.productCode === snapshot.productCode)
+  const fwMin = fwBaseline ? `${fwBaseline.minRevMajor}.${fwBaseline.minRevMinor}` : undefined
+
   return (
     <section
       id={`${snapshot.deviceName}_NN`}
@@ -507,6 +616,7 @@ function DeviceSection({ state, now, defaultExpanded }: { state: DeviceState; no
                 : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />}
               <h2 className="font-mono text-base font-bold tracking-tight">{snapshot.deviceName}</h2>
               <TagBadge status={tagStatus} count={summary.warnCount} />
+              <FirmwareComplianceChip verdict={fwVerdict} min={fwMin} />
               {summary.activePorts > 0 && (
                 <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider">
                   {summary.activePorts}/{portCap} linked

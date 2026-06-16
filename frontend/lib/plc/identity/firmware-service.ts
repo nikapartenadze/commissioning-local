@@ -104,6 +104,21 @@ function identityFromSnapshot(
 }
 
 /**
+ * Read ONLY the controller's firmware (single @raw Identity request) and judge
+ * it against the cached baseline. Used by the diagnostics view's controller card
+ * (the controller isn't a network node, so it's absent from the snapshots the
+ * view already renders). Returns null when the PLC isn't connected.
+ */
+export async function scanController(): Promise<FirmwareDeviceResult | null> {
+  const status = getPlcStatus()
+  if (!status.connected || !status.connectionConfig) return null
+  const baselines = getCachedBaselines()
+  const ctrl = await readIdentity(status.connectionConfig.ip, status.connectionConfig.path)
+  const baseline = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode) : undefined
+  return toResult('Controller', status.connectionConfig.path, ctrl, baseline)
+}
+
+/**
  * Run a firmware scan: read the controller's Identity (@raw, one request) and
  * fold in the firmware the diagnostics poller has already captured for every
  * networked device. Judge each against the cached baseline. Returns (and caches)
