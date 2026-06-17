@@ -31,7 +31,7 @@ export async function POST(req: Request, res: Response) {
     }
 
     const body = req.body
-    const { result, comments, currentUser, failureMode, blockerResponsibleParty, blockerDescription } = body
+    const { result, comments, currentUser, failureMode, blockerResponsibleParty, blockerDescription, trade } = body
 
     if (!result || !['Pass', 'Fail', 'Passed', 'Failed'].includes(result)) {
       return res.status(400).json({ error: 'Invalid result. Must be "Pass" or "Fail"' })
@@ -135,6 +135,12 @@ export async function POST(req: Request, res: Response) {
     const newFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
       ? (failureMode || null)
       : null
+    // Discipline the tester picks when failing an IO (Electrical/Controls/
+    // Mechanical). Denormalised onto Ios.Trade and carried on the sync push so
+    // the cloud punchlist's Discipline column is populated. Cleared on Pass.
+    const newTrade = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (trade || null)
+      : null
     // Blocker (party + description) only ride along on the cloud sync push —
     // they end up on the shared Devices row (the install-tracker's two
     // columns), NOT on the local Ios row. A regular Fail doesn't send them
@@ -154,8 +160,8 @@ export async function POST(req: Request, res: Response) {
     let testHistoryId: number | bigint = 0
     const txn = db.transaction(() => {
       db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ? WHERE id = ?'
-      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, ioId)
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ?, Trade = ? WHERE id = ?'
+      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, newTrade, ioId)
 
       const histResult = db.prepare(
         'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -187,7 +193,7 @@ export async function POST(req: Request, res: Response) {
 
     try {
       const info = db.prepare(
-        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode, BlockerResponsibleParty, BlockerDescription) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode, BlockerResponsibleParty, BlockerDescription, Trade) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(
         ioId,
         currentUser || null,
@@ -199,6 +205,7 @@ export async function POST(req: Request, res: Response) {
         newFailureMode,
         newBlockerResponsibleParty,
         newBlockerDescription,
+        newTrade,
       )
       console.log(
         `[Test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
