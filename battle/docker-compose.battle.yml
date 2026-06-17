@@ -279,6 +279,10 @@ services:
       # Point sync at cloud-stage. Without this the tool would target the
       # hardcoded production URL — see EMBEDDED_REMOTE_URL.
       CLOUD_URL_OVERRIDE: http://cloud:3000
+      # Backup retention — keep it low in battle so a soak with cloud edits
+      # actually EXERCISES pruning (I9). Defaults in prod are far higher (300).
+      BACKUP_RETENTION_KEEP: ${BACKUP_RETENTION_KEEP:-20}
+      BACKUP_RETENTION_MIN_AGE_MS: "0"
     # Belt-and-suspenders: even if the override were ever dropped, the embedded
     # production hostname resolves to a dead loopback here — a battle tool can
     # NEVER reach production cloud.
@@ -364,6 +368,8 @@ services:
       # central scenario: comma-separated list of every seeded subsystem so the
       # cloud-side I4 read covers all clones
       SUBSYSTEM_ID: ${OBS_SUBSYSTEM_IDS:-${SUBSYSTEM_ID:-38}}
+      # I9 backup-bound: match the tool's retention so "exercised" lines up.
+      BACKUP_RETENTION_KEEP: ${BACKUP_RETENTION_KEEP:-20}
     volumes:
       - runs:/runs
       - tool-data:/data:ro

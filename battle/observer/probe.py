@@ -573,6 +573,129 @@ def rss_slope_mb_per_h(samples: list[tuple[float, float, float]], skip_first_s: 
     return slope_per_s * 3600.0
 
 
+def check_live_channel() -> dict:
+    """I8 — the cloud live channel (SSE) must authenticate.
+
+    The 2026-06-16 MCM11 incident: a cloud security deploy gated /api/sync/events
+    behind a browser session, so the field tool's X-API-Key SSE subscription got
+    a permanent HTTP 401. The cloud then showed the server/PLC as disconnected
+    ("Red") and real-time pushes degraded to 15-min safety pulls — invisible to
+    every existing test.
+
+    We GATE only on the DETERMINISTIC failure: an auth rejection (HTTP 401/403)
+    on the SSE connect. Transient `fetch failed`/`terminated` reconnect loops are
+    docker-network noise (see I7 note) and are recorded but never gate. So a clean
+    auth contract → green; the exact incident → red.
+    """
+    connecting = connected = auth_fail = transient = 0
+    last_auth_samples: list[str] = []
+    connect_re = re.compile(r"\[CloudSSE\] Connecting to")
+    ok_re = re.compile(r"\[CloudSSE\] Connected")
+    auth_re = re.compile(r"\[CloudSSE\] Connection error: HTTP (401|403)")
+    other_err_re = re.compile(r"\[CloudSSE\] Connection error: (?!HTTP (?:401|403))")
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "app-*.log"))):
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    if connect_re.search(line):
+                        connecting += 1
+                    elif ok_re.search(line):
+                        connected += 1
+                    elif auth_re.search(line):
+                        auth_fail += 1
+                        if len(last_auth_samples) < 5:
+                            last_auth_samples.append(line.strip()[:200])
+                    elif other_err_re.search(line):
+                        transient += 1
+        except OSError:
+            pass
+
+    # GATE: any auth rejection is a real contract break. If the tool never even
+    # attempted SSE (connecting == 0), there is nothing to judge → pass (the
+    # scenario may not point the tool at a cloud).
+    passed = auth_fail == 0
+    return {
+        "pass": passed,
+        "connect_attempts": connecting,
+        "connected_ok": connected,
+        "auth_failures_401_403": auth_fail,
+        "transient_errors": transient,
+        "auth_failure_samples": last_auth_samples,
+        "note": (
+            "SSE auth rejected (HTTP 401/403) — cloud live channel broken, "
+            "field tool shows Red and loses real-time sync"
+            if auth_fail else
+            ("never connected, no auth error (transient/network only)"
+             if connecting and not connected else
+             ("live channel OK" if connected else "SSE not attempted"))
+        ),
+    }
+
+
+def check_backup_bound() -> dict:
+    """I9 — the auto-backup directory must stay bounded.
+
+    The 2026-06-16 MCM11 incident: the pre-pull safety backup (a full DB copy)
+    ran before EVERY pull for EVERY active MCM with no retention, so a central
+    server filled the disk to ~4 GB / ~1,700 copies. The fix adds retention
+    (BACKUP_RETENTION_KEEP) and a no-op-pull short-circuit. This invariant fails
+    on unbounded growth.
+
+    Deterministic + non-vacuous: we only judge retention once enough backups were
+    CREATED to require pruning (created > keep). We always gate an absolute
+    runaway (total size over BACKUP_DIR_MAX_MB) regardless.
+    """
+    keep = max(1, int(os.environ.get("BACKUP_RETENTION_KEEP", "300") or "300"))
+    slack = int(os.environ.get("BACKUP_RETENTION_SLACK", "50") or "50")
+    max_mb = float(os.environ.get("BACKUP_DIR_MAX_MB", "2048") or "2048")
+
+    backups_dir = os.path.join(DATA_DIR, "backups")
+    remaining = 0
+    total_bytes = 0
+    try:
+        for name in os.listdir(backups_dir):
+            if name.startswith("database-") and name.endswith(".db"):
+                remaining += 1
+                try:
+                    total_bytes += os.path.getsize(os.path.join(backups_dir, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    created = 0
+    created_re = re.compile(r"Auto-backup created")
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "app-*.log"))):
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    if created_re.search(line):
+                        created += 1
+        except OSError:
+            pass
+
+    total_mb = round(total_bytes / (1024 * 1024), 1)
+    exercised = created > keep
+    runaway = total_mb > max_mb
+    retention_broken = exercised and remaining > keep + slack
+    passed = not runaway and not retention_broken
+    return {
+        "pass": passed,
+        "created": created,
+        "remaining": remaining,
+        "total_mb": total_mb,
+        "keep": keep,
+        "retention_exercised": exercised,
+        "note": (
+            f"backup dir runaway: {total_mb} MB > {max_mb} MB cap" if runaway else
+            (f"retention broken: {remaining} kept > {keep}+{slack} after {created} created"
+             if retention_broken else
+             ("retention OK" if exercised else
+              f"not exercised (only {created} created, keep={keep})"))
+        ),
+    }
+
+
 def main() -> None:
     print(f"observer: run={RUN_ID} target={TOOL_URL} soak={SOAK_MINUTES}min")
     deadline = time.monotonic() + SOAK_MINUTES * 60.0
@@ -690,6 +813,16 @@ def main() -> None:
     mut_path = os.path.join(RUNS_DIR, RUN_ID, "cloud-mutations.jsonl")
     if CLOUD_URL and os.path.exists(mut_path):
         invariants["I7_cloud_propagation"] = check_cloud_propagation(mut_path)
+
+    # I8 cloud live-channel (SSE) auth — only when a cloud is attached. Gates on
+    # an HTTP 401/403 auth break (the 2026-06-16 MCM11 incident class), not on
+    # transient docker-network reconnect noise.
+    if CLOUD_URL:
+        invariants["I8_live_channel"] = check_live_channel()
+
+    # I9 bounded auto-backups — always; backups are local to the tool. Catches
+    # the unbounded pre-pull-backup disk runaway (2026-06-16 MCM11 incident).
+    invariants["I9_backup_bound"] = check_backup_bound()
 
     # REPORT-ONLY invariants do NOT gate the build. I7 (cloud→field propagation)
     # depends on the SSE-reconnect-pull firing cleanly, which the docker-network

@@ -384,3 +384,50 @@ dependent invariant and shouldn't red the nightly on (a). To investigate: give
 the env a clean cloud-cut that the SSE recovers from (or an explicit reconnect),
 then re-judge; if additions still don't import after a confirmed reconnect+pull,
 it's a real tool bug.
+
+## MCM11 / CDW5 central-server incident — 2026-06-16 → new invariants I8, I9
+
+First real central-server (`PLC_MODE=remote`) deployment surfaced three bugs the
+rig could NOT have caught, because nothing asserted on the live channel or on
+backup growth. All are now fixed; I8 + I9 added so a regression reds the build.
+
+**Root causes (confirmed from the site's logs + source):**
+1. **SSE auth contract break (cloud).** Cloud commit `3d58ce7` (deployed ~06-15)
+   gated `/api/sync/events` behind a NextAuth browser session. The field tool
+   subscribes with its per-project `X-API-Key` (no session) → permanent
+   **HTTP 401** every 60 s, never recovering. The cloud's live "connected"
+   presence IS the SSE subscription, so the portal showed the server/PLC **Red**
+   even though the local PLC + REST pull/push were healthy. Pull/push were never
+   affected (different routes, still accept `X-API-Key`). Fix: events route now
+   authenticates via the shared `authorizeSubsystemIds` (session **or** scoped
+   `X-API-Key`) — restores the live channel, keeps anonymous out. This is exactly
+   B10's "SSE never reconnects" — but in PROD the cause was a deterministic 401,
+   not docker-flap noise.
+2. **Unbounded pre-pull backups (tool).** The pre-pull safety backup (full DB
+   copy) ran before EVERY pull for EVERY active MCM with NO retention. AutoSync's
+   15-min catch-up × 5 active MCMs ⇒ hundreds of full copies/day ⇒ disk hit
+   ~4 GB / ~1,700 files. Fix: `pruneBackups()` (keep `BACKUP_RETENTION_KEEP`,
+   default 300; 1 h min-age guard).
+3. **No-op pull churn (tool).** The multi-MCM pull unconditionally
+   DELETE+reinserted thousands of rows + took a backup every cycle even when the
+   cloud was byte-identical. Fix: ported the single-MCM `id:version:result`
+   change-hash into the per-MCM route — unchanged cloud ⇒ skip backup + rewrite.
+4. **Connection reported from singleton only (tool).** `pushNetworkStatus` read
+   the in-process SINGLETON client + single `config.subsystemId`; in REMOTE mode
+   there is no in-process client, so it pushed `connected:false` for every MCM.
+   Fix: report each active MCM from the mode-agnostic registry status; single-MCM
+   tablets keep the untouched singleton path.
+
+**I8 — live channel (SSE) auth (GATE, cloud-attached runs).** Scrapes tool logs
+for `[CloudSSE]` outcomes. GATES on an HTTP **401/403** (the deterministic auth
+break); transient `fetch failed`/`terminated` reconnect loops are recorded but
+NEVER gate (same docker-network reason I7 is report-only).
+→ **For I8 to pass, the `cloud` image must be rebuilt+pushed with fix #1**
+(`ci/build_and_push.sh`); against a pre-fix cloud image I8 correctly reds.
+
+**I9 — bounded auto-backups (GATE, always).** Counts `database-*.db` in
+`/data/backups` + total size. Non-vacuous: judges retention only once `created >
+keep` (a short smoke that never triggers pruning reports "not exercised" rather
+than a false green); always gates an absolute runaway (> `BACKUP_DIR_MAX_MB`,
+default 2048). Battle compose sets the tool's `BACKUP_RETENTION_KEEP=20` so a
+soak with cloud edits exercises pruning.
