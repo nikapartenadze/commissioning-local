@@ -72,6 +72,10 @@ try {
     // kept (additive, harmless) — new code does not populate them.
     'ALTER TABLE PendingSyncs ADD COLUMN BlockerResponsibleParty TEXT',
     'ALTER TABLE PendingSyncs ADD COLUMN BlockerDescription TEXT',
+    // Discipline (Electrical/Controls/Mechanical) the tester picks on a Fail.
+    // Carried on the sync queue so the cloud push lands it on Ios.trade, which
+    // feeds the cloud punchlist's Discipline column. Additive, nullable.
+    'ALTER TABLE PendingSyncs ADD COLUMN Trade TEXT',
     'ALTER TABLE Ios ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE TestHistories ADD COLUMN BlockerDescription TEXT',
     // Dead-letter flag: a pending row that the cloud permanently rejected, or
@@ -768,6 +772,7 @@ export interface PendingSync {
   HasDependencies: number | null
   BlockerResponsibleParty: string | null
   BlockerDescription: string | null
+  Trade: string | null
 }
 
 // ── Helper constants ─────────────────────────────────────────────

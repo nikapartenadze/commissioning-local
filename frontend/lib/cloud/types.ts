@@ -79,6 +79,12 @@ export interface IoUpdateDto {
   blockerResponsibleParty?: string | null
   blockerDescription?: string | null
   /**
+   * Discipline picked by the tester on a Fail (Electrical/Controls/Mechanical).
+   * Cloud lands it on the `ios.trade` column, which feeds the punchlist's
+   * Discipline column. Null on Pass / Cleared.
+   */
+  trade?: string | null
+  /**
    * Per-IO Yes/No flag toggled in the new Dependencies column. Cloud
    * stores and displays read-only. Null = unset (treated as 'No').
    */

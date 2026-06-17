@@ -40,8 +40,16 @@ interface FailCommentDialogProps<T extends FailCommentDialogIo> {
     failureMode?: string,
     blockerResponsibleParty?: string,
     blockerDescription?: string,
+    discipline?: string,
   ) => void
   onCancel: () => void
+  /**
+   * When true, the tester MUST pick a Discipline (Electrical/Controls/
+   * Mechanical) on the Fail. Set by the main IO grid; it lands on Ios.trade
+   * and feeds the cloud punchlist's Discipline column. Off by default so the
+   * EPC / guided callers are unaffected.
+   */
+  requireDiscipline?: boolean
   /**
    * When true, this is a Pass → Fail correction (Raul's "Unpass a temp
    * install" case). The dialog additionally asks for the two Blocker
@@ -77,11 +85,13 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
   onSubmit,
   onCancel,
   unpassMode = false,
+  requireDiscipline = false,
 }: FailCommentDialogProps<T>) {
   const [comment, setComment] = useState("")
   const [failureMode, setFailureMode] = useState<string>("")
   const [blockerParty, setBlockerParty] = useState<BlockerParty | "">("")
   const [blockerDescription, setBlockerDescription] = useState<string>("")
+  const [discipline, setDiscipline] = useState<string>("")
 
   // Reset every time the dialog reopens for a new IO.
   useEffect(() => {
@@ -90,6 +100,7 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
       setFailureMode("")
       setBlockerParty("")
       setBlockerDescription("")
+      setDiscipline("")
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, io])
@@ -119,6 +130,10 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
       toast({ title: "Comment is required when the reason is 'Other'", variant: "destructive" })
       return
     }
+    if (requireDiscipline && !discipline) {
+      toast({ title: "Please select a discipline (Electrical / Controls / Mechanical)", variant: "destructive" })
+      return
+    }
     if (unpassMode) {
       if (!blockerParty) {
         toast({ title: "Pick a Blocker (responsible party) for the unpass", variant: "destructive" })
@@ -134,14 +149,15 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
     // Blocker fields — the page/sync route forwards them to the shared
     // Devices row.
     if (unpassMode) {
-      onSubmit(io, comment, failureMode, blockerParty || undefined, blockerDescription || undefined)
+      onSubmit(io, comment, failureMode, blockerParty || undefined, blockerDescription || undefined, discipline || undefined)
     } else {
-      onSubmit(io, comment, failureMode)
+      onSubmit(io, comment, failureMode, undefined, undefined, discipline || undefined)
     }
     setComment("")
     setFailureMode("")
     setBlockerParty("")
     setBlockerDescription("")
+    setDiscipline("")
     onOpenChange(false)
   }
 
@@ -150,6 +166,7 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
     setFailureMode("")
     setBlockerParty("")
     setBlockerDescription("")
+    setDiscipline("")
     onCancel()
     onOpenChange(false)
   }
@@ -218,6 +235,26 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
               </p>
             )}
           </div>
+
+          {/* Discipline — required on a regular IO Fail. Lands on Ios.trade and
+              feeds the cloud punchlist's Discipline column. */}
+          {requireDiscipline && (
+            <div className="space-y-2">
+              <Label htmlFor="discipline">
+                Discipline <span className="text-destructive">*</span>
+              </Label>
+              <Select value={discipline} onValueChange={setDiscipline}>
+                <SelectTrigger id="discipline">
+                  <SelectValue placeholder="Select a discipline..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Electrical">Electrical</SelectItem>
+                  <SelectItem value="Controls">Controls</SelectItem>
+                  <SelectItem value="Mechanical">Mechanical</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {/* Blocker fields — only in unpass mode. These go to the shared
               Devices row (the same two columns the installation tracker
@@ -291,6 +328,7 @@ export function FailCommentDialog<T extends FailCommentDialogIo>({
             disabled={
               !failureMode
               || otherMissingComment
+              || (requireDiscipline && !discipline)
               || (unpassMode && (!blockerParty || !blockerDescription))
             }
           >
