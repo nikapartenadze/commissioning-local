@@ -431,3 +431,42 @@ keep` (a short smoke that never triggers pruning reports "not exercised" rather
 than a false green); always gates an absolute runaway (> `BACKUP_DIR_MAX_MB`,
 default 2048). Battle compose sets the tool's `BACKUP_RETENTION_KEEP=20` so a
 soak with cloud edits exercises pruning.
+
+## Incident → test coverage matrix (the "is it accounted for?" answer)
+
+Goal: every KNOWN on-site failure has a scenario that REACHES it and a gated
+invariant that CATCHES it. "100%" applies to known incident classes — unknown
+unknowns can't be pre-written, which is why the soak runs broad chaos and the
+matrix is revisited after every new incident. Honest status below.
+
+| On-site incident | Reaching scenario | Gating invariant | Status |
+|---|---|---|---|
+| MCM11 SSE 401 → portal "Red", no real-time (2026-06-16) | `central` (cloud SSE + multi-MCM) | **I8** (gates on 401/403) | **COVERED** — needs the fixed `cloud` image (main) pulled into the rig |
+| MCM11 unbounded pre-pull backups → 4 GB disk fill | `central` + `mutate` (pulls churn backups) | **I9** (count+size cap) | **COVERED** — `BACKUP_RETENTION_KEEP=20` makes pruning fire |
+| MCM11 no-op pull churn (DELETE+reinsert every cycle) | `central` + `mutate` | **I9** (churn → backup growth) | **COVERED indirectly** — explicit churn metric is a TODO (count "Cleared N existing IOs" with no cloud change) |
+| MCM11 per-MCM connection singleton-only → other MCMs "Red" (#4) | `central` / `central-cdw5-split` | partial via **I8**; per-MCM connected-flag | **PARTIAL** — dominant cause (SSE) gated; the singleton network-status flag is a residual report-gap |
+| MCM08 pull wiped 818 results (2026-06-04) | `s3` (offline queue) + `mutate` | **I4** (no data loss) + pre-pull backup | COVERED |
+| B1 — HTTP 429 silent result-drop (MCM11 class) | `s3` (cloud flap → 429-ish) | **I4** `suspect_silent_drops` | COVERED (reproduced + fixed v2.40.3) |
+| MCM02 freeze — VFD writer blocked event loop | `s1`/`central` under load | **I1** responsiveness + **I2** leak | COVERED (caught v2.40.1 freeze) |
+| Polarity/flag wipe on PLC program download | `s2` (download storm) | **I3** (restore after download) | COVERED |
+| Generic field-write loss / work interruption | all scenarios | **I4** + **I1**/**I5** | COVERED |
+| Cloud→field propagation (additions don't arrive) | `mutate` | **I7** (report-only; env-dependent) | PARTIAL — see B10 |
+
+**Rollout required for this matrix to be REAL (not just authored):**
+1. **Rebuild + push the heavy images from main** (`ci/build_and_push.sh`): the
+   `tool` image must include the backup-retention / no-op-pull / per-MCM
+   connection / firmware fixes, and the `cloud` image must include the
+   `/api/sync/events` X-API-Key fix — else CI tests STALE binaries (image-
+   freshness gotcha) and I8 reds against the pre-fix cloud.
+2. **`central` is now in the weekday rotation (Wed + Sun)** so the SITE topology
+   is exercised routinely, not just manually. For full-site depth, point a
+   GitLab schedule at `central-cdw5-split` (19 real MCMs, PLC_MODE=remote) — that
+   needs the CDW5 19-MCM seed package, so it stays a dedicated schedule, not the
+   MCM02-seeded nightly.
+3. **Validate the new gates per skill rule #4:** run `central` TWICE green before
+   trusting I8/I9 there (a flapping gate is worse than none).
+
+**Residual gaps (be honest):** (a) no explicit no-op-churn gate (I9 catches the
+harmful symptom, not the wasted rewrites); (b) per-MCM connected-flag isn't its
+own gate yet; (c) I7 stays report-only (docker-network flap doesn't cleanly
+restore SSE — env, not tool). None of these are data-loss paths.
