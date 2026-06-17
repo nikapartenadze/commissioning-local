@@ -17,11 +17,14 @@ if [ "$SCENARIO" = "auto" ]; then
     case "$(date +%u)" in
         1) SCENARIO=s2 ;;      # Mon: PLC download storm
         2) SCENARIO=s3 ;;      # Tue: connectivity hell (cloud flap)
-        3) SCENARIO=mutate ;;  # Wed: cloud-mutation (propagation + no wipe)
-        4) SCENARIO=s1 ;;      # Thu: clean scale soak
+        3) SCENARIO=central ;; # Wed: CENTRAL multi-MCM server — the SITE topology
+                               # where the 2026-06-16 MCM11 incident lived. Runs
+                               # 4 registry MCMs + cloud SSE (exercises I8 live-
+                               # channel auth + I9 backup-bound + per-MCM Red).
+        4) SCENARIO=mutate ;;  # Thu: cloud-mutation (propagation + no wipe)
         5) SCENARIO=s3 ;;      # Fri: connectivity hell
         6) SCENARIO=s6 ;;      # Sat: CIP saturation
-        7) SCENARIO=mutate ;;  # Sun: cloud-mutation
+        7) SCENARIO=central ;; # Sun: CENTRAL multi-MCM server (second weekly pass)
     esac
 fi
 
