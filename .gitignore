@@ -15,10 +15,24 @@ frontend/.env*.local
 *.tsbuildinfo
 next-env.d.ts
 
-# SQLite database files
+# SQLite database files + all database-related artifacts (never commit)
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+# Runtime DB backup folders (NOT frontend/app/api/backups/ — that's source code)
+/backups/
+frontend/backups/
+**/database.db
+# Extracted/runtime tool working copies (each holds database.db + logs + backups)
+CommissioningTool-mcm*/
+/mcm*/
+/tpa*-mcm*/
+.cdw5-stage/
 
 # User-specific configuration
 config.json
