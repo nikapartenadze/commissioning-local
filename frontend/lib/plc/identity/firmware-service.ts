@@ -24,6 +24,7 @@
  */
 
 import { getPlcStatus, getLatestNetworkDeviceSnapshots } from '@/lib/plc-client-manager'
+import { hasAnyMcm, getAllNetworkSnapshots } from '@/lib/mcm-registry'
 import { readIdentity } from './identity-reader'
 import { getCachedBaselines, getLastBaselineSyncAt } from '@/lib/cloud/firmware-baseline-sync'
 import { findBaseline, evaluateCompliance, type ComplianceVerdict, type FirmwareBaseline } from './compliance'
@@ -146,7 +147,14 @@ export async function scanFirmware(): Promise<FirmwareScanResult> {
   devices.push(toResult('Controller', status.connectionConfig.path, ctrl, ctrlBaseline))
 
   // Networked devices — firmware already in the diagnostics snapshots.
-  for (const snap of getLatestNetworkDeviceSnapshots()) {
+  // Multi-MCM aware: a central server (PLC_MODE=remote) has no singleton
+  // poller, so getLatestNetworkDeviceSnapshots() (singleton-only) would hide
+  // EVERY networked device's firmware — defeating "expose firmware of ALL
+  // hardware" on exactly the deployment that hosts the most devices. Prefer the
+  // registry's aggregate snapshots (REMOTE-aware) when the registry is in use;
+  // fall back to the singleton poller for legacy single-MCM tablets.
+  const deviceSnapshots = hasAnyMcm() ? getAllNetworkSnapshots() : getLatestNetworkDeviceSnapshots()
+  for (const snap of deviceSnapshots) {
     const identity = identityFromSnapshot(snap.productCode, snap.firmwareMajor, snap.firmwareMinor)
     // vendorId unknown from diagnostics → match baseline by productCode only.
     const baseline = identity ? findBaseline(baselines, null, identity.productCode) : undefined
