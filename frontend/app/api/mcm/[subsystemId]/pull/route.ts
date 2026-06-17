@@ -97,23 +97,6 @@ export async function POST(req: Request, res: Response) {
       });
     }
 
-    // B6 (mirrors legacy /api/cloud/pull): the pull below is DESTRUCTIVE
-    // (scoped DELETE FROM Ios + reinsert cloud state). The pre-pull backup is
-    // the last line of recovery — if it fails, ABORT rather than wipe with no
-    // safety net.
-    try {
-      const backup = await createBackup(`pre-pull-mcm${subsystemId}`);
-      console.log(`[MCM ${subsystemIdStr} Pull] Auto-backup created: ${backup.filename}`);
-    } catch (backupErr) {
-      console.error(`[MCM ${subsystemIdStr} Pull] Pre-pull backup FAILED — aborting to protect local data:`, backupErr);
-      return res.status(500).json({
-        success: false,
-        error:
-          'Pre-pull safety backup failed, so the pull was aborted to protect your local data. ' +
-          'Check disk space / backups folder permissions and try again.',
-      });
-    }
-
     const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`;
     console.log(`[MCM ${subsystemIdStr} Pull] GET ${cloudUrl}`);
 
@@ -167,6 +150,53 @@ export async function POST(req: Request, res: Response) {
         message: `No IOs returned for subsystem ${subsystemId}`,
         iosCount: 0,
         subsystemId,
+      });
+    }
+
+    // ── No-op short-circuit (2026-06-16 MCM11 incident) ──────────────────
+    // The AutoSync periodic safety catch-up calls this route for every active
+    // MCM every ~15 min. Without this check it unconditionally took a full-DB
+    // backup AND ran a destructive DELETE+reinsert of thousands of rows EVERY
+    // cycle, even when the cloud data was byte-for-byte identical to last time
+    // — the source of both the runaway backups and the constant WAL churn.
+    // Mirror the change-detection the single-MCM pullFromCloud path already
+    // uses (hash of id:version:result): if the cloud IO set is unchanged since
+    // the last applied pull for THIS subsystem, skip the backup and the rewrite
+    // entirely. Skipping a true no-op is safe — nothing destructive happens, so
+    // no recovery point is needed. `force` always bypasses this. On process
+    // restart the in-memory store is empty, so the first pull is always a full
+    // pull (safe).
+    const pullHashStore = ((globalThis as { __mcmPullHash?: Map<number, string> })
+      .__mcmPullHash ??= new Map<number, string>());
+    const versionHash = cloudIos
+      .map((io: { id: number; version?: number; result?: string }) =>
+        `${io.id}:${io.version ?? 0}:${io.result || '-'}`)
+      .join('|');
+    if (!force && pullHashStore.get(subsystemId) === versionHash) {
+      return res.json({
+        success: true,
+        unchanged: true,
+        message: `No changes for MCM ${mcm.name} — skipped backup + rewrite`,
+        iosCount: cloudIos.length,
+        subsystemId,
+      });
+    }
+
+    // B6 (mirrors legacy /api/cloud/pull): the rewrite below is DESTRUCTIVE
+    // (scoped DELETE FROM Ios + reinsert cloud state). The pre-pull backup is
+    // the last line of recovery — if it fails, ABORT rather than wipe with no
+    // safety net. Taken AFTER the no-op check above so unchanged cycles don't
+    // generate backups, but still BEFORE any delete.
+    try {
+      const backup = await createBackup(`pre-pull-mcm${subsystemId}`);
+      console.log(`[MCM ${subsystemIdStr} Pull] Auto-backup created: ${backup.filename}`);
+    } catch (backupErr) {
+      console.error(`[MCM ${subsystemIdStr} Pull] Pre-pull backup FAILED — aborting to protect local data:`, backupErr);
+      return res.status(500).json({
+        success: false,
+        error:
+          'Pre-pull safety backup failed, so the pull was aborted to protect your local data. ' +
+          'Check disk space / backups folder permissions and try again.',
       });
     }
 
@@ -505,6 +535,10 @@ export async function POST(req: Request, res: Response) {
     } catch {
       // best-effort
     }
+
+    // Record the applied cloud signature so the next periodic catch-up can
+    // short-circuit if nothing changed (see no-op check above).
+    pullHashStore.set(subsystemId, versionHash);
 
     console.log(`[MCM ${subsystemIdStr} Pull] DONE — ios=${result}, network=${networkPulled}, estop=${estopPulled}, punchlists=${punchlistsPulled}`);
     return res.json({

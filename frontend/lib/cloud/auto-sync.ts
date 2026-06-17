@@ -21,6 +21,7 @@ import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
+import { getMcmStatus, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -1390,40 +1391,107 @@ class AutoSyncService {
       const config = await configService.getConfig()
       const remoteUrl = config.remoteUrl
       const apiPassword = config.apiPassword
+      if (!remoteUrl) return
+
+      // ── Central / multi-MCM reporting (2026-06-16 MCM11 incident) ────────
+      // The legacy path below only ever reported config.subsystemId via the
+      // in-process SINGLETON PLC client. On a central server that (a) runs
+      // PLC_MODE=remote (no in-process client at all → singleton.isConnected
+      // is always false) and (b) hosts many MCMs, every MCM showed
+      // disconnected ("Red") in the cloud even while live. Report each active
+      // MCM's OWN state from the mode-agnostic registry status (which reflects
+      // the gateway-polled cache in REMOTE mode and the live clients in
+      // embedded mode). Guarded so single-MCM tablets are untouched.
+      let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
+      try { mcms = await configService.getMcms() } catch { mcms = [] }
+      const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
+      const remoteMode = process.env.PLC_MODE === 'remote'
+      const centralMode = remoteMode || active.length > 1
+
+      if (centralMode && active.length >= 1) {
+        for (const m of active) {
+          const sid = m.subsystemId
+          const sidNum = parseInt(sid, 10)
+          if (!Number.isFinite(sidNum)) continue
+          // Mode-agnostic per-MCM connection state.
+          let connected = getMcmStatus(sid)?.connected ?? false
+          // Embedded-mode tags (and a singleton fallback for the configured
+          // subsystem) — in REMOTE mode tag values live in the gateway, so we
+          // report the connection flag with empty tags (still flips the MCM
+          // green; far better than the old all-Red behavior).
+          let tags: Record<string, boolean | null> = {}
+          if (!remoteMode) {
+            const conn = getEmbeddedMcmConnection(sid)
+            if (conn) {
+              connected = true
+              tags = this.readNetworkTags(sidNum, conn.client)
+            }
+          }
+          await this.postNetworkStatus(remoteUrl, apiPassword, sidNum, connected, tags)
+        }
+        return
+      }
+
+      // ── Legacy single-MCM (singleton) path — unchanged behavior ──────────
       const subsystemId = config.subsystemId
+      if (!subsystemId) return
 
-      if (!remoteUrl || !subsystemId) return
-
-      // Read PLC connection + network tag values
       let connected = false
       let tags: Record<string, boolean | null> = {}
-
       try {
         const { hasPlcClient, getPlcClient } = await import('@/lib/plc-client-manager')
         if (hasPlcClient() && getPlcClient().isConnected) {
           connected = true
-          // Read network tags from database
-          const subsystemIdNum = parseInt(String(subsystemId), 10)
-          const rings = db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(subsystemIdNum) as any[]
-
-          for (const ring of rings) {
-            if (ring.McmTag) tags[ring.McmTag] = getPlcClient().readTagCached(ring.McmTag)
-
-            const nodes = db.prepare('SELECT * FROM NetworkNodes WHERE RingId = ?').all(ring.id) as any[]
-            for (const node of nodes) {
-              if (node.StatusTag) tags[node.StatusTag] = getPlcClient().readTagCached(node.StatusTag)
-
-              const ports = db.prepare('SELECT * FROM NetworkPorts WHERE NodeId = ?').all(node.id) as any[]
-              for (const port of ports) {
-                if (port.StatusTag) tags[port.StatusTag] = getPlcClient().readTagCached(port.StatusTag)
-              }
-            }
-          }
+          tags = this.readNetworkTags(parseInt(String(subsystemId), 10), getPlcClient())
         }
       } catch {
         // PLC not available — send disconnected status
       }
 
+      await this.postNetworkStatus(
+        remoteUrl,
+        apiPassword,
+        parseInt(String(subsystemId), 10),
+        connected,
+        tags,
+      )
+    } catch {
+      // Network status push is best-effort — don't log noise
+    } finally {
+      this.isPushingNetworkStatus = false
+    }
+  }
+
+  /** Read every network StatusTag value for a subsystem from a connected client. */
+  private readNetworkTags(
+    subsystemIdNum: number,
+    client: { readTagCached: (name: string) => boolean | null },
+  ): Record<string, boolean | null> {
+    const tags: Record<string, boolean | null> = {}
+    const rings = db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(subsystemIdNum) as any[]
+    for (const ring of rings) {
+      if (ring.McmTag) tags[ring.McmTag] = client.readTagCached(ring.McmTag)
+      const nodes = db.prepare('SELECT * FROM NetworkNodes WHERE RingId = ?').all(ring.id) as any[]
+      for (const node of nodes) {
+        if (node.StatusTag) tags[node.StatusTag] = client.readTagCached(node.StatusTag)
+        const ports = db.prepare('SELECT * FROM NetworkPorts WHERE NodeId = ?').all(node.id) as any[]
+        for (const port of ports) {
+          if (port.StatusTag) tags[port.StatusTag] = client.readTagCached(port.StatusTag)
+        }
+      }
+    }
+    return tags
+  }
+
+  /** POST one subsystem's live network status to the cloud (best-effort). */
+  private async postNetworkStatus(
+    remoteUrl: string,
+    apiPassword: string | undefined,
+    subsystemId: number,
+    connected: boolean,
+    tags: Record<string, boolean | null>,
+  ): Promise<void> {
+    try {
       await fetch(`${remoteUrl}/api/sync/network-status`, {
         method: 'POST',
         headers: {
@@ -1431,7 +1499,7 @@ class AutoSyncService {
           'X-API-Key': apiPassword || '',
         },
         body: JSON.stringify({
-          subsystemId: parseInt(String(subsystemId), 10),
+          subsystemId,
           connected,
           tags,
           timestamp: new Date().toISOString(),
@@ -1439,9 +1507,7 @@ class AutoSyncService {
         signal: AbortSignal.timeout(5000),
       })
     } catch {
-      // Network status push is best-effort — don't log noise
-    } finally {
-      this.isPushingNetworkStatus = false
+      // best-effort — don't log noise
     }
   }
 
