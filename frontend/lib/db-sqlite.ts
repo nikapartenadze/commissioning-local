@@ -49,6 +49,15 @@ try {
     'ALTER TABLE L2Columns ADD COLUMN IsSystem INTEGER DEFAULT 0',
     'ALTER TABLE L2Columns ADD COLUMN IsEditable INTEGER DEFAULT 1',
     'ALTER TABLE L2Columns ADD COLUMN IncludeInProgress INTEGER DEFAULT 0',
+    // Per-MCM scoping for FV/L2 devices. L2 was modeled as one global dataset
+    // (sheets/columns are project templates, shared), but DEVICES + their cell
+    // values belong to a specific MCM. On a central server hosting many MCMs the
+    // old "wipe-all + reload one subsystem" pull (pull-l2) could only ever hold
+    // ONE MCM's L2 data, so the FV page always showed one MCM. SubsystemId scopes
+    // devices so pulls ACCUMULATE per MCM instead of clobbering each other.
+    // Nullable: legacy rows (single-MCM tablets) stay NULL and are treated as
+    // "matches the requested subsystem" until the next scoped pull re-stamps them.
+    'ALTER TABLE L2Devices ADD COLUMN SubsystemId INTEGER',
     'ALTER TABLE TestHistories ADD COLUMN Source TEXT',
     'ALTER TABLE EStopEpcChecks ADD COLUMN FailureMode TEXT',
     // E-Stop dual safety verification: pending-sync rows carry the CheckType

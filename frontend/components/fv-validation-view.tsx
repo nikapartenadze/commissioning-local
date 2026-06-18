@@ -184,8 +184,12 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
     try {
       setLoading(true)
       setError(null)
-      // Cache-bust to ensure we get fresh data after wizard writes
-      const res = await authFetch(`/api/l2?_t=${Date.now()}`)
+      // Scope to THIS MCM on a central server so the FV page shows the selected
+      // subsystem's devices (not whichever MCM was pulled last). Omitted on a
+      // single-MCM tablet (no subsystemId) → returns all, as before.
+      // Cache-bust to ensure we get fresh data after wizard writes.
+      const scope = subsystemId ? `subsystemId=${subsystemId}&` : ''
+      const res = await authFetch(`/api/l2?${scope}_t=${Date.now()}`)
       if (!res.ok) throw new Error(`Failed to fetch functional validation data: ${res.status}`)
       const json: FVData = await res.json()
       setData(json)
@@ -201,7 +205,7 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [subsystemId])
 
   const handleManualL2Pull = useCallback(async () => {
     setL2Pulling(true)
