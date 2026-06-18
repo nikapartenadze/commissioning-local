@@ -193,16 +193,53 @@ async function probeExe(exe: string): Promise<string | null> {
   })
 }
 
+// Config tomls that may carry the ID, across user and service-account install
+// layouts. A service install keeps its config under the LocalService profile,
+// which the tool can read when it runs as a service (LocalSystem).
+function configTomlPaths(): string[] {
+  const appdata = process.env['APPDATA'] || ''
+  const sysroot = process.env['SystemRoot'] || 'C:\\Windows'
+  const dirs: string[] = []
+  if (appdata) dirs.push(path.join(appdata, 'RustDesk', 'config'))
+  dirs.push(path.join(sysroot, 'ServiceProfiles', 'LocalService', 'AppData', 'Roaming', 'RustDesk', 'config'))
+  dirs.push(path.join(sysroot, 'ServiceProfiles', 'NetworkService', 'AppData', 'Roaming', 'RustDesk', 'config'))
+  const files: string[] = []
+  for (const d of dirs) {
+    files.push(path.join(d, 'RustDesk2.toml'))
+    files.push(path.join(d, 'RustDesk.toml'))
+  }
+  return files
+}
+
+// Fallback ID source: read the plaintext `id = '123456789'` line RustDesk
+// writes to its config. Modern clients store only an ENCRYPTED `enc_id` (which
+// this regex deliberately won't match — it isn't a bare 6-12 digit run, and
+// the line starts with `enc_`), so this only helps older clients or cases where
+// the binary won't run --get-id from our context. Best-effort and read-only.
+function readIdFromConfig(): string | null {
+  for (const file of configTomlPaths()) {
+    try {
+      const txt = fs.readFileSync(file, 'utf8')
+      const m = txt.match(/(?:^|\n)\s*id\s*=\s*['"]?(\d{6,12})['"]?/)
+      if (m) return m[1]
+    } catch {
+      /* not present / unreadable (e.g. LocalService ACL) — try next */
+    }
+  }
+  return null
+}
+
 /**
- * Try each candidate exe until one yields a valid ID. Returns the first hit,
- * or null if every candidate failed (RustDesk not installed / not responding).
+ * Try each candidate exe until one yields a valid ID, then fall back to reading
+ * the ID straight from RustDesk's config. Returns the first hit, or null if
+ * every source failed (RustDesk not installed / not responding).
  */
 async function probeAll(): Promise<string | null> {
   for (const exe of candidateExes()) {
     const id = await probeExe(exe)
     if (id) return id
   }
-  return null
+  return readIdFromConfig()
 }
 
 /**
