@@ -696,6 +696,65 @@ def check_backup_bound() -> dict:
     }
 
 
+def check_mcm_isolation() -> dict:
+    """I10 — per-MCM data isolation (central server).
+
+    The 2026-06-18 "FV shows only one MCM" class: data that should be scoped to
+    one MCM was instead a single shared pool, so every MCM's page showed the same
+    rows. On a central server each configured MCM must have its OWN IO / L2 /
+    network rows (SubsystemId-scoped) AND there must be NO unscoped (NULL
+    SubsystemId) rows — a NULL row matches EVERY subsystem via the tool's OR-NULL
+    read fallback, leaking one MCM's data into all of them.
+
+    Deterministic DB read at judgment time (after quiesce). GATES on: every MCM
+    has its own IOs (non-vacuous) AND zero unscoped L2/network rows (isolation).
+    L2/network presence per MCM is reported. Single-MCM runs: N/A → pass.
+    """
+    sids = [int(s) for s in SUBSYSTEM_ID.split(",") if s.strip().isdigit()]
+    if len(sids) <= 1:
+        return {"pass": True, "subsystems": len(sids), "note": "single-MCM — isolation N/A"}
+
+    db_path = os.path.join(DATA_DIR, "database.db")
+    per: dict[int, dict] = {}
+    leak_l2 = leak_net = -1
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+        try:
+            for sid in sids:
+                per[sid] = {
+                    "ios": con.execute("SELECT COUNT(*) FROM Ios WHERE SubsystemId=?", (sid,)).fetchone()[0],
+                    "l2_devices": con.execute("SELECT COUNT(*) FROM L2Devices WHERE SubsystemId=?", (sid,)).fetchone()[0],
+                    "network_rings": con.execute("SELECT COUNT(*) FROM NetworkRings WHERE SubsystemId=?", (sid,)).fetchone()[0],
+                }
+            leak_l2 = con.execute("SELECT COUNT(*) FROM L2Devices WHERE SubsystemId IS NULL").fetchone()[0]
+            leak_net = con.execute("SELECT COUNT(*) FROM NetworkRings WHERE SubsystemId IS NULL").fetchone()[0]
+        finally:
+            con.close()
+    except Exception as e:  # noqa: BLE001 — a read failure must not crash the verdict
+        return {"pass": True, "subsystems": sids, "note": f"isolation check skipped (db read failed: {e})"}
+
+    every_io = all(per[s]["ios"] > 0 for s in sids)
+    every_l2 = all(per[s]["l2_devices"] > 0 for s in sids)
+    every_net = all(per[s]["network_rings"] > 0 for s in sids)
+    no_leak = leak_l2 == 0 and leak_net == 0
+    passed = every_io and no_leak
+    return {
+        "pass": passed,
+        "subsystems": sids,
+        "per_subsystem": {str(k): v for k, v in per.items()},
+        "unscoped_l2_devices": leak_l2,
+        "unscoped_network_rings": leak_net,
+        "every_mcm_has_ios": every_io,
+        "every_mcm_has_l2": every_l2,
+        "every_mcm_has_network": every_net,
+        "note": (
+            "each MCM has its own scoped data, no unscoped leak" if passed else
+            ("unscoped (NULL-subsystem) L2/network rows leak into every MCM's page"
+             if not no_leak else "an MCM has zero IOs (not its own data)")
+        ),
+    }
+
+
 def main() -> None:
     print(f"observer: run={RUN_ID} target={TOOL_URL} soak={SOAK_MINUTES}min")
     deadline = time.monotonic() + SOAK_MINUTES * 60.0
@@ -823,6 +882,11 @@ def main() -> None:
     # I9 bounded auto-backups — always; backups are local to the tool. Catches
     # the unbounded pre-pull-backup disk runaway (2026-06-16 MCM11 incident).
     invariants["I9_backup_bound"] = check_backup_bound()
+
+    # I10 per-MCM data isolation — central server: each MCM has its own IO/L2/
+    # network rows, no unscoped (NULL) rows leaking into every MCM's page
+    # (2026-06-18 "FV shows one MCM" class). N/A → pass on single-MCM runs.
+    invariants["I10_mcm_isolation"] = check_mcm_isolation()
 
     # REPORT-ONLY invariants do NOT gate the build. I7 (cloud→field propagation)
     # depends on the SSE-reconnect-pull firing cleanly, which the docker-network
