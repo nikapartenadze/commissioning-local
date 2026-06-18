@@ -25,6 +25,12 @@ const THINK_MAX = parseInt(process.env.THINK_MAX_MS ?? '15000', 10);
 // drop). HOT_FRACTION: chance a write targets the hot set vs a random IO.
 const HOT_SET = parseInt(process.env.HOT_SET ?? '12', 10);
 const HOT_FRACTION = parseFloat(process.env.HOT_FRACTION ?? '0.35');
+// FV_FRACTION: chance an iteration does a FUNCTIONAL-VALIDATION (L2 cell) write
+// instead of an IO result — simulates electricians filling FV checks per MCM.
+// These flow through the same offline queue (L2PendingSyncs) so a cloud outage
+// must hold them and drain on reconnect (the "internet gone for days then back"
+// case). 0 disables (single-MCM IO-only runs).
+const FV_FRACTION = parseFloat(process.env.FV_FRACTION ?? '0');
 
 const OUT = join(RUNS_DIR, RUN_ID);
 mkdirSync(OUT, { recursive: true });
@@ -96,6 +102,37 @@ async function bot(n) {
     }
     try {
       const scoped = subsystems.length > 0 ? pick(subsystems) : null;
+
+      // Functional-validation (L2) path — simulate an electrician filling FV
+      // cells for THIS MCM. Scoped per subsystem (the per-MCM fix) and
+      // partitioned by device.id % BOTS so each device is single-writer (the
+      // observer can then judge L2 cell survival unambiguously). The write goes
+      // through /api/l2/cell → L2PendingSyncs, so an offline window holds it and
+      // it must drain when the cloud returns.
+      if (scoped && FV_FRACTION > 0 && Math.random() < FV_FRACTION) {
+        const { body: lb } = await api(`/api/l2?subsystemId=${scoped}`);
+        const devices = (lb?.devices ?? []).filter((d) => (d.id % BOTS) === (n - 1));
+        const columns = (lb?.columns ?? []).filter((c) => c.IsEditable !== 0 && c.IsSystem !== 1);
+        if (devices.length > 0 && columns.length > 0) {
+          const dev = pick(devices);
+          const col = pick(columns);
+          const value = Math.random() < 0.85 ? 'Pass' : 'Fail';
+          const t0 = Date.now();
+          const r = await api('/api/l2/cell', {
+            method: 'POST',
+            body: JSON.stringify({ deviceId: dev.id, columnId: col.id, value, updatedBy: name }),
+          });
+          log({
+            action: 'fv', subsystemId: scoped, deviceId: dev.id, columnId: col.id,
+            value, status: r.status, latencyMs: Date.now() - t0,
+          });
+          if (r.status !== 200) console.log(`[crew] ${name}: POST /api/l2/cell -> ${r.status}`);
+          await sleep(rand(THINK_MIN, THINK_MAX));
+          continue;
+        }
+        // no owned FV work for this MCM → fall through to the IO path
+      }
+
       const { status, body } = await api(scoped ? `/api/ios?subsystemId=${scoped}` : '/api/ios');
       const ios = Array.isArray(body) ? body : (body?.ios ?? []);
       if (status !== 200 || ios.length === 0) {
