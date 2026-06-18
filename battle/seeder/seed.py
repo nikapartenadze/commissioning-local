@@ -116,6 +116,21 @@ def clone_subsystems(db: sqlite3.Connection) -> list[tuple[str, str]]:
     )
     col_list = ", ".join(f'"{c}"' for c in cols)
 
+    # The raw seed DB predates the L2Devices.SubsystemId column (added by the
+    # tool's runtime migration, which runs AFTER this seeder). Add it here so the
+    # per-MCM L2 clone below works; the tool's idempotent ALTER is a no-op later.
+    try:
+        cur.execute("ALTER TABLE L2Devices ADD COLUMN SubsystemId INTEGER")
+    except sqlite3.OperationalError:
+        pass  # column already present
+
+    # Stamp the base subsystem's L2 devices (legacy rows are NULL-scoped). A NULL
+    # SubsystemId matches EVERY subsystem via the tool's OR-NULL read fallback,
+    # which would leak the base's FV devices into every cloned MCM's FV page
+    # (the 2026-06-18 "FV shows one MCM" class). After this, each device is
+    # scoped to exactly one MCM, so the clones below are genuinely distinct.
+    cur.execute("UPDATE L2Devices SET SubsystemId = :base WHERE SubsystemId IS NULL", {"base": base})
+
     for k in range(2, MCM_COUNT + 1):
         sid = base + (k - 1) * SUBSYSTEM_STRIDE
         off = (k - 1) * IO_ID_STRIDE
@@ -131,7 +146,57 @@ def clone_subsystems(db: sqlite3.Connection) -> list[tuple[str, str]]:
             {"off": off, "sid": sid, "base": base},
         )
         n = cur.execute("SELECT COUNT(*) FROM Ios WHERE SubsystemId = ?", (sid,)).fetchone()[0]
-        print(f"seeder: cloned subsystem {base} -> {sid} ({name}): {n} IOs")
+
+        # L2 functional-validation: sheets/columns are the shared project
+        # template (NOT cloned — they're global). DEVICES + their cell values are
+        # per-MCM, so clone them with THIS subsystem's id/name and offset
+        # ids/CloudIds. Each cloned MCM then has its OWN distinct FV devices —
+        # the FV page per MCM, with zero cross-MCM sharing (proves the per-MCM
+        # L2 fix end-to-end in the rig).
+        cur.execute(
+            'INSERT OR IGNORE INTO L2Devices '
+            '(id, CloudId, SubsystemId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) '
+            'SELECT id + :off, CASE WHEN CloudId IS NULL THEN NULL ELSE CloudId + :off END, :sid, SheetId, '
+            'DeviceName, :name, :name, DisplayOrder, CompletedChecks, TotalChecks '
+            'FROM L2Devices WHERE SubsystemId = :base',
+            {"off": off, "sid": sid, "name": name, "base": base},
+        )
+        cur.execute(
+            'INSERT OR IGNORE INTO L2CellValues '
+            '(id, CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) '
+            'SELECT cv.id + :off, CASE WHEN cv.CloudCellId IS NULL THEN NULL ELSE cv.CloudCellId + :off END, '
+            'cv.DeviceId + :off, cv.ColumnId, cv.Value, cv.UpdatedBy, cv.UpdatedAt, cv.Version '
+            'FROM L2CellValues cv JOIN L2Devices d ON d.id = cv.DeviceId WHERE d.SubsystemId = :base',
+            {"off": off, "base": base},
+        )
+        ld = cur.execute("SELECT COUNT(*) FROM L2Devices WHERE SubsystemId = ?", (sid,)).fetchone()[0]
+
+        # Network topology (rings → nodes → ports): per-MCM, so clone the FK
+        # chain with offset ids. McmName is set to this MCM's name so the
+        # diagnostics/network page shows THIS MCM's own ring (not the base's).
+        cur.execute(
+            'INSERT OR IGNORE INTO NetworkRings (id, SubsystemId, Name, McmName, McmIp, McmTag) '
+            'SELECT id + :off, :sid, Name, :name, McmIp, McmTag FROM NetworkRings WHERE SubsystemId = :base',
+            {"off": off, "sid": sid, "name": name, "base": base},
+        )
+        cur.execute(
+            'INSERT OR IGNORE INTO NetworkNodes '
+            '(id, RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) '
+            'SELECT id + :off, RingId + :off, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts '
+            'FROM NetworkNodes WHERE RingId IN (SELECT id FROM NetworkRings WHERE SubsystemId = :base)',
+            {"off": off, "base": base},
+        )
+        cur.execute(
+            'INSERT OR IGNORE INTO NetworkPorts '
+            '(id, NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) '
+            'SELECT id + :off, NodeId + :off, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, '
+            'CASE WHEN ParentPortId IS NULL THEN NULL ELSE ParentPortId + :off END '
+            'FROM NetworkPorts WHERE NodeId IN '
+            '(SELECT id FROM NetworkNodes WHERE RingId IN (SELECT id FROM NetworkRings WHERE SubsystemId = :base))',
+            {"off": off, "base": base},
+        )
+        nr = cur.execute("SELECT COUNT(*) FROM NetworkRings WHERE SubsystemId = ?", (sid,)).fetchone()[0]
+        print(f"seeder: cloned subsystem {base} -> {sid} ({name}): {n} IOs, {ld} L2 devices, {nr} network ring(s)")
         mcms.append((str(sid), name))
     db.commit()
     return mcms
