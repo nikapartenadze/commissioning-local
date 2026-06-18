@@ -1129,6 +1129,39 @@ class AutoSyncService {
       this._lastPullAt = new Date()
       this._lastPullResult = `mcm catch-up: ${outcomes.join(' ')}`
       console.log(`[AutoSync] catch-up done: ${outcomes.join(' ')}`)
+
+      // Populate each active MCM's FV/L2 data ONCE (scoped per-MCM pull). The
+      // per-MCM IO pull deliberately skips L2, so without this an MCM's FV page
+      // stays empty on a central server until someone manually hits "Pull FV"
+      // (the 2026-06-18 "FV shows only one MCM" report). Guarded to a one-time
+      // pull per MCM — skip any MCM that already has scoped L2 devices — so it
+      // never re-wipes or churns; ongoing cell edits arrive live via SSE, and a
+      // manual Pull FV still forces a refresh.
+      try {
+        const cfg = await configService.getConfig()
+        const remoteUrl = cfg.remoteUrl
+        const apiPassword = cfg.apiPassword
+        if (remoteUrl) {
+          const countStmt = db.prepare('SELECT COUNT(*) as c FROM L2Devices WHERE SubsystemId = ?')
+          for (const m of active) {
+            const sid = parseInt(m.subsystemId, 10)
+            if (!Number.isFinite(sid)) continue
+            if ((countStmt.get(sid) as { c: number }).c > 0) continue
+            try {
+              await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ remoteUrl, apiPassword, subsystemId: sid }),
+                signal: AbortSignal.timeout(60_000),
+              })
+            } catch {
+              /* best-effort per MCM — next catch-up retries */
+            }
+          }
+        }
+      } catch {
+        /* best-effort L2 population */
+      }
     } finally {
       this.isPullingMcms = false
     }
