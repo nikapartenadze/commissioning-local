@@ -60,46 +60,81 @@ export async function POST(req: Request, res: Response) {
       return res.json({ success: true, l2Pulled: 0, l2CellsPulled: 0, message: 'No FV template configured on cloud' })
     }
 
-    // Clear and re-insert inside a transaction
+    // Pre-pull safety backup. FV/L2 cell values are real commissioning work and
+    // the rewrite below is DESTRUCTIVE for this subsystem's devices/cells — if
+    // the backup fails, ABORT rather than wipe with no safety net (mirrors the
+    // IO pull's B6). Closes the pre-existing L2 data-loss hole (pull-l2 used to
+    // DELETE every L2 cell value with no backup at all).
+    try {
+      const { createBackup } = await import('@/lib/db/backup')
+      const backup = await createBackup(`pre-pull-l2-mcm${subsystemId}`)
+      console.log(`[L2Pull] Auto-backup created: ${backup.filename}`)
+    } catch (backupErr) {
+      console.error('[L2Pull] Pre-pull backup FAILED — aborting to protect local FV data:', backupErr)
+      return res.status(500).json({ success: false, error: 'Pre-pull safety backup failed; L2 pull aborted to protect local data.' })
+    }
+
+    const sid = Number(subsystemId)
     let l2Pulled = 0
     let l2CellsPulled = 0
 
     const result = db.transaction(() => {
-      db.exec('DELETE FROM L2CellValues')
-      db.exec('DELETE FROM L2Devices')
-      db.exec('DELETE FROM L2Columns')
-      db.exec('DELETE FROM L2Sheets')
+      // Sheets + columns are PROJECT-GLOBAL templates shared by every MCM —
+      // UPSERT them by CloudId so repeated per-MCM pulls neither duplicate nor
+      // clobber them (and don't churn local ids).
+      const findSheet = db.prepare('SELECT id FROM L2Sheets WHERE CloudId = ?')
+      const insertSheet = db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)')
+      const updateSheet = db.prepare('UPDATE L2Sheets SET Name=?, DisplayName=?, DisplayOrder=?, Discipline=?, DeviceCount=? WHERE id=?')
+      const findCol = db.prepare('SELECT id FROM L2Columns WHERE CloudId = ?')
+      const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, InputType, DisplayOrder, IsSystem, IsEditable, IncludeInProgress, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      const updateCol = db.prepare('UPDATE L2Columns SET SheetId=?, Name=?, ColumnType=?, InputType=?, DisplayOrder=?, IsSystem=?, IsEditable=?, IncludeInProgress=?, IsRequired=?, Description=? WHERE id=?')
+      const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SubsystemId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      const insertCell = db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
 
       const sheetIdMap = new Map<number, number>()
       const columnIdMap = new Map<number, number>()
       const deviceIdMap = new Map<number, number>()
 
-      const insertSheet = db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)')
-      const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, InputType, DisplayOrder, IsSystem, IsEditable, IncludeInProgress, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      const insertCell = db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
-
       for (const sheet of data.sheets) {
-        const sr = insertSheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0)
-        sheetIdMap.set(sheet.id, sr.lastInsertRowid as number)
-        if (sheet.columns) {
-          for (const col of sheet.columns) {
-            const cr = insertCol.run(
-              col.id, sr.lastInsertRowid, col.name, col.columnType,
-              col.inputType || col.columnType, col.displayOrder,
-              col.isSystem ? 1 : 0, col.isEditable === false ? 0 : 1,
-              col.includeInProgress ? 1 : 0, col.isRequired ? 1 : 0,
-              col.description || null
-            )
-            columnIdMap.set(col.id, cr.lastInsertRowid as number)
+        const existing = findSheet.get(sheet.id) as { id: number } | undefined
+        let localSheetId: number
+        if (existing) {
+          localSheetId = existing.id
+          updateSheet.run(sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0, localSheetId)
+        } else {
+          localSheetId = insertSheet.run(sheet.id, sheet.name, sheet.displayName, sheet.displayOrder, sheet.discipline, sheet.deviceCount || 0).lastInsertRowid as number
+        }
+        sheetIdMap.set(sheet.id, localSheetId)
+        for (const col of (sheet.columns || [])) {
+          const colArgs = [
+            localSheetId, col.name, col.columnType, col.inputType || col.columnType, col.displayOrder,
+            col.isSystem ? 1 : 0, col.isEditable === false ? 0 : 1, col.includeInProgress ? 1 : 0,
+            col.isRequired ? 1 : 0, col.description || null,
+          ]
+          const ec = findCol.get(col.id) as { id: number } | undefined
+          let localColId: number
+          if (ec) {
+            localColId = ec.id
+            updateCol.run(...colArgs, localColId)
+          } else {
+            localColId = insertCol.run(col.id, ...colArgs).lastInsertRowid as number
           }
+          columnIdMap.set(col.id, localColId)
         }
       }
+
+      // Scope: replace ONLY this subsystem's devices/cells (plus any legacy
+      // unscoped rows from before SubsystemId existed). Every OTHER MCM's L2
+      // data is preserved — this is what lets the central server hold all MCMs.
+      // FK cascade isn't guaranteed (foreign_keys pragma may be off), so delete
+      // the dependent cells explicitly first.
+      db.prepare('DELETE FROM L2CellValues WHERE DeviceId IN (SELECT id FROM L2Devices WHERE SubsystemId = ? OR SubsystemId IS NULL)').run(sid)
+      db.prepare('DELETE FROM L2Devices WHERE SubsystemId = ? OR SubsystemId IS NULL').run(sid)
 
       for (const dev of (data.devices || [])) {
         const localSheetId = sheetIdMap.get(dev.sheetId)
         if (!localSheetId) continue
-        const dr = insertDev.run(dev.id, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
+        const dr = insertDev.run(dev.id, sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
         deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
         l2Pulled++
       }
