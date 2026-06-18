@@ -316,6 +316,9 @@ services:
       THINK_MAX_MS: ${THINK_MAX_MS:-15000}
       HOT_SET: ${HOT_SET:-12}
       HOT_FRACTION: ${HOT_FRACTION:-0.35}
+      # Fraction of crew actions that are functional-validation (L2 cell) writes
+      # instead of IO results — simulates electricians doing FV checks per MCM.
+      FV_FRACTION: ${FV_FRACTION:-0}
     volumes:
       - runs:/runs
     networks: [battle]
