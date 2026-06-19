@@ -115,9 +115,22 @@ case "$SCENARIO" in
         # first runs: keep the verdict attributable to multi-MCM behavior.
         export COMPOSE_PROFILES=central
         export MCM_COUNT="${MCM_COUNT:-4}"
-        export PLC_SIM_CONTAINERS="battle-plc-sim-1,battle-plc-sim-2-1,battle-plc-sim-3-1,battle-plc-sim-4-1"
-        # Subsystems the seeder creates: base 38 + clones at +1000 strides.
-        export OBS_SUBSYSTEM_IDS="38,1038,2038,3038"
+        # Derive the sim-container list and subsystem-id list from MCM_COUNT so
+        # the SAME scenario scales (e.g. MCM_COUNT=10 SCENARIO=central). Base sim
+        # is battle-plc-sim-1 (subsystem 38); clone k uses battle-plc-sim-<k>-1
+        # and subsystem (k-1)*1000+38 (matches the seeder's +1000 stride). Needs
+        # plc-sim-<k> services in the compose (defined through plc-sim-10 → 10
+        # MCMs locally). MCM_COUNT=4 reproduces the original 4-sim list exactly.
+        _sims="battle-plc-sim-1"; _subs="38"
+        for _k in $(seq 2 "$MCM_COUNT"); do
+            _sims="$_sims,battle-plc-sim-$_k-1"
+            _subs="$_subs,$(( (_k - 1) * 1000 + 38 ))"
+        done
+        export PLC_SIM_CONTAINERS="$_sims"
+        export OBS_SUBSYSTEM_IDS="$_subs"
+        # Sims 5..10 live in a separate compose profile so routine 4-MCM central
+        # runs (and CI) don't spin up idle sims; activate it only when scaling up.
+        [ "$MCM_COUNT" -gt 4 ] && export COMPOSE_PROFILES=central,central-scale
         # All four field failure modes at once across the 4 MCMs (see the CDW5
         # site setup for the mapping): program write + disconnect + slow + the
         # cloud flap is added here too so the small central run is a faithful
