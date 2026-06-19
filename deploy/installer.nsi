@@ -188,7 +188,7 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; node.exe instances whose binary lives under $INSTDIR, leaving any
   ; other node.exe the user might be running alone.
   DetailPrint "Killing any leftover node.exe under $INSTDIR..."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name = ''node.exe'' OR Name = ''nssm.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"'
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name = ''node.exe'' OR Name = ''nssm.exe''\" | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   Sleep 2000
 
   ; Step 5: belt-and-suspenders retry on the process kill. Even if
@@ -200,7 +200,7 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   StrCpy $1 0
   process_kill_loop:
     IntCmp $1 3 process_kill_done
-    nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$found = Get-CimInstance Win32_Process -Filter \"Name = ''node.exe'' OR Name = ''nssm.exe''\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) }; if ($found) { $found | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; exit 1 } else { exit 0 }"'
+    nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$found = Get-CimInstance Win32_Process -Filter \"Name = ''node.exe'' OR Name = ''nssm.exe''\" | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith(''$INSTDIR'', [StringComparison]::OrdinalIgnoreCase) }; if ($$found) { $$found | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; exit 1 } else { exit 0 }"'
     Pop $2  ; exit code: 0 = no processes left, 1 = had to kill some
     Pop $3  ; (output, ignored)
     StrCmp $2 "0" process_kill_done
@@ -229,8 +229,14 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; from IT). Does NOT defeat Smart App Control — an SAC-enforced machine
   ; still requires a signed binary or SAC turned off.
   ; ══════════════════════════════════════════════════════════════════
-  DetailPrint "Adding Windows Defender exclusion for $INSTDIR ..."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { Add-MpPreference -ExclusionPath \"$INSTDIR\",\"$DATA_DIR\" -ErrorAction Stop; Add-MpPreference -AttackSurfaceReductionOnlyExclusions \"$INSTDIR\app\plctag.dll\",\"$INSTDIR\app\dist-server\plctag.dll\" -ErrorAction SilentlyContinue } catch {}"'
+  DetailPrint "Adding Windows Defender exclusion for $INSTDIR (max 20s, best-effort) ..."
+  ; Add-MpPreference can HANG indefinitely on org-managed Defender / Tamper
+  ; Protection, and nsExec waits for it — that froze the installer mid-run.
+  ; Run it inside a background job bounded by Wait-Job -Timeout: the installer
+  ; waits at most ~20s, then moves on (the orphaned job dies with this host).
+  ; Still best-effort/non-fatal; the exclusion just may not apply on locked-down
+  ; machines (those need a central exclusion from IT).
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$j = Start-Job { try { Add-MpPreference -ExclusionPath \"$INSTDIR\",\"$DATA_DIR\" -ErrorAction Stop; Add-MpPreference -AttackSurfaceReductionOnlyExclusions \"$INSTDIR\app\plctag.dll\",\"$INSTDIR\app\dist-server\plctag.dll\" -ErrorAction SilentlyContinue } catch {} }; Wait-Job $$j -Timeout 20 | Out-Null"'
 
   ; ── Create data directory (preserved across upgrades) ──
   CreateDirectory "$DATA_DIR"
