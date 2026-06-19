@@ -2192,7 +2192,7 @@ export default function CommissioningPage() {
 
 
       {/* Network Status - Shows PLC path, cloud connection, etc */}
-      <NetworkStatusBreadcrumbs className="flex-shrink-0 border-b" />
+      <NetworkStatusBreadcrumbs className="flex-shrink-0 border-b" subsystemId={isUnconfigured ? undefined : paramId} />
 
 
       {/* Error Log — disabled, breadcrumbs already show connection status
