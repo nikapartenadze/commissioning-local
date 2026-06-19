@@ -120,6 +120,15 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; ══════════════════════════════════════════════════════════════════
   DetailPrint "Stopping ${SERVICE_NAME} service before upgrade..."
 
+  ; Step 0: neutralize auto-restart BEFORE stopping. The service carries SCM
+  ; recovery actions (sc failure ... restart/5000) + NSSM AppExit Restart.
+  ; Without this, force-killing leftover node.exe below makes the SCM treat it
+  ; as a crash and respawn the whole service ~5s later — right as the file copy
+  ; runs — re-locking node.exe ("error opening file for writing node.exe").
+  ; Disable start + clear failure actions so NOTHING respawns mid-install.
+  nsExec::ExecToLog 'sc.exe config ${SERVICE_NAME} start= disabled'
+  nsExec::ExecToLog 'sc.exe failure ${SERVICE_NAME} reset= 0 actions= ""'
+
   ; Step 1: graceful stop. nsExec returns immediately, we poll below.
   nsExec::ExecToLog 'sc.exe stop ${SERVICE_NAME}'
 
@@ -158,6 +167,11 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; die, `nssm remove` ran while node.exe was still live and the file copy
   ; below failed with "cannot write node.exe". Poll up to 30s instead.
   DetailPrint "Stopping ${GATEWAY_SERVICE_NAME} service before upgrade..."
+  ; Same anti-respawn neutralization as the app service above. THIS is the one
+  ; that bit v2.42.1: the gateway's restart/5000 recovery respawned it ~5s after
+  ; the kill, racing (and re-locking) the file copy. Disable + clear FIRST.
+  nsExec::ExecToLog 'sc.exe config ${GATEWAY_SERVICE_NAME} start= disabled'
+  nsExec::ExecToLog 'sc.exe failure ${GATEWAY_SERVICE_NAME} reset= 0 actions= ""'
   nsExec::ExecToLog 'sc.exe stop ${GATEWAY_SERVICE_NAME}'
   StrCpy $1 0
   poll_gw_stopped_loop:
