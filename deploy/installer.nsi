@@ -293,11 +293,17 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; dialog. We've already taken the steps above to make sure nothing
   ; SHOULD be locked; this turns silent failure into a visible one if
   ; the worst happens.
-  ; Final backstop before the copy: force-kill ALL nssm.exe. nssm only ever
-  ; hosts OUR services, so killing every instance is safe and frees the nssm.exe
-  ; lock even for an orphaned / differently-named prior service the PID kills
-  ; above couldn't resolve. node children of a killed nssm exit with it.
+  ; Final backstop before the copy — THE actual on-site failure. A prior
+  ; `sc delete` removed the service but left its node.exe RUNNING (orphaned,
+  ; no owning service), holding $INSTDIR\node.exe open. With no service, every
+  ; service-based kill above finds nothing, and the ExecutablePath filter can
+  ; miss it too. Kill by IMAGE NAME — no service, no path, no fragile escaping.
+  ; A central server is a DEDICATED box running only this app's node/nssm, so
+  ; force-killing all instances is safe and is the ONLY thing that reliably
+  ; frees an orphaned node.exe/nssm.exe. (NSIS itself is not node, so this
+  ; cannot kill the installer.)
   nsExec::ExecToLog 'taskkill /F /IM nssm.exe'
+  nsExec::ExecToLog 'taskkill /F /IM node.exe'
   Sleep 1500
 
   SetOverwrite on
