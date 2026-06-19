@@ -216,6 +216,36 @@ class AutoSyncService {
     }
   }
 
+  /**
+   * Best-effort SubsystemId for an IO row, for enriching recovery-audit
+   * payloads (sync.push.drop / .park) so a dropped/parked result can be
+   * attributed to its MCM on a central server. Returns null when unknown.
+   */
+  private ioSubsystemId(ioId: number): number | null {
+    try {
+      const row = db.prepare('SELECT SubsystemId FROM Ios WHERE id = ?').get(ioId) as { SubsystemId: number | null } | undefined
+      return row?.SubsystemId ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Best-effort subsystem label for an L2 cell, derived via the cloud device id
+   * (L2Devices.CloudId → L2Devices.Subsystem). L2 tables carry no numeric
+   * SubsystemId, only the TEXT `Subsystem` label — returned as-is for the audit
+   * payload, or null when it can't be resolved (recorded with a note by callers).
+   */
+  private l2SubsystemLabel(cloudDeviceId: number | null | undefined): string | null {
+    if (cloudDeviceId == null) return null
+    try {
+      const row = db.prepare('SELECT Subsystem FROM L2Devices WHERE CloudId = ?').get(cloudDeviceId) as { Subsystem: string | null } | undefined
+      return row?.Subsystem ?? null
+    } catch {
+      return null
+    }
+  }
+
   private async pushToCloud(): Promise<void> {
     if (this.isPushing) return
     this.isPushing = true
@@ -301,6 +331,7 @@ class AutoSyncService {
             auditLog({
               type: 'sync.push.drop',
               ioId: p.IoId,
+              subsystemId: this.ioSubsystemId(p.IoId),
               version: p.Version,
               result: p.TestResult,
               user: p.InspectorName,
@@ -423,6 +454,7 @@ class AutoSyncService {
             auditLog({
               type: 'sync.push.park',
               ioId: pending.IoId,
+              subsystemId: this.ioSubsystemId(pending.IoId),
               version: pending.Version,
               result: pending.TestResult,
               user: pending.InspectorName,
@@ -544,8 +576,12 @@ class AutoSyncService {
              FROM L2PendingSyncs WHERE DeadLettered = 0 AND RetryCount >= ?`
         ).all(PENDING_RETRY_CAP) as any[]
         for (const p of l2ToDrop) {
+          const l2Subsystem = this.l2SubsystemLabel(p.CloudDeviceId)
           auditLog({
             type: 'sync.push.drop',
+            // L2 tables carry no numeric SubsystemId — best-effort TEXT label
+            // via L2Devices.Subsystem, or null when it can't be resolved.
+            subsystemId: l2Subsystem,
             version: p.Version,
             user: p.UpdatedBy,
             reason: `L2 retry-cap (${PENDING_RETRY_CAP} retries exceeded)`,
@@ -554,6 +590,8 @@ class AutoSyncService {
               pendingId: p.id,
               cloudDeviceId: p.CloudDeviceId,
               cloudColumnId: p.CloudColumnId,
+              subsystemLabel: l2Subsystem,
+              subsystemNote: l2Subsystem == null ? 'L2 SubsystemId unavailable (no numeric col; device row absent)' : undefined,
               value: p.Value,
               retries: p.RetryCount,
               createdAt: p.CreatedAt,
@@ -1038,7 +1076,7 @@ class AutoSyncService {
       if (norm(cloud.result) === norm(row.TestResult)) {
         // The push already landed (ack was lost) — nothing unsynced here.
         auditLog({
-          type: 'sync.push.drop', ioId: row.IoId, version: row.Version,
+          type: 'sync.push.drop', ioId: row.IoId, subsystemId: row.SubsystemId, version: row.Version,
           result: row.TestResult, user: null,
           reason: 'b7-reconcile: cloud already has this value (at-least-once ghost)',
           detail: { pendingId: row.id, cloudVersion: cloud.version },
@@ -1048,7 +1086,7 @@ class AutoSyncService {
       } else if ((newerStmt.get(row.IoId, row.id) as { cnt: number }).cnt > 0) {
         // A newer local write supersedes this row — it carries the newer value.
         auditLog({
-          type: 'sync.push.drop', ioId: row.IoId, version: row.Version,
+          type: 'sync.push.drop', ioId: row.IoId, subsystemId: row.SubsystemId, version: row.Version,
           result: row.TestResult, user: null,
           reason: 'b7-reconcile: superseded by a newer pending row',
           detail: { pendingId: row.id },
@@ -1061,7 +1099,7 @@ class AutoSyncService {
         // applies last-write-wins, and clear strikes/park.
         rebaseStmt.run(cloud.version, `b7-rebased from v${row.Version} to cloud v${cloud.version}`, row.id)
         auditLog({
-          type: 'sync.push.drop', ioId: row.IoId, version: row.Version,
+          type: 'sync.push.drop', ioId: row.IoId, subsystemId: row.SubsystemId, version: row.Version,
           result: row.TestResult, user: null,
           reason: `b7-reconcile: rebased to cloud v${cloud.version} (will re-push, local wins)`,
           detail: { pendingId: row.id, cloudResult: cloud.result },
@@ -1552,9 +1590,54 @@ class AutoSyncService {
       const config = await configService.getConfig()
       const remoteUrl = config.remoteUrl
       const apiPassword = config.apiPassword
-      const subsystemId = config.subsystemId
+      if (!remoteUrl) return
 
-      if (!remoteUrl || !subsystemId) return
+      // ── Central / multi-MCM reporting (2026-06-16 MCM11 incident) ────────
+      // Mirrors pushNetworkStatus(): the legacy path below only ever reported
+      // config.subsystemId via the in-process SINGLETON PLC client, reading
+      // EStopZones UNSCOPED. On a central server (PLC_MODE=remote → no
+      // singleton, singleton.isConnected always false; and N hosted MCMs) the
+      // disconnected-status guard short-circuited and pushed NOTHING, so every
+      // MCM read "Red" in the cloud even while live. Report each active MCM's
+      // OWN estop state, scoped to its subsystem, from the mode-agnostic
+      // registry. Guarded so single-MCM tablets are untouched.
+      let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
+      try { mcms = await configService.getMcms() } catch { mcms = [] }
+      const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
+      const remoteMode = process.env.PLC_MODE === 'remote'
+      const centralMode = remoteMode || active.length > 1
+
+      if (centralMode && active.length >= 1) {
+        for (const m of active) {
+          const sid = m.subsystemId
+          const sidNum = parseInt(sid, 10)
+          if (!Number.isFinite(sidNum)) continue
+          // Mode-agnostic per-MCM connection state.
+          let connected = getMcmStatus(sid)?.connected ?? false
+          // Embedded-mode tags (and a singleton fallback is unnecessary here —
+          // the registry owns every MCM on a central server). In REMOTE mode
+          // estop tag values live in the gateway, so we report the connection
+          // flag with empty tags (still flips the MCM out of all-Red).
+          let tags: Record<string, boolean | null> = {}
+          if (!remoteMode) {
+            const conn = getEmbeddedMcmConnection(sid)
+            if (conn) {
+              connected = true
+              tags = this.readEstopTags(sidNum, conn.client)
+            }
+          }
+          // Preserve the per-MCM "don't push disconnected status" intent — a
+          // disconnected push would clobber live data from a tool that IS
+          // connected to this MCM.
+          if (!connected) continue
+          await this.postEstopStatus(remoteUrl, apiPassword, sidNum, connected, tags)
+        }
+        return
+      }
+
+      // ── Legacy single-MCM (singleton) path — unchanged behavior ──────────
+      const subsystemId = config.subsystemId
+      if (!subsystemId) return
 
       // Only push estop status when PLC is actually connected.
       // If PLC is not connected, skip entirely — avoids overwriting
@@ -1566,47 +1649,8 @@ class AutoSyncService {
         const { hasPlcClient, getPlcClient } = await import('@/lib/plc-client-manager')
         if (hasPlcClient() && getPlcClient().isConnected) {
           connected = true
-          // Read estop tags from database
-          const zones = db.prepare('SELECT * FROM EStopZones').all() as any[]
-
-          for (const zone of zones) {
-            // Zone-level <ZONE>_Nominal_OK — the single bit the cloud needs to
-            // roll a zone (and the whole MCM) up to nominal/fault. The DB zone
-            // Name carries the MCM prefix (MCM02_ZONE_01_01) for grouping, but
-            // the PLC tag lives at controller scope as ZONE_01_01_Nominal_OK,
-            // so strip the leading MCM##_ to match what's on the PLC. Same
-            // derivation as app/api/estop/status/route.ts.
-            const zm = /^([A-Z]+\d+)_(.+)$/.exec(zone.Name)
-            const zoneLabel = zm ? zm[2] : zone.Name
-            const nominalOkTag = `${zoneLabel}_Nominal_OK`
-            tags[nominalOkTag] = getPlcClient().readTagCached(nominalOkTag)
-
-            const epcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?').all(zone.id) as any[]
-            for (const epc of epcs) {
-              if (epc.CheckTag) tags[epc.CheckTag] = getPlcClient().readTagCached(epc.CheckTag)
-
-              const ioPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?').all(epc.id) as any[]
-              for (const ioPoint of ioPoints) {
-                if (ioPoint.Tag) tags[ioPoint.Tag] = getPlcClient().readTagCached(ioPoint.Tag)
-              }
-
-              const vfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?').all(epc.id) as any[]
-              for (const vfd of vfds) {
-                if (vfd.StoTag) tags[vfd.StoTag] = getPlcClient().readTagCached(vfd.StoTag)
-              }
-
-              // 2026 Zone Matrix: include the cross-EPC dependency tags
-              // (ESTOPs_Must_Drop / ESTOPs_Must_Stay_OK) so the cloud
-              // view can render their live state. Guarded for older
-              // databases that don't yet have the table.
-              try {
-                const related = db.prepare('SELECT * FROM EStopRelatedEpcs WHERE EpcId = ?').all(epc.id) as any[]
-                for (const rel of related) {
-                  if (rel.Tag) tags[rel.Tag] = getPlcClient().readTagCached(rel.Tag)
-                }
-              } catch { /* table absent on pre-migration DBs */ }
-            }
-          }
+          // Read estop tags scoped to the configured subsystem.
+          tags = this.readEstopTags(parseInt(String(subsystemId), 10), getPlcClient())
         }
       } catch {
         // PLC not available — skip push
@@ -1616,6 +1660,83 @@ class AutoSyncService {
       // live data from a tool that IS connected to the PLC
       if (!connected) return
 
+      await this.postEstopStatus(
+        remoteUrl,
+        apiPassword,
+        parseInt(String(subsystemId), 10),
+        connected,
+        tags,
+      )
+    } catch {
+      // Estop status push is best-effort — don't log noise
+    } finally {
+      this.isPushingEstopStatus = false
+    }
+  }
+
+  /**
+   * Read every EStop status tag for ONE subsystem from a connected client.
+   * Scoped via EStopZones.SubsystemId so a central server reads only the
+   * MCM's own zones → epcs → ioPoints/vfds/relatedEpcs (the legacy path read
+   * EStopZones unscoped, which on multi-MCM mixed every MCM's tags together).
+   */
+  private readEstopTags(
+    subsystemIdNum: number,
+    client: { readTagCached: (name: string) => boolean | null },
+  ): Record<string, boolean | null> {
+    const tags: Record<string, boolean | null> = {}
+    const zones = db.prepare('SELECT * FROM EStopZones WHERE SubsystemId = ?').all(subsystemIdNum) as any[]
+
+    for (const zone of zones) {
+      // Zone-level <ZONE>_Nominal_OK — the single bit the cloud needs to
+      // roll a zone (and the whole MCM) up to nominal/fault. The DB zone
+      // Name carries the MCM prefix (MCM02_ZONE_01_01) for grouping, but
+      // the PLC tag lives at controller scope as ZONE_01_01_Nominal_OK,
+      // so strip the leading MCM##_ to match what's on the PLC. Same
+      // derivation as app/api/estop/status/route.ts.
+      const zm = /^([A-Z]+\d+)_(.+)$/.exec(zone.Name)
+      const zoneLabel = zm ? zm[2] : zone.Name
+      const nominalOkTag = `${zoneLabel}_Nominal_OK`
+      tags[nominalOkTag] = client.readTagCached(nominalOkTag)
+
+      const epcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?').all(zone.id) as any[]
+      for (const epc of epcs) {
+        if (epc.CheckTag) tags[epc.CheckTag] = client.readTagCached(epc.CheckTag)
+
+        const ioPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?').all(epc.id) as any[]
+        for (const ioPoint of ioPoints) {
+          if (ioPoint.Tag) tags[ioPoint.Tag] = client.readTagCached(ioPoint.Tag)
+        }
+
+        const vfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?').all(epc.id) as any[]
+        for (const vfd of vfds) {
+          if (vfd.StoTag) tags[vfd.StoTag] = client.readTagCached(vfd.StoTag)
+        }
+
+        // 2026 Zone Matrix: include the cross-EPC dependency tags
+        // (ESTOPs_Must_Drop / ESTOPs_Must_Stay_OK) so the cloud
+        // view can render their live state. Guarded for older
+        // databases that don't yet have the table.
+        try {
+          const related = db.prepare('SELECT * FROM EStopRelatedEpcs WHERE EpcId = ?').all(epc.id) as any[]
+          for (const rel of related) {
+            if (rel.Tag) tags[rel.Tag] = client.readTagCached(rel.Tag)
+          }
+        } catch { /* table absent on pre-migration DBs */ }
+      }
+    }
+    return tags
+  }
+
+  /** POST one subsystem's live EStop status to the cloud (best-effort). */
+  private async postEstopStatus(
+    remoteUrl: string,
+    apiPassword: string | undefined,
+    subsystemId: number,
+    connected: boolean,
+    tags: Record<string, boolean | null>,
+  ): Promise<void> {
+    try {
       await fetch(`${remoteUrl}/api/sync/estop-status`, {
         method: 'POST',
         headers: {
@@ -1623,7 +1744,7 @@ class AutoSyncService {
           'X-API-Key': apiPassword || '',
         },
         body: JSON.stringify({
-          subsystemId: parseInt(String(subsystemId), 10),
+          subsystemId,
           connected,
           tags,
           timestamp: new Date().toISOString(),
@@ -1631,9 +1752,7 @@ class AutoSyncService {
         signal: AbortSignal.timeout(5000),
       })
     } catch {
-      // Estop status push is best-effort — don't log noise
-    } finally {
-      this.isPushingEstopStatus = false
+      // best-effort — don't log noise
     }
   }
 
@@ -1658,9 +1777,50 @@ class AutoSyncService {
       const config = await configService.getConfig()
       const remoteUrl = config.remoteUrl
       const apiPassword = config.apiPassword
-      const subsystemId = config.subsystemId
+      if (!remoteUrl) return
 
-      if (!remoteUrl || !subsystemId) return
+      // ── Central / multi-MCM reporting (2026-06-16 MCM11 incident) ────────
+      // Mirrors pushNetworkStatus()/pushEstopStatus(): the legacy path below
+      // only ever reported config.subsystemId via the in-process SINGLETON
+      // (getLatestNetworkDeviceSnapshots()), so on a central server hosting N
+      // MCMs the cloud Diagnostics modal showed data for at most one MCM. Use
+      // the registry's getAllNetworkSnapshots() — each snapshot is decorated
+      // with its owning `subsystemId` — group by subsystem, and POST one batch
+      // per subsystem. Guarded so single-MCM tablets are untouched.
+      let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
+      try { mcms = await configService.getMcms() } catch { mcms = [] }
+      const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
+      const remoteMode = process.env.PLC_MODE === 'remote'
+      const centralMode = remoteMode || active.length > 1
+
+      if (centralMode) {
+        const { getAllNetworkSnapshots } = await import('@/lib/mcm-registry')
+        const all = getAllNetworkSnapshots()
+        if (!Array.isArray(all) || all.length === 0) return
+
+        // Group snapshots by their decorated subsystemId.
+        const bySubsystem = new Map<number, any[]>()
+        for (const snap of all) {
+          const sidNum = parseInt(String(snap.subsystemId), 10)
+          if (!Number.isFinite(sidNum)) continue
+          // Strip the routing-only `subsystemId` field — the cloud receives it
+          // as the top-level batch key, not per-snapshot.
+          const { subsystemId: _drop, ...rest } = snap
+          const list = bySubsystem.get(sidNum)
+          if (list) list.push(rest)
+          else bySubsystem.set(sidNum, [rest])
+        }
+
+        for (const [sidNum, snapshots] of bySubsystem) {
+          if (snapshots.length === 0) continue
+          await this.postNetworkDiagnostics(remoteUrl, apiPassword, sidNum, snapshots)
+        }
+        return
+      }
+
+      // ── Legacy single-MCM (singleton) path — unchanged behavior ──────────
+      const subsystemId = config.subsystemId
+      if (!subsystemId) return
 
       // Only push when PLC is up — same gate as pushEstopStatus, for the
       // same reason: a snapshot batch from a tool that isn't actually
@@ -1672,19 +1832,12 @@ class AutoSyncService {
       const snapshots = getLatestNetworkDeviceSnapshots()
       if (!Array.isArray(snapshots) || snapshots.length === 0) return
 
-      await fetch(`${remoteUrl}/api/sync/network-diagnostics`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiPassword || '',
-        },
-        body: JSON.stringify({
-          subsystemId: parseInt(String(subsystemId), 10),
-          snapshots,
-          timestamp: new Date().toISOString(),
-        }),
-        signal: AbortSignal.timeout(15_000),
-      })
+      await this.postNetworkDiagnostics(
+        remoteUrl,
+        apiPassword,
+        parseInt(String(subsystemId), 10),
+        snapshots,
+      )
     } catch (err) {
       // Best-effort; don't spam logs on every transient HTTP failure.
       const msg = err instanceof Error ? err.message : String(err)
@@ -1694,6 +1847,28 @@ class AutoSyncService {
     } finally {
       this.isPushingNetworkDiagnostics = false
     }
+  }
+
+  /** POST one subsystem's network-diagnostics snapshot batch to the cloud (best-effort). */
+  private async postNetworkDiagnostics(
+    remoteUrl: string,
+    apiPassword: string | undefined,
+    subsystemId: number,
+    snapshots: any[],
+  ): Promise<void> {
+    await fetch(`${remoteUrl}/api/sync/network-diagnostics`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiPassword || '',
+      },
+      body: JSON.stringify({
+        subsystemId,
+        snapshots,
+        timestamp: new Date().toISOString(),
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
   }
 }
 

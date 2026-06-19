@@ -15,13 +15,32 @@ import { deriveSystemRunning } from '@/lib/guided/system-running'
  * Both reads are best-effort against in-memory caches (no PLC round-trip, no
  * DB) so polling is essentially free and never disturbs the tag reader.
  */
-export async function GET(_req: Request, res: Response) {
+export async function GET(req: Request, res: Response) {
   let ring: { state: string; reason?: string; lastActiveNode1?: string | null; lastActiveNode2?: string | null } | null = null
   let systemRunning: boolean | null = null
+
+  // Per-MCM ring gate (central/multi-MCM server). The legacy singleton poller
+  // never runs in PLC_MODE=remote / multi-MCM embedded, so getLatestRingStatus()
+  // returns null for every MCM and D5 stays grey fleet-wide. When the caller
+  // names a registry MCM, read THAT MCM's poller; otherwise (single-MCM field
+  // tablet, no subsystemId) fall back to the singleton.
+  const sidRaw = req.query.subsystemId
+  const sid = sidRaw != null && sidRaw !== '' ? String(sidRaw) : null
+
   try {
     // Lazy require so non-PLC contexts (tests, tools) never pull the FFI stack.
     const mgr = require('@/lib/plc-client-manager') as typeof import('@/lib/plc-client-manager')
-    const r = mgr.getLatestRingStatus()
+    let r: ReturnType<typeof mgr.getLatestRingStatus> = null
+    if (sid) {
+      const registry = require('@/lib/mcm-registry') as typeof import('@/lib/mcm-registry')
+      if (registry.hasMcm(sid)) {
+        r = registry.getRingStatusForMcm(sid)
+      } else {
+        r = mgr.getLatestRingStatus()
+      }
+    } else {
+      r = mgr.getLatestRingStatus()
+    }
     if (r) {
       ring = {
         state: r.state,

@@ -31,7 +31,7 @@ import {
   type ConnectionStatus,
   type IoTag,
 } from './plc';
-import { NetworkPoller, type NetworkDeviceSnapshot } from './plc/network';
+import { NetworkPoller, type NetworkDeviceSnapshot, type RingStatus } from './plc/network';
 import { gatewayClient } from './plc/gateway-client';
 import {
   getCachedMcm,
@@ -334,6 +334,23 @@ export function getMcmNetworkSnapshots(subsystemId: string): NetworkDeviceSnapsh
   if (REMOTE) return getCachedNetworkForMcm(subsystemId);
   const entry = reg().mcms.get(subsystemId);
   return entry?.networkPoller?.getLatestSnapshots() ?? [];
+}
+
+/**
+ * Latest DLR ring verdict for one MCM, read from that MCM's own network
+ * poller. Returns null when the id is unknown, the poller is off / hasn't
+ * probed yet, or we're in REMOTE mode (the polled cache carries per-device
+ * network snapshots but no ring verdict — see remote-cache.ts; guided mode's
+ * D5 gate then degrades to "unknown" rather than fabricating a verdict).
+ *
+ * Mirror of getLatestRingStatus() in the legacy singleton manager, but scoped
+ * to a registry MCM so the central/multi-MCM server gets a per-MCM ring gate
+ * instead of the never-running singleton poller's null.
+ */
+export function getRingStatusForMcm(subsystemId: string): RingStatus | null {
+  if (REMOTE) return null;
+  const entry = reg().mcms.get(subsystemId);
+  return entry?.networkPoller?.getLatestRingStatus() ?? null;
 }
 
 /**
