@@ -481,12 +481,12 @@ export default function CommissioningPage() {
 
   // Fetch punchlists on load
   useEffect(() => {
-    if (!plcConfig.subsystemId || plcConfig.subsystemId === '0') return
-    authFetch(`/api/punchlists?subsystemId=${plcConfig.subsystemId}`)
+    if (!projectId) return
+    authFetch(`/api/punchlists?subsystemId=${projectId}`)
       .then(r => r.ok ? r.json() : [])
       .then(data => setPunchlists(data))
       .catch(() => {})
-  }, [plcConfig.subsystemId])
+  }, [projectId])
 
   // Poll network/estop stats — always poll network for faulted device detection
   useEffect(() => {
@@ -494,7 +494,7 @@ export default function CommissioningPage() {
       let active = true
       const poll = async () => {
         try {
-          const res = await authFetch(`/api/network/status?subsystemId=${plcConfig.subsystemId}`)
+          const res = await authFetch(`/api/network/status?subsystemId=${projectId}`)
           if (res.ok && active) {
             const data = await res.json()
             if (data.success && data.tags) {
@@ -550,7 +550,7 @@ export default function CommissioningPage() {
       let active = true
       const poll = async () => {
         try {
-          const res = await authFetch(`/api/estop/status?subsystemId=${plcConfig.subsystemId}`)
+          const res = await authFetch(`/api/estop/status?subsystemId=${projectId}`)
           if (res.ok && active) {
             const data = await res.json()
             if (data.zones) {
@@ -572,7 +572,7 @@ export default function CommissioningPage() {
       const interval = setInterval(poll, 3000)
       return () => { active = false; clearInterval(interval) }
     }
-  }, [activeTab, plcConfig.subsystemId])
+  }, [activeTab, projectId])
 
   // SignalR connection for real-time updates.
   //
@@ -2057,7 +2057,7 @@ export default function CommissioningPage() {
             <span className="text-[10px] sm:text-xs font-mono bg-muted px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">
               {projectName && subsystemLabel
                 ? `${projectName} / ${subsystemLabel}`
-                : subsystemLabel || (ios.length > 0 && ios[0].subsystemName ? ios[0].subsystemName : `SUB ${plcConfig.subsystemId}`)}
+                : subsystemLabel || (ios.length > 0 && ios[0].subsystemName ? ios[0].subsystemName : `SUB ${projectId}`)}
             </span>
             <div className="h-5 w-px bg-border shrink-0" />
             {/* Tab switcher — desktop: inline buttons, mobile: dropdown */}
@@ -2215,19 +2215,23 @@ export default function CommissioningPage() {
       {/* Tab Content */}
       {activeTab === 'network' ? (
         <div className="flex-1 min-h-0 overflow-hidden px-4">
-          <NetworkTopologyView subsystemId={parseInt(plcConfig.subsystemId) || 16} />
+          {/* Per-MCM views MUST scope by the ROUTE subsystem (paramId), like the
+              IO grid does — NOT plcConfig.subsystemId, which the PLC status
+              broadcast (see ~L597) overwrites with the central server's singleton
+              MCM, leaking one MCM's data onto every MCM's page. */}
+          <NetworkTopologyView subsystemId={parseInt(paramId) || 16} />
         </div>
       ) : activeTab === 'estop' ? (
         <div className="flex-1 min-h-0 overflow-auto">
-          <EStopCheckView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
+          <EStopCheckView subsystemId={parseInt(paramId) || undefined} />
         </div>
       ) : activeTab === 'safety' ? (
         <div className="flex-1 min-h-0 overflow-auto px-4">
-          <SafetyIoView subsystemId={parseInt(plcConfig.subsystemId) || undefined} />
+          <SafetyIoView subsystemId={parseInt(paramId) || undefined} />
         </div>
       ) : activeTab === 'l2' ? (
         <div className="flex-1 min-h-0 overflow-hidden">
-          <FVValidationView subsystemId={parseInt(plcConfig.subsystemId) || undefined} plcConnected={plcStatus.isConnected} />
+          <FVValidationView subsystemId={parseInt(paramId) || undefined} plcConnected={plcStatus.isConnected} />
         </div>
       ) : (
       <>
@@ -2265,7 +2269,7 @@ export default function CommissioningPage() {
           onShowTagStatus={() => setShowTagStatusDialog(true)}
           onShowChangeRequests={() => setShowChangeRequestsPanel(true)}
           onStartTour={() => setShowTour(true)}
-          subsystemId={plcConfig.subsystemId}
+          subsystemId={paramId}
           activeTab={activeTab}
           networkStats={networkStats}
           estopStats={estopStats}
@@ -2424,7 +2428,7 @@ export default function CommissioningPage() {
         <CloudSyncDialog
           open={showCloudSyncDialog}
           onOpenChange={setShowCloudSyncDialog}
-          subsystemId={plcConfig.subsystemId}
+          subsystemId={paramId}
           initialStatus={cloudStatus}
         />
 
