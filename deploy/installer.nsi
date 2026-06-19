@@ -149,9 +149,11 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   nsExec::ExecToLog 'sc.exe delete ${SERVICE_NAME}'
   Sleep 1000
 
-!ifdef CENTRAL
-  ; Central build also runs the plc-gateway service — stop + remove it too
-  ; before touching files. CRITICAL: poll for STOPPED exactly like the app
+  ; Stop + remove the plc-gateway service UNCONDITIONALLY (even on a non-central
+  ; build). A prior CENTRAL install leaves CommissioningGateway running; if this
+  ; cleanup is skipped, its node.exe/nssm.exe keep the install files locked and
+  ; the copy below fails with "error opening file for writing node.exe".
+  ; CRITICAL: poll for STOPPED exactly like the app
   ; service above. A fixed Sleep was too short — if the gateway took >2s to
   ; die, `nssm remove` ran while node.exe was still live and the file copy
   ; below failed with "cannot write node.exe". Poll up to 30s instead.
@@ -177,7 +179,6 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; Hard fallback in case nssm.exe is itself missing/locked.
   nsExec::ExecToLog 'sc.exe delete ${GATEWAY_SERVICE_NAME}'
   Sleep 1000
-!endif
 
   ; Step 4: last-resort process kill. WMIC / PowerShell can filter
   ; node.exe by ExecutablePath, which taskkill cannot do. The earlier
