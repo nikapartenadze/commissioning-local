@@ -37,19 +37,25 @@ interface NetworkChainStatus {
 
 interface NetworkStatusBreadcrumbsProps {
   tagName?: string
+  /** Route subsystem — scopes the PLC/module nodes to THIS MCM on a central
+   *  server. Without it the bar shows the fleet-wide aggregate tag count
+   *  (identical on every page). */
+  subsystemId?: string
   className?: string
 }
 
-export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBreadcrumbsProps) {
+export function NetworkStatusBreadcrumbs({ tagName, subsystemId, className }: NetworkStatusBreadcrumbsProps) {
   const [chainStatus, setChainStatus] = useState<NetworkChainStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
 
   const fetchNetworkStatus = useCallback(async () => {
     try {
-      const url = tagName
-        ? `${API_ENDPOINTS.networkChainStatus}?tagName=${encodeURIComponent(tagName)}`
-        : API_ENDPOINTS.networkChainStatus
+      const params = new URLSearchParams()
+      if (tagName) params.set('tagName', tagName)
+      if (subsystemId) params.set('subsystemId', subsystemId)
+      const qs = params.toString()
+      const url = qs ? `${API_ENDPOINTS.networkChainStatus}?${qs}` : API_ENDPOINTS.networkChainStatus
 
       const response = await authFetch(url)
       if (response.ok) {
@@ -61,7 +67,7 @@ export function NetworkStatusBreadcrumbs({ tagName, className }: NetworkStatusBr
     } finally {
       setLoading(false)
     }
-  }, [tagName])
+  }, [tagName, subsystemId])
 
   useEffect(() => {
     fetchNetworkStatus()
