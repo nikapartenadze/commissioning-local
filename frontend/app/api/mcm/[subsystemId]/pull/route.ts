@@ -520,10 +520,30 @@ export async function POST(req: Request, res: Response) {
         e instanceof Error ? e.message : e);
     }
 
-    // L2 pull intentionally skipped here — L2Sheets/Columns are global to the
-    // project, and replacing them would clobber other MCMs' setups. The
-    // legacy /api/cloud/pull-l2 endpoint owns that flow and should be called
-    // once per project, not per MCM.
+    // L2/FV pull, scoped to THIS subsystem. Previously skipped here — which
+    // left every MCM EXCEPT the server's own subsystem with an empty Functional
+    // Validation tab on a central server, because connect-all / pull-all only
+    // ever call this route and never pulled L2. That skip predated the
+    // L2Devices.SubsystemId scoping: /api/cloud/pull-l2 now deletes/inserts only
+    // this subsystem's devices/cells and upserts the project-global
+    // L2Sheets/Columns by CloudId, so per-MCM pulls no longer clobber each
+    // other. Self-call it (mirrors how pull-all self-calls this route).
+    // Best-effort — an L2 failure must not fail the IO pull. (l2Pulled is
+    // already declared with the other counters near the top of the handler.)
+    try {
+      const port = process.env.PORT || '3000';
+      const l2Res = await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const l2Data = await l2Res.json().catch(() => ({}));
+      l2Pulled = l2Data.l2Pulled || l2Data.devices || 0;
+    } catch (e) {
+      console.warn(`[MCM ${subsystemIdStr} Pull] L2 pull failed:`,
+        e instanceof Error ? e.message : e);
+    }
 
     // Broadcast IOsUpdated so live UIs refresh.
     try {
