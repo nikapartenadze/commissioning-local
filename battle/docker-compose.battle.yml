@@ -232,6 +232,76 @@ services:
     mem_limit: 256m
     cpus: 1
 
+  # ── central-scale: sims 5..10 for local 10-MCM soaks (MCM_COUNT>4) ──────────
+  # Separate profile so routine 4-MCM `central` runs (and CI) don't start these.
+  # run_scenario.sh activates COMPOSE_PROFILES=central,central-scale when
+  # MCM_COUNT>4. IPs continue the 172.28.0.10+i block the seeder already expects.
+  plc-sim-5:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central-scale"]
+    networks: { battle: { ipv4_address: 172.28.0.14 } }
+    volumes: [ "gen:/gen:ro" ]
+    depends_on:
+      seeder: { condition: service_completed_successfully }
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  plc-sim-6:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central-scale"]
+    networks: { battle: { ipv4_address: 172.28.0.15 } }
+    volumes: [ "gen:/gen:ro" ]
+    depends_on:
+      seeder: { condition: service_completed_successfully }
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  plc-sim-7:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central-scale"]
+    networks: { battle: { ipv4_address: 172.28.0.16 } }
+    volumes: [ "gen:/gen:ro" ]
+    depends_on:
+      seeder: { condition: service_completed_successfully }
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  plc-sim-8:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central-scale"]
+    networks: { battle: { ipv4_address: 172.28.0.17 } }
+    volumes: [ "gen:/gen:ro" ]
+    depends_on:
+      seeder: { condition: service_completed_successfully }
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  plc-sim-9:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central-scale"]
+    networks: { battle: { ipv4_address: 172.28.0.18 } }
+    volumes: [ "gen:/gen:ro" ]
+    depends_on:
+      seeder: { condition: service_completed_successfully }
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
+  plc-sim-10:
+    image: ${PLC_SIM_IMAGE:-battle/plc-sim:local}
+    profiles: ["central-scale"]
+    networks: { battle: { ipv4_address: 172.28.0.19 } }
+    volumes: [ "gen:/gen:ro" ]
+    depends_on:
+      seeder: { condition: service_completed_successfully }
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1
+
   # ── split deployment (Phase 1.1): the plc-gateway owns every PLC connection;
   # the tool runs PLC_MODE=remote and routes all PLC ops here over :3200. The
   # gateway broadcasts events (tag changes, McmReconnected → validation
