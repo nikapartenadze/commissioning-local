@@ -24,7 +24,7 @@
  */
 
 import { getPlcStatus, getLatestNetworkDeviceSnapshots } from '@/lib/plc-client-manager'
-import { hasAnyMcm, getAllNetworkSnapshots } from '@/lib/mcm-registry'
+import { hasAnyMcm, getAllNetworkSnapshots, listMcms } from '@/lib/mcm-registry'
 import { readIdentity } from './identity-reader'
 import { getCachedBaselines, getLastBaselineSyncAt } from '@/lib/cloud/firmware-baseline-sync'
 import { findBaseline, evaluateCompliance, type ComplianceVerdict, type FirmwareBaseline } from './compliance'
@@ -44,6 +44,12 @@ export interface FirmwareDeviceResult {
   productCode: number | null
   serial: number | null
   verdict: ComplianceVerdict
+  /**
+   * Owning MCM. Present on central-server (multi-MCM) results so each device /
+   * controller can be attributed to its subsystem; undefined on legacy
+   * single-MCM (tablet) results, which carry no subsystem context.
+   */
+  subsystemId?: string
 }
 
 export interface FirmwareScanResult {
@@ -52,6 +58,12 @@ export interface FirmwareScanResult {
   baselineAvailable: boolean
   baselineSyncedAt: number | null
   devices: FirmwareDeviceResult[]
+  /**
+   * Per-MCM controller identities on a central server (one entry per connected
+   * MCM, tagged with subsystemId). Omitted on single-MCM tablets, where the
+   * sole controller is the first entry of `devices` exactly as before.
+   */
+  controllers?: FirmwareDeviceResult[]
   error?: string
 }
 
@@ -69,6 +81,7 @@ function toResult(
   source: string,
   identity: DeviceIdentity | null,
   baseline: FirmwareBaseline | undefined,
+  subsystemId?: string,
 ): FirmwareDeviceResult {
   return {
     label,
@@ -80,6 +93,7 @@ function toResult(
     productCode: identity?.productCode ?? null,
     serial: identity?.serial ?? null,
     verdict: evaluateCompliance(identity, baseline),
+    ...(subsystemId !== undefined ? { subsystemId } : {}),
   }
 }
 
@@ -105,18 +119,50 @@ function identityFromSnapshot(
 }
 
 /**
- * Read ONLY the controller's firmware (single @raw Identity request) and judge
- * it against the cached baseline. Used by the diagnostics view's controller card
- * (the controller isn't a network node, so it's absent from the snapshots the
- * view already renders). Returns null when the PLC isn't connected.
+ * Read EVERY connected controller's firmware (one @raw Identity request each)
+ * and judge each against the cached baseline. The controller is not a network
+ * node, so it's absent from the diagnostics snapshots the view already renders.
+ *
+ * Multi-MCM aware (mirrors the device-snapshot split in scanFirmware): on a
+ * central server the singleton getPlcStatus() collapses to the FIRST connected
+ * MCM only, hiding every other controller's firmware. When the registry is in
+ * use we iterate its connected MCMs and read each controller, tagging the
+ * result with its subsystemId. Legacy single-MCM tablets keep the singleton
+ * path (one untagged controller).
  */
-export async function scanController(): Promise<FirmwareDeviceResult | null> {
-  const status = getPlcStatus()
-  if (!status.connected || !status.connectionConfig) return null
+export async function scanControllers(): Promise<FirmwareDeviceResult[]> {
   const baselines = getCachedBaselines()
+
+  if (hasAnyMcm()) {
+    const connected = listMcms().filter((m) => m.connected)
+    const results = await Promise.all(
+      connected.map(async (mcm) => {
+        const ctrl = await readIdentity(mcm.ip, mcm.path)
+        const baseline = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode) : undefined
+        const label = mcm.name ? `Controller (${mcm.name})` : `Controller (MCM ${mcm.subsystemId})`
+        return toResult(label, mcm.path, ctrl, baseline, mcm.subsystemId)
+      }),
+    )
+    return results
+  }
+
+  // Singleton (tablet) path — unchanged.
+  const status = getPlcStatus()
+  if (!status.connected || !status.connectionConfig) return []
   const ctrl = await readIdentity(status.connectionConfig.ip, status.connectionConfig.path)
   const baseline = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode) : undefined
-  return toResult('Controller', status.connectionConfig.path, ctrl, baseline)
+  return [toResult('Controller', status.connectionConfig.path, ctrl, baseline)]
+}
+
+/**
+ * Read ONLY a controller's firmware. Back-compat single-result wrapper for the
+ * diagnostics view's controller card. Returns the sole controller on a tablet,
+ * or the first connected MCM's controller on a central server (use
+ * scanControllers() to enumerate all). Null when nothing is connected.
+ */
+export async function scanController(): Promise<FirmwareDeviceResult | null> {
+  const controllers = await scanControllers()
+  return controllers[0] ?? null
 }
 
 /**
@@ -134,17 +180,31 @@ export async function scanFirmware(): Promise<FirmwareScanResult> {
     baselineSyncedAt: getLastBaselineSyncAt(),
   }
 
-  if (!status.connected || !status.connectionConfig) {
+  const central = hasAnyMcm()
+
+  // On a central server "connected" means at least one MCM is connected; on a
+  // tablet it's the singleton's status. (baselines is read above.)
+  const singletonConnected = status.connected && !!status.connectionConfig
+
+  // Controllers — not network nodes; one @raw Identity read each. Multi-MCM
+  // aware: scanControllers() iterates EVERY connected MCM on a central server
+  // (the singleton getPlcStatus() would otherwise collapse to MCM #1 only).
+  const controllers = await scanControllers()
+
+  if (!central && !singletonConnected) {
     lastScan = { ...base, connected: false, devices: [], error: 'PLC not connected' }
+    return lastScan
+  }
+  if (central && controllers.length === 0) {
+    lastScan = { ...base, connected: false, devices: [], error: 'No MCM connected' }
     return lastScan
   }
 
   const devices: FirmwareDeviceResult[] = []
 
-  // Controller — not a network node; single @raw Identity read (full identity).
-  const ctrl = await readIdentity(status.connectionConfig.ip, status.connectionConfig.path)
-  const ctrlBaseline = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode) : undefined
-  devices.push(toResult('Controller', status.connectionConfig.path, ctrl, ctrlBaseline))
+  // Keep the controller(s) as the leading device entries (single-MCM callers
+  // read devices[0] as "the controller" exactly as before).
+  devices.push(...controllers)
 
   // Networked devices — firmware already in the diagnostics snapshots.
   // Multi-MCM aware: a central server (PLC_MODE=remote) has no singleton
@@ -153,14 +213,21 @@ export async function scanFirmware(): Promise<FirmwareScanResult> {
   // hardware" on exactly the deployment that hosts the most devices. Prefer the
   // registry's aggregate snapshots (REMOTE-aware) when the registry is in use;
   // fall back to the singleton poller for legacy single-MCM tablets.
-  const deviceSnapshots = hasAnyMcm() ? getAllNetworkSnapshots() : getLatestNetworkDeviceSnapshots()
+  const deviceSnapshots = central ? getAllNetworkSnapshots() : getLatestNetworkDeviceSnapshots()
   for (const snap of deviceSnapshots) {
     const identity = identityFromSnapshot(snap.productCode, snap.firmwareMajor, snap.firmwareMinor)
     // vendorId unknown from diagnostics → match baseline by productCode only.
     const baseline = identity ? findBaseline(baselines, null, identity.productCode) : undefined
-    devices.push(toResult(snap.deviceName, snap.tagName, identity, baseline))
+    // Aggregate snapshots carry subsystemId; the singleton poller's do not.
+    const sub = (snap as { subsystemId?: string }).subsystemId
+    devices.push(toResult(snap.deviceName, snap.tagName, identity, baseline, sub))
   }
 
-  lastScan = { ...base, connected: true, devices }
+  // Surface the per-MCM controllers separately on a central server so callers
+  // can attribute each controller to its subsystem. Single-MCM tablets keep the
+  // old shape (sole controller is devices[0], no `controllers` array).
+  lastScan = central
+    ? { ...base, connected: true, devices, controllers }
+    : { ...base, connected: true, devices }
   return lastScan
 }

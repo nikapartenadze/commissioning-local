@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { disconnectMcm, hasMcm } from '@/lib/mcm-registry';
+import { auditLog } from '@/lib/logging/recovery-log';
 
 /**
  * POST /api/mcm/:subsystemId/plc/disconnect
@@ -14,6 +15,8 @@ export async function POST(req: Request, res: Response) {
       return res.json({ success: true, status: 'disconnected', alreadyDown: true });
     }
     await disconnectMcm(subsystemId);
+    // Durable recovery-log trace of the teardown. Log-only.
+    auditLog({ type: 'plc.disconnect', subsystemId });
     return res.json({ success: true, status: 'disconnected' });
   } catch (error) {
     return res.status(500).json({

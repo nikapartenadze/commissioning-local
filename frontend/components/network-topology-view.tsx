@@ -1427,6 +1427,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
               liveSnapshots={networkSnapshots.snapshots}
               wsConnected={networkSnapshots.wsConnected}
               ringStatus={networkSnapshots.ringStatus}
+              subsystemId={subsystemId}
             />
           </div>
         </DialogContent>
