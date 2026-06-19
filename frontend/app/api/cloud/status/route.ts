@@ -19,6 +19,76 @@ export async function GET(req: Request, res: Response) {
     // never reads "all synced" while field work is actually stuck (B3/B5).
     const attentionCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
 
+    // ── Per-MCM (per-subsystem) breakdown ──────────────────────────────
+    // On a CENTRAL server one tool owns many MCMs, so the global totals above
+    // can't tell the operator WHICH subsystem has stuck/unsynced/rejected work.
+    // We re-derive the same counts grouped by subsystem via JOINs:
+    //   PendingSyncs.IoId           → Ios.SubsystemId
+    //   L2PendingSyncs.CloudDeviceId → L2Devices.CloudId → L2Devices.Subsystem
+    // L2Devices has no numeric SubsystemId column (only the Subsystem name),
+    // so L2 work is keyed by that name; a parked L2 row whose device row is
+    // gone buckets as 'unknown'. Counting semantics are IDENTICAL to the
+    // globals — this only adds grouping. Single-MCM tablets just see one entry.
+    interface PerSubsystemCounts {
+      subsystemId: string
+      pendingIoSyncCount: number
+      pendingL2SyncCount: number
+      attentionCount: number
+      failedIoSyncCount: number
+      pullBlocked: boolean
+    }
+    const perSubsystemMap = new Map<string, PerSubsystemCounts>()
+    const bucket = (key: string | number | null | undefined): PerSubsystemCounts => {
+      const k = key == null ? 'unknown' : String(key)
+      let entry = perSubsystemMap.get(k)
+      if (!entry) {
+        entry = { subsystemId: k, pendingIoSyncCount: 0, pendingL2SyncCount: 0, attentionCount: 0, failedIoSyncCount: 0, pullBlocked: false }
+        perSubsystemMap.set(k, entry)
+      }
+      return entry
+    }
+
+    // IO pending (active queue): group by the owning IO's subsystem.
+    const ioPendingRows = db.prepare(`
+      SELECT i.SubsystemId AS sid, COUNT(*) AS cnt
+      FROM PendingSyncs p LEFT JOIN Ios i ON i.id = p.IoId
+      WHERE p.DeadLettered = 0
+      GROUP BY i.SubsystemId
+    `).all() as { sid: number | null; cnt: number }[]
+    for (const r of ioPendingRows) bucket(r.sid).pendingIoSyncCount = r.cnt
+
+    // IO parked (DeadLettered=1) → attention, per subsystem.
+    const ioAttentionRows = db.prepare(`
+      SELECT i.SubsystemId AS sid, COUNT(*) AS cnt
+      FROM PendingSyncs p LEFT JOIN Ios i ON i.id = p.IoId
+      WHERE p.DeadLettered = 1
+      GROUP BY i.SubsystemId
+    `).all() as { sid: number | null; cnt: number }[]
+    for (const r of ioAttentionRows) bucket(r.sid).attentionCount = r.cnt
+
+    // IO failed (RetryCount > 0), per subsystem.
+    const ioFailedRows = db.prepare(`
+      SELECT i.SubsystemId AS sid, COUNT(*) AS cnt
+      FROM PendingSyncs p LEFT JOIN Ios i ON i.id = p.IoId
+      WHERE p.RetryCount > 0
+      GROUP BY i.SubsystemId
+    `).all() as { sid: number | null; cnt: number }[]
+    for (const r of ioFailedRows) bucket(r.sid).failedIoSyncCount = r.cnt
+
+    // L2 pending: resolve subsystem through the device row's Subsystem name.
+    // No DeadLettered filter — matches the global pendingL2SyncCount above.
+    const l2PendingRows = db.prepare(`
+      SELECT d.Subsystem AS sub, COUNT(*) AS cnt
+      FROM L2PendingSyncs lp LEFT JOIN L2Devices d ON d.CloudId = lp.CloudDeviceId
+      GROUP BY d.Subsystem
+    `).all() as { sub: string | null; cnt: number }[]
+    for (const r of l2PendingRows) bucket(r.sub).pendingL2SyncCount = r.cnt
+
+    for (const entry of Array.from(perSubsystemMap.values())) {
+      entry.pullBlocked = (entry.pendingIoSyncCount + entry.pendingL2SyncCount) > 0
+    }
+    const perSubsystem = Array.from(perSubsystemMap.values())
+
     const cloudSyncService = getCloudSyncService()
     const config = await cloudSyncService.getConfig()
     const autoSyncService = getAutoSyncService()
@@ -66,6 +136,7 @@ export async function GET(req: Request, res: Response) {
       pendingChangeRequestCount,
       totalPendingCount,
       attentionCount,
+      perSubsystem,
       failedIoSyncCount,
       failedL2SyncCount,
       oldestPendingIoSync: oldestIoRow?.CreatedAt ?? undefined,

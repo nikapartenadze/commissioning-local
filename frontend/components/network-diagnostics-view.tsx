@@ -49,6 +49,13 @@ interface Props {
   wsConnected?: boolean
   /** Latest DLR ring verdict from the poller (null until the first push). */
   ringStatus?: RingStatusUpdateMessage['ring'] | null
+  /**
+   * Selected MCM on a CENTRAL server. Threaded into the firmware
+   * baseline/controller fetches as `?subsystemId=` so a multi-MCM tool scopes
+   * compliance to the chosen subsystem instead of whichever MCM was last
+   * resolved. Omitted on a single-MCM tablet → endpoints return the sole MCM.
+   */
+  subsystemId?: number
 }
 
 const STALE_MS = 60_000
@@ -195,8 +202,13 @@ export function NetworkDiagnosticsView({
   liveSnapshots,
   wsConnected = false,
   ringStatus = null,
+  subsystemId,
 }: Props) {
   const [now, setNow] = useState(() => Date.now())
+
+  // Scope firmware compliance lookups to THIS MCM on a central server. Omitted
+  // on a single-MCM tablet (no subsystemId) → endpoints return the sole MCM.
+  const scope = subsystemId ? `?subsystemId=${subsystemId}` : ''
 
   useEffect(() => {
     if (!active) return
@@ -212,12 +224,12 @@ export function NetworkDiagnosticsView({
   useEffect(() => {
     if (!active) return
     let cancelled = false
-    authFetch('/api/firmware/baseline')
+    authFetch(`/api/firmware/baseline${scope}`)
       .then((r) => r.json())
       .then((d) => { if (!cancelled && Array.isArray(d?.baselines)) setBaselines(d.baselines) })
       .catch(() => { /* baseline optional */ })
     return () => { cancelled = true }
-  }, [active])
+  }, [active, scope])
 
   // Controller firmware (not a network node → not in liveSnapshots). One @raw
   // read on open; optional — the card hides if it can't be read.
@@ -225,12 +237,12 @@ export function NetworkDiagnosticsView({
   useEffect(() => {
     if (!active || singleDevice) return
     let cancelled = false
-    authFetch('/api/firmware/controller')
+    authFetch(`/api/firmware/controller${scope}`)
       .then((r) => r.json())
       .then((d) => { if (!cancelled) setControllerFw(d?.controller ?? null) })
       .catch(() => { /* controller card optional */ })
     return () => { cancelled = true }
-  }, [active, singleDevice])
+  }, [active, singleDevice, scope])
 
   const lastSeenRef = useRef<Map<string, DeviceState>>(new Map())
   const devices = useMemo<Map<string, DeviceState>>(() => {
