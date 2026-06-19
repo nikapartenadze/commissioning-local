@@ -1,6 +1,10 @@
 {
   "name": "commissioning-tool",
+<<<<<<< HEAD
   "version": "2.42.0",
+=======
+  "version": "2.42.1",
+>>>>>>> ce5b8ec (fix(central): scope per-MCM page views by route subsystem, not singleton config)
   "private": true,
   "scripts": {
     "dev": "cross-env PORT=3020 PLC_WS_PORT=3022 WS_BROADCAST_URL=http://localhost:3122/broadcast concurrently \"vite --port 5173 --host 0.0.0.0\" \"tsx watch server-express.ts\"",
