@@ -129,6 +129,14 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   nsExec::ExecToLog 'sc.exe config ${SERVICE_NAME} start= disabled'
   nsExec::ExecToLog 'sc.exe failure ${SERVICE_NAME} reset= 0 actions= ""'
 
+  ; Step 0b: PID-BASED kill (path-independent) — THE fix for the recurring
+  ; "error opening file for writing node.exe/nssm.exe". A LocalSystem service's
+  ; node.exe reports a null/unreadable ExecutablePath via WMI, so the
+  ; ExecutablePath-filtered kill further down SILENTLY SKIPS it and the lock
+  ; survives. The SCM always knows the service's PID — kill that whole tree
+  ; (/T) by PID. Recovery is disabled above, so it won't respawn.
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$s = Get-CimInstance Win32_Service -Filter \"Name = ''${SERVICE_NAME}''\" -ErrorAction SilentlyContinue; if ($$s -and $$s.ProcessId -gt 0) { Start-Process taskkill -ArgumentList ''/F'',''/T'',''/PID'',$$s.ProcessId -NoNewWindow -Wait -ErrorAction SilentlyContinue }"'
+
   ; Step 1: graceful stop. nsExec returns immediately, we poll below.
   nsExec::ExecToLog 'sc.exe stop ${SERVICE_NAME}'
 
@@ -172,6 +180,11 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; the kill, racing (and re-locking) the file copy. Disable + clear FIRST.
   nsExec::ExecToLog 'sc.exe config ${GATEWAY_SERVICE_NAME} start= disabled'
   nsExec::ExecToLog 'sc.exe failure ${GATEWAY_SERVICE_NAME} reset= 0 actions= ""'
+  ; PID-based kill (path-independent) — see the SERVICE_NAME note above. THIS is
+  ; the gateway process that was surviving on-site (its node.exe ExecutablePath
+  ; was null → the path-filtered kill skipped it → node.exe/nssm.exe stayed
+  ; locked → "error opening file for writing node.exe").
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$$s = Get-CimInstance Win32_Service -Filter \"Name = ''${GATEWAY_SERVICE_NAME}''\" -ErrorAction SilentlyContinue; if ($$s -and $$s.ProcessId -gt 0) { Start-Process taskkill -ArgumentList ''/F'',''/T'',''/PID'',$$s.ProcessId -NoNewWindow -Wait -ErrorAction SilentlyContinue }"'
   nsExec::ExecToLog 'sc.exe stop ${GATEWAY_SERVICE_NAME}'
   StrCpy $1 0
   poll_gw_stopped_loop:
@@ -280,6 +293,13 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; dialog. We've already taken the steps above to make sure nothing
   ; SHOULD be locked; this turns silent failure into a visible one if
   ; the worst happens.
+  ; Final backstop before the copy: force-kill ALL nssm.exe. nssm only ever
+  ; hosts OUR services, so killing every instance is safe and frees the nssm.exe
+  ; lock even for an orphaned / differently-named prior service the PID kills
+  ; above couldn't resolve. node children of a killed nssm exit with it.
+  nsExec::ExecToLog 'taskkill /F /IM nssm.exe'
+  Sleep 1500
+
   SetOverwrite on
   SetOutPath "$INSTDIR"
   File "${PORTABLE_DIR}\node.exe"
