@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { connectConfiguredMcm } from '@/lib/services/mcm-connect';
+import { auditLog } from '@/lib/logging/recovery-log';
 
 /**
  * POST /api/mcm/:subsystemId/plc/connect
@@ -23,6 +24,11 @@ export async function POST(req: Request, res: Response) {
 
   try {
     const r = await connectConfiguredMcm(subsystemId, { ip, path }, { ensureIos: true });
+
+    // Durable recovery-log trace of a successful connect. Log-only.
+    if (r.success) {
+      auditLog({ type: 'plc.connect', subsystemId });
+    }
 
     // Map the shared result to this route's response shape (kept stable for
     // the central dashboard + commissioning page clients).

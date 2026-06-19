@@ -6,6 +6,7 @@ import { invalidateIoSubsystemCache, getMcmStatus } from '@/lib/mcm-registry';
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { createBackup } from '@/lib/db/backup';
 import { computeAtRiskResults, computeAtRiskComments } from '@/lib/cloud/pull-guard';
+import { auditLog } from '@/lib/logging/recovery-log';
 
 /**
  * POST /api/mcm/:subsystemId/pull
@@ -541,6 +542,19 @@ export async function POST(req: Request, res: Response) {
     pullHashStore.set(subsystemId, versionHash);
 
     console.log(`[MCM ${subsystemIdStr} Pull] DONE — ios=${result}, network=${networkPulled}, estop=${estopPulled}, punchlists=${punchlistsPulled}`);
+
+    // Durable recovery-log trace of this DESTRUCTIVE pull (the no-op short-
+    // circuit above rewrote nothing and is intentionally not logged). Log-only.
+    auditLog({
+      type: 'sync.pull',
+      subsystemId,
+      detail: {
+        iosCount: result,
+        networkPulled,
+        estopPulled,
+      },
+    });
+
     return res.json({
       success: true,
       subsystemId,

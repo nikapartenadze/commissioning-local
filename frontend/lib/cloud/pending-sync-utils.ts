@@ -63,9 +63,17 @@ export async function drainPendingSyncsForIo(
       // emitted inside tryRealtimeSync.
       // Recovery-critical: record the full discarded payload so the result can
       // be reconstructed/re-pushed by hand if the rejection was wrong.
+      // Best-effort SubsystemId so this dropped result can be attributed to its
+      // MCM on a central server (parity with the auto-sync drop/park audits).
+      let subsystemId: number | null = null
+      try {
+        const ioRow = db.prepare('SELECT SubsystemId FROM Ios WHERE id = ?').get(ioId) as { SubsystemId: number | null } | undefined
+        subsystemId = ioRow?.SubsystemId ?? null
+      } catch { /* best-effort — record null */ }
       auditLog({
         type: 'sync.push.drop',
         ioId,
+        subsystemId,
         version: pending.Version,
         result: pending.TestResult,
         user: pending.InspectorName,
