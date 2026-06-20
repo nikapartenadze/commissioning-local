@@ -22,6 +22,14 @@ import './guided-tasks.css'
 const MANUAL_COMPLETE_TYPES = new Set<Task['type']>(['network_loop'])
 
 type Popup = { kind: 'pass' | 'fail'; message: string } | null
+
+/**
+ * Value recorded when a tester skips a single functional/VFD column step
+ * (e.g. the "(SCADA)" columns, which are verified separately). It is a
+ * non-empty value, so it counts toward L2 completion (countCompleted in
+ * /api/l2/cell) and the task can still close — without a Pass/Fail verdict.
+ */
+const SKIP_STEP_VALUE = 'N/A (skipped)'
 type EstopVerdict = { autoVerdict: string; checkTagValue: boolean | null } | null
 
 /** Live D4/D5 status polled from /api/guided/system-status. */
@@ -923,6 +931,16 @@ function renderStepBody(p: BodyProps) {
           >
             SAVE & CONTINUE
           </button>
+          <button
+            className="gt-btn gt-btn-ghost"
+            disabled={p.busy}
+            title="Records N/A (skipped) for this column and moves on — e.g. SCADA checks done separately"
+            onClick={() =>
+              isFunctional ? p.recordFunctionalValue(SKIP_STEP_VALUE) : p.recordVfdColumn(SKIP_STEP_VALUE)
+            }
+          >
+            SKIP STEP
+          </button>
         </div>
       )
     }
@@ -945,6 +963,18 @@ function renderStepBody(p: BodyProps) {
             onClick={() => (isFunctional ? p.recordWithPopup('Failed') : p.recordVfdColumn('Fail'))}
           >
             FAIL
+          </button>
+        </div>
+        <div className="gt-actions-center">
+          <button
+            className="gt-btn gt-btn-ghost"
+            disabled={p.busy}
+            title="Records N/A (skipped) for this column and moves on — e.g. SCADA checks done separately"
+            onClick={() =>
+              isFunctional ? p.recordFunctionalValue(SKIP_STEP_VALUE) : p.recordVfdColumn(SKIP_STEP_VALUE)
+            }
+          >
+            SKIP STEP
           </button>
         </div>
       </>
