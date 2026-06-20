@@ -210,6 +210,11 @@ html:not(.dark) .gt-root {
 .gt-map-layer {
   position: absolute;
   inset: 0;
+  /* Light SCADA canvas: the engineered drawing is black ink + colored device
+     fills, which vanished on the dark body background. A light panel makes
+     labels, lines and pass/fail/untested colors all clearly legible; the dark
+     HUD card floats over it with strong contrast. */
+  background: #eef2f7;
 }
 .gt-map-layer > * { width: 100%; height: 100%; }
 .gt-map-fallback {
