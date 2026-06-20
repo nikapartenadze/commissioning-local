@@ -323,6 +323,19 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   SetOutPath "$INSTDIR\app"
   File /r "${PORTABLE_DIR}\app\*.*"
 
+!ifdef CENTRAL
+  ; ── Logix SDK bridge venv (best-effort, CENTRAL build only) ──
+  ; "Program Download" drives the Rockwell Logix Designer SDK via a Python venv
+  ; at $INSTDIR\app\logix-sdk-bridge\.venv. provision.ps1 (shipped above) builds
+  ; it ONLY when this box has Studio 5000 + the SDK wheel + Python 3.12/3.13 —
+  ; otherwise it exits quietly and the feature shows "not available on this
+  ; station" (connect/configure/read-I/O are unaffected). The script self-bounds
+  ; (Wait-Job timeout) so a slow pip can never stall the install. The licensed
+  ; SDK is NEVER bundled — it is installed separately on this engineering node.
+  DetailPrint "Provisioning Logix SDK bridge (best-effort; needs Studio 5000 + Python 3.12/3.13)..."
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\app\logix-sdk-bridge\provision.ps1"'
+!endif
+
   ; ── Copy NSSM + icon ──
   SetOutPath "$INSTDIR"
   File "${NSSM_PATH}"
