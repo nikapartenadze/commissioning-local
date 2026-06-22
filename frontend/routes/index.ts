@@ -137,7 +137,10 @@ import * as ctrlMgmtCommPath from '@/app/api/controller-management/comm-path/rou
 import * as ctrlMgmtStatus from '@/app/api/controller-management/status/route'
 import * as ctrlMgmtMode from '@/app/api/controller-management/mode/route'
 import * as ctrlMgmtDownload from '@/app/api/controller-management/download/route'
+import * as ctrlMgmtUploadBatch from '@/app/api/controller-management/upload-batch/route'
 import * as ctrlMgmtJob from '@/app/api/controller-management/job/route'
+import * as sharepointStatus from '@/app/api/sharepoint/status/route'
+import * as sharepointTest from '@/app/api/sharepoint/test/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -175,7 +178,10 @@ export function createApiRouter(): Router {
   // runs the operator on the server laptop. adminMiddleware is the right gate.
   router.post('/api/controller-management/mode', adminMiddleware, asyncHandler(ctrlMgmtMode.POST))
   router.post('/api/controller-management/download', adminMiddleware, asyncHandler(ctrlMgmtDownload.POST))
+  router.post('/api/controller-management/upload-batch', adminMiddleware, asyncHandler(ctrlMgmtUploadBatch.POST))
   router.get('/api/controller-management/job', authMiddleware, asyncHandler(ctrlMgmtJob.GET))
+  router.get('/api/sharepoint/status', authMiddleware, asyncHandler(sharepointStatus.GET))
+  router.post('/api/sharepoint/test', authMiddleware, asyncHandler(sharepointTest.POST))
 
   // ── Configuration (admin for writes, open for reads) ───────────
   router.get('/api/configuration', asyncHandler(configuration.GET))
