@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import {
-  Download, Radio, Play, Square, FlaskConical, Loader2,
+  Download, Upload, Radio, Play, Square, FlaskConical, Loader2,
   CheckCircle2, XCircle, Zap, FileCog, ChevronDown, ServerCrash,
 } from 'lucide-react'
 import { apiCall } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
+import { commFrom, parseComm } from '@/lib/logix-comm-path'
+import { useConfirm } from './use-confirm'
 
 interface Project { name: string; path: string; sizeBytes: number; modified: number }
 interface JobState {
@@ -12,6 +14,10 @@ interface JobState {
   error?: string; result?: any; startedAt?: number
 }
 export interface ConsoleTarget { subsystemId: string; name: string; ip?: string; path?: string }
+
+// Single-controller upload reuses the fleet /upload-batch job (one item).
+interface BatchItem { name: string; status: string; percent: number; statusText?: string; error?: string; out?: string; sharepoint?: { status: string; webUrl?: string; error?: string } }
+interface BatchJob { id: string; status: 'running' | 'done' | 'error'; percent: number; items?: BatchItem[]; error?: string }
 
 // Controller-mode tones, built from the Autstand theme tokens.
 const MODE_TONE: Record<string, { text: string; chip: string; dot: string; label: string }> = {
@@ -50,27 +56,60 @@ function stageIndex(job: JobState | null): number {
 
 const norm = (s: string) => s.toLowerCase().replace(/\.acd$/i, '').replace(/[^a-z0-9]/g, '')
 
-// Build the Logix SDK communications path from the IP + backplane path the
-// operator already knows (same fields as the Connect config). "1,0" -> slot 0.
-function commFrom(ip: string, path: string): string {
-  const ipt = ip.trim()
-  if (!ipt) return ''
-  const nums = (path || '').split(/[^0-9]+/).filter(Boolean)
-  const slot = nums.length ? nums[nums.length - 1] : '0'
-  return `AB_ETH-2\\${ipt}\\Backplane\\${slot}`
-}
-// Pull IP + slot back out of a stored Studio 5000 comm path so the two fields
-// reflect what the ACD actually targets.
-function parseComm(s: string): { ip: string; path: string } | null {
-  if (!s) return null
-  const ipm = s.match(/(\d{1,3}\.){3}\d{1,3}/)
-  if (!ipm) return null
-  const slotm = s.match(/Backplane[\\/](\d+)/i)
-  return { ip: ipm[0], path: `1,${slotm ? slotm[1] : '0'}` }
-}
-const sectionLbl = 'text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'
+const sectionLbl ='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'
 const field = 'w-full bg-background border border-input rounded-md px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-primary'
 const btnPrimary = 'inline-flex items-center justify-center gap-2 rounded-md bg-primary text-primary-foreground font-semibold shadow-sm shadow-primary/20 hover:bg-primary/90 active:bg-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed'
+
+// ── Live "going online" readout for the blocking SDK ops ────────────────────
+// Read / mode-change / comm-path are synchronous server calls with no streamed
+// sub-progress, so we can't show a true percentage. Instead we walk through the
+// REAL phase sequence the SDK performs on a time schedule, fill an asymptotic
+// bar (approaches but never claims 100% until the call returns), and show a
+// live elapsed clock — so a 20s wait reads as "working", not "frozen".
+type SyncOp = 'comm' | 'status' | 'mode'
+const OP_META: Record<SyncOp, { title: string; tone: 'primary' | 'warning'; hint: string; phases: { at: number; text: string }[] }> = {
+  comm: {
+    title: 'Reading project', tone: 'primary', hint: 'opening the .ACD',
+    phases: [{ at: 0, text: 'Starting Logix SDK…' }, { at: 3, text: 'Opening project…' }, { at: 10, text: 'Reading stored controller path…' }],
+  },
+  status: {
+    title: 'Going online', tone: 'primary', hint: 'about 20s — same as Studio 5000',
+    phases: [{ at: 0, text: 'Starting Logix SDK…' }, { at: 3, text: 'Opening project…' }, { at: 10, text: 'Connecting to controller…' }, { at: 16, text: 'Reading controller state…' }],
+  },
+  mode: {
+    title: 'Switching mode', tone: 'warning', hint: 'changing live controller state',
+    phases: [{ at: 0, text: 'Starting Logix SDK…' }, { at: 3, text: 'Opening project…' }, { at: 10, text: 'Going online…' }, { at: 16, text: 'Sending mode change…' }, { at: 22, text: 'Confirming new mode…' }],
+  },
+}
+function LiveOp({ kind, elapsed }: { kind: SyncOp; elapsed: number }) {
+  const meta = OP_META[kind]
+  const phase = meta.phases.reduce((acc, p) => (elapsed >= p.at ? p : acc), meta.phases[0])
+  const pct = Math.min(95, Math.round((1 - Math.exp(-elapsed / 10)) * 100))
+  const mm = Math.floor(elapsed / 60), ss = Math.floor(elapsed % 60)
+  const warn = meta.tone === 'warning'
+  return (
+    <div role="status" aria-live="polite"
+      className={cn('rounded-lg border p-4 space-y-3', warn ? 'border-warning/40 bg-warning/5' : 'border-primary/40 bg-primary/5')}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className={cn('absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping motion-reduce:animate-none', warn ? 'bg-warning' : 'bg-primary')} />
+            <span className={cn('relative inline-flex h-2.5 w-2.5 rounded-full', warn ? 'bg-warning' : 'bg-primary')} />
+          </span>
+          <span className={cn('text-xs font-bold uppercase tracking-[0.15em]', warn ? 'text-warning' : 'text-primary')}>{meta.title}</span>
+        </div>
+        <span className="font-mono tabular-nums text-sm text-muted-foreground">{mm}:{String(ss).padStart(2, '0')}</span>
+      </div>
+      <div className="h-2 rounded-full bg-muted overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all duration-500 ease-out', warn ? 'bg-warning' : 'bg-primary')} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="flex items-center justify-between gap-3 text-[11px]">
+        <span className="text-foreground/80">{phase.text}</span>
+        <span className="text-muted-foreground/70 shrink-0">{meta.hint}</span>
+      </div>
+    </div>
+  )
+}
 
 export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
   const [projects, setProjects] = useState<Project[]>([])
@@ -88,9 +127,14 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
   const [health, setHealth] = useState<'checking' | 'ok' | 'down'>('checking')
   const [healthReason, setHealthReason] = useState('')
   const pollRef = useRef<number | null>(null)
+  const [upBusy, setUpBusy] = useState(false)
+  const [upJob, setUpJob] = useState<BatchJob | null>(null)
+  const upPollRef = useRef<number | null>(null)
+  const { confirm, confirmModal } = useConfirm()
 
   const selectedProject = useMemo(() => projects.find((p) => p.path === acd) || null, [projects, acd])
   const downloading = busy === 'download' || job?.status === 'running'
+  const uploading = upBusy || upJob?.status === 'running'
   const comm = useMemo(() => commFrom(ip, path), [ip, path])
 
   // Is the Logix Designer SDK usable on this station? Field laptops without
@@ -136,12 +180,23 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
     })()
   }, [acd])
 
-  useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current) }, [])
+  useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current); if (upPollRef.current) window.clearInterval(upPollRef.current) }, [])
   useEffect(() => {
     if (job?.status !== 'running') return
     const t = window.setInterval(() => force((n) => n + 1), 1000)
     return () => window.clearInterval(t)
   }, [job?.status])
+
+  // Tick while a blocking SDK op (comm/status/mode) runs so the LiveOp readout
+  // animates and the elapsed clock advances. opStartedAt resets each op.
+  const [opStartedAt, setOpStartedAt] = useState<number | null>(null)
+  useEffect(() => {
+    const isSync = busy === 'comm' || busy === 'status' || busy === 'mode'
+    if (!isSync) { setOpStartedAt(null); return }
+    setOpStartedAt(Date.now())
+    const tck = window.setInterval(() => force((n) => n + 1), 500)
+    return () => window.clearInterval(tck)
+  }, [busy])
 
   const readStatus = useCallback(async () => {
     if (!acd) return
@@ -155,7 +210,7 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
 
   const changeMode = useCallback(async (target: 'PROGRAM' | 'RUN' | 'TEST') => {
     if (!acd) return
-    if (!window.confirm(`Switch ${mcm.name} to ${target}? This changes the live controller state.`)) return
+    if (!(await confirm({ title: `Switch to ${target}`, danger: true, confirmLabel: target, message: `Switch ${mcm.name} to ${target}? This changes the live controller state.` }))) return
     setBusy('mode'); setErr(null); setOk(null)
     try {
       const r = await apiCall<{ mode: string }>('/api/controller-management/mode', { method: 'POST', body: JSON.stringify({ acd, comm: comm || undefined, mode: target }) })
@@ -166,7 +221,7 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
 
   const startDownload = useCallback(async () => {
     if (!acd) return
-    if (!window.confirm(`Download "${selectedProject?.name}" to ${mcm.name}${mcm.ip ? ` (${mcm.ip})` : ''}?\n\nThe controller will be stopped (PROGRAM), the program written, then returned to RUN.`)) return
+    if (!(await confirm({ title: 'Download program', danger: true, confirmLabel: 'Download', message: `Download "${selectedProject?.name}" to ${mcm.name}${mcm.ip ? ` (${mcm.ip})` : ''}?\n\nThe controller will be stopped (PROGRAM), the program written, then returned to RUN.` }))) return
     setBusy('download'); setErr(null); setOk(null)
     setJob({ id: '', status: 'running', percent: 0, statusText: 'Starting…', startedAt: Date.now() })
     try {
@@ -188,11 +243,39 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
     } catch (e) { setBusy(null); setJob(null); setErr(`Could not start: ${e instanceof Error ? e.message : e}`) }
   }, [acd, comm, selectedProject, mcm])
 
-  const anyBusy = !!busy
+  const startUpload = useCallback(async () => {
+    if (!ip.trim()) return
+    if (!(await confirm({ title: 'Upload program', danger: true, confirmLabel: 'Upload', message: `Upload the running program from ${mcm.name}${mcm.ip ? ` (${mcm.ip})` : ''} into a NEW .ACD?\n\nThis reads the controller (it may briefly go OFFLINE). The file is saved to the projects folder.` }))) return
+    setUpBusy(true); setErr(null); setOk(null)
+    setUpJob({ id: '', status: 'running', percent: 0, items: [{ name: mcm.name, status: 'running', percent: 0, statusText: 'Starting…' }] })
+    try {
+      const r = await apiCall<{ jobId: string; error?: string }>('/api/controller-management/upload-batch', { method: 'POST', body: JSON.stringify({ subsystemIds: [mcm.subsystemId] }) })
+      if (!r.jobId) throw new Error(r.error || 'no job created')
+      if (upPollRef.current) window.clearInterval(upPollRef.current)
+      upPollRef.current = window.setInterval(async () => {
+        try {
+          const j = await apiCall<BatchJob>(`/api/controller-management/job?id=${r.jobId}`)
+          setUpJob(j)
+          if (j.status !== 'running') {
+            if (upPollRef.current) window.clearInterval(upPollRef.current); upPollRef.current = null
+            setUpBusy(false)
+            const it = j.items?.[0]
+            if (it?.status === 'done') setOk(`Upload complete${it.out ? ` → ${it.out.split(/[\\/]/).pop()}` : ''}`)
+            else setErr(`Upload failed: ${it?.error || j.error || 'unknown error'}`)
+          }
+        } catch { /* keep polling */ }
+      }, 600)
+    } catch (e) { setUpBusy(false); setUpJob(null); setErr(`Could not start upload: ${e instanceof Error ? e.message : e}`) }
+  }, [ip, mcm])
+
+  const anyBusy = !!busy || upBusy
   const t = tone(mode)
+  const upItem = upJob?.items?.[0]
   const curStage = stageIndex(job)
   const elapsed = job?.startedAt ? Math.round((Date.now() - job.startedAt) / 1000) : 0
   const downloadBlocked = !acd || anyBusy || !ip.trim()
+  const syncOp: SyncOp | null = busy === 'comm' || busy === 'status' || busy === 'mode' ? busy : null
+  const opElapsed = opStartedAt ? (Date.now() - opStartedAt) / 1000 : 0
 
   if (health === 'checking') {
     return <div className="flex items-center gap-2 text-sm text-muted-foreground py-10 justify-center"><Loader2 className="h-4 w-4 animate-spin" />Checking Logix Designer SDK…</div>
@@ -218,6 +301,7 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
 
   return (
     <div className="space-y-6 max-w-2xl">
+      {confirmModal}
       {/* live mode readout */}
       <div className={cn('flex items-center justify-between rounded-lg border p-4', t.chip)}>
         <div>
@@ -247,9 +331,9 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
       <div className="space-y-1.5">
         <label className={sectionLbl}>Controller address</label>
         <div className="flex gap-2">
-          <input value={ip} onChange={(e) => setIp(e.target.value)} spellCheck={false} disabled={!acd}
+          <input value={ip} onChange={(e) => setIp(e.target.value)} spellCheck={false} disabled={anyBusy}
             placeholder="192.168.5.106" aria-label="Controller IP address" className={cn(field, 'flex-1 font-mono')} />
-          <input value={path} onChange={(e) => setPath(e.target.value)} spellCheck={false} disabled={!acd}
+          <input value={path} onChange={(e) => setPath(e.target.value)} spellCheck={false} disabled={anyBusy}
             placeholder="1,0" aria-label="Backplane path" className={cn(field, 'w-24 font-mono text-center')} />
           <button onClick={readStatus} disabled={!acd || anyBusy || !ip.trim()} className={cn(btnPrimary, 'shrink-0 px-4 text-sm')}>
             {busy === 'status' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radio className="w-4 h-4" />}Read
@@ -278,6 +362,9 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
         </div>
         {!connected && <p className="text-xs text-muted-foreground">Read the controller first to enable mode control.</p>}
       </div>
+
+      {/* live readout for the blocking SDK ops (Read / mode / path resolve) */}
+      {syncOp && <LiveOp kind={syncOp} elapsed={opElapsed} />}
 
       {/* download */}
       <div className="rounded-lg border border-border bg-card p-4 space-y-4">
@@ -326,6 +413,30 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
           {downloading ? 'Downloading…' : 'Download program to controller'}
         </button>
         {!downloading && <p className="text-center text-xs text-muted-foreground">Stops the controller → writes the program → returns to <span className="font-medium text-success">RUN</span></p>}
+      </div>
+
+      {/* upload */}
+      <div className="rounded-lg border border-border bg-card p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <span className={sectionLbl}>Program upload</span>
+          {uploading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+        </div>
+        {upItem && (
+          <div className="space-y-2">
+            <div className="h-2.5 rounded-full bg-muted overflow-hidden">
+              <div className={cn('h-full rounded-full transition-all duration-300', upItem.status === 'error' ? 'bg-destructive' : upItem.status === 'done' ? 'bg-success' : 'bg-primary')} style={{ width: `${upItem.status === 'done' ? 100 : upItem.percent || 0}%` }} />
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground truncate">{upItem.statusText || (upItem.status === 'done' ? 'Done' : '…')}</span>
+              <span className="font-mono tabular-nums font-bold text-foreground">{upItem.status === 'done' ? 100 : upItem.percent || 0}%</span>
+            </div>
+          </div>
+        )}
+        <button onClick={startUpload} disabled={!ip.trim() || anyBusy} className={cn(btnPrimary, 'w-full py-3 text-sm')}>
+          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          {uploading ? 'Uploading…' : 'Upload program from controller'}
+        </button>
+        {!uploading && <p className="text-center text-xs text-muted-foreground">Reads the running controller into a new <span className="font-medium text-foreground">.ACD</span> in the projects folder. Use <span className="font-medium text-foreground">“Upload all”</span> on the MCM list for the whole fleet (+ SharePoint).</p>}
       </div>
     </div>
   )
