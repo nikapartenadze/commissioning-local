@@ -32,6 +32,12 @@ type IoItem = {
   installationPercent?: number | null
   poweredUp?: boolean | null
   hasDependencies?: boolean | null
+  // Punchlist resolver state, owned by the cloud and pulled down here. A Failed
+  // IO an electrician/admin marked ADDRESSED (fixed, ready to re-check) or
+  // CLARIFICATION (parked, awaiting engineer input). result stays Pass/Fail.
+  punchlistStatus?: string | null
+  clarificationNote?: string | null
+  trade?: string | null
 }
 
 type TestHistory = {
@@ -56,7 +62,7 @@ interface EnhancedIoDataGridProps {
   onRowClick?: (io: IoItem) => void
   onShowFireOutputDialog?: (io: IoItem) => void
   onCommentChange?: (io: IoItem, comment: string) => void
-  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null
+  activeQuickFilter?: 'failed' | 'not-tested' | 'passed' | 'addressed' | 'clarification' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null
   punchlists?: Array<{ id: number; name: string; ioIds: number[] }>
   activePunchlistId?: number | null
   onRequestChange?: (io: IoItem) => void
@@ -655,10 +661,18 @@ export function EnhancedIoDataGrid({
       // Punchlist filter — if active, only show IOs in this punchlist
       if (punchlistIoSet && !punchlistIoSet.has(io.id)) return false
 
+      // Resolver-state predicates. An ADDRESSED item (electrician fixed it) or a
+      // CLARIFICATION item (parked for engineering) leaves the electrician's
+      // "Failed" queue and enters its own bucket — that's the whole feedback loop.
+      const isAddressed = io.punchlistStatus === 'ADDRESSED' || io.result === 'Addressed'
+      const isClarification = io.punchlistStatus === 'CLARIFICATION'
+
       // Apply quick filter first
-      if (activeQuickFilter === 'failed' && io.result !== 'Failed') return false
+      if (activeQuickFilter === 'failed' && (io.result !== 'Failed' || isAddressed || isClarification)) return false
       if (activeQuickFilter === 'not-tested' && io.result) return false
       if (activeQuickFilter === 'passed' && io.result !== 'Passed') return false
+      if (activeQuickFilter === 'addressed' && !isAddressed) return false
+      if (activeQuickFilter === 'clarification' && !isClarification) return false
       if (activeQuickFilter === 'outputs') {
         if (!isOutputIo(io.name, io.description)) return false
       }
@@ -900,6 +914,11 @@ export function EnhancedIoDataGrid({
   })
 
   const getRowClassName = (io: IoItem) => {
+    // Resolver states take precedence over the underlying Failed result so the
+    // row reads as amber (addressed, re-check me) / violet (clarification) — not
+    // red — once an electrician or admin has actioned it.
+    if (io.punchlistStatus === 'ADDRESSED' || io.result === 'Addressed') return "row-addressed"
+    if (io.punchlistStatus === 'CLARIFICATION') return "row-clarification"
     if (io.result === TEST_CONSTANTS.RESULT_PASSED) return "row-passed"
     if (io.result === TEST_CONSTANTS.RESULT_FAILED) return "row-failed"
     if (currentTestIo?.id === io.id) return "row-current-test"
@@ -1571,13 +1590,29 @@ export function EnhancedIoDataGrid({
                        className="px-4 py-2 flex items-center justify-center flex-shrink-0"
                        style={{ width: `${COLUMN_WIDTHS.result}px` }}
                      >
-                       {io.result ? (
-                         <Badge variant={getResultBadgeVariant(io.result)} className="text-sm font-bold px-3 py-1">
-                           {io.result}
-                         </Badge>
-                       ) : (
-                         <span className="text-muted-foreground text-sm">—</span>
-                       )}
+                       <div className="flex flex-col items-center gap-1">
+                         {io.result ? (
+                           <Badge variant={getResultBadgeVariant(io.result)} className="text-sm font-bold px-3 py-1">
+                             {io.result}
+                           </Badge>
+                         ) : (
+                           <span className="text-muted-foreground text-sm">—</span>
+                         )}
+                         {/* Resolver-state overlay pulled from the cloud punchlist. */}
+                         {io.punchlistStatus === 'ADDRESSED' && (
+                           <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/40">
+                             Addressed
+                           </span>
+                         )}
+                         {io.punchlistStatus === 'CLARIFICATION' && (
+                           <span
+                             title={io.clarificationNote || undefined}
+                             className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-violet-500/15 text-violet-700 dark:text-violet-400 border border-violet-500/40"
+                           >
+                             Clarification
+                           </span>
+                         )}
+                       </div>
                      </div>
                    )}
                   {showTimestamp && (

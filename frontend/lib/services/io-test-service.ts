@@ -364,8 +364,11 @@ function updateTestResult(
 
     // Use transaction for atomicity
     const testTransaction = db.transaction(() => {
+      // A new Pass/Fail result is a re-test outcome — it supersedes any resolver
+      // workflow state (Addressed / Clarification), so clear it. This is what
+      // moves a re-checked item out of the Addressed bucket back to Pass/Fail.
       db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = Version + 1 WHERE id = ?'
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, PunchlistStatus = NULL, ClarificationNote = NULL, Version = Version + 1 WHERE id = ?'
       ).run(result, timestamp, sanitizedComments, ioId)
 
       db.prepare(

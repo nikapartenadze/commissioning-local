@@ -47,6 +47,10 @@ interface PlcToolbarProps {
   failedIos: number
   notTestedIos: number
   notInstalledIos?: number
+  // Resolver-state buckets (cloud punchlist): ADDRESSED = ready to re-check,
+  // CLARIFICATION = parked for engineering. Shown as their own filter cards.
+  addressedIos?: number
+  clarificationIos?: number
   onToggleTesting: () => void
   onShowGraph: () => void
   onDownloadCsv: () => void
@@ -56,8 +60,8 @@ interface PlcToolbarProps {
   currentUser?: { isAdmin: boolean; fullName: string } | null
   onToggleSimulator?: () => void
   isSimulatorEnabled?: boolean
-  activeFilter?: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null
-  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null) => void
+  activeFilter?: 'failed' | 'not-tested' | 'passed' | 'addressed' | 'clarification' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null
+  onFilterChange?: (filter: 'failed' | 'not-tested' | 'passed' | 'addressed' | 'clarification' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null) => void
   tagStatus?: TagStatus | null
   onShowTagStatus?: () => void
   onShowChangeRequests?: () => void
@@ -91,6 +95,8 @@ export function PlcToolbar({
   failedIos,
   notTestedIos,
   notInstalledIos = 0,
+  addressedIos = 0,
+  clarificationIos = 0,
   onToggleTesting,
   onShowGraph,
   onDownloadCsv,
@@ -222,6 +228,36 @@ export function PlcToolbar({
                 >
                   <span className="text-lg sm:text-2xl font-bold leading-none">{notInstalledIos}</span>
                   <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">No Inst.</span>
+                </button>
+              )}
+              {addressedIos > 0 && (
+                <button
+                  onClick={() => onFilterChange?.(activeFilter === 'addressed' ? null : 'addressed')}
+                  title="Addressed — fixed, ready to re-check"
+                  className={cn(
+                    "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+                    activeFilter === 'addressed'
+                      ? "bg-amber-500 text-white"
+                      : "bg-amber-400/15 hover:bg-amber-400/25 text-amber-600 dark:text-amber-400"
+                  )}
+                >
+                  <span className="text-lg sm:text-2xl font-bold leading-none">{addressedIos}</span>
+                  <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Addr.</span>
+                </button>
+              )}
+              {clarificationIos > 0 && (
+                <button
+                  onClick={() => onFilterChange?.(activeFilter === 'clarification' ? null : 'clarification')}
+                  title="Clarification — parked, awaiting engineering"
+                  className={cn(
+                    "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+                    activeFilter === 'clarification'
+                      ? "bg-violet-600 text-white"
+                      : "bg-violet-500/10 hover:bg-violet-500/20 text-violet-600 dark:text-violet-400"
+                  )}
+                >
+                  <span className="text-lg sm:text-2xl font-bold leading-none">{clarificationIos}</span>
+                  <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Clar.</span>
                 </button>
               )}
             </>

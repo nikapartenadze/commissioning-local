@@ -131,6 +131,24 @@
   background-color: #b91c1c !important;
 }
 
+/* Addressed — electrician fixed it, ready for a tester to re-check (amber). */
+.row-addressed {
+  background-color: #d97706 !important;
+  color: #fffbeb !important;
+}
+.row-addressed:hover {
+  background-color: #b45309 !important;
+}
+
+/* Clarification — parked, awaiting engineering input (violet). */
+.row-clarification {
+  background-color: #7c3aed !important;
+  color: #f5f3ff !important;
+}
+.row-clarification:hover {
+  background-color: #6d28d9 !important;
+}
+
 .row-default {
   background-color: hsl(var(--card)) !important;
 }
