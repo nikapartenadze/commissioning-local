@@ -84,6 +84,12 @@ interface IoItem {
   poweredUp?: boolean | null
   hasDependencies?: boolean | null
   failureMode?: string | null
+  // Cloud punchlist resolver state pulled down with the IO. ADDRESSED = fixed,
+  // ready to re-check; CLARIFICATION = parked for engineering (reason held in
+  // clarificationNote). result stays Pass/Fail.
+  punchlistStatus?: string | null
+  clarificationNote?: string | null
+  trade?: string | null
 }
 
 interface ChartData {
@@ -298,7 +304,7 @@ export default function CommissioningPage() {
 
   const [punchlists, setPunchlists] = useState<Array<{ id: number; name: string; ioIds: number[] }>>([])
   const [activePunchlistId, setActivePunchlistId] = useState<number | null>(null)
-  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null>(null)
+  const [quickFilter, setQuickFilter] = useState<'failed' | 'not-tested' | 'passed' | 'addressed' | 'clarification' | 'inputs' | 'outputs' | 'my-ios' | 'not-installed' | null>(null)
   const [showChangeRequestDialog, setShowChangeRequestDialog] = useState(false)
   const [showChangeRequestsPanel, setShowChangeRequestsPanel] = useState(false)
   const [changeRequestIo, setChangeRequestIo] = useState<IoItem | null>(null)
@@ -2245,9 +2251,11 @@ export default function CommissioningPage() {
           isCloudConnected={isCloudConnected}
           totalIos={ios.filter(io => !io.description?.toUpperCase().includes('SPARE')).length}
           passedIos={ios.filter(io => io.result === 'Passed' && !io.description?.toUpperCase().includes('SPARE')).length}
-          failedIos={ios.filter(io => io.result === 'Failed' && !io.description?.toUpperCase().includes('SPARE')).length}
+          failedIos={ios.filter(io => io.result === 'Failed' && io.punchlistStatus !== 'ADDRESSED' && io.punchlistStatus !== 'CLARIFICATION' && !io.description?.toUpperCase().includes('SPARE')).length}
           notTestedIos={ios.filter(io => !io.result && !io.description?.toUpperCase().includes('SPARE')).length}
           notInstalledIos={ios.filter(io => io.installationStatus && io.installationStatus !== 'complete' && !io.description?.toUpperCase().includes('SPARE')).length}
+          addressedIos={ios.filter(io => (io.punchlistStatus === 'ADDRESSED' || io.result === 'Addressed') && !io.description?.toUpperCase().includes('SPARE')).length}
+          clarificationIos={ios.filter(io => io.punchlistStatus === 'CLARIFICATION' && !io.description?.toUpperCase().includes('SPARE')).length}
           onToggleTesting={handleToggleTesting}
           onShowGraph={() => setShowGraph(true)}
           onDownloadCsv={handleDownloadCsv}
