@@ -52,6 +52,7 @@ import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
 import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
 import * as cloudPullRoadmap from '@/app/api/cloud/pull-roadmap/route'
+import * as cloudReconcile from '@/app/api/cloud/reconcile/route'
 import * as guidedResetSubsystem from '@/app/api/guided/reset-subsystem/route'
 import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
 // ── central-tool: multi-MCM namespace ───────────────────────────
@@ -232,6 +233,7 @@ export function createApiRouter(): Router {
 
   // ── Cloud ──────────────────────────────────────────────────────
   router.post('/api/cloud/pull', asyncHandler(cloudPull.POST))
+  router.post('/api/cloud/reconcile', asyncHandler(cloudReconcile.POST))
   router.post('/api/cloud/sync', asyncHandler(cloudSync.POST))
   router.get('/api/cloud/sync', asyncHandler(cloudSync.GET))
   router.post('/api/cloud/sync-l2', asyncHandler(cloudSyncL2.POST))
