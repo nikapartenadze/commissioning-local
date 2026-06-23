@@ -1168,7 +1168,6 @@ class AutoSyncService {
           })
           rebased++
         }
->>>>>>> feat/punchlist-discipline-sync
       }
     }
     if (applied + superseded + rebased > 0) {
