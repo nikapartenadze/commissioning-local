@@ -4,6 +4,45 @@ Living log of what the battle environment has found. The environment's job is
 to **reproduce, in an automated soak, the bug classes that have hit the field**
 — and then catch their regressions forever.
 
+## Orphan-result reconciler + backup-churn fix (2026-06-22) — code done, battle scenario PENDING image rebuild
+
+**Problem (field report).** After a long offline stint / flapping link, operators
+hit: Cloud-Sync modal shows **0 pending**, yet **Pull keeps warning** that specific
+results would be overwritten, and it **never clears**. Root cause: a result that
+left the `PendingSyncs` queue WITHOUT landing on cloud (legacy retry-cap *delete*,
+permanent-reject *delete*) becomes an **orphan** — present in local `Ios`, absent on
+cloud, with NO queue row. The push loop only drains the queue, so nothing ever
+re-pushes it; only the destructive-pull guard surfaces it (as a block, with the
+push button disabled at queue=0). This is the MCM08/MCM11 residue class.
+
+**Fix (frontend/, code complete, 455/455 unit tests green incl. 8 new):**
+- `lib/cloud/result-reconciler.ts` — runs the pull-guard diff and **re-enqueues**
+  any local result/comment the cloud is missing but that has no queue row, at the
+  cloud's current version (B7 rebases any miss). Skips IOs with any existing queue
+  row (active or parked); never touches `Ios`; best-effort on cloud failure.
+- `lib/cloud/auto-sync.ts` — runs it (throttled 2 min) **on SSE reconnect** and the
+  15-min safety tick → orphans self-heal on the next "net came back".
+- `POST /api/cloud/reconcile` — on-demand force (and the battle hook).
+- Backup churn: `app/api/mcm/[id]/pull/route.ts` now takes the pre-pull backup
+  AFTER the at-risk guard and **skips it for background catch-up pulls** with
+  nothing to recover (the every-few-minutes full-DB copy storm); retention 300→100.
+  Auto-sync catch-up pulls send `{ background: true }`.
+
+**Battle verification — TODO once the tool image is rebuilt+pushed** (CI pulls the
+image, so this can only run after `ci/build_and_push.sh`; no local Docker on the
+dev box this was authored on). Add scenario **`s8` (orphan recovery)** + invariant
+**`I8`**:
+- chaos `/orphan`: mid-soak, for K IOs that have a *journaled local result the
+  cloud lacks*, DELETE their active `PendingSyncs` row (simulating the historical
+  drop) — creating a true queue-less orphan without nulling the local result.
+- under `CLOUD_FLAP` so reconnects fire the reconciler.
+- **I8 (GATE):** at quiescent soak-end, every orphaned IO's result is present on
+  cloud (`reconciled`), and `suspect_silent_drops` stays 0. A clean run (no
+  `/orphan`) must be vacuously green. Per the skill: run twice, confirm green,
+  before trusting the gate.
+This closes the loop the existing `s3`/I4 leaves open: I4 proves the queue isn't
+*dropped* under flap; I8 proves a *queue-less orphan is recovered*.
+
 ## REAL polarity/Valid_* WRITE-BACK proof (2026-06-08) — MCM02 @ 192.168.20.40 path 1,1 ✅
 
 The .5.x bench emulators lacked the belt-tracking AOI CMD tags, so the write
