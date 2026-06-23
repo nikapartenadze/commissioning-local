@@ -30,6 +30,10 @@ export async function POST(req: Request, res: Response) {
   }
 
   const force = req.body?.force === true;
+  // Background catch-up pulls (auto-sync) skip the pre-pull backup when there's
+  // nothing to recover — see the conditional backup below. Manual pulls omit
+  // this flag and always back up.
+  const isBackground = req.body?.background === true;
 
   try {
     const cfg = await configService.getConfig();
@@ -183,24 +187,6 @@ export async function POST(req: Request, res: Response) {
       });
     }
 
-    // B6 (mirrors legacy /api/cloud/pull): the rewrite below is DESTRUCTIVE
-    // (scoped DELETE FROM Ios + reinsert cloud state). The pre-pull backup is
-    // the last line of recovery — if it fails, ABORT rather than wipe with no
-    // safety net. Taken AFTER the no-op check above so unchanged cycles don't
-    // generate backups, but still BEFORE any delete.
-    try {
-      const backup = await createBackup(`pre-pull-mcm${subsystemId}`);
-      console.log(`[MCM ${subsystemIdStr} Pull] Auto-backup created: ${backup.filename}`);
-    } catch (backupErr) {
-      console.error(`[MCM ${subsystemIdStr} Pull] Pre-pull backup FAILED — aborting to protect local data:`, backupErr);
-      return res.status(500).json({
-        success: false,
-        error:
-          'Pre-pull safety backup failed, so the pull was aborted to protect your local data. ' +
-          'Check disk space / backups folder permissions and try again.',
-      });
-    }
-
     // ── Result-loss guard (2026-06-04 TPA8/MCM08 incident) ──────────────
     // Same second line of defense as the legacy /api/cloud/pull, scoped to
     // this subsystem: the pending-queue check above failed catastrophically
@@ -246,6 +232,31 @@ export async function POST(req: Request, res: Response) {
         `[MCM ${subsystemIdStr} Pull] FORCE override: erasing ${atRisk.length} result(s) + ` +
         `${atRiskComments.length} comment(s) not present on cloud (user confirmed)`,
       );
+    }
+
+    // ── Pre-pull safety backup (moved AFTER the guard — B6 churn fix) ─────
+    // The rewrite below is DESTRUCTIVE (scoped DELETE FROM Ios + reinsert). A
+    // full-DB backup is the last line of recovery, so take one before any
+    // delete — BUT skip it for BACKGROUND catch-up pulls that have nothing to
+    // recover: those either refused above (at-risk → no write) or only re-apply
+    // cloud state local already has. Taking a full-DB copy per MCM on every
+    // ~15-min sweep was the source of the "backup every few minutes" churn.
+    // Manual pulls — and any pull about to FORCE-overwrite at-risk data — always
+    // back up.
+    const mustBackup = !isBackground || (force && (atRisk.length > 0 || atRiskComments.length > 0));
+    if (mustBackup) {
+      try {
+        const backup = await createBackup(`pre-pull-mcm${subsystemId}`);
+        console.log(`[MCM ${subsystemIdStr} Pull] Auto-backup created: ${backup.filename}`);
+      } catch (backupErr) {
+        console.error(`[MCM ${subsystemIdStr} Pull] Pre-pull backup FAILED — aborting to protect local data:`, backupErr);
+        return res.status(500).json({
+          success: false,
+          error:
+            'Pre-pull safety backup failed, so the pull was aborted to protect your local data. ' +
+            'Check disk space / backups folder permissions and try again.',
+        });
+      }
     }
 
     // ── Scoped upsert ────────────────────────────────────────────────────

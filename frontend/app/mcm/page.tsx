@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Cpu, Wifi, WifiOff, PlugZap, Plug, Power, Download, Settings, Users,
   DownloadCloud, Search, Loader2, Network, Hash, Tag, ArrowUpRight,
-  Save, CheckCircle2, XCircle, AlertTriangle,
+  Save, CheckCircle2, XCircle, AlertTriangle, UploadCloud,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { ThemeToggle } from '@/components/theme-toggle'
 import { AutstandLogo } from '@/components/autstand-logo'
 import { ControllerConsole } from '@/components/controller-console'
+import { BatchUploadDialog } from '@/components/batch-upload-dialog'
 import { useUser } from '@/lib/user-context'
 import { authFetch } from '@/lib/api-config'
 
@@ -56,6 +57,7 @@ export default function McmLandingPage() {
   const [filter, setFilter] = useState('')
   const [fleetBusy, setFleetBusy] = useState<'connect' | 'disconnect' | 'import' | null>(null)
   const [fleetMsg, setFleetMsg] = useState<string | null>(null)
+  const [uploadAllOpen, setUploadAllOpen] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -120,6 +122,9 @@ export default function McmLandingPage() {
               <Button onClick={() => fleet('disconnect')} disabled={!!fleetBusy} size="sm" variant="outline" className="gap-1.5">
                 {fleetBusy === 'disconnect' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Power className="h-4 w-4" />}<span className="hidden lg:inline">Stop all</span>
               </Button>
+              <Button onClick={() => setUploadAllOpen(true)} disabled={!!fleetBusy} size="sm" variant="outline" className="gap-1.5" title="Upload program from multiple controllers">
+                <UploadCloud className="h-4 w-4" /><span className="hidden lg:inline">Upload all</span>
+              </Button>
               <Button onClick={() => fleet('import')} disabled={!!fleetBusy} size="sm" variant="ghost" className="gap-1.5">
                 {fleetBusy === 'import' ? <Loader2 className="h-4 w-4 animate-spin" /> : <DownloadCloud className="h-4 w-4" />}<span className="hidden lg:inline">Import</span>
               </Button>
@@ -159,6 +164,14 @@ export default function McmLandingPage() {
           </div>
         )}
       </main>
+
+      {canConfigure && (
+        <BatchUploadDialog
+          mcms={mcms.map((m) => ({ subsystemId: m.subsystemId, name: m.name, ip: m.ip, path: m.path, connected: m.connected }))}
+          open={uploadAllOpen}
+          onOpenChange={setUploadAllOpen}
+        />
+      )}
     </div>
   )
 }

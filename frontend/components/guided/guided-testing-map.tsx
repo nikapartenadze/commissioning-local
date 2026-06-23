@@ -101,9 +101,18 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
       const state = stateByName.get(id) ?? 'no_ios'
       el.setAttribute('data-status', state)
       const colors = STATE_FILL[state]
-      // For <g> apply to direct shape children; for a bare <path> apply to itself.
+      // Recolor EVERY descendant shape of a device group, not just direct
+      // children: the engineered SCADA export nests a device's icon shapes
+      // inside sub-<g> elements (and uses <polyline>/<line> for conveyor
+      // runs), so the old ":scope > shape" selector painted nothing on the
+      // real layout. Scope each shape to its OWNING device via
+      // closest('[id]') so a (rare) nested identified device isn't repainted
+      // by its parent. A bare <path>/<polyline> device colors itself.
+      const SHAPE_SEL = 'rect, path, polygon, circle, ellipse, polyline, line'
       const shapes: SVGElement[] = el.tagName.toLowerCase() === 'g'
-        ? Array.from(el.querySelectorAll<SVGElement>(':scope > rect, :scope > path, :scope > polygon, :scope > circle, :scope > ellipse'))
+        ? Array.from(el.querySelectorAll<SVGElement>(SHAPE_SEL)).filter(
+            shape => shape.closest('[id]') === el,
+          )
         : [el]
       shapes.forEach(shape => {
         // Stash the source fill on the first pass so state transitions can
@@ -112,13 +121,12 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
         if (!shape.hasAttribute('data-orig-fill')) {
           shape.setAttribute('data-orig-fill', shape.getAttribute('fill') ?? '')
         }
-        // EPC cables and similar open-path devices author fill="none" on
-        // <path> deliberately. Filling them closes the curve into a blob.
-        // Closed shapes (rect/circle/ellipse/polygon) always take the state fill.
-        const isOpenLinePath =
-          shape.tagName.toLowerCase() === 'path' &&
-          shape.getAttribute('data-orig-fill') === 'none'
-        shape.setAttribute('fill', isOpenLinePath ? 'none' : colors.fill)
+        // Conveyor polylines, EPC cables and other open paths are authored
+        // with fill="none" deliberately. Filling them closes the curve into a
+        // blob — keep them unfilled and only restroke. Closed shapes
+        // (rect/circle/ellipse/polygon, filled paths) take the state fill.
+        const keepNoFill = shape.getAttribute('data-orig-fill') === 'none'
+        shape.setAttribute('fill', keepNoFill ? 'none' : colors.fill)
         shape.setAttribute('stroke', colors.stroke)
         shape.setAttribute('stroke-width', '1.5')
         if (state === 'skipped') {

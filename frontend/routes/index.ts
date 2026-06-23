@@ -52,6 +52,7 @@ import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
 import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
 import * as cloudPullRoadmap from '@/app/api/cloud/pull-roadmap/route'
+import * as cloudReconcile from '@/app/api/cloud/reconcile/route'
 import * as guidedResetSubsystem from '@/app/api/guided/reset-subsystem/route'
 import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
 // ── central-tool: multi-MCM namespace ───────────────────────────
@@ -137,7 +138,10 @@ import * as ctrlMgmtCommPath from '@/app/api/controller-management/comm-path/rou
 import * as ctrlMgmtStatus from '@/app/api/controller-management/status/route'
 import * as ctrlMgmtMode from '@/app/api/controller-management/mode/route'
 import * as ctrlMgmtDownload from '@/app/api/controller-management/download/route'
+import * as ctrlMgmtUploadBatch from '@/app/api/controller-management/upload-batch/route'
 import * as ctrlMgmtJob from '@/app/api/controller-management/job/route'
+import * as sharepointStatus from '@/app/api/sharepoint/status/route'
+import * as sharepointTest from '@/app/api/sharepoint/test/route'
 
 /**
  * Wrap an async route handler so unhandled rejections are forwarded to Express error handling.
@@ -175,7 +179,10 @@ export function createApiRouter(): Router {
   // runs the operator on the server laptop. adminMiddleware is the right gate.
   router.post('/api/controller-management/mode', adminMiddleware, asyncHandler(ctrlMgmtMode.POST))
   router.post('/api/controller-management/download', adminMiddleware, asyncHandler(ctrlMgmtDownload.POST))
+  router.post('/api/controller-management/upload-batch', adminMiddleware, asyncHandler(ctrlMgmtUploadBatch.POST))
   router.get('/api/controller-management/job', authMiddleware, asyncHandler(ctrlMgmtJob.GET))
+  router.get('/api/sharepoint/status', authMiddleware, asyncHandler(sharepointStatus.GET))
+  router.post('/api/sharepoint/test', authMiddleware, asyncHandler(sharepointTest.POST))
 
   // ── Configuration (admin for writes, open for reads) ───────────
   router.get('/api/configuration', asyncHandler(configuration.GET))
@@ -226,6 +233,7 @@ export function createApiRouter(): Router {
 
   // ── Cloud ──────────────────────────────────────────────────────
   router.post('/api/cloud/pull', asyncHandler(cloudPull.POST))
+  router.post('/api/cloud/reconcile', asyncHandler(cloudReconcile.POST))
   router.post('/api/cloud/sync', asyncHandler(cloudSync.POST))
   router.get('/api/cloud/sync', asyncHandler(cloudSync.GET))
   router.post('/api/cloud/sync-l2', asyncHandler(cloudSyncL2.POST))

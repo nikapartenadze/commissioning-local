@@ -13,6 +13,7 @@ export async function GET(req: Request, res: Response) {
     status: job.status,
     percent: job.percent,
     statusText: job.statusText,
+    items: job.items,
     error: job.error,
     result: job.result,
     logs: job.logs.slice(-40),

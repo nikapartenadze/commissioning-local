@@ -103,6 +103,37 @@ export interface AppConfig {
    * enabled entry for backwards compatibility.
    */
   mcms?: McmConnection[];
+
+  /**
+   * Optional SharePoint (Microsoft Graph, app-only client-credentials) push
+   * config. When present + enabled with all four secrets, the batch "Upload
+   * All" flow can push each produced .acd to a SharePoint document library.
+   * Absent/disabled → the whole SharePoint path is a no-op and the batch
+   * upload behaves exactly as before. Mirrors the apiPassword secret pattern:
+   * the clientSecret lives in config.json (or env override) and is never
+   * logged or echoed back in an error.
+   */
+  sharepoint?: SharePointConfig;
+}
+
+/**
+ * SharePoint app-only (Entra / Azure AD client-credentials) configuration.
+ * All fields optional so a partial/absent block is safe; `isSharePointConfigured()`
+ * gates real use on the four required secrets being present.
+ */
+export interface SharePointConfig {
+  /** Master switch. Treated as enabled unless explicitly false. */
+  enabled?: boolean;
+  /** Entra tenant ID (GUID or domain). */
+  tenantId?: string;
+  /** App registration (client) ID. */
+  clientId?: string;
+  /** App client secret. Never logged or returned in errors. */
+  clientSecret?: string;
+  /** Full site URL, e.g. "https://contoso.sharepoint.com/sites/Commissioning". */
+  siteUrl?: string;
+  /** Optional folder path inside the default document library (no leading slash). */
+  folderPath?: string;
 }
 
 /**

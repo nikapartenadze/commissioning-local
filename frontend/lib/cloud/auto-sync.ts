@@ -18,6 +18,7 @@ import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/clou
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
+import { reconcileConfiguredSubsystems } from '@/lib/cloud/result-reconciler'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
@@ -124,7 +125,12 @@ class AutoSyncService {
     const safetyMin = parseInt(process.env.SYNC_SAFETY_PULL_MINUTES || '', 10)
     const safetyMinutes = Number.isFinite(safetyMin) && safetyMin > 0 ? safetyMin : 15
     this.mcmSafetyTimer = setInterval(
-      () => void this.pullAllConfiguredMcms('periodic safety'),
+      () => {
+        // Re-enqueue orphaned local results FIRST so the pull's guard sees them
+        // as pending work and protects them, and the next push delivers them.
+        void this.reconcileOrphans('periodic safety')
+        void this.pullAllConfiguredMcms('periodic safety')
+      },
       safetyMinutes * 60_000
     )
 
@@ -143,6 +149,10 @@ class AutoSyncService {
           this.sseUnsubscribe = sseClient.onConnect(() => {
             console.log('[AutoSync] Cloud SSE connected — pushing pending + pulling to catch up')
             this.pushToCloud()
+            // Net just came back: sweep for orphaned local results the cloud is
+            // missing (dropped from the queue without ever landing) and re-enqueue
+            // them so this reconnect delivers them too.
+            void this.reconcileOrphans('SSE reconnect')
             // Catch up EVERY configured MCM (central-server), not just the one
             // in config.subsystemId — events missed during the disconnect could
             // belong to any MCM.
@@ -994,6 +1004,30 @@ class AutoSyncService {
     this._lastManualPullAt = Date.now()
   }
 
+  private _lastReconcileAt = 0
+  /**
+   * Throttled orphan reconcile: re-enqueue local results/comments the cloud is
+   * missing but that have no queue row (legacy/permanent drops). Closes the
+   * "0 in queue but pull keeps warning" gap so offline→online delivery is
+   * complete. Best-effort; on success it kicks an immediate push so recovered
+   * orphans don't wait for the next tick.
+   */
+  private async reconcileOrphans(trigger: string): Promise<void> {
+    const THROTTLE_MS = 2 * 60_000
+    if (Date.now() - this._lastReconcileAt < THROTTLE_MS) return
+    this._lastReconcileAt = Date.now()
+    try {
+      const results = await reconcileConfiguredSubsystems()
+      const enqueued = results.reduce((n, r) => n + r.enqueued, 0)
+      if (enqueued > 0) {
+        console.warn(`[AutoSync] ${trigger}: reconciler re-enqueued ${enqueued} orphaned result/comment(s) for push`)
+        this.pushToCloud()
+      }
+    } catch (e) {
+      console.warn('[AutoSync] reconcile failed (non-fatal):', e instanceof Error ? e.message : e)
+    }
+  }
+
   /**
    * Catch-up pull for EVERY configured MCM (central-server multi-MCM).
    *
@@ -1094,17 +1128,47 @@ class AutoSyncService {
         delStmt.run(row.id)
         superseded++
       } else {
-        // Cloud holds a DIFFERENT value at a newer version. Local is the
-        // result authority — rebase to cloud's version so the next push
-        // applies last-write-wins, and clear strikes/park.
-        rebaseStmt.run(cloud.version, `b7-rebased from v${row.Version} to cloud v${cloud.version}`, row.id)
-        auditLog({
-          type: 'sync.push.drop', ioId: row.IoId, subsystemId: row.SubsystemId, version: row.Version,
-          result: row.TestResult, user: null,
-          reason: `b7-reconcile: rebased to cloud v${cloud.version} (will re-push, local wins)`,
-          detail: { pendingId: row.id, cloudResult: cloud.result },
-        })
-        rebased++
+        // Cloud holds a DIFFERENT value. Before re-pushing this parked row, make
+        // sure it STILL represents the local's CURRENT truth for the IO. A parked
+        // INTERMEDIATE edit (an older "Comment Modified" / "Failed" that a LATER
+        // local edit has since superseded) must NOT be re-pushed — under the
+        // cloud's last-write-wins it would clobber newer cloud state and make the
+        // result flip back (the FL1085_2_FIOM1_X1.I.5 flip-flop). Only the row
+        // whose payload still matches the live Ios value is the real local truth
+        // and worth rebasing; any stale snapshot is dropped instead.
+        const localIo = db.prepare('SELECT Result, Comments FROM Ios WHERE id = ?').get(row.IoId) as { Result: string | null; Comments: string | null } | undefined
+        const ncmt = (v: string | null | undefined) => (v == null || v.trim() === '') ? null : v.trim()
+        const isCommentOp = /comment/i.test(row.TestResult || '')
+        const matchesLocalTruth = !!localIo && (
+          isCommentOp
+            ? ncmt(localIo.Comments) === ncmt(row.Comments)   // comment ops only carry the comment
+            : norm(localIo.Result) === norm(row.TestResult)   // result ops carry the result
+        )
+        if (!matchesLocalTruth) {
+          // Stale intermediate — a newer local edit already supersedes this row's
+          // value. Drop it (don't rebase) so it can't re-push old text over the
+          // fresher cloud state.
+          auditLog({
+            type: 'sync.push.drop', ioId: row.IoId, subsystemId: row.SubsystemId, version: row.Version,
+            result: row.TestResult, user: null,
+            reason: 'b7-reconcile: dropped stale parked row (superseded by newer local value; not re-pushed)',
+            detail: { pendingId: row.id, cloudResult: cloud.result, localResult: localIo?.Result ?? null },
+          })
+          delStmt.run(row.id)
+          superseded++
+        } else {
+          // This row IS the local truth and cloud differs → rebase to cloud's
+          // version so the next push applies last-write-wins, and clear strikes/park.
+          rebaseStmt.run(cloud.version, `b7-rebased from v${row.Version} to cloud v${cloud.version}`, row.id)
+          auditLog({
+            type: 'sync.push.drop', ioId: row.IoId, subsystemId: row.SubsystemId, version: row.Version,
+            result: row.TestResult, user: null,
+            reason: `b7-reconcile: rebased to cloud v${cloud.version} (will re-push, local wins)`,
+            detail: { pendingId: row.id, cloudResult: cloud.result },
+          })
+          rebased++
+        }
+>>>>>>> feat/punchlist-discipline-sync
       }
     }
     if (applied + superseded + rebased > 0) {
@@ -1152,7 +1216,9 @@ class AutoSyncService {
             const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(m.subsystemId)}/pull`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: '{}',
+              // background: this is an automated catch-up, not a user pull — let
+              // the route skip the pre-pull backup when there's nothing to recover.
+              body: JSON.stringify({ background: true }),
               signal: AbortSignal.timeout(120_000),
             })
             if (r.status === 409) return `${m.subsystemId}:skip-pending` // unsynced local work — safe
