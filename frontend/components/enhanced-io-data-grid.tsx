@@ -919,6 +919,9 @@ export function EnhancedIoDataGrid({
     // red — once an electrician or admin has actioned it.
     if (io.punchlistStatus === 'ADDRESSED' || io.result === 'Addressed') return "row-addressed"
     if (io.punchlistStatus === 'CLARIFICATION') return "row-clarification"
+    // Engineer answered — it's a Failed item again, but flagged for the
+    // electrician to re-review (sky, distinct from a plain unaddressed Fail).
+    if (io.punchlistStatus === 'CLARIFICATION_ADDED') return "row-clarification-added"
     if (io.result === TEST_CONSTANTS.RESULT_PASSED) return "row-passed"
     if (io.result === TEST_CONSTANTS.RESULT_FAILED) return "row-failed"
     if (currentTestIo?.id === io.id) return "row-current-test"
@@ -1610,6 +1613,14 @@ export function EnhancedIoDataGrid({
                              className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-violet-500/15 text-violet-700 dark:text-violet-400 border border-violet-500/40"
                            >
                              Clarification
+                           </span>
+                         )}
+                         {io.punchlistStatus === 'CLARIFICATION_ADDED' && (
+                           <span
+                             title={io.clarificationNote || undefined}
+                             className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-sky-500/15 text-sky-700 dark:text-sky-400 border border-sky-500/40"
+                           >
+                             Clar. Added
                            </span>
                          )}
                        </div>

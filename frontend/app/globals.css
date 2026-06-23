@@ -149,6 +149,15 @@
   background-color: #6d28d9 !important;
 }
 
+/* Clarification added — engineer answered; back to the electrician to re-review (sky). */
+.row-clarification-added {
+  background-color: #0284c7 !important;
+  color: #f0f9ff !important;
+}
+.row-clarification-added:hover {
+  background-color: #0369a1 !important;
+}
+
 .row-default {
   background-color: hsl(var(--card)) !important;
 }
