@@ -20,6 +20,8 @@ export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
     failureMode: pending.FailureMode ?? null,
     blockerResponsibleParty: pending.BlockerResponsibleParty ?? null,
     blockerDescription: pending.BlockerDescription ?? null,
+    // Discipline (Electrical/Controls/Mechanical) → cloud Ios.trade.
+    trade: pending.Trade ?? null,
     hasDependencies:
       pending.HasDependencies == null ? null : pending.HasDependencies === 1,
   }

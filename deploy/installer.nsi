@@ -48,11 +48,32 @@ OutFile "..\CommissioningTool-Setup-v${APP_VERSION}.exe"
 InstallDir "${INSTALL_DIR}"
 InstallDirRegKey HKLM "Software\${APP_SHORT}" "InstallDir"
 RequestExecutionLevel admin
+BrandingText "autStand - Commissioning Tool"
 
 ; ── UI ──────────────────────────────────────────────────────
 !define MUI_ICON "app.ico"
 !define MUI_UNICON "app.ico"
 !define MUI_ABORTWARNING
+
+; ── autStand branding (gold-on-dark) ──────────────────────────
+; Logo header strip + Welcome/Finish side banner, generated from app.ico into
+; brand colors (see deploy/branding/). Installer + uninstaller both branded.
+!define MUI_HEADERIMAGE
+!define MUI_HEADERIMAGE_RIGHT
+!define MUI_HEADERIMAGE_BITMAP "branding\header.bmp"
+!define MUI_HEADERIMAGE_UNBITMAP "branding\header.bmp"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "branding\welcome.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "branding\welcome.bmp"
+
+; Dark + gold page theming via MUI2's built-in color controls (no add-on).
+; Colors the header + welcome/finish backgrounds dark, body text light, and the
+; install-log gold-on-dark. (Native window chrome + button faces stay OS-default
+; — that's the MUI2 ceiling; full chrome theming would need UltraModernUI.)
+!define MUI_BGCOLOR "141414"
+!define MUI_TEXTCOLOR "EAEAEA"
+!define MUI_HEADER_TRANSPARENT_TEXT
+!define MUI_INSTFILESPAGE_COLORS "C9961A 141414"
+!define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -322,6 +343,19 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
 
   SetOutPath "$INSTDIR\app"
   File /r "${PORTABLE_DIR}\app\*.*"
+
+!ifdef CENTRAL
+  ; ── Logix SDK bridge venv (best-effort, CENTRAL build only) ──
+  ; "Program Download" drives the Rockwell Logix Designer SDK via a Python venv
+  ; at $INSTDIR\app\logix-sdk-bridge\.venv. provision.ps1 (shipped above) builds
+  ; it ONLY when this box has Studio 5000 + the SDK wheel + Python 3.12/3.13 —
+  ; otherwise it exits quietly and the feature shows "not available on this
+  ; station" (connect/configure/read-I/O are unaffected). The script self-bounds
+  ; (Wait-Job timeout) so a slow pip can never stall the install. The licensed
+  ; SDK is NEVER bundled — it is installed separately on this engineering node.
+  DetailPrint "Provisioning Logix SDK bridge (best-effort; needs Studio 5000 + Python 3.12/3.13)..."
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\app\logix-sdk-bridge\provision.ps1"'
+!endif
 
   ; ── Copy NSSM + icon ──
   SetOutPath "$INSTDIR"

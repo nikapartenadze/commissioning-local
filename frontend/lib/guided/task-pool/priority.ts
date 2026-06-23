@@ -5,18 +5,23 @@ import type { Task, TaskType } from './types'
  * Pool"). Lower number = higher priority = handed to the tester first.
  *
  *   1. Network Loop Tasks          (highest priority in queue)
- *   2. VFD Setup Tasks
- *   3. IO Check Tasks (Safety)
- *   4. E-Stop Verification Tasks
- *   5. IO Check Tasks (Non-Safety)
+ *   2. IO Check Tasks (Safety)
+ *   3. E-Stop Verification Tasks
+ *   4. IO Check Tasks (Non-Safety)
+ *   5. VFD Setup Tasks
  *   6. Functional Checks           (lowest priority in queue)
+ *
+ * NOTE: IO Checkout is intentionally ahead of VFD Setup (field request:
+ * "IO has to be done first"). The engine does not gate IO checks on VFD, so
+ * this ordering is safe. Functional Validation stays locked behind ALL of
+ * Phase 1 (network → IO → e-stop → VFD) via the phase gate in task-builder.
  */
 export const TASK_PRIORITY: Record<TaskType, number> = {
   network_loop: 1,
-  vfd_setup: 2,
-  io_check_safety: 3,
-  estop_verification: 4,
-  io_check_nonsafety: 5,
+  io_check_safety: 2,
+  estop_verification: 3,
+  io_check_nonsafety: 4,
+  vfd_setup: 5,
   functional_check: 6,
 }
 

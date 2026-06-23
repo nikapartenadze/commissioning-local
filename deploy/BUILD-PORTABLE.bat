@@ -118,6 +118,16 @@ copy "%FRONTEND_DIR%\lib\startup-backup.js" "%OUTPUT_DIR%\app\dist-server\lib\" 
 if not exist "%OUTPUT_DIR%\app\dist-server\tools" mkdir "%OUTPUT_DIR%\app\dist-server\tools"
 copy "%FRONTEND_DIR%\tools\install-update.ps1" "%OUTPUT_DIR%\app\dist-server\tools\" >nul 2>nul
 
+REM ── Logix SDK bridge: ship bridge.py + provision.ps1 ONLY (NEVER the .venv,
+REM    which is licensed / machine-specific / huge). The installer runs
+REM    provision.ps1 to build the venv on a box that has Studio 5000 + the SDK.
+REM    Runtime cwd is $INSTDIR\app, so lib/logix-sdk-bridge.ts resolves this at
+REM    app\logix-sdk-bridge\. ──
+if not exist "%OUTPUT_DIR%\app\logix-sdk-bridge" mkdir "%OUTPUT_DIR%\app\logix-sdk-bridge"
+copy "%FRONTEND_DIR%\logix-sdk-bridge\bridge.py" "%OUTPUT_DIR%\app\logix-sdk-bridge\" >nul
+copy "%FRONTEND_DIR%\logix-sdk-bridge\provision.ps1" "%OUTPUT_DIR%\app\logix-sdk-bridge\" >nul
+copy "%FRONTEND_DIR%\logix-sdk-bridge\README.md" "%OUTPUT_DIR%\app\logix-sdk-bridge\" >nul 2>nul
+
 REM ── PLC native library ──
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\" >nul
 copy "%FRONTEND_DIR%\plctag.dll" "%OUTPUT_DIR%\app\dist-server\" >nul

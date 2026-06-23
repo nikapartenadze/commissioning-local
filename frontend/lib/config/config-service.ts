@@ -23,6 +23,7 @@ import {
   DEFAULT_CONFIG,
   EMBEDDED_REMOTE_URL,
   McmConnection,
+  SharePointConfig,
 } from './types';
 import { resolveConfigFilePath } from '@/lib/storage-paths';
 
@@ -179,6 +180,10 @@ class ConfigurationService {
               && typeof p.plcPath === 'string')
           : [],
         mcms,
+        // SharePoint push block. Carried through verbatim (string fields
+        // coerced/trimmed) so getSharePointConfig() can read it. Absent →
+        // undefined, which getSharePointConfig() normalises to {}.
+        sharepoint: this.normalizeSharePoint(parsed.sharepoint),
       };
 
       console.log('[ConfigService] Configuration loaded:', {
@@ -602,6 +607,62 @@ class ConfigurationService {
    */
   public getConfigFilePath(): string {
     return CONFIG_FILE_PATH;
+  }
+
+  // ── SharePoint (Microsoft Graph app-only) helpers ───────────────────────
+
+  /**
+   * Coerce a raw parsed `sharepoint` block into a clean SharePointConfig.
+   * Returns undefined when nothing usable is present so the file stays clean.
+   */
+  private normalizeSharePoint(raw: unknown): SharePointConfig | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const r = raw as Record<string, unknown>;
+    const str = (v: unknown): string | undefined =>
+      typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+    const block: SharePointConfig = {
+      enabled: r.enabled === false ? false : r.enabled === true ? true : undefined,
+      tenantId: str(r.tenantId),
+      clientId: str(r.clientId),
+      clientSecret: str(r.clientSecret),
+      siteUrl: str(r.siteUrl),
+      folderPath: str(r.folderPath),
+    };
+    // If every field is empty/undefined, treat as absent.
+    const hasAny = Object.values(block).some((v) => v !== undefined);
+    return hasAny ? block : undefined;
+  }
+
+  /**
+   * Return the effective SharePoint config (config.json block overlaid with
+   * env overrides). Always returns an object — empty when nothing configured.
+   * Env overrides (SHAREPOINT_*) win over config.json so a deployment can
+   * supply secrets without editing the file.
+   */
+  public getSharePointConfig(): SharePointConfig {
+    const base = this.config?.sharepoint ?? {};
+    const env = typeof process !== 'undefined' ? process.env : undefined;
+    const pick = (envVal: string | undefined, cfgVal: string | undefined) => {
+      const e = typeof envVal === 'string' && envVal.trim().length > 0 ? envVal.trim() : undefined;
+      return e ?? cfgVal;
+    };
+    return {
+      enabled: base.enabled,
+      tenantId: pick(env?.SHAREPOINT_TENANT_ID, base.tenantId),
+      clientId: pick(env?.SHAREPOINT_CLIENT_ID, base.clientId),
+      clientSecret: pick(env?.SHAREPOINT_CLIENT_SECRET, base.clientSecret),
+      siteUrl: pick(env?.SHAREPOINT_SITE_URL, base.siteUrl),
+      folderPath: pick(env?.SHAREPOINT_FOLDER, base.folderPath),
+    };
+  }
+
+  /**
+   * True when SharePoint push is usable: not explicitly disabled AND all four
+   * required secrets present. No network call — config presence only.
+   */
+  public isSharePointConfigured(): boolean {
+    const c = this.getSharePointConfig();
+    return c.enabled !== false && !!(c.tenantId && c.clientId && c.clientSecret && c.siteUrl);
   }
 }
 

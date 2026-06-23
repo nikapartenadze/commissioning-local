@@ -1590,16 +1590,26 @@ export function EnhancedIoDataGrid({
                   )}
                    {showComments && (
                    <div
-                     className="px-4 py-2 text-sm flex-shrink-0 flex items-center"
+                     className="px-4 py-2 text-sm flex-shrink-0 flex items-start"
                      style={{ width: `${COLUMN_WIDTHS.comments}px` }}
                      onClick={(e) => e.stopPropagation()}
                    >
                      {editingCommentId === io.id ? (
-                       <input
-                         type="text"
-                         className="w-full px-3 py-2 text-sm border-2 rounded bg-background focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+                       // Auto-growing textarea so long electrical failure
+                       // descriptions (multi-line) are fully visible while typing
+                       // and the row grows to fit. Enter saves; Shift+Enter adds a
+                       // newline; Escape cancels. The grid row is height-measured
+                       // (virtualizer.measureElement), so it resizes with content.
+                       <textarea
+                         rows={1}
+                         className="w-full px-3 py-2 text-sm border-2 rounded bg-background focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary resize-none overflow-hidden leading-snug whitespace-pre-wrap break-words"
                          value={editingCommentValue}
-                         onChange={(e) => setEditingCommentValue(e.target.value)}
+                         ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px` } }}
+                         onChange={(e) => {
+                           setEditingCommentValue(e.target.value)
+                           e.target.style.height = 'auto'
+                           e.target.style.height = `${e.target.scrollHeight}px`
+                         }}
                          onBlur={() => {
                            if (editingCommentValue !== (io.comments || '')) {
                              onCommentChange?.(io, editingCommentValue)
@@ -1607,7 +1617,8 @@ export function EnhancedIoDataGrid({
                            setEditingCommentId(null)
                          }}
                          onKeyDown={(e) => {
-                           if (e.key === 'Enter') {
+                           if (e.key === 'Enter' && !e.shiftKey) {
+                             e.preventDefault()
                              if (editingCommentValue !== (io.comments || '')) {
                                onCommentChange?.(io, editingCommentValue)
                              }
@@ -1620,7 +1631,7 @@ export function EnhancedIoDataGrid({
                        />
                      ) : (
                        <div
-                         className="break-words cursor-text hover:bg-muted px-2 py-1 rounded w-full min-w-0 min-h-[32px] flex items-center"
+                         className="break-words whitespace-pre-wrap cursor-text hover:bg-muted px-2 py-1 rounded w-full min-w-0 min-h-[32px]"
                          title={io.comments ? `${io.comments} (click to edit)` : 'Click to add note'}
                          onClick={() => {
                            setEditingCommentId(io.id)

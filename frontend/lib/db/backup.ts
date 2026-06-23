@@ -59,15 +59,17 @@ export async function createBackup(reason: string): Promise<{ filename: string; 
 /**
  * Retention policy for auto-created backups.
  *
- * Keeps at most BACKUP_RETENTION_KEEP newest backups (default 300 — generous
- * recovery history while bounding disk at ~300 × DB size). Backups younger
+ * Keeps at most BACKUP_RETENTION_KEEP newest backups (default 100 — ample
+ * recovery history while bounding disk at ~100 × DB size; the churn that made
+ * this matter is removed by the background-pull backup skip in the MCM pull
+ * route). Backups younger
  * than BACKUP_RETENTION_MIN_AGE_MS (default 1 h) are NEVER pruned, so a burst
  * of pulls can't immediately delete a just-made recovery point. Only files
  * matching the auto-backup naming pattern are ever touched; the live
  * database.db is in a different directory and is never a candidate.
  */
 export function pruneBackups(): { deleted: number; kept: number } {
-  const keep = Math.max(1, parseInt(process.env.BACKUP_RETENTION_KEEP || '', 10) || 300)
+  const keep = Math.max(1, parseInt(process.env.BACKUP_RETENTION_KEEP || '', 10) || 100)
   const minAgeMs = Math.max(
     0,
     parseInt(process.env.BACKUP_RETENTION_MIN_AGE_MS || '', 10) || 60 * 60 * 1000,

@@ -311,7 +311,30 @@ export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
   tasks.push(...nonSafetyTasks)
 
   // 6) Functional Checks (priority 6)
+  // PHASE GATE (user choice "two locked phases"): IO Checkout is Phase 1
+  // (Network → VFD → IO Safety → E-Stop → IO Non-Safety); Functional
+  // Validation is Phase 2 and stays LOCKED until every Phase-1 task is done —
+  // i.e. completed or intentionally skipped. A still-blocked Phase-1 task keeps
+  // Phase 2 locked on purpose ("IO has to be done first"); its own reason
+  // surfaces in the Task Viewer. Phase 2 unlocks automatically once Phase 1 is
+  // clear.
+  const phase1Tasks: Task[] = [
+    ...(networkTask ? [networkTask] : []),
+    ...vfdTasks,
+    ...safetyTasks,
+    ...estopTasks,
+    ...nonSafetyTasks,
+  ]
+  const phase1Remaining = phase1Tasks.filter(
+    (t) => t.state !== 'completed' && t.state !== 'skipped',
+  ).length
+
   const functionalGlobalUnmet: string[] = []
+  if (phase1Remaining > 0) {
+    functionalGlobalUnmet.push(
+      `Complete IO Checkout first — ${phase1Remaining} task${phase1Remaining === 1 ? '' : 's'} remaining (Phase 1)`,
+    )
+  }
   if (ringDegraded) functionalGlobalUnmet.push(RING_DEGRADED_DEP)
   if (snapshot.allNetworkedCommunicating === false) {
     functionalGlobalUnmet.push('All networked items must be communicating')

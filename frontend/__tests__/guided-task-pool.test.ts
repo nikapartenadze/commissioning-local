@@ -72,10 +72,10 @@ describe('TASK_PRIORITY', () => {
   it('follows the commissioning flow order', () => {
     const order: TaskType[] = [
       'network_loop',
-      'vfd_setup',
       'io_check_safety',
       'estop_verification',
       'io_check_nonsafety',
+      'vfd_setup',
       'functional_check',
     ]
     const ranks = order.map((t) => TASK_PRIORITY[t])
@@ -410,9 +410,9 @@ describe('buildTaskPool — full priority ordering', () => {
       ],
     })
     const pool = buildTaskPool(snap)
-    // VFD (2) is highest workable since there's no network ring to gate it,
-    // safety devices are not yet done so e-stop would be blocked, etc.
-    expect(pool.nextTaskId).toBe(taskId('vfd_setup', 'VFD1'))
+    // IO Check (Safety) is priority 2 (ahead of VFD now) and SAFE1 is workable
+    // — there's no network ring to gate it and the safety IO is untested.
+    expect(pool.nextTaskId).toBe(taskId('io_check_safety', 'SAFE1'))
 
     // Once VFD + safety done, next should be the non-safety IO check.
     const snap2 = emptySnapshot({
@@ -574,15 +574,59 @@ describe('D3 — associated-device gating for functional checks', () => {
   })
 
   it('falls back to global rules when no prefix can be derived', () => {
+    // Phase-1 IO checks must be complete (results on every IO) so the only
+    // thing under test here is the association fallback — not the phase gate.
     const pool = buildTaskPool(
       emptySnapshot({
-        devices: mkDevices(null, null),
+        devices: mkDevices('Passed', 'Failed'),
         functional: [
           { sheetName: 'SS', displayName: 'Start/Stop', deviceName: 'SS1', order: 0, completedChecks: 0, totalChecks: 2 },
         ],
       }),
     )
     expect(byId(pool.tasks, taskId('functional_check', 'SS:SS1'))?.state).toBe('available')
+  })
+})
+
+describe('Phase gate — Functional Validation locked until IO Checkout (Phase 1) done', () => {
+  const functional = [
+    { sheetName: 'SS', displayName: 'Start/Stop', deviceName: 'XYZ1', order: 0, completedChecks: 0, totalChecks: 2 },
+  ]
+  const fid = taskId('functional_check', 'SS:XYZ1')
+
+  it('blocks functional while a Phase-1 IO check is incomplete', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        devices: [device('DPM1', 0, [io(1, null, false, { name: 'A', description: 'A point' })])],
+        functional,
+      }),
+    )
+    const t = byId(pool.tasks, fid)
+    expect(t?.state).toBe('blocked')
+    expect(t?.unmetDependencies.join(' ')).toMatch(/Complete IO Checkout first/)
+  })
+
+  it('unlocks functional once every Phase-1 task is complete', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        devices: [device('DPM1', 0, [io(1, 'Passed', false, { name: 'A', description: 'A point' })])],
+        functional,
+      }),
+    )
+    expect(byId(pool.tasks, fid)?.state).toBe('available')
+  })
+
+  it('treats a skipped Phase-1 task as done (functional unlocks)', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        devices: [device('DPM1', 0, [io(1, null, false, { name: 'A', description: 'A point' })])],
+        functional,
+        manualTaskStatus: {
+          [taskId('io_check_nonsafety', 'DPM1')]: { status: 'skipped', reason: 'n/a' },
+        },
+      }),
+    )
+    expect(byId(pool.tasks, fid)?.state).toBe('available')
   })
 })
 
