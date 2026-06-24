@@ -64,13 +64,22 @@ interface Zone {
   /** PLC tag `<zone.name>_Nominal_OK`. True = healthy, false = faulted, null = no data. */
   nominalOk?: boolean | null
   nominalOkTag?: string
+  /** Whether this zone's owning controller is connected (distinct from the OR'd top-level `connected`). */
+  mcmConnected?: boolean
   epcs: Epc[]
 }
+
+type TagReadStatus = 'not_found' | 'read_error' | 'mcm_disconnected'
+interface TagIssue { tag: string; status: TagReadStatus; error?: string }
+interface ReadSummary { total: number; ok: number; notFound: number; readError: number; disconnected: number }
 
 interface EStopStatusResponse {
   success: boolean
   connected: boolean
   zones: Zone[]
+  /** Tags that did NOT read OK, so a name mismatch is visible instead of a silent blank. */
+  tagIssues?: TagIssue[]
+  readSummary?: ReadSummary
 }
 
 interface EStopCheckViewProps {
@@ -516,6 +525,51 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           </div>
         </div>
       )}
+
+      {/* Tag-read diagnostics — makes a tag-NAME mismatch visible instead of a
+          silent blank. The single most common reason E-Stop zones "don't read
+          the PLC" is the matrix tag names not matching the controller; without
+          this the tester just sees empty cells and assumes a dead connection. */}
+      {(() => {
+        const issues = data?.tagIssues ?? []
+        const notFound = issues.filter(i => i.status === 'not_found')
+        const readErr = issues.filter(i => i.status === 'read_error')
+        if (notFound.length === 0 && readErr.length === 0) return null
+        return (
+          <div className="rounded-lg border-2 border-amber-500/60 bg-amber-500/10 px-4 py-3 space-y-1.5">
+            <div className="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-300">
+              <ShieldAlert className="w-4 h-4 shrink-0" />
+              {notFound.length > 0 && (
+                <span>{notFound.length} tag{notFound.length !== 1 ? 's' : ''} not found on the PLC</span>
+              )}
+              {notFound.length > 0 && readErr.length > 0 && <span className="opacity-50">·</span>}
+              {readErr.length > 0 && (
+                <span>{readErr.length} read error{readErr.length !== 1 ? 's' : ''}</span>
+              )}
+            </div>
+            <p className="text-[11px] text-amber-700/80 dark:text-amber-300/80">
+              These tag names don&apos;t match the controller — the values read blank, <em>not</em> because the
+              E-Stop is faulted. Check the E-Stop matrix tag names against the live PLC tag list.
+            </p>
+            <div className="flex flex-wrap gap-1.5 pt-0.5">
+              {notFound.slice(0, 24).map(i => (
+                <code
+                  key={i.tag}
+                  title={i.error || 'Not found on PLC'}
+                  className="text-[10px] font-mono bg-amber-500/15 text-amber-800 dark:text-amber-200 rounded px-1.5 py-0.5"
+                >
+                  {i.tag}
+                </code>
+              ))}
+              {notFound.length > 24 && (
+                <span className="text-[10px] text-amber-700/70 dark:text-amber-300/70 self-center">
+                  +{notFound.length - 24} more
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Search */}
       <div className="relative">

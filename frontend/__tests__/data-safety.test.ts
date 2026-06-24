@@ -56,12 +56,28 @@ describe('PendingSync TTL', () => {
 })
 
 describe('Destructive cloud pull guard', () => {
-  function shouldBlockPull(pendingIoCount: number, pendingL2Count: number, pendingChangeRequestCount: number): boolean {
-    return pendingIoCount + pendingL2Count + pendingChangeRequestCount > 0
+  // Mirrors the block condition in app/api/cloud/pull/route.ts: a destructive
+  // pull is refused while ANY local sync queue is dirty. The EStop-check and
+  // guided-task queues were originally omitted, so a forced/at-risk-clean pull
+  // could wipe unsynced E-stop and guided-task results.
+  function shouldBlockPull(
+    pendingIoCount: number,
+    pendingL2Count: number,
+    pendingChangeRequestCount: number,
+    pendingEStopCheckCount = 0,
+    pendingGuidedTaskCount = 0,
+  ): boolean {
+    return (
+      pendingIoCount +
+      pendingL2Count +
+      pendingChangeRequestCount +
+      pendingEStopCheckCount +
+      pendingGuidedTaskCount > 0
+    )
   }
 
   it('allows pull only when all local queues are clean', () => {
-    expect(shouldBlockPull(0, 0, 0)).toBe(false)
+    expect(shouldBlockPull(0, 0, 0, 0, 0)).toBe(false)
   })
 
   it('blocks pull when IO sync queue is dirty', () => {
@@ -76,8 +92,16 @@ describe('Destructive cloud pull guard', () => {
     expect(shouldBlockPull(0, 0, 1)).toBe(true)
   })
 
+  it('blocks pull when the E-stop check sync queue is dirty', () => {
+    expect(shouldBlockPull(0, 0, 0, 1, 0)).toBe(true)
+  })
+
+  it('blocks pull when the guided-task sync queue is dirty', () => {
+    expect(shouldBlockPull(0, 0, 0, 0, 1)).toBe(true)
+  })
+
   it('blocks pull when multiple local queues are dirty', () => {
-    expect(shouldBlockPull(3, 2, 4)).toBe(true)
+    expect(shouldBlockPull(3, 2, 4, 1, 1)).toBe(true)
   })
 })
 

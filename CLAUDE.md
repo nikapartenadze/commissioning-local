@@ -62,11 +62,17 @@ The root docs are for workspace orientation, not detailed app internals.
 
 ## Ports
 
-| Port | Purpose |
-|------|---------|
-| 3000 | HTTP server + WebSocket (`/ws` path upgrade) |
-| 3102 | Internal broadcast API (localhost only, PLC tag events) |
-| 5173 | Vite dev server (development only) |
+Dev and prod use **different** ports. Production (`npm start`, the packaged
+field tool) uses the defaults; development (`npm run dev`) overrides them via
+`cross-env` in `frontend/package.json` so a dev instance can run alongside an
+installed one.
+
+| Purpose | Prod (`npm start`) | Dev (`npm run dev`) |
+|---------|--------------------|---------------------|
+| HTTP server + WebSocket (`/ws` path upgrade) | 3000 | 3020 |
+| Internal broadcast API (localhost only, PLC tag events) | 3102 | 3122 |
+| PLC WebSocket server | 3000 | 3022 |
+| Vite dev server (development only) | — | 5173 |
 
 ## Distribution
 

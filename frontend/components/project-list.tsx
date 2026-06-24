@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { SubsystemDialog } from "@/components/subsystem-dialog"
-import { Eye, Settings, TestTube } from "lucide-react"
+import { Settings, TestTube } from "lucide-react"
 
 type ProjectWithSubsystems = {
   id: number
@@ -68,13 +68,6 @@ export function ProjectList({ projects }: { projects: ProjectWithSubsystems[] })
           
           <CardFooter className="flex flex-col gap-2 pt-3">
                 <div className="flex gap-2 w-full">
-                  <Link to={`/project/${project.id}`} className="flex-1">
-                    <Button variant="default" className="w-full" size="sm">
-                      <Eye className="mr-2 h-4 w-4" />
-                      Dashboard
-                    </Button>
-                  </Link>
-                  
                   <Link to={`/commissioning/${project.id}`} className="flex-1">
                     <Button variant="secondary" className="w-full" size="sm">
                       <TestTube className="mr-2 h-4 w-4" />

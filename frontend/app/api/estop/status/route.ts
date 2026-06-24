@@ -16,6 +16,19 @@ let createdTags = new Set<string>()
 let failedTags = new Set<string>()
 let lastConnectedState = false
 
+/**
+ * Classify a libplctag read/create failure message as "the controller has no
+ * such tag" (a NAME MISMATCH — the most common real-world E-Stop problem) vs a
+ * generic read error. Used to give the tester an honest reason for a blank
+ * value instead of silently collapsing every failure to null.
+ */
+function isNotFoundError(msg?: string): boolean {
+  if (!msg) return false
+  return /not.?found|no such|unknown tag|bad.?param|ERR_NOT_FOUND|0x0?4\b|0x0?5\b/i.test(msg)
+}
+
+type TagReadStatus = 'ok' | 'not_found' | 'read_error' | 'mcm_disconnected'
+
 export async function GET(req: Request, res: Response) {
   try {
     const singletonConnected = hasPlcClient() && getPlcClient().isConnected
@@ -98,6 +111,12 @@ export async function GET(req: Request, res: Response) {
     }
 
     const tagValues: Record<string, boolean | null> = {}
+    // Per-tag read diagnostics so a NOT_FOUND / wrong tag name is VISIBLE to the
+    // tester instead of silently collapsing to null (which reads as "no data").
+    // A null value can mean three very different things — disambiguate them.
+    const tagDiag: Record<string, TagReadStatus> = {}
+    const tagErrors: Record<string, string> = {}
+    const connectedSids = new Set<string>()
     let anyConnected = false
 
     // Registry MCM zones: one typed batch per subsystem, mode-aware (works
@@ -107,12 +126,31 @@ export async function GET(req: Request, res: Response) {
     for (const [sid, tags] of Array.from(registryTagsBySid.entries())) {
       try {
         const batch = await readTypedTagsForMcm(sid, Array.from(tags).map((name) => ({ name, dataType: 'BOOL' as const })))
-        if (!batch.connected) continue
-        anyConnected = true
-        for (const r of batch.results) {
-          tagValues[r.name] = r.success ? (r.value === true || r.value === 1) : null
+        if (!batch.connected) {
+          for (const name of Array.from(tags)) tagDiag[name] = 'mcm_disconnected'
+          continue
         }
-      } catch { /* MCM read failed — its zones read as unknown */ }
+        anyConnected = true
+        connectedSids.add(sid)
+        for (const r of batch.results) {
+          if (r.success) {
+            tagValues[r.name] = r.value === true || r.value === 1
+            tagDiag[r.name] = 'ok'
+          } else {
+            tagValues[r.name] = null
+            tagDiag[r.name] = isNotFoundError(r.error) ? 'not_found' : 'read_error'
+            if (r.error) tagErrors[r.name] = r.error
+          }
+        }
+      } catch (err) {
+        // Whole-batch failure (e.g. gateway RPC threw) — this MCM's zones are
+        // unknown; record WHY rather than leaving them indistinguishable from
+        // a clean "no data".
+        for (const name of Array.from(tags)) {
+          tagDiag[name] = 'read_error'
+          tagErrors[name] = err instanceof Error ? err.message : String(err)
+        }
+      }
     }
 
     // Legacy singleton zones (field tablets / unregistered subsystems).
@@ -132,9 +170,16 @@ export async function GET(req: Request, res: Response) {
         }
       }
       for (const tagName of Array.from(legacyTags)) {
-        if (failedTags.has(tagName)) { tagValues[tagName] = null; continue }
-        tagValues[tagName] = client.readTagCached(tagName)
+        if (failedTags.has(tagName)) { tagValues[tagName] = null; tagDiag[tagName] = 'not_found'; continue }
+        const v = client.readTagCached(tagName)
+        tagValues[tagName] = v
+        // null here = handle exists but the poll loop hasn't produced a value
+        // (transient on first read) or the read is erroring — surface it.
+        tagDiag[tagName] = v === null ? 'read_error' : 'ok'
       }
+    } else if (legacyTags.size > 0) {
+      // Singleton not connected — these zones can't be read at all right now.
+      for (const tagName of Array.from(legacyTags)) tagDiag[tagName] = 'mcm_disconnected'
     }
 
     const connected = anyConnected || singletonConnected
@@ -163,6 +208,13 @@ export async function GET(req: Request, res: Response) {
     const result = zones.map((zone: any) => ({
       id: zone.id, name: zone.Name,
       nominalOkTag: zone.nominalOkTag as string,
+      // Whether THIS zone's owning controller is actually connected — distinct
+      // from the OR'd top-level `connected`, so a zone whose MCM is offline no
+      // longer hides under a green "connected" banner with all-null bits.
+      mcmConnected: (() => {
+        const zsid = zone.SubsystemId != null ? String(zone.SubsystemId) : ''
+        return zsid && hasMcm(zsid) ? connectedSids.has(zsid) : singletonConnected
+      })(),
       nominalOk: connected ? (tagValues[zone.nominalOkTag] ?? null) : null,
       epcs: zone.epcs.map((epc: any) => {
         const mustStopVfds = epc.vfds.filter((v: any) => v.mustStop)
@@ -234,7 +286,22 @@ export async function GET(req: Request, res: Response) {
       }),
     }))
 
-    return res.json({ success: true, connected, zones: result })
+    // Per-tag diagnostics: ship only the problems (ok tags are implied by their
+    // values). This is what makes a tag-name mismatch VISIBLE in the UI instead
+    // of an invisible blank — the tester sees "ZONE_X_Nominal_OK: not found".
+    const tagIssues = Object.entries(tagDiag)
+      .filter(([, status]) => status !== 'ok')
+      .map(([tag, status]) => ({ tag, status, error: tagErrors[tag] || undefined }))
+    const diagValues = Object.values(tagDiag)
+    const readSummary = {
+      total: diagValues.length,
+      ok: diagValues.filter((s) => s === 'ok').length,
+      notFound: diagValues.filter((s) => s === 'not_found').length,
+      readError: diagValues.filter((s) => s === 'read_error').length,
+      disconnected: diagValues.filter((s) => s === 'mcm_disconnected').length,
+    }
+
+    return res.json({ success: true, connected, zones: result, tagIssues, readSummary })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     return res.status(500).json({ success: false, error: message })

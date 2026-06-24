@@ -25,7 +25,21 @@ This app is no longer a pure Next.js runtime.
 - Server: Express 5 + TypeScript
 - Database: `better-sqlite3` runtime access
 - PLC: `ffi-rs` -> `libplctag`
-- Realtime: WebSocket on the same app port, internal broadcast HTTP API on `3102`
+- Realtime: WebSocket on the same app port, internal broadcast HTTP API on `3102` (prod) / `3122` (dev)
+
+### Ports (dev vs prod)
+
+Production (`npm start`, the packaged tool) uses the default ports. Development
+(`npm run dev`) overrides them via `cross-env` in `package.json` so a dev
+instance can run next to an installed one. The architecture diagrams below use
+the **prod** numbers.
+
+| Purpose | Prod (`npm start`) | Dev (`npm run dev`) |
+|---------|--------------------|---------------------|
+| HTTP server + WebSocket (`/ws`) | 3000 | 3020 |
+| Internal broadcast API (localhost only) | 3102 | 3122 |
+| PLC WebSocket server | 3000 | 3022 |
+| Vite dev server | — | 5173 |
 
 The code still preserves a Next-style directory layout in places:
 

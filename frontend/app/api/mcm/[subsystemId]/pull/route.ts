@@ -87,7 +87,18 @@ export async function POST(req: Request, res: Response) {
          WHERE i.SubsystemId = ? AND ps.DeadLettered = 1`,
       )
       .get(subsystemId) as { cnt: number }).cnt;
-    if (pendingActive + pendingParked > 0) {
+    // E-stop EPC checks and guided-task overrides have their own offline push
+    // queues, both keyed by SubsystemId. The scoped delete below cascades this
+    // subsystem's E-stop check data and rewrites its guided state, so an
+    // unsynced row in either queue for THIS subsystem is at risk too — block on
+    // them exactly like IO. (Neither queue has a DeadLettered concept.)
+    const pendingEStopCheck = (db
+      .prepare('SELECT COUNT(*) as cnt FROM EStopCheckPendingSyncs WHERE SubsystemId = ?')
+      .get(subsystemId) as { cnt: number }).cnt;
+    const pendingGuidedTask = (db
+      .prepare('SELECT COUNT(*) as cnt FROM GuidedTaskStatePendingSyncs WHERE SubsystemId = ?')
+      .get(subsystemId) as { cnt: number }).cnt;
+    if (pendingActive + pendingParked + pendingEStopCheck + pendingGuidedTask > 0) {
       const parts: string[] = [];
       if (pendingActive > 0) parts.push(`sync ${pendingActive} IO test change(s) first`);
       if (pendingParked > 0) {
@@ -96,6 +107,8 @@ export async function POST(req: Request, res: Response) {
           '(re-pass/fail/clear or accept in the grid — these cannot be synced)',
         );
       }
+      if (pendingEStopCheck > 0) parts.push(`sync ${pendingEStopCheck} E-stop check result(s) first`);
+      if (pendingGuidedTask > 0) parts.push(`sync ${pendingGuidedTask} guided-task update(s) first`);
       return res.status(409).json({
         success: false,
         error: `Pull blocked to protect unsynced local data for subsystem ${subsystemId}: ${parts.join('; ')}.`,
@@ -293,7 +306,16 @@ export async function POST(req: Request, res: Response) {
            WHERE i.SubsystemId = ?`,
         )
         .get(subsystemId) as { cnt: number }).cnt;
-      if (pendingNow > 0) {
+      // Same TOCTOU window for the E-stop check / guided-task queues: a result
+      // recorded during the cloud fetch above would slip past the top-of-handler
+      // block and then be erased by the delete below. Re-check them atomically.
+      const estopPendingNow = (db
+        .prepare('SELECT COUNT(*) as cnt FROM EStopCheckPendingSyncs WHERE SubsystemId = ?')
+        .get(subsystemId) as { cnt: number }).cnt;
+      const guidedPendingNow = (db
+        .prepare('SELECT COUNT(*) as cnt FROM GuidedTaskStatePendingSyncs WHERE SubsystemId = ?')
+        .get(subsystemId) as { cnt: number }).cnt;
+      if (pendingNow + estopPendingNow + guidedPendingNow > 0) {
         throw new Error('PENDING_APPEARED');
       }
 
