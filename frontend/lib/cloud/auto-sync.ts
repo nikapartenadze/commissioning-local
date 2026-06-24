@@ -1454,6 +1454,16 @@ class AutoSyncService {
       const cloudData = await response.json()
       const cloudIos = Array.isArray(cloudData) ? cloudData : (cloudData.ios || cloudData.Ios || [])
 
+      // Seed the delta cursor to the cloud's current max seq right after the
+      // baseline pull, so subsequent cloud changes arrive as granular deltas.
+      // Without this the cursor stays 0 and the delta path can't bootstrap —
+      // the resync→full-pull that would otherwise seed it is gated by the
+      // offline queue, which never drains under continuous field activity
+      // (caught by the battle `delta` scenario). Forward-only; safe every pull.
+      if (typeof cloudData?.cursorSeq === 'number' && cloudData.cursorSeq > 0) {
+        try { setSyncCursor(parseInt(subsystemId, 10), cloudData.cursorSeq) } catch { /* cursor table optional */ }
+      }
+
       if (cloudIos.length === 0) {
         this._lastPullAt = new Date()
         this._lastPullResult = 'no IOs from cloud'
