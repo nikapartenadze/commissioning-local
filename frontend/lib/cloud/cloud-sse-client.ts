@@ -21,7 +21,7 @@ export interface CloudSseConfig {
 
 const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
 
-class CloudSseClient {
+export class CloudSseClient {
   private config: CloudSseConfig
   private abortController: AbortController | null = null
   private reconnectTimer: NodeJS.Timeout | null = null
@@ -33,6 +33,13 @@ class CloudSseClient {
   private recentPushedIds = new Set<number>() // Skip echoes of our own pushes
   private recentPushedL2Keys = new Set<string>() // Key format: "deviceId-columnId"
   private _onConnectCallbacks = new Set<() => void>()
+  private _onSubsystemChangedCallbacks = new Set<(subsystemId: number) => void>()
+  // Per-subsystem debounce: a CSV import fires many hints in a burst; collapse
+  // them to a single scoped pull per subsystem. Keyed by subsystemId so changes
+  // to different MCMs (a central server sees them all on one stream) don't
+  // cancel each other.
+  private _subsystemChangedTimers = new Map<number, NodeJS.Timeout>()
+  private subsystemChangedDebounceMs = 2000
 
   constructor(config: CloudSseConfig) {
     this.config = config
@@ -42,6 +49,19 @@ class CloudSseClient {
   onConnect(callback: () => void): () => void {
     this._onConnectCallbacks.add(callback)
     return () => { this._onConnectCallbacks.delete(callback) }
+  }
+
+  /**
+   * Register a callback fired (debounced) when the cloud signals that a
+   * subsystem's data changed via a `subsystem_changed` hint. The callback
+   * receives the changed subsystemId; deciding whether this tool manages that
+   * subsystem (and doing the scoped pull) is the caller's job — the cloud
+   * broadcasts every subsystem's hint to every authorized subscriber.
+   * Returns an unsubscribe function.
+   */
+  onSubsystemChanged(callback: (subsystemId: number) => void): () => void {
+    this._onSubsystemChangedCallbacks.add(callback)
+    return () => { this._onSubsystemChangedCallbacks.delete(callback) }
   }
 
   get connectionState(): SseConnectionState { return this._connectionState }
@@ -96,6 +116,8 @@ class CloudSseClient {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    for (const timer of this._subsystemChangedTimers.values()) clearTimeout(timer)
+    this._subsystemChangedTimers.clear()
   }
 
   private setConnectionState(state: SseConnectionState): void {
@@ -251,10 +273,41 @@ class CloudSseClient {
         break
       }
 
+      case 'subsystem-changed':
+      case 'subsystem_changed': {
+        this.handleSubsystemChanged(event.data || event)
+        break
+      }
+
       default:
         // Unknown event type — ignore
         break
     }
+  }
+
+  /**
+   * A `subsystem_changed` hint means the cloud's definition/config data for a
+   * subsystem changed (IO add/delete, network/estop/safety import) — a class of
+   * change the io_updated result path never carries. We don't ship data here;
+   * we debounce, then notify subscribers so they can fetch a scoped delta/pull.
+   */
+  private handleSubsystemChanged(data: any): void {
+    const subsystemId = Number(data?.subsystemId)
+    if (!Number.isFinite(subsystemId)) return
+
+    const existing = this._subsystemChangedTimers.get(subsystemId)
+    if (existing) clearTimeout(existing)
+
+    const timer = setTimeout(() => {
+      this._subsystemChangedTimers.delete(subsystemId)
+      Array.from(this._onSubsystemChangedCallbacks).forEach((cb) => {
+        try { cb(subsystemId) } catch (err) {
+          console.error('[CloudSSE] Error in onSubsystemChanged callback:', err)
+        }
+      })
+    }, this.subsystemChangedDebounceMs)
+
+    this._subsystemChangedTimers.set(subsystemId, timer)
   }
 
   private handleIoUpdated(event: any): void {
