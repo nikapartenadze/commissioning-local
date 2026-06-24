@@ -128,7 +128,10 @@ services:
     image: ${CLOUD_IMAGE:-battle/cloud:local}
     environment:
       DATABASE_URL: postgresql://battle:battle@cloud-db:5432/commissioning
-      NODE_ENV: production
+      # prod by default; the `delta` scenario flips to development + bypass so
+      # the dev-admin provider exists and the mutator can drive the real admin API.
+      NODE_ENV: ${CLOUD_NODE_ENV:-production}
+      DEV_BYPASS_AUTH: ${CLOUD_DEV_BYPASS:-}
       NEXTAUTH_SECRET: battle-secret-not-prod
       NEXTAUTH_URL: http://cloud:3000
       NEXT_TELEMETRY_DISABLED: "1"
@@ -158,6 +161,10 @@ services:
       MUTATE_PERIOD_SEC: ${MUTATE_PERIOD_SEC:-120}
       MUTATE_ADD: ${MUTATE_ADD:-3}
       MUTATE_EDIT: ${MUTATE_EDIT:-5}
+      # sql (default, full-pull catch-up) or api (drives recordChange + SSE hint
+      # for the delta scenario). CLOUD_BASE is the in-network cloud URL.
+      MUTATE_MODE: ${MUTATE_MODE:-sql}
+      CLOUD_BASE: ${CLOUD_BASE:-http://cloud:3000}
     volumes:
       - runs:/runs
     depends_on:
