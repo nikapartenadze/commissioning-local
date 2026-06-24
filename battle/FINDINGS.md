@@ -509,3 +509,31 @@ matrix is revisited after every new incident. Honest status below.
 harmful symptom, not the wasted rewrites); (b) per-MCM connected-flag isn't its
 own gate yet; (c) I7 stays report-only (docker-network flap doesn't cleanly
 restore SSE — env, not tool). None of these are data-loss paths.
+
+---
+
+## delta scenario — cloud→field delta-sync coverage (2026-06-24)
+
+**What it stresses:** the NEW delta-sync path (admin CRUD → `recordChange` +
+`subsystem_change_log` → `subsystem_changed` SSE hint → field `fetchAndApplyDelta`
+granular upsert/guarded-delete + per-subsystem cursor). The original `mutate`/I7
+scenario can't reach it: its mutator writes raw SQL (no `recordChange`, no hint)
+and the battle `cloud` is a prod build (no admin auth → can't drive the API).
+
+**How:** a dev-mode cloud image (`battle/cloud-dev`, `next dev` +
+`DEV_BYPASS_AUTH=true`) lets the mutator (`MUTATE_MODE=api`) sign in as dev-admin
+and drive the REAL admin API (POST/DELETE `/api/admin/ios`), firing the in-process
+`recordChange` + hint. The field (same prod tool image, `CLOUD_URL_OVERRIDE`)
+applies the resulting deltas. Run: `SCENARIO=delta SOAK_MINUTES=10 sh ci/run_scenario.sh`
+(builds `cloud-dev:local`); CI job `battle-delta` pulls `cloud-dev:latest`.
+
+**Invariants (REPORT-ONLY until proven green twice — skill rule #4):**
+- **I11 delta-propagation** — cloud adds converge in local SQLite AND arrived via
+  the granular delta path (`[AutoSync] delta` log lines), not a full pull.
+- **I12 delete-propagation + guarded delete** — cloud deletes remove clean local
+  IOs; an IO with an un-pushed local result (PendingSyncs) is NEVER dropped.
+- **I13 cold-start cursor** — `SyncCursors.LastSeq` advances past 0 (proves the
+  resync→full-pull→seed-cursor handshake works and deltas actually run, rather
+  than resyncing forever — the cold-start bug caught during live dev testing).
+
+**Promote I11/I12/I13 to GATE** once two consecutive clean `delta` runs are green.
