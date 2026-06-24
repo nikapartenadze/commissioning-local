@@ -113,6 +113,30 @@ battle-smoke:
   script:
     - sh battle/ci/run_scenario.sh
 
+# ── battle-delta ──────────────────────────────────────────────────────────────
+# Cloud→field DELTA-SYNC coverage (I11 delta-propagation, I12 delete + guarded
+# delete, I13 cold-start cursor). Drives changes through the REAL admin API via
+# a dev-mode cloud (DEV_BYPASS_AUTH), so it needs cloud-dev:latest pushed from a
+# dev box (battle/ci/build_and_push.sh pushes it alongside cloud:latest).
+# Trigger: DELTA=1 schedule/API, or manually on a push pipeline.
+battle-delta:
+  extends: .battle-base
+  rules:
+    - if: '$DELTA == "1"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+      allow_failure: true
+  timeout: 90m
+  variables:
+    SCENARIO: delta
+    SOAK_MINUTES: "15"
+    CLOUD_IMAGE: $CI_REGISTRY_IMAGE/cloud-dev:latest
+    MUTATE_MODE: api
+    CLOUD_NODE_ENV: development
+    CLOUD_DEV_BYPASS: "true"
+  script:
+    - sh battle/ci/run_scenario.sh
+
 # ── central-battle ────────────────────────────────────────────────────────────
 # Centralized-server scenarios (central / central-cdw5 / central-cdw5-split)
 # on the central-tool-latest branch ref. Pulls the BRANCH-built tool image
