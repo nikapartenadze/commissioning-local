@@ -21,6 +21,53 @@ export interface CloudSseConfig {
 
 const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
 
+/** A local IO row's fields needed to decide an SSE merge. */
+export interface SseLocalIo { Result: string | null; Version: number }
+
+/**
+ * Pure decision for which columns an `io_updated` SSE event writes to the local
+ * Ios row. Extracted from handleIoUpdated so the merge rules are unit-tested.
+ *
+ *  - definitions (name/description/order/tagType/version): applied if present.
+ *  - result/timestamp/comments: only when cloud version is newer, OR local has
+ *    no result yet (last-write-wins — unchanged behaviour).
+ *  - punchlistStatus/clarificationNote: applied REGARDLESS of version — the
+ *    cloud owns the resolver state and the punchlist PATCH doesn't bump version,
+ *    so this is how an admin's Addressed/Clarification lands on a tablet live.
+ */
+export function computeSseIoUpdate(
+  event: any,
+  localIo: SseLocalIo,
+): { clauses: string[]; params: any[] } {
+  const clauses: string[] = []
+  const params: any[] = []
+
+  if (event.name !== undefined) { clauses.push('Name = ?'); params.push(event.name) }
+  if (event.description !== undefined) { clauses.push('Description = ?'); params.push(event.description) }
+  if (event.order !== undefined) { clauses.push('"Order" = ?'); params.push(event.order) }
+  if (event.tagType !== undefined) { clauses.push('TagType = ?'); params.push(event.tagType) }
+  if (event.version !== undefined) { clauses.push('Version = ?'); params.push(Number(event.version) || 0) }
+
+  const cloudVersion = Number(event.version) || 0
+  const localVersion = localIo.Version ?? 0
+  if (cloudVersion > localVersion) {
+    if (event.result !== undefined) { clauses.push('Result = ?'); params.push(event.result ?? null) }
+    if (event.timestamp !== undefined) { clauses.push('Timestamp = ?'); params.push(event.timestamp ?? null) }
+    if (event.comments !== undefined) { clauses.push('Comments = ?'); params.push(event.comments ?? null) }
+  } else if (!localIo.Result && event.result) {
+    // Local has no result, cloud does — accept regardless of version.
+    clauses.push('Result = ?'); params.push(event.result)
+    clauses.push('Timestamp = ?'); params.push(event.timestamp ?? null)
+    clauses.push('Comments = ?'); params.push(event.comments ?? null)
+  }
+
+  // Resolver state — cloud-owned, applied regardless of the version gate.
+  if (event.punchlistStatus !== undefined) { clauses.push('PunchlistStatus = ?'); params.push(event.punchlistStatus ?? null) }
+  if (event.clarificationNote !== undefined) { clauses.push('ClarificationNote = ?'); params.push(event.clarificationNote ?? null) }
+
+  return { clauses, params }
+}
+
 export class CloudSseClient {
   private config: CloudSseConfig
   private abortController: AbortController | null = null
@@ -323,31 +370,9 @@ export class CloudSseClient {
 
       if (!localIo) return // IO doesn't exist locally
 
-      const setClauses: string[] = []
-      const params: any[] = []
-
-      // Always update definitions if provided
-      if (event.name !== undefined) { setClauses.push('Name = ?'); params.push(event.name) }
-      if (event.description !== undefined) { setClauses.push('Description = ?'); params.push(event.description) }
-      if (event.order !== undefined) { setClauses.push('"Order" = ?'); params.push(event.order) }
-      if (event.tagType !== undefined) { setClauses.push('TagType = ?'); params.push(event.tagType) }
-      if (event.version !== undefined) { setClauses.push('Version = ?'); params.push(Number(event.version) || 0) }
-
-      // Merge test results if cloud version is newer (includes clears)
-      const cloudVersion = Number(event.version) || 0
-      const localVersion = localIo.Version ?? 0
-      console.log(`[SSE] IO ${ioId}: cloud v${cloudVersion} vs local v${localVersion}, result=${event.result}, localResult=${localIo.Result}`)
-
-      if (cloudVersion > localVersion) {
-        if (event.result !== undefined) { setClauses.push('Result = ?'); params.push(event.result ?? null) }
-        if (event.timestamp !== undefined) { setClauses.push('Timestamp = ?'); params.push(event.timestamp ?? null) }
-        if (event.comments !== undefined) { setClauses.push('Comments = ?'); params.push(event.comments ?? null) }
-      } else if (!localIo.Result && event.result) {
-        // Local has no result, cloud does — accept regardless of version
-        setClauses.push('Result = ?'); params.push(event.result)
-        setClauses.push('Timestamp = ?'); params.push(event.timestamp ?? null)
-        setClauses.push('Comments = ?'); params.push(event.comments ?? null)
-      }
+      // Decide the column writes (pure + unit-tested in
+      // __tests__/cloud-sse-io-update.test.ts).
+      const { clauses: setClauses, params } = computeSseIoUpdate(event, localIo)
 
       if (setClauses.length === 0) return
 
@@ -366,6 +391,10 @@ export class CloudSseClient {
             state: '',
             timestamp: event.timestamp ?? '',
             comments: event.comments ?? '',
+            // Carry resolver state so the grid repaints the Addressed/
+            // Clarification badge live without a page refresh.
+            punchlistStatus: event.punchlistStatus,
+            clarificationNote: event.clarificationNote,
           }),
         }).catch(() => { /* WS broadcast best-effort */ })
       } catch (wsErr) {

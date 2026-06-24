@@ -31,6 +31,10 @@ export interface IOUpdate {
   // tabs / client laptops see the Party Responsible badge change without a
   // refetch. null on Pass / Clear; absent on state-only updates.
   FailureMode?: string | null
+  // Cloud-owned resolver state, forwarded so the grid repaints the
+  // Addressed/Clarification badge live without a refetch.
+  PunchlistStatus?: string | null
+  ClarificationNote?: string | null
 }
 
 export interface ConfigurationEvent {
@@ -347,6 +351,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
             // Responsible column in lockstep with Result/Comments. Server
             // omits the field on state-only events.
             FailureMode: ioMsg.failureMode,
+            PunchlistStatus: ioMsg.punchlistStatus,
+            ClarificationNote: ioMsg.clarificationNote,
           }
           ioCallbacksRef.current.forEach((cb) => {
             try {

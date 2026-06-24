@@ -1211,6 +1211,11 @@ export default function CommissioningPage() {
                 // badge. Explicit string is the Fail case → derive the
                 // badge.
                 failureMode: update.FailureMode !== undefined ? update.FailureMode : io.failureMode,
+                // Resolver state from a cloud-driven UpdateIO — repaint the
+                // Addressed/Clarification badge live. `undefined` = field absent
+                // (preserve); explicit value (incl. null) = apply.
+                punchlistStatus: update.PunchlistStatus !== undefined ? update.PunchlistStatus : io.punchlistStatus,
+                clarificationNote: update.ClarificationNote !== undefined ? update.ClarificationNote : io.clarificationNote,
               }
               if (DEBUG_OTHER) {
                 console.log('📡 Full IO update for:', io.name, 'New state:', update.State, 'New result:', updatedIo.result)
