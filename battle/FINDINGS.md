@@ -537,3 +537,32 @@ applies the resulting deltas. Run: `SCENARIO=delta SOAK_MINUTES=10 sh ci/run_sce
   than resyncing forever — the cold-start bug caught during live dev testing).
 
 **Promote I11/I12/I13 to GATE** once two consecutive clean `delta` runs are green.
+
+### delta run #1 (2026-06-24) — REAL findings, not yet green
+
+I4 green (293 writes, no loss — harness is real). I11/I7 FAIL (0 cloud adds
+propagated), I13 cursor=0. Field log (`tool-logs/logs/app-2026-06-24.log`) shows
+the root causes:
+
+1. **Catch-up pull is GATED under load.** `[AutoSync] catch-up done: 38:skip-pending`
+   every time — the reconnect/periodic full pull returns 409 while the bot
+   offline queue is non-empty (continuous testing), so cloud→field propagation
+   STALLS under load. This is a real product issue affecting the deployed
+   full-pull path, not just the rig. Fix: make the catch-up **delta-first**
+   (granular apply is non-gated) — auto-sync Task 2.8, still open.
+2. **The SSE `subsystem_changed` hint is never received** (grep=0) under the
+   dev-mode cloud. Almost certainly `next dev` module isolation: the admin
+   route's in-process `broadcastSubsystemChanged` emits to a different emitter
+   instance than the SSE route's subscriber. PROD (`next start`, true singleton)
+   works, but the `cloud-dev` (next dev) harness can't deliver it.
+
+**Design fork for testing the hint path in the rig** (pick one):
+- (a) small **test-only admin auth seam** in the cloud (accept admin via a
+  header gated by a battle-only env) so a PROD-mode cloud image — real singleton
+  emitter — can be driven by the mutator → real hint→delta; OR
+- (b) accept the rig only tests the **catch-up-delta** path (make catch-up
+  delta-first + frequent), and rely on unit tests + the live dev-cloud curl
+  proof for the hint itself.
+
+Cold-start cursor-seed (cloud `cursorSeq` + field seed after baseline pull) is
+committed (402842c / dd34730) and is a prerequisite for either path.
