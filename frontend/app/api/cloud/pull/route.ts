@@ -19,6 +19,8 @@ function createPullStmts() {
     pendingIoCount: db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs'),
     pendingL2Count: db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE DeadLettered = 0'),
     pendingChangeRequestCount: db.prepare("SELECT COUNT(*) as cnt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL"),
+    pendingEStopCheckCount: db.prepare('SELECT COUNT(*) as cnt FROM EStopCheckPendingSyncs'),
+    pendingGuidedTaskCount: db.prepare('SELECT COUNT(*) as cnt FROM GuidedTaskStatePendingSyncs'),
     ioCount: db.prepare('SELECT COUNT(*) as cnt FROM Ios'),
     getProject: db.prepare('SELECT id FROM Projects WHERE id = ?'),
     insertProject: db.prepare('INSERT INTO Projects (id, Name) VALUES (?, ?)'),
@@ -162,12 +164,21 @@ export async function POST(req: Request, res: Response) {
     const pendingIoParked = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
     const pendingL2Count = (getPullStmts().pendingL2Count.get() as { cnt: number }).cnt
     const pendingChangeRequestCount = (getPullStmts().pendingChangeRequestCount.get() as { cnt: number }).cnt
-    const totalPendingCount = pendingIoActive + pendingIoParked + pendingL2Count + pendingChangeRequestCount
+    // E-stop EPC checks and guided-task overrides have their own offline push
+    // queues. The destructive pull below DELETEs EStopZones/EStopEpcs (which
+    // cascades E-stop check data) and rewrites the IO/guided state, so an
+    // unsynced row in either queue is at risk too — block on them exactly like
+    // IO/L2. (These queues carry no DeadLettered concept; any row blocks.)
+    const pendingEStopCheckCount = (getPullStmts().pendingEStopCheckCount.get() as { cnt: number }).cnt
+    const pendingGuidedTaskCount = (getPullStmts().pendingGuidedTaskCount.get() as { cnt: number }).cnt
+    const totalPendingCount = pendingIoActive + pendingIoParked + pendingL2Count + pendingChangeRequestCount + pendingEStopCheckCount + pendingGuidedTaskCount
     if (totalPendingCount > 0) {
       const syncable = [
         pendingIoActive > 0 ? `${pendingIoActive} IO test change(s)` : null,
         pendingL2Count > 0 ? `${pendingL2Count} L2 cell change(s)` : null,
         pendingChangeRequestCount > 0 ? `${pendingChangeRequestCount} change request(s)` : null,
+        pendingEStopCheckCount > 0 ? `${pendingEStopCheckCount} E-stop check result(s)` : null,
+        pendingGuidedTaskCount > 0 ? `${pendingGuidedTaskCount} guided-task update(s)` : null,
       ].filter(Boolean).join(', ')
 
       const parts: string[] = []

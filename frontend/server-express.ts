@@ -59,8 +59,9 @@ const BROADCAST_HOST = process.env.BROADCAST_HOST || (PLC_REMOTE ? '0.0.0.0' : '
 
 // Keep logs beside the active database/config storage root. Files rotate DAILY
 // (app-YYYY-MM-DD.log / errors-YYYY-MM-DD.log) and are kept for LOG_RETENTION_DAYS
-// (default 14) — see lib/logging/file-log. The old 30MB cap couldn't retain
-// "everything for 2 weeks" under multi-MCM load.
+// (default 14) — see lib/logging/file-log. Each dated file is also capped at
+// LOG_MAX_FILE_BYTES (default 50MB, keeping LOG_MAX_ROLLS rolls) so a runaway
+// log loop on a single day can't blow up the disk inside the 14-day window.
 const LOG_DIR = resolveLogsDirPath();
 const LOG_FILE = path.join(LOG_DIR, 'app.log');
 const ERROR_FILE = path.join(LOG_DIR, 'errors.log');
@@ -69,9 +70,10 @@ try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); }
 
 function logTimestamp(): string { return new Date().toISOString().replace('T', ' ').substring(0, 19); }
 
-// Daily-rotating logs with time-based retention (BACKUP/LOG retention default
-// 14 days) — see lib/logging/file-log. The old 30MB rolling cap couldn't
-// guarantee two weeks of history, which is required for data recovery.
+// Daily-rotating logs with time-based retention (default 14 days) plus a
+// per-file size cap (LOG_MAX_FILE_BYTES) — see lib/logging/file-log. Daily
+// rotation guarantees two weeks of history for data recovery; the size cap
+// bounds any single day so a runaway loop can't fill the disk.
 function appendLog(file: string, line: string): void {
   appendDailyLog(file, line);
 }
