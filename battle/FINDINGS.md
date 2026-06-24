@@ -566,3 +566,29 @@ the root causes:
 
 Cold-start cursor-seed (cloud `cursorSeq` + field seed after baseline pull) is
 committed (402842c / dd34730) and is a prerequisite for either path.
+
+### delta run #2 (2026-06-24) — RIG CAUGHT A REAL DEFECT
+
+With delta-first catch-up + cursor-seed: I13 PASS (cursor=30), I4 green (288),
+I12 pass. **I11/I7 still FAIL** (0 propagated). Field log: `38:resync->skip-pending`
+every catch-up.
+
+**Root cause (real product defect, would bite in production):** under continuous
+field activity the offline queue is never empty, so the resync→full-pull is
+GATED (409 skip-pending) and the baseline IOs are never pulled. Seeding the
+cursor anyway (to the cloud max seq) makes it worse — it advances past changes
+that were never applied, so the next `delta(since=max)` returns nothing and the
+new cloud IOs fall into a PERMANENT GAP. Net: while a tech is actively testing,
+cloud-side CRUD silently fails to reach the tablet.
+
+**Correct fix (not yet implemented — needs care + a verification soak):** on
+resync, the delta endpoint should deliver the IO SNAPSHOT through the non-gated
+granular apply path — return all current IOs as `upserts` (serialized like the
+full pull), applied by `fetchAndApplyDelta` (preserves local results, NOT
+queue-gated), then seed the cursor to `toSeq`. This replaces the gated
+destructive full pull on the cold-start/resync path and closes the gap. The
+`seed-cursor-even-when-full-pull-skips` shortcut (commit 33f5961) must be
+REVERTED as part of this — it is unsafe (creates the gap).
+
+This is the rig doing its job: a defect unit tests + the happy-path live proof
+missed. Implement the snapshot-on-resync fix, then re-run `delta` twice green.
