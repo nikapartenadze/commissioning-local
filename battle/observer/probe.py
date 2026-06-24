@@ -612,7 +612,9 @@ def check_delta_propagation(mut_path: str) -> dict:
             break
         print(f"observer: I11 — {len(missing)}/{len(added)} cloud-added IOs not yet local")
         time.sleep(10)
-    delta_used = _tool_log_has(r"\[AutoSync\] delta ")
+    # Matches either the hint path (`[AutoSync] delta <sid>: +x/-y`) or the
+    # delta-first catch-up (`catch-up done: <sid>:delta(+x/-y)`).
+    delta_used = _tool_log_has(r":delta\(\+|\[AutoSync\] delta ")
     return {
         # All (modulo a small final-batch in-flight margin) must have arrived,
         # AND at least one must have come through the granular delta path.

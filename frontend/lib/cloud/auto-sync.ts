@@ -1328,24 +1328,52 @@ class AutoSyncService {
     const port = process.env.PORT || '3000'
     console.log(`[AutoSync] ${trigger}: catch-up pull for ${active.length} active MCM(s)`)
 
+    let cfg: Awaited<ReturnType<typeof configService.getConfig>> | null = null
+    try { cfg = await configService.getConfig() } catch { cfg = null }
+
+    // Gated full pull (destructive; refuses with 409 while local work is pending).
+    const mcmFullPull = async (sid: number): Promise<string> => {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${sid}/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ background: true }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        if (r.status === 409) return 'skip-pending'
+        const data = (await r.json().catch(() => ({}))) as { success?: boolean; iosCount?: number }
+        return data?.success ? `ok(${data.iosCount ?? '?'})` : `err(${r.status})`
+      } catch (e) {
+        return `err(${e instanceof Error ? e.message : 'fetch'})`
+      }
+    }
+
     try {
       const outcomes = await Promise.all(
         active.map(async (m) => {
+          const sid = parseInt(m.subsystemId, 10)
+          if (!Number.isFinite(sid)) return `${m.subsystemId}:bad-id`
+          // Delta-first catch-up: the granular apply is NOT gated by the offline
+          // queue, so cloud changes propagate even while local work is pending —
+          // fixing the `skip-pending` stall the battle delta run exposed. Full
+          // pull is only the fallback (resync / config-section change / error).
+          if (!cfg || !cfg.remoteUrl) return `${sid}:${await mcmFullPull(sid)}`
           try {
-            const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(m.subsystemId)}/pull`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              // background: this is an automated catch-up, not a user pull — let
-              // the route skip the pre-pull backup when there's nothing to recover.
-              body: JSON.stringify({ background: true }),
-              signal: AbortSignal.timeout(120_000),
-            })
-            if (r.status === 409) return `${m.subsystemId}:skip-pending` // unsynced local work — safe
-            const data = (await r.json().catch(() => ({}))) as { success?: boolean; iosCount?: number }
-            if (data && data.success) return `${m.subsystemId}:ok(${data.iosCount ?? '?'})`
-            return `${m.subsystemId}:err(${r.status})`
+            const result = await fetchAndApplyDelta(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
+            if (result.resync) {
+              const full = await mcmFullPull(sid)
+              // Seed the cursor even when the full pull is gated (skip-pending):
+              // the local baseline already exists (seed / earlier pull), so the
+              // next catch-up deltas from here instead of resyncing forever.
+              if (result.toSeq > 0) { try { setSyncCursor(sid, result.toSeq) } catch { /* cursor optional */ } }
+              return `${sid}:resync->${full}`
+            }
+            if (result.sections.network || result.sections.estop || result.sections.safety) {
+              return `${sid}:delta(+${result.applied}/-${result.deleted})+sect->${await mcmFullPull(sid)}`
+            }
+            return `${sid}:delta(+${result.applied}/-${result.deleted})`
           } catch (e) {
-            return `${m.subsystemId}:err(${e instanceof Error ? e.message : 'fetch'})`
+            return `${sid}:delta-err->${await mcmFullPull(sid)}`
           }
         })
       )
@@ -1361,9 +1389,8 @@ class AutoSyncService {
       // never re-wipes or churns; ongoing cell edits arrive live via SSE, and a
       // manual Pull FV still forces a refresh.
       try {
-        const cfg = await configService.getConfig()
-        const remoteUrl = cfg.remoteUrl
-        const apiPassword = cfg.apiPassword
+        const remoteUrl = cfg?.remoteUrl
+        const apiPassword = cfg?.apiPassword
         if (remoteUrl) {
           const countStmt = db.prepare('SELECT COUNT(*) as c FROM L2Devices WHERE SubsystemId = ?')
           for (const m of active) {
