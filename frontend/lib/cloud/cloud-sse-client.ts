@@ -296,6 +296,14 @@ class CloudSseClient {
         setClauses.push('Comments = ?'); params.push(event.comments ?? null)
       }
 
+      // Resolver state (Addressed / Clarification / Clarification Added) is
+      // cloud-owned and the punchlist PATCH doesn't bump version, so apply it
+      // regardless of the version gate. This is what lands an admin's status
+      // change on the tablet LIVE over SSE — closing the cloud→field gap that
+      // previously needed a full Pull. result/comments above are untouched.
+      if (event.punchlistStatus !== undefined) { setClauses.push('PunchlistStatus = ?'); params.push(event.punchlistStatus ?? null) }
+      if (event.clarificationNote !== undefined) { setClauses.push('ClarificationNote = ?'); params.push(event.clarificationNote ?? null) }
+
       if (setClauses.length === 0) return
 
       params.push(ioId)
@@ -313,6 +321,10 @@ class CloudSseClient {
             state: '',
             timestamp: event.timestamp ?? '',
             comments: event.comments ?? '',
+            // Carry resolver state so the grid repaints the Addressed/
+            // Clarification badge live without a page refresh.
+            punchlistStatus: event.punchlistStatus,
+            clarificationNote: event.clarificationNote,
           }),
         }).catch(() => { /* WS broadcast best-effort */ })
       } catch (wsErr) {
