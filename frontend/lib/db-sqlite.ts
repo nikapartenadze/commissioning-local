@@ -688,6 +688,18 @@ export function initializeSchema() {
       UNIQUE(VendorId, ProductCode)
     );
 
+    -- Per-subsystem delta-sync cursor: the highest cloud change-log seq this
+    -- tool has applied for the subsystem. The delta endpoint
+    -- (GET /api/sync/subsystem/:id/changes?since=LastSeq) returns everything
+    -- newer — IO upserts, delete tombstones, changed-section flags — letting the
+    -- tool catch up WITHOUT the destructive full pull. 0 (or absent) = bootstrap
+    -- via full pull.
+    CREATE TABLE IF NOT EXISTS SyncCursors (
+      SubsystemId INTEGER PRIMARY KEY,
+      LastSeq     INTEGER NOT NULL DEFAULT 0,
+      UpdatedAt   TEXT DEFAULT (datetime('now'))
+    );
+
   `)
 
   // VFD commissioning state is now stored entirely in L2CellValues
