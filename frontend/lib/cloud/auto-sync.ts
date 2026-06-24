@@ -1232,11 +1232,13 @@ class AutoSyncService {
       const result = await fetchAndApplyDelta(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
 
       if (result.resync) {
-        console.log(`[AutoSync] delta resync for ${subsystemId} → full pull, then seed cursor to ${result.toSeq}`)
+        // Empty resync (old cloud without snapshot support) → full-pull fallback.
+        // Do NOT seed the cursor here: the full pull may be queue-gated, and
+        // seeding past un-applied changes creates a propagation gap. An updated
+        // cloud returns the snapshot inline (applyDelta applies it + advances the
+        // cursor), so this branch is the backward-compat path only.
+        console.log(`[AutoSync] delta resync for ${subsystemId} (no snapshot) → full pull`)
         await this.scopedFullPull(subsystemId)
-        // Seed the cursor to the cloud's current max seq so the NEXT hint is a
-        // real delta — without this the cursor stays 0 and we resync forever.
-        if (result.toSeq > 0) setSyncCursor(subsystemId, result.toSeq)
         return
       }
 
@@ -1361,12 +1363,10 @@ class AutoSyncService {
           try {
             const result = await fetchAndApplyDelta(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
             if (result.resync) {
-              const full = await mcmFullPull(sid)
-              // Seed the cursor even when the full pull is gated (skip-pending):
-              // the local baseline already exists (seed / earlier pull), so the
-              // next catch-up deltas from here instead of resyncing forever.
-              if (result.toSeq > 0) { try { setSyncCursor(sid, result.toSeq) } catch { /* cursor optional */ } }
-              return `${sid}:resync->${full}`
+              // Empty resync (old cloud, no snapshot) → full-pull fallback, no
+              // cursor seed (gated pull + seed = propagation gap). Updated cloud
+              // returns the snapshot inline (applyDelta applies it + seeds).
+              return `${sid}:resync->${await mcmFullPull(sid)}`
             }
             if (result.sections.network || result.sections.estop || result.sections.safety) {
               return `${sid}:delta(+${result.applied}/-${result.deleted})+sect->${await mcmFullPull(sid)}`

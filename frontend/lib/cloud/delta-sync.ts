@@ -117,10 +117,14 @@ function ioToParams(io: DeltaIo, subsystemId: number) {
 export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDeltaResult {
   const sections = payload.sections ?? { network: false, estop: false, safety: false, l2: false }
 
-  if (payload.resync) {
-    // Surface the cloud's current max seq (payload.toSeq) so the caller can seed
-    // the cursor AFTER its full pull — otherwise the cursor stays 0 and every
-    // sync resyncs forever, so the granular delta path never runs.
+  const upserts = payload.ios?.upserts ?? []
+
+  // A resync WITHOUT a snapshot (legacy / pruning-gap with no payload) tells the
+  // caller to fall back to a full pull. A resync WITH a snapshot carries the
+  // full IO set — apply it through the SAME non-gated granular path below (and
+  // advance the cursor to toSeq), so cold-start bootstraps even while the
+  // offline queue is non-empty (no queue-gated full pull, no propagation gap).
+  if (payload.resync && upserts.length === 0) {
     return {
       resync: true,
       applied: 0,
@@ -131,7 +135,6 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
     }
   }
 
-  const upserts = payload.ios?.upserts ?? []
   const deletes = payload.ios?.deletes ?? []
   const skippedDeletes: number[] = []
   let applied = 0
