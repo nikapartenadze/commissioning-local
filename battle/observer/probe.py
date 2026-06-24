@@ -556,6 +556,121 @@ def check_cloud_propagation(mut_path: str) -> dict:
     }
 
 
+def _delta_journal(mut_path: str) -> tuple[list[int], list[int], bool]:
+    """Parse the mutator journal → (added_ids, deleted_ids, is_api_mode).
+    api mode is the `delta` scenario: changes went through the recorded admin
+    API, so the cloud fired recordChange + the SSE hint and the field should
+    apply them via the granular delta path."""
+    added: list[int] = []
+    deleted: list[int] = []
+    is_api = False
+    try:
+        for line in open(mut_path, errors="replace"):
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("mode") == "api":
+                is_api = True
+            if e.get("added"):
+                added += [int(x) for x in str(e["added"]).split(",") if x]
+            if e.get("deleted"):
+                deleted += [int(x) for x in str(e["deleted"]).split(",") if x]
+    except OSError:
+        pass
+    return added, deleted, is_api
+
+
+def _tool_log_has(pattern: str) -> bool:
+    rx = re.compile(pattern)
+    for path in sorted(glob.glob(os.path.join(DATA_DIR, "logs", "app-*.log"))):
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    if rx.search(line):
+                        return True
+        except OSError:
+            pass
+    return False
+
+
+def check_delta_propagation(mut_path: str) -> dict:
+    """I11 — IOs added on the cloud via the recorded admin API converge in the
+    field's local DB AND arrived via the GRANULAR delta path (the `[AutoSync]
+    delta` log line), not a destructive full pull. The SSE subsystem_changed
+    hint drives this automatically — no forced reconnect needed."""
+    added, deleted, is_api = _delta_journal(mut_path)
+    dset = set(deleted)
+    added = [i for i in added if i not in dset]  # ones later deleted are tested by I12
+    if not added:
+        return {"pass": True, "added": 0, "note": "no api-mode cloud additions"}
+    missing = added
+    for _ in range(24):  # up to ~4 min
+        local, _pending, _q = local_results_and_queue()
+        missing = [i for i in added if i not in local]
+        if not missing:
+            break
+        print(f"observer: I11 — {len(missing)}/{len(added)} cloud-added IOs not yet local")
+        time.sleep(10)
+    delta_used = _tool_log_has(r"\[AutoSync\] delta ")
+    return {
+        # All (modulo a small final-batch in-flight margin) must have arrived,
+        # AND at least one must have come through the granular delta path.
+        "pass": len(missing) <= max(2, int(0.05 * len(added))) and delta_used,
+        "cloud_added": len(added),
+        "not_propagated_to_local": len(missing),
+        "arrived_via_delta": delta_used,
+        "missing_samples": missing[:10],
+    }
+
+
+def check_delete_propagation(mut_path: str) -> dict:
+    """I12 — IOs deleted on the cloud are removed from the field's local DB,
+    EXCEPT any that still hold un-pushed local work (a PendingSyncs row): those
+    must be KEPT (guarded delete — never drop field work). A deleted IO still
+    present with NO pending local result is a missed delete = fail."""
+    _added, deleted, _is_api = _delta_journal(mut_path)
+    if not deleted:
+        return {"pass": True, "deleted": 0, "note": "no api-mode cloud deletes"}
+    still_present = deleted
+    for _ in range(18):  # up to ~3 min
+        local, _pending, queued = local_results_and_queue()
+        still_present = [i for i in deleted if i in local]
+        # Removed, or only the guarded (queued) ones remain → done.
+        if not [i for i in still_present if i not in queued]:
+            break
+        time.sleep(10)
+    local, _pending, queued = local_results_and_queue()
+    unguarded = [i for i in deleted if i in local and i not in queued]
+    guarded = [i for i in deleted if i in local and i in queued]
+    return {
+        "pass": len(unguarded) == 0,
+        "cloud_deleted": len(deleted),
+        "still_present_unguarded": len(unguarded),  # missed deletes (bad)
+        "still_present_guarded": len(guarded),       # kept on purpose (good)
+        "unguarded_samples": unguarded[:10],
+    }
+
+
+def check_cold_start_cursor() -> dict:
+    """I13 — the field's per-subsystem delta cursor (SyncCursors.LastSeq) advances
+    PAST 0, proving the cold-start handshake worked and granular deltas actually
+    run (not a perpetual resync→full-pull loop where the cursor stays 0)."""
+    db_path = os.path.join(DATA_DIR, "database.db")
+    max_seq = -1  # -1 = table/db unreadable
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+        try:
+            row = con.execute("SELECT MAX(LastSeq) FROM SyncCursors").fetchone()
+            max_seq = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.Error:
+            max_seq = -1
+        con.close()
+    except sqlite3.Error:
+        max_seq = -1
+    return {"pass": max_seq > 0, "max_cursor": max_seq}
+
+
 def rss_slope_mb_per_h(samples: list[tuple[float, float, float]], skip_first_s: float) -> float | None:
     if not samples:
         return None
@@ -872,6 +987,13 @@ def main() -> None:
     mut_path = os.path.join(RUNS_DIR, RUN_ID, "cloud-mutations.jsonl")
     if CLOUD_URL and os.path.exists(mut_path):
         invariants["I7_cloud_propagation"] = check_cloud_propagation(mut_path)
+        # Delta scenario (mutator api mode): the recorded admin API fired the SSE
+        # hint, so verify the GRANULAR delta path end-to-end.
+        _a, _d, _is_api = _delta_journal(mut_path)
+        if _is_api:
+            invariants["I11_delta_propagation"] = check_delta_propagation(mut_path)
+            invariants["I12_delete_propagation"] = check_delete_propagation(mut_path)
+            invariants["I13_cold_start_cursor"] = check_cold_start_cursor()
 
     # I8 cloud live-channel (SSE) auth — only when a cloud is attached. Gates on
     # an HTTP 401/403 auth break (the 2026-06-16 MCM11 incident class), not on
@@ -894,7 +1016,10 @@ def main() -> None:
     # failure is recorded for investigation, not treated as a release blocker.
     # The real guarantees (responsiveness, leak, restore, stability, DATA LOSS)
     # gate. See FINDINGS B10.
-    REPORT_ONLY = {"I7_cloud_propagation"}
+    # I11/I12/I13 (delta-sync) start REPORT-ONLY until proven non-flaky across
+    # two clean runs (skill rule #4); promote to gating once stable.
+    REPORT_ONLY = {"I7_cloud_propagation", "I11_delta_propagation",
+                   "I12_delete_propagation", "I13_cold_start_cursor"}
     gating = {k: v for k, v in invariants.items() if k not in REPORT_ONLY}
     verdict = {
         "run": RUN_ID,
