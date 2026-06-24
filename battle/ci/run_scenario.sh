@@ -219,6 +219,21 @@ case "$SCENARIO" in
         # FINDINGS F2 + the mutate scenario.
         export HOT_FRACTION=0
         export THINK_MIN_MS=700; export THINK_MAX_MS=3000 ;;
+    delta)                                            # cloud→field DELTA-SYNC (real hint→delta)
+        # Drive cloud changes through the RECORDED admin API (dev-mode cloud +
+        # DEV_BYPASS_AUTH) so recordChange + the subsystem_changed SSE hint fire
+        # and the field applies them via the granular delta path. Verifies I11
+        # (delta propagation) / I12 (delete + guarded delete) / I13 (cold-start
+        # cursor). No cloud flap — the hint drives the delta; a flap would just
+        # add full pulls and mask the delta path.
+        export COMPOSE_PROFILES=mutate
+        export MUTATE_MODE=api
+        export MUTATE_PERIOD_SEC="${MUTATE_PERIOD_SEC:-45}"   # frequent → deltas accumulate
+        export MUTATE_ADD="${MUTATE_ADD:-2}"
+        export CLOUD_IMAGE="${CLOUD_IMAGE:-battle/cloud-dev:local}"
+        export CLOUD_NODE_ENV=development
+        export CLOUD_DEV_BYPASS=true
+        export HOT_FRACTION=0 ;;                       # light queue → propagation observable
     *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;
 esac
 
@@ -234,7 +249,12 @@ if [ "${BATTLE_PULL:-0}" = "1" ]; then
     docker compose $COMPOSE_FILES -p battle build $BUILD_SVCS
     docker compose $COMPOSE_FILES -p battle up -d
 else
-    # Local path: build everything.
+    # Local path: build everything. The dev-mode cloud image (delta scenario)
+    # has no compose build context, so build it explicitly from the sibling repo.
+    if [ "$SCENARIO" = "delta" ]; then
+        echo "battle: building cloud-dev:local (next dev + DEV_BYPASS_AUTH) from ../../commissioning-cloud"
+        docker build -t battle/cloud-dev:local -f cloud-dev/Dockerfile ../../commissioning-cloud
+    fi
     docker compose $COMPOSE_FILES -p battle up --build -d
 fi
 
