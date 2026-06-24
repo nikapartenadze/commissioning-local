@@ -30,6 +30,12 @@ if [ "${BUILD_CLOUD:-0}" = "1" ]; then
   echo "=== cloud (from sibling repo) ==="
   docker build -t "$REG/cloud:latest" "$ROOT/../commissioning-cloud"
   docker push "$REG/cloud:latest"
+
+  # cloud-dev: next dev + DEV_BYPASS_AUTH, used ONLY by the battle-delta job so
+  # the mutator can drive the real admin API (recordChange + SSE hint).
+  echo "=== cloud-dev (delta scenario) ==="
+  docker build -t "$REG/cloud-dev:latest" -f cloud-dev/Dockerfile "$ROOT/../commissioning-cloud"
+  docker push "$REG/cloud-dev:latest"
 fi
 
 echo "=== done — nightly TOOL_IMAGE/PLC_SIM_IMAGE/CLOUD_IMAGE point at $REG/*:latest ==="
