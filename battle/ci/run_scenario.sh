@@ -239,6 +239,12 @@ esac
 
 echo "=== battle: scenario=$SCENARIO run=$RUN_ID soak=${SOAK_MINUTES}min ==="
 
+# Clear any prior run dir for this RUN_ID from the persistent (external) runs
+# volume. A leftover STOP sentinel from a previous run with the same RUN_ID
+# makes the crew + mutator exit instantly (0 writes / 0 mutations = a vacuous
+# verdict). Fresh dir every run.
+docker run --rm -v battle_runs:/runs alpine sh -c "rm -rf /runs/$RUN_ID" >/dev/null 2>&1 || true
+
 COMPOSE_FILES="-f docker-compose.battle.yml ${EXTRA_COMPOSE:-}"
 if [ "${BATTLE_PULL:-0}" = "1" ]; then
     # CI path: PULL the 3 heavy images (tool/cloud/plc-sim) from the registry,
