@@ -16,6 +16,7 @@ import type { PendingSync } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 import { fetchAndApplyDelta } from '@/lib/cloud/delta-sync'
+import { setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
@@ -1231,8 +1232,11 @@ class AutoSyncService {
       const result = await fetchAndApplyDelta(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
 
       if (result.resync) {
-        console.log(`[AutoSync] delta resync for ${subsystemId} → full pull`)
+        console.log(`[AutoSync] delta resync for ${subsystemId} → full pull, then seed cursor to ${result.toSeq}`)
         await this.scopedFullPull(subsystemId)
+        // Seed the cursor to the cloud's current max seq so the NEXT hint is a
+        // real delta — without this the cursor stays 0 and we resync forever.
+        if (result.toSeq > 0) setSyncCursor(subsystemId, result.toSeq)
         return
       }
 

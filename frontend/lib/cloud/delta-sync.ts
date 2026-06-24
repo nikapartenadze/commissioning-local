@@ -118,7 +118,17 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   const sections = payload.sections ?? { network: false, estop: false, safety: false, l2: false }
 
   if (payload.resync) {
-    return { resync: true, applied: 0, deleted: 0, skippedDeletes: [], sections, toSeq: getSyncCursor(subsystemId) }
+    // Surface the cloud's current max seq (payload.toSeq) so the caller can seed
+    // the cursor AFTER its full pull — otherwise the cursor stays 0 and every
+    // sync resyncs forever, so the granular delta path never runs.
+    return {
+      resync: true,
+      applied: 0,
+      deleted: 0,
+      skippedDeletes: [],
+      sections,
+      toSeq: typeof payload.toSeq === 'number' ? payload.toSeq : getSyncCursor(subsystemId),
+    }
   }
 
   const upserts = payload.ios?.upserts ?? []
