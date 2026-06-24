@@ -14,7 +14,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
-RUN npm ci
+# --ignore-scripts: the cloud's postinstall runs `prisma generate`, which needs
+# prisma/schema.prisma — not COPYed yet at this layer. We run generate explicitly
+# after COPY . . below.
+RUN npm ci --ignore-scripts
 COPY . .
 RUN npx prisma generate
 ENV NODE_ENV=development \
