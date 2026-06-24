@@ -306,6 +306,10 @@ export interface UpdateIOMessage {
   // Responsible column updates across tabs without a refetch. Absent on
   // state-only events from the PLC reader.
   failureMode?: string | null
+  // Punchlist resolver state, forwarded on cloud-driven UpdateIO events so the
+  // grid repaints the Addressed/Clarification badge live (no refetch/pull).
+  punchlistStatus?: string | null
+  clarificationNote?: string | null
 }
 
 export interface CommentUpdateMessage {
