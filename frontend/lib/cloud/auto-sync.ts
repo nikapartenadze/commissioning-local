@@ -15,6 +15,7 @@ import { db } from '@/lib/db-sqlite'
 import type { PendingSync } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
+import { fetchAndApplyDelta } from '@/lib/cloud/delta-sync'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
@@ -1189,13 +1190,17 @@ class AutoSyncService {
   }
 
   /**
-   * Scoped pull triggered by a cloud `subsystem_changed` hint. The cloud
+   * Delta-first reaction to a cloud `subsystem_changed` hint. The cloud
    * broadcasts every subsystem's hint to every authorized subscriber, so we
-   * first confirm THIS tool actually manages the subsystem (a configured MCM,
-   * or the single config.subsystemId on a field tablet) — otherwise a tablet
-   * would pull a foreign project's IOs into its local DB. Reuses the same
-   * per-MCM pull route as the catch-up sweep (409 = unsynced local work, safe
-   * to skip; the pre-pull guards still apply).
+   * first confirm THIS tool manages the subsystem (a configured MCM, or the
+   * single config.subsystemId on a field tablet) — otherwise a tablet would
+   * pull a foreign project's IOs.
+   *
+   * Then it applies a GRANULAR, non-destructive delta (IO upserts + guarded
+   * deletes) instead of the old destructive full pull. Falls back to the scoped
+   * full pull only when needed: a `resync` verdict (fresh cursor / pruning gap),
+   * a changed network/estop/safety section (no granular local section endpoint),
+   * or a delta error. A changed L2 section uses the granular pull-l2 route.
    */
   private async pullSubsystemOnHint(subsystemId: number): Promise<void> {
     if (!Number.isFinite(subsystemId)) return
@@ -1218,6 +1223,42 @@ class AutoSyncService {
       return
     }
 
+    let cfg
+    try { cfg = await configService.getConfig() } catch { return }
+    if (!cfg.remoteUrl) return
+
+    try {
+      const result = await fetchAndApplyDelta(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
+
+      if (result.resync) {
+        console.log(`[AutoSync] delta resync for ${subsystemId} → full pull`)
+        await this.scopedFullPull(subsystemId)
+        return
+      }
+
+      // No granular local endpoint for network/estop/safety config — refresh
+      // those via the scoped full pull (rare: only on a config import). L2 has a
+      // granular pull-l2 route.
+      const s = result.sections
+      if (s.network || s.estop || s.safety) {
+        await this.scopedFullPull(subsystemId)
+      } else if (s.l2) {
+        await this.pullL2Scoped(subsystemId, cfg.remoteUrl, cfg.apiPassword)
+      }
+
+      this._lastPullAt = new Date()
+      this._lastPullResult =
+        `delta ${subsystemId}: +${result.applied}/-${result.deleted}` +
+        (result.skippedDeletes.length ? ` (kept ${result.skippedDeletes.length} w/ local work)` : '')
+      console.log(`[AutoSync] ${this._lastPullResult}`)
+    } catch (e) {
+      console.warn(`[AutoSync] delta for ${subsystemId} failed (${e instanceof Error ? e.message : 'fetch'}); falling back to full pull`)
+      await this.scopedFullPull(subsystemId)
+    }
+  }
+
+  /** Existing destructive scoped pull — now only a fallback (resync / section change / error). */
+  private async scopedFullPull(subsystemId: number): Promise<void> {
     const port = process.env.PORT || '3000'
     try {
       const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(String(subsystemId))}/pull`, {
@@ -1227,15 +1268,30 @@ class AutoSyncService {
         signal: AbortSignal.timeout(120_000),
       })
       if (r.status === 409) {
-        console.log(`[AutoSync] subsystem_changed pull for ${subsystemId} skipped (unsynced local work)`)
+        console.log(`[AutoSync] scoped full pull for ${subsystemId} skipped (unsynced local work)`)
         return
       }
       const data = (await r.json().catch(() => ({}))) as { success?: boolean; iosCount?: number }
       this._lastPullAt = new Date()
-      this._lastPullResult = `subsystem_changed pull ${subsystemId}: ${data?.success ? `ok(${data.iosCount ?? '?'})` : `err(${r.status})`}`
+      this._lastPullResult = `scoped pull ${subsystemId}: ${data?.success ? `ok(${data.iosCount ?? '?'})` : `err(${r.status})`}`
       console.log(`[AutoSync] ${this._lastPullResult}`)
     } catch (e) {
-      console.warn(`[AutoSync] subsystem_changed pull for ${subsystemId} failed: ${e instanceof Error ? e.message : 'fetch'}`)
+      console.warn(`[AutoSync] scoped full pull for ${subsystemId} failed: ${e instanceof Error ? e.message : 'fetch'}`)
+    }
+  }
+
+  /** Granular L2/FV refresh (used when only the L2 section changed). */
+  private async pullL2Scoped(subsystemId: number, remoteUrl: string, apiPassword?: string): Promise<void> {
+    const port = process.env.PORT || '3000'
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId }),
+        signal: AbortSignal.timeout(60_000),
+      })
+    } catch (e) {
+      console.warn(`[AutoSync] pull-l2 for ${subsystemId} failed: ${e instanceof Error ? e.message : 'fetch'}`)
     }
   }
 

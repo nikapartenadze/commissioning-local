@@ -116,7 +116,7 @@ export class CloudSseClient {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    for (const timer of this._subsystemChangedTimers.values()) clearTimeout(timer)
+    this._subsystemChangedTimers.forEach((timer) => clearTimeout(timer))
     this._subsystemChangedTimers.clear()
   }
 
