@@ -592,3 +592,19 @@ REVERTED as part of this — it is unsafe (creates the gap).
 
 This is the rig doing its job: a defect unit tests + the happy-path live proof
 missed. Implement the snapshot-on-resync fix, then re-run `delta` twice green.
+
+### delta run #3 (2026-06-24) — FIX VERIFIED (1st green)
+
+With snapshot-on-resync (cloud f424618 / field 34ab59c): **I11 PASS** (18 adds,
+0 missing, arrived_via_delta=true), **I12 PASS**, **I13 PASS** (cursor=30), I4
+green (276). Field log: `catch-up done: 38:delta(+1184/-0)` → `38:delta(+1202/-0)`
+— the snapshot bootstraps via the non-gated granular path, cursor advances, and
+later cloud adds arrive as true deltas under continuous load. The cold-start gap
+is closed.
+
+I7 (legacy full-pull reconnect path, report-only) improved 24→6 missing; it's
+superseded by the delta path (I11) for propagation and stays report-only.
+
+REMAINING before promoting I11/I12/I13 to GATE: one more clean `delta` run
+(skill rule #4 — green twice). This was the agreed single-soak checkpoint; the
+confirming run is a deliberate follow-up.
