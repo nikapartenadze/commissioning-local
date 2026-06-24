@@ -54,6 +54,7 @@ class AutoSyncService {
   private estopStatusTimer: NodeJS.Timeout | null = null
   private networkDiagnosticsTimer: NodeJS.Timeout | null = null
   private sseUnsubscribe: (() => void) | null = null
+  private sseSubsystemChangedUnsub: (() => void) | null = null
   private config: AutoSyncConfig
   private isPushing = false
   private isPulling = false
@@ -157,6 +158,14 @@ class AutoSyncService {
             // in config.subsystemId — events missed during the disconnect could
             // belong to any MCM.
             void this.pullAllConfiguredMcms('SSE reconnect')
+          })
+          // React to cloud-side CRUD hints (IO add/delete, network/estop/safety
+          // import) the moment they happen — the io_updated result path doesn't
+          // carry them, so without this they'd only land on the next reconnect
+          // or 15-min safety sweep. The client debounces bursts per subsystem.
+          if (this.sseSubsystemChangedUnsub) this.sseSubsystemChangedUnsub()
+          this.sseSubsystemChangedUnsub = sseClient.onSubsystemChanged((sid) => {
+            void this.pullSubsystemOnHint(sid)
           })
         }
       } catch (err) {
@@ -1176,6 +1185,57 @@ class AutoSyncService {
         `${superseded} superseded row(s) cleared, ${rebased} rebased for re-push ` +
         `(${rows.length} conflicted row(s) examined across ${subsystems.length} subsystem(s))`
       )
+    }
+  }
+
+  /**
+   * Scoped pull triggered by a cloud `subsystem_changed` hint. The cloud
+   * broadcasts every subsystem's hint to every authorized subscriber, so we
+   * first confirm THIS tool actually manages the subsystem (a configured MCM,
+   * or the single config.subsystemId on a field tablet) — otherwise a tablet
+   * would pull a foreign project's IOs into its local DB. Reuses the same
+   * per-MCM pull route as the catch-up sweep (409 = unsynced local work, safe
+   * to skip; the pre-pull guards still apply).
+   */
+  private async pullSubsystemOnHint(subsystemId: number): Promise<void> {
+    if (!Number.isFinite(subsystemId)) return
+    if (Date.now() - this._lastManualPullAt < 30_000) return // a manual pull just ran
+
+    // Is this subsystem one we manage?
+    let managed = false
+    try {
+      const mcms = await configService.getMcms()
+      managed = mcms.some((m) => m.enabled !== false && parseInt(m.subsystemId, 10) === subsystemId)
+    } catch { /* fall through to single-subsystem check */ }
+    if (!managed) {
+      try {
+        const cfg = await configService.getConfig()
+        managed = parseInt(String(cfg.subsystemId), 10) === subsystemId
+      } catch { /* no config yet */ }
+    }
+    if (!managed) {
+      console.log(`[AutoSync] Ignoring subsystem_changed hint for unmanaged subsystem ${subsystemId}`)
+      return
+    }
+
+    const port = process.env.PORT || '3000'
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(String(subsystemId))}/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ background: true }),
+        signal: AbortSignal.timeout(120_000),
+      })
+      if (r.status === 409) {
+        console.log(`[AutoSync] subsystem_changed pull for ${subsystemId} skipped (unsynced local work)`)
+        return
+      }
+      const data = (await r.json().catch(() => ({}))) as { success?: boolean; iosCount?: number }
+      this._lastPullAt = new Date()
+      this._lastPullResult = `subsystem_changed pull ${subsystemId}: ${data?.success ? `ok(${data.iosCount ?? '?'})` : `err(${r.status})`}`
+      console.log(`[AutoSync] ${this._lastPullResult}`)
+    } catch (e) {
+      console.warn(`[AutoSync] subsystem_changed pull for ${subsystemId} failed: ${e instanceof Error ? e.message : 'fetch'}`)
     }
   }
 
