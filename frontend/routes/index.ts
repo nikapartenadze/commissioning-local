@@ -118,6 +118,8 @@ import * as vfdClear from '@/app/api/vfd-commissioning/clear/route'
 import * as vfdTestWrite from '@/app/api/vfd-commissioning/test-write/route'
 import * as vfdControlsVerified from '@/app/api/vfd-commissioning/controls-verified/route'
 import * as vfdBumpBlocker from '@/app/api/vfd-commissioning/bump-blocker/route'
+import * as beltTracking from '@/app/api/belt-tracking/route'
+import * as beltTrackingAddressed from '@/app/api/belt-tracking/addressed/route'
 import * as deviceIdentity from '@/app/api/device/identity/route'
 import * as guidedMapById from '@/app/api/maps/subsystem/[id]/route'
 import * as guidedDevices from '@/app/api/guided/devices/route'
@@ -360,6 +362,8 @@ export function createApiRouter(): Router {
   router.get('/api/vfd-commissioning/test-write', asyncHandler(vfdTestWrite.GET))
   router.post('/api/vfd-commissioning/controls-verified', asyncHandler(vfdControlsVerified.POST))
   router.post('/api/vfd-commissioning/bump-blocker', asyncHandler(vfdBumpBlocker.POST))
+  router.get('/api/belt-tracking', asyncHandler(beltTracking.GET))
+  router.post('/api/belt-tracking/addressed', asyncHandler(beltTrackingAddressed.POST))
 
   // ── Device Identity ───────────────────────────────────────────
   router.get('/api/device/identity', asyncHandler(deviceIdentity.GET))
