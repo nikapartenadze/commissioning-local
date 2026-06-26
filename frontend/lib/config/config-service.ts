@@ -104,6 +104,11 @@ class ConfigurationService {
       const legacyPath: string = parsed.path ?? DEFAULT_CONFIG.path;
       const legacySubsystemId: string = parsed.subsystemId ?? DEFAULT_CONFIG.subsystemId;
 
+      // Central deployments persist an explicit `mcms` array; a legacy tablet
+      // has none and we synthesize one below. Boot auto-connect needs to know
+      // which case this is so it drives the registry (central) instead of the
+      // legacy singleton (tablet).
+      const mcmsExplicit = Array.isArray(parsed.mcms);
       let mcms: McmConnection[] = [];
       if (Array.isArray(parsed.mcms)) {
         mcms = parsed.mcms
@@ -180,6 +185,7 @@ class ConfigurationService {
               && typeof p.plcPath === 'string')
           : [],
         mcms,
+        mcmsExplicit,
         // SharePoint push block. Carried through verbatim (string fields
         // coerced/trimmed) so getSharePointConfig() can read it. Absent →
         // undefined, which getSharePointConfig() normalises to {}.
