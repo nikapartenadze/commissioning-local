@@ -660,6 +660,33 @@ async function tryBootAutoConnect(): Promise<void> {
   }
   try {
     const cfg = await configService.getConfig();
+
+    // ── Central / multi-MCM deployment ───────────────────────────────
+    // When config.json explicitly lists MCMs, connections are owned by the
+    // MCM registry — each MCM connects to its OWN ip/path from mcms[]. The
+    // legacy single-PLC path below must NOT run, or its stale top-level `ip`
+    // opens a second, divergent singleton connection that flaps against the
+    // wrong controller (field: MCM17 set to 11.200.1.1 in mcms[] while the
+    // legacy top-level ip 11.200.0.111 kept auto-connecting and erroring).
+    // Connect every enabled MCM through the same path as POST /api/mcm/connect-all.
+    if (cfg.mcmsExplicit) {
+      const mcms = (await configService.getMcms()).filter(
+        (m) => m.enabled !== false && String(m.ip ?? '').trim().length > 0
+      );
+      if (mcms.length === 0) {
+        console.log('[Boot AutoConnect] Central mode: no enabled MCMs with an IP — operator connects from the dashboard');
+        return;
+      }
+      console.log(`[Boot AutoConnect] Central mode: connecting ${mcms.length} configured MCM(s) via registry…`);
+      const { connectConfiguredMcm } = await import('@/lib/services/mcm-connect');
+      const results = await Promise.all(
+        mcms.map((m) => connectConfiguredMcm(m.subsystemId, undefined, { ensureIos: true }))
+      );
+      const ok = results.filter((r) => r.success).length;
+      console.log(`[Boot AutoConnect] Central mode: ${ok}/${results.length} MCM(s) connected`);
+      return; // registry owns connections — never fall through to the legacy singleton
+    }
+
     if (!cfg.ip || !cfg.path || !cfg.subsystemId) {
       console.log('[Boot AutoConnect] Skipped: PLC config incomplete');
       return;

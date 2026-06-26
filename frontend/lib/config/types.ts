@@ -152,6 +152,17 @@ export interface AppConfigExtended extends AppConfig {
 
   /** Show history column in IO table */
   showHistoryColumn?: boolean;
+
+  /**
+   * Runtime-only (never persisted): true when config.json explicitly contained
+   * an `mcms` array — i.e. this is a central / multi-MCM deployment whose
+   * connections are owned by the MCM registry. False/undefined means the
+   * `mcms` entry was synthesized from the legacy single-PLC fields (a field
+   * tablet). Boot auto-connect uses this to decide whether to drive the
+   * registry (central) or the legacy singleton (tablet) — they must never both
+   * open a connection, or a stale top-level `ip` flaps against the wrong PLC.
+   */
+  mcmsExplicit?: boolean;
 }
 
 /**
