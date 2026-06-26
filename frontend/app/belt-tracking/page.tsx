@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   GitBranch, ArrowLeft, RefreshCw, Loader2, Search, X,
-  CheckCircle2, AlertTriangle, Circle, Wrench, Check,
+  CheckCircle2, AlertTriangle, Circle, Wrench, Check, Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { AutstandLogo } from '@/components/autstand-logo'
 import { useUser } from '@/lib/user-context'
+import { VfdWizardModal } from '@/components/vfd-wizard-modal'
 
 /**
  * Field-tool belt-tracking page — a local mirror of the cloud /belt-tracking
@@ -21,7 +22,19 @@ import { useUser } from '@/lib/user-context'
  * happens when a tester re-runs the VFD wizard and the bump passes. It is an
  * annotation surfaced only on BLOCKED belts.
  *
- * Phase 2 only — no PLC writes, no VFD wizard launch (Phase 3).
+ * Phase 3 adds a "Run VFD Wizard" launcher per belt that opens the UNCHANGED
+ * <VfdWizardModal> with identical props (device, subsystemId, plcConnected,
+ * sheetName). This is a relocation-of-launch only — the wizard's PLC reads/
+ * writes are untouched. Hard pre-launch guards mirror the architecture audit:
+ *   (a) subsystemId must resolve (> 0) — else PLC writes route to the wrong
+ *       controller on a multi-MCM/central setup;
+ *   (b) PLC connection state is passed through verbatim — like
+ *       vfd-commissioning-view, offline entry is allowed (the wizard is
+ *       read-only offline and gates its own PLC writes);
+ *   (c) every required wizard-write L2 column must exist on the sheet
+ *       (route's `missingColumns`) — a missing column means a PLC bit is
+ *       written with no durable L2 record (the CDW5 polarity incident);
+ *   (d) one wizard open at a time (single `wizardDevice` state).
  */
 
 type BeltStatus = 'Tracked' | 'Ready' | 'Blocked' | 'Not Ready'
@@ -50,6 +63,10 @@ interface Belt {
   addressed: boolean
   addressedBy: string | null
   addressedAt: string | null
+  // Required wizard-write L2 columns absent from this belt's sheet. Non-empty
+  // ⇒ launching the wizard would silently drop writes (CDW5 polarity incident),
+  // so wizard launch is blocked until "pull latest L2" restores them.
+  missingColumns: string[]
 }
 
 const STATUS_META: Record<BeltStatus, { cls: string; Icon: typeof CheckCircle2 }> = {
@@ -87,6 +104,14 @@ export default function BeltTrackingPage() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<BeltStatus | 'all'>('all')
   const [savingId, setSavingId] = useState<number | null>(null)
+  // Single wizard open at a time (guard d). Holds the belt whose wizard is open.
+  const [wizardBelt, setWizardBelt] = useState<Belt | null>(null)
+  // Per-MCM PLC connection state, keyed by subsystemId. Sourced from the
+  // canonical /api/plc/status?subsystemId= endpoint (the same per-MCM read the
+  // commissioning page reconciles against). A belt's `plcConnected` is looked
+  // up here; absence ⇒ treated as offline (the wizard still opens read-only,
+  // matching vfd-commissioning-view, and gates its own PLC writes).
+  const [plcBySubsystem, setPlcBySubsystem] = useState<Map<number, boolean>>(new Map())
 
   const load = useCallback(async () => {
     setError(null)
@@ -103,6 +128,50 @@ export default function BeltTrackingPage() {
   }, [])
 
   useEffect(() => { void load() }, [load])
+
+  // Distinct resolved subsystemIds across the belt list — the MCMs we need PLC
+  // status for. Memoized string so the polling effect only re-arms when the set
+  // of MCMs actually changes.
+  const subsystemIdsKey = useMemo(() => {
+    const ids = Array.from(new Set(belts.map(b => b.subsystemId).filter(id => id > 0)))
+    ids.sort((a, b) => a - b)
+    return ids.join(',')
+  }, [belts])
+
+  // Reconcile per-MCM PLC connection from /api/plc/status?subsystemId= for every
+  // MCM that has belts, then re-poll every 20s — the same self-healing pull the
+  // commissioning page uses. Best-effort: a fetch error leaves prior state
+  // intact (an MCM stays whatever it last was; absent ⇒ offline).
+  useEffect(() => {
+    const ids = subsystemIdsKey ? subsystemIdsKey.split(',').map(Number) : []
+    if (ids.length === 0) return
+    let cancelled = false
+
+    const reconcile = async () => {
+      const results = await Promise.all(ids.map(async (id) => {
+        try {
+          const res = await fetch(`/api/plc/status?subsystemId=${id}`, { signal: AbortSignal.timeout(8000) })
+          if (!res.ok) return [id, undefined] as const
+          const body = await res.json() as { connected?: boolean }
+          return [id, !!body.connected] as const
+        } catch {
+          return [id, undefined] as const
+        }
+      }))
+      if (cancelled) return
+      setPlcBySubsystem(prev => {
+        const next = new Map(prev)
+        for (const [id, connected] of results) {
+          if (connected !== undefined) next.set(id, connected)
+        }
+        return next
+      })
+    }
+
+    void reconcile()
+    const t = setInterval(() => { void reconcile() }, 20_000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [subsystemIdsKey])
 
   // Toggle ADDRESSED. Optimistically update local UI immediately (offline-safe —
   // the server records it locally first), then reconcile from a reload.
@@ -272,12 +341,32 @@ export default function BeltTrackingPage() {
                   <th className="px-3 py-2 font-medium">Status</th>
                   <th className="px-3 py-2 font-medium">Details</th>
                   <th className="px-3 py-2 font-medium text-right">Mechanic</th>
+                  <th className="px-3 py-2 font-medium text-right">Wizard</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(belt => {
                   const isSaving = savingId === belt.deviceId
                   const cannotAddress = belt.subsystemId <= 0
+                  // ── Wizard-launch guards ──────────────────────────────
+                  // (a) subsystemId must resolve, or PLC writes route to the
+                  //     wrong controller. Same condition as `cannotAddress`.
+                  const unresolvedSubsystem = belt.subsystemId <= 0
+                  // (c) every required wizard-write L2 column must be present,
+                  //     else the wizard silently drops writes.
+                  const missing = belt.missingColumns ?? []
+                  const hasMissingColumns = missing.length > 0
+                  const wizardBlocked = unresolvedSubsystem || hasMissingColumns
+                  // (b) PLC connection passed through verbatim (offline ⇒
+                  //     read-only entry, exactly like vfd-commissioning-view).
+                  const beltPlcConnected = plcBySubsystem.get(belt.subsystemId) ?? false
+                  const wizardTitle = unresolvedSubsystem
+                    ? "Cannot resolve this belt's subsystem — pull the L2 sheet per-MCM before running the wizard"
+                    : hasMissingColumns
+                      ? `Sheet is missing required column(s): ${missing.join(', ')} — pull latest L2 before running the wizard`
+                      : beltPlcConnected
+                        ? 'Run the VFD wizard for this belt'
+                        : 'Run the VFD wizard (PLC offline — read-only, no PLC writes)'
                   return (
                     <tr
                       key={belt.deviceId}
@@ -328,6 +417,20 @@ export default function BeltTrackingPage() {
                           <span className="text-muted-foreground text-xs">—</span>
                         )}
                       </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <button
+                          onClick={() => { if (!wizardBlocked) setWizardBelt(belt) }}
+                          disabled={wizardBlocked}
+                          title={wizardTitle}
+                          className={cn(
+                            'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                            'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20',
+                          )}
+                        >
+                          <Zap className="h-3.5 w-3.5" />
+                          Run VFD Wizard
+                        </button>
+                      </td>
                     </tr>
                   )
                 })}
@@ -344,6 +447,28 @@ export default function BeltTrackingPage() {
           </div>
         )}
       </main>
+
+      {/* VFD wizard — UNCHANGED component, launched with identical props. One
+          open at a time (guard d, single wizardBelt state). On close, refresh
+          the belt list since the wizard may have written L2 cells / cleared a
+          blocker, exactly like vfd-commissioning-view. */}
+      {wizardBelt && (
+        <VfdWizardModal
+          device={{
+            id: wizardBelt.deviceId,
+            deviceName: wizardBelt.deviceName,
+            mcm: wizardBelt.mcm ?? '',
+            subsystem: wizardBelt.subsystem ?? '',
+          }}
+          subsystemId={wizardBelt.subsystemId}
+          plcConnected={plcBySubsystem.get(wizardBelt.subsystemId) ?? false}
+          sheetName={wizardBelt.sheetName}
+          onClose={() => {
+            setWizardBelt(null)
+            void load()
+          }}
+        />
+      )}
     </div>
   )
 }
