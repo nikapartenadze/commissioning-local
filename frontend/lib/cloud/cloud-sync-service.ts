@@ -34,12 +34,6 @@ import {
   recordDeviceBlockerSyncFailure,
   recordDeviceBlockerSyncTransientFailure,
 } from '@/lib/db/repositories/device-blocker-sync-repository'
-import {
-  listVfdAddressedSyncs,
-  deleteVfdAddressedSync,
-  recordVfdAddressedSyncFailure,
-  recordVfdAddressedSyncTransientFailure,
-} from '@/lib/db/repositories/vfd-addressed-sync-repository'
 
 /**
  * Outcome of attempting to push a single IO update to cloud.
@@ -1054,110 +1048,12 @@ export class CloudSyncService {
   }
 
   // ===========================================================================
-  // Belt-tracking ADDRESSED Sync (mechanic handoff flag)
+  // (removed) Belt-tracking ADDRESSED push — marking now happens on the cloud
+  // only; the field tool PULLS the cloud-authoritative flag instead. See
+  // lib/cloud/vfd-addressed-pull.ts.
   // ===========================================================================
-
-  /**
-   * Drain the VfdAddressedPendingSyncs queue oldest-first, POSTing each row to
-   * the cloud's /api/sync/vfd-addressed endpoint, which lands it on
-   * VfdCommissioningBlocker.addressed_* for the resolved (subsystem, device).
-   *
-   * Same retry-cap philosophy as pushDeviceBlockerSyncs: a 2xx with ok!==false
-   * deletes the row; a cloud verdict (ok:false, or non-401 4xx) burns a strike;
-   * a network-level failure (fetch threw, no remote URL, 401, 5xx) keeps the
-   * row alive WITHOUT a strike and stops the batch.
-   *
-   * The cloud rejects (409) addressing a non-blocked belt; that is a genuine
-   * verdict (a strike), since retrying the same payload will keep failing until
-   * the row is eventually dropped by the retry cap — by then the local block has
-   * almost certainly cleared (the wizard re-ran), so the ADDRESSED annotation is
-   * moot anyway.
-   */
-  async pushVfdAddressedSyncs(): Promise<number> {
-    const rows = listVfdAddressedSyncs(50)
-    if (rows.length === 0) return 0
-
-    const { remoteUrl } = await this.getCloudConfig()
-    if (!remoteUrl) {
-      log.debug('VFD addressed push skipped — no remote URL configured')
-      return 0
-    }
-
-    log.info(`Pushing ${rows.length} VFD addressed sync row(s) to cloud...`)
-
-    let synced = 0
-    for (const row of rows) {
-      try {
-        const headers = new Headers({ 'Content-Type': 'application/json' })
-        await this.addApiKeyHeader(headers)
-
-        const body = {
-          subsystemId: row.subsystemId,
-          deviceName: row.deviceName,
-          addressed: row.addressed,
-          updatedBy: row.updatedBy ?? undefined,
-          timestamp: row.timestamp ?? new Date().toISOString(),
-        }
-
-        const response = await this.fetchWithTimeout(
-          `${remoteUrl}/api/sync/vfd-addressed`,
-          { method: 'POST', headers, body: JSON.stringify(body) },
-          15000,
-        )
-
-        if (response.status === 401) {
-          log.error('VFD addressed push: HTTP 401 auth failed — deferring queue, no strikes burned')
-          recordVfdAddressedSyncTransientFailure(row.id, 'HTTP 401 auth failed')
-          break
-        }
-
-        if (response.ok) {
-          let data: { ok?: boolean; reason?: string } | null = null
-          try {
-            data = await response.json()
-          } catch {
-            data = null
-          }
-
-          if (data && data.ok === false) {
-            log.warn(
-              `[CloudSync] VFD addressed row ${row.id} rejected by cloud: ${data.reason ?? 'unknown'} ` +
-              `(device=${row.deviceName}, addressed=${row.addressed})`,
-            )
-            recordVfdAddressedSyncFailure(row.id, `cloud-rejected: ${data.reason ?? 'unknown'}`)
-            continue
-          }
-
-          deleteVfdAddressedSync(row.id)
-          synced++
-          this.setConnectionState('connected')
-          continue
-        }
-
-        if (isNetworkLevelFailure({ httpStatus: response.status })) {
-          log.warn(`VFD addressed push: HTTP ${response.status} (network-level) — deferring queue, no strikes burned`)
-          recordVfdAddressedSyncTransientFailure(row.id, `HTTP ${response.status} (network-level)`)
-          break
-        }
-
-        // 4xx (other than 401), incl. 409 not-blocked: cloud verdict — strike it.
-        log.warn(`[CloudSync] VFD addressed row ${row.id} got HTTP ${response.status} — counting a strike`)
-        recordVfdAddressedSyncFailure(row.id, `HTTP ${response.status}`)
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error)
-        log.debug(`VFD addressed push failed for row ${row.id}: ${msg} — deferring queue, no strikes burned`)
-        recordVfdAddressedSyncTransientFailure(row.id, msg)
-        this.setConnectionState('error', 'VFD addressed sync failed')
-        break
-      }
-    }
-
-    if (synced > 0) {
-      log.info(`Pushed ${synced} VFD addressed sync row(s) to cloud`)
-    }
-    return synced
-  }
 }
+
 
 // =============================================================================
 // Singleton Instance
@@ -1206,30 +1102,4 @@ export function triggerDeviceBlockerPush(debounceMs = 500): void {
   }, debounceMs)
   // Don't keep the event loop alive for a best-effort push.
   if (typeof deviceBlockerPushTimer.unref === 'function') deviceBlockerPushTimer.unref()
-}
-
-// =============================================================================
-// Belt-tracking ADDRESSED Push Trigger
-// =============================================================================
-
-/**
- * Debounced instant push of the VfdAddressedPendingSyncs queue. Fired by the
- * local /api/belt-tracking/addressed route right after it records + enqueues a
- * toggle, so it reaches the cloud in ~1 s. Best-effort — failures are swallowed;
- * the background loop (pushVfdAddressedSyncs in the AutoSync tick) retries the
- * rest. Mirrors triggerDeviceBlockerPush.
- */
-let vfdAddressedPushTimer: NodeJS.Timeout | null = null
-
-export function triggerVfdAddressedPush(debounceMs = 500): void {
-  if (vfdAddressedPushTimer) clearTimeout(vfdAddressedPushTimer)
-  vfdAddressedPushTimer = setTimeout(() => {
-    vfdAddressedPushTimer = null
-    void getCloudSyncService()
-      .pushVfdAddressedSyncs()
-      .catch(err =>
-        log.debug(`triggerVfdAddressedPush drain failed: ${err instanceof Error ? err.message : String(err)}`),
-      )
-  }, debounceMs)
-  if (typeof vfdAddressedPushTimer.unref === 'function') vfdAddressedPushTimer.unref()
 }

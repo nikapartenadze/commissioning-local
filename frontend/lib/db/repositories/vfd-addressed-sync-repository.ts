@@ -1,18 +1,20 @@
 import { db } from '@/lib/db-sqlite'
 
 /**
- * Local state + offline push queue for the belt-tracking ADDRESSED toggle.
+ * Local READ-ONLY mirror of the cloud belt-tracking ADDRESSED flag.
  *
- * ADDRESSED is a handoff flag a mechanic sets on a BLOCKED belt VFD ("physical
- * issue fixed — re-run the VFD wizard"). It is an annotation on a blocked belt;
- * it never clears the block and never enables tracking (the wizard clearing the
- * Bump Blocker cell does that). Cloud is authoritative, but the local row
- * reflects the toggle immediately and offline; the queue pushes to the cloud
- * `/api/sync/vfd-addressed` endpoint and the background loop retries.
+ * ADDRESSED is a handoff flag a MECHANIC sets on a BLOCKED belt VFD on the CLOUD
+ * app ("physical issue fixed — re-run the VFD wizard"). It is an annotation on a
+ * blocked belt; it never clears the block and never enables tracking (only the
+ * wizard clearing the Bump Blocker cell does that).
  *
- * Mirrors device-blocker-sync-repository.ts: thin pure functions over the
- * better-sqlite3 singleton. Keyed by (SubsystemId, DeviceName) — exactly what
- * the cloud contract resolves on.
+ * Marking happens ON THE CLOUD ONLY — the field tool does NOT push. The cloud is
+ * authoritative; the field pulls the addressed state down (on SSE reconnect /
+ * when the VFD tab opens) and UPSERTS it into the local VfdAddressed table so
+ * the VFD Commissioning view can show a read-only ADDRESSED badge offline.
+ *
+ * Keyed by (SubsystemId, DeviceName) — exactly what the cloud
+ * GET /api/sync/vfd-addressed contract returns.
  */
 
 /** Local ADDRESSED state for one belt VFD. */
@@ -24,100 +26,15 @@ export interface VfdAddressedState {
   addressedAt: string | null
 }
 
-/** One VfdAddressedPendingSyncs row, camelCased. */
-export interface VfdAddressedSyncRow {
-  id: number
-  subsystemId: number
+/** One ADDRESSED row as returned by the cloud GET /api/sync/vfd-addressed. */
+export interface CloudVfdAddressedRow {
   deviceName: string
   addressed: boolean
-  updatedBy: string | null
-  timestamp: string | null
-  createdAt: string | null
-  retryCount: number
-  lastError: string | null
+  addressedBy?: string | null
+  addressedAt?: string | null
 }
 
-interface RawSyncRow {
-  id: number
-  SubsystemId: number
-  DeviceName: string
-  Addressed: number
-  UpdatedBy: string | null
-  Timestamp: string | null
-  CreatedAt: string | null
-  RetryCount: number
-  LastError: string | null
-}
-
-function mapSyncRow(r: RawSyncRow): VfdAddressedSyncRow {
-  return {
-    id: r.id,
-    subsystemId: r.SubsystemId,
-    deviceName: r.DeviceName,
-    addressed: r.Addressed === 1,
-    updatedBy: r.UpdatedBy,
-    timestamp: r.Timestamp,
-    createdAt: r.CreatedAt,
-    retryCount: r.RetryCount,
-    lastError: r.LastError,
-  }
-}
-
-/**
- * Set (or undo) the local ADDRESSED flag for a belt and enqueue a cloud push.
- * Runs in a single transaction so the local state and the queued sync row are
- * always consistent (the UI reads the state immediately, even offline).
- *
- * Coalesces the queue: any earlier un-pushed row for the same (subsystem,
- * device) is replaced so a rapid toggle collapses to the final intent and we
- * never push a stale value. Returns the new queue row id.
- */
-export function setVfdAddressed(input: {
-  subsystemId: number
-  deviceName: string
-  addressed: boolean
-  updatedBy?: string
-}): number {
-  const now = new Date().toISOString()
-  const updatedBy = input.updatedBy ?? null
-
-  const tx = db.transaction(() => {
-    // 1. Local state (immediate, offline-safe).
-    db.prepare(
-      `INSERT INTO VfdAddressed (SubsystemId, DeviceName, Addressed, AddressedBy, AddressedAt)
-         VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(SubsystemId, DeviceName) DO UPDATE SET
-         Addressed = excluded.Addressed,
-         AddressedBy = CASE WHEN excluded.Addressed = 1 THEN excluded.AddressedBy ELSE NULL END,
-         AddressedAt = CASE WHEN excluded.Addressed = 1 THEN excluded.AddressedAt ELSE NULL END`,
-    ).run(
-      input.subsystemId,
-      input.deviceName,
-      input.addressed ? 1 : 0,
-      input.addressed ? updatedBy : null,
-      input.addressed ? now : null,
-    )
-
-    // 2. Coalesce: drop any earlier un-pushed intent for this belt.
-    db.prepare(
-      'DELETE FROM VfdAddressedPendingSyncs WHERE SubsystemId = ? AND DeviceName = ?',
-    ).run(input.subsystemId, input.deviceName)
-
-    // 3. Enqueue the push.
-    const result = db
-      .prepare(
-        `INSERT INTO VfdAddressedPendingSyncs
-           (SubsystemId, DeviceName, Addressed, UpdatedBy, Timestamp, RetryCount)
-         VALUES (?, ?, ?, ?, ?, 0)`,
-      )
-      .run(input.subsystemId, input.deviceName, input.addressed ? 1 : 0, updatedBy, now)
-    return Number(result.lastInsertRowid)
-  })
-
-  return tx()
-}
-
-/** Read all local ADDRESSED states (for merging into the belt-tracking read). */
+/** Read all local ADDRESSED states (for merging into the VFD/belt read). */
 export function listVfdAddressedStates(): VfdAddressedState[] {
   const rows = db
     .prepare(
@@ -139,36 +56,52 @@ export function listVfdAddressedStates(): VfdAddressedState[] {
   }))
 }
 
-/** List queued addressed syncs, oldest-first (drain order). Optional limit. */
-export function listVfdAddressedSyncs(limit?: number): VfdAddressedSyncRow[] {
-  const sql =
-    'SELECT * FROM VfdAddressedPendingSyncs ORDER BY CreatedAt ASC, id ASC' +
-    (limit !== undefined ? ' LIMIT ?' : '')
-  const rows = (limit !== undefined
-    ? db.prepare(sql).all(limit)
-    : db.prepare(sql).all()) as RawSyncRow[]
-  return rows.map(mapSyncRow)
-}
-
-/** Delete a queued addressed sync (after a successful cloud push). */
-export function deleteVfdAddressedSync(id: number): void {
-  db.prepare('DELETE FROM VfdAddressedPendingSyncs WHERE id = ?').run(id)
-}
-
 /**
- * Record a failed push attempt that the cloud actually gave a verdict on: bump
- * RetryCount + store the error. Mirror of recordDeviceBlockerSyncFailure.
+ * UPSERT cloud-authoritative ADDRESSED rows for one subsystem into the local
+ * VfdAddressed mirror. Called by the cloud→field pull.
+ *
+ * The cloud is the sole authority, so this REPLACES the local rows for the
+ * subsystem with exactly what the cloud returned: any local device NOT present
+ * in `rows` is cleared (the cloud no longer considers it addressed — e.g. the
+ * blocker was cleared, or the mechanic un-pressed it). Runs in a single
+ * transaction so the mirror is never half-applied.
+ *
+ * Returns the number of rows written.
  */
-export function recordVfdAddressedSyncFailure(id: number, error: string): void {
-  db.prepare(
-    'UPDATE VfdAddressedPendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?',
-  ).run(error, id)
-}
+export function upsertVfdAddressedFromCloud(
+  subsystemId: number,
+  rows: CloudVfdAddressedRow[],
+): number {
+  const upsert = db.prepare(
+    `INSERT INTO VfdAddressed (SubsystemId, DeviceName, Addressed, AddressedBy, AddressedAt)
+       VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(SubsystemId, DeviceName) DO UPDATE SET
+       Addressed   = excluded.Addressed,
+       AddressedBy = excluded.AddressedBy,
+       AddressedAt = excluded.AddressedAt`,
+  )
 
-/**
- * Record a network-level failure WITHOUT burning a retry-cap strike (offline /
- * timeout / 5xx / 401). Mirror of recordDeviceBlockerSyncTransientFailure.
- */
-export function recordVfdAddressedSyncTransientFailure(id: number, error: string): void {
-  db.prepare('UPDATE VfdAddressedPendingSyncs SET LastError = ? WHERE id = ?').run(error, id)
+  const tx = db.transaction(() => {
+    // Cloud is authoritative for this subsystem: drop the prior mirror and
+    // rewrite it, so an unlisted device (no longer addressed cloud-side) is
+    // cleared rather than left stale.
+    db.prepare('DELETE FROM VfdAddressed WHERE SubsystemId = ?').run(subsystemId)
+    let written = 0
+    for (const r of rows) {
+      const name = typeof r.deviceName === 'string' ? r.deviceName.trim() : ''
+      if (!name) continue
+      const addressed = r.addressed ? 1 : 0
+      upsert.run(
+        subsystemId,
+        name,
+        addressed,
+        addressed ? r.addressedBy ?? null : null,
+        addressed ? r.addressedAt ?? null : null,
+      )
+      written++
+    }
+    return written
+  })
+
+  return tx()
 }

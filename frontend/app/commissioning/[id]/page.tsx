@@ -23,6 +23,7 @@ import NetworkTopologyView from "@/components/network-topology-view"
 import EStopCheckView from "@/components/estop-check-view"
 import SafetyIoView from "@/components/safety-io-view"
 import { FVValidationView } from "@/components/fv-validation-view"
+import { VfdCommissioningView } from "@/components/vfd-commissioning-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -230,7 +231,7 @@ export default function CommissioningPage() {
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatusResponse | null>(null)
   const [showConfigDialog, setShowConfigDialog] = useState(false)
   const [showGraph, setShowGraph] = useState(false)
-  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety' | 'l2'>('io')
+  const [activeTab, setActiveTab] = useState<'io' | 'network' | 'estop' | 'safety' | 'vfd' | 'l2'>('io')
   const [mobileTabOpen, setMobileTabOpen] = useState(false)
   const [showHistoryDialog, setShowHistoryDialog] = useState(false)
 
@@ -240,6 +241,7 @@ export default function CommissioningPage() {
     if (hash === '#network') setActiveTab('network')
     else if (hash === '#estop') setActiveTab('estop')
     else if (hash === '#safety') setActiveTab('safety')
+    else if (hash === '#vfd') setActiveTab('vfd')
     else if (hash === '#l2') setActiveTab('l2')
   }, [])
   const [networkStats, setNetworkStats] = useState<{ healthy: number; faulted: number; unknown: number }>({ healthy: 0, faulted: 0, unknown: 0 })
@@ -2078,6 +2080,7 @@ export default function CommissioningPage() {
                 { id: 'network', label: 'Network', hash: 'network' },
                 { id: 'estop', label: 'EStop', hash: 'estop' },
                 { id: 'safety', label: 'Safety', hash: 'safety' },
+                { id: 'vfd', label: 'VFD', hash: 'vfd' },
                 { id: 'l2', label: 'Functional', hash: 'l2' },
               ]
               const switchTab = (tab: typeof activeTab, hash: string) => {
@@ -2154,6 +2157,7 @@ export default function CommissioningPage() {
                 { id: 'network', label: 'Network', hash: 'network' },
                 { id: 'estop', label: 'EStop', hash: 'estop' },
                 { id: 'safety', label: 'Safety', hash: 'safety' },
+                { id: 'vfd', label: 'VFD', hash: 'vfd' },
                 { id: 'l2', label: 'Functional', hash: 'l2' },
               ]
               const switchTab = (tab: typeof activeTab, hash: string) => {
@@ -2239,6 +2243,14 @@ export default function CommissioningPage() {
       ) : activeTab === 'safety' ? (
         <div className="flex-1 min-h-0 overflow-auto px-4">
           <SafetyIoView subsystemId={parseInt(paramId) || undefined} />
+        </div>
+      ) : activeTab === 'vfd' ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {/* VFD Commissioning self-loads its device list + blocked/addressed
+              state from /api/vfd-commissioning/state. subsystemId scopes the
+              wizard's PLC writes + the cloud ADDRESSED pull (route param, NOT the
+              singleton plcConfig — see the Network/EStop tabs above). */}
+          <VfdCommissioningView subsystemId={parseInt(paramId) || undefined} plcConnected={plcStatus.isConnected} />
         </div>
       ) : activeTab === 'l2' ? (
         <div className="flex-1 min-h-0 overflow-hidden">

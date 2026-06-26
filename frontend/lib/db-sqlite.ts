@@ -670,13 +670,14 @@ export function initializeSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
 
-    -- Local ADDRESSED flag for a BLOCKED belt VFD (belt-tracking page).
-    -- A mechanic who has physically fixed a blocked belt presses ADDRESSED as a
-    -- handoff signal ("re-run the VFD wizard"). It is an ANNOTATION on a blocked
-    -- belt — it never clears the block (only the wizard clearing the Bump Blocker
-    -- cell does that) and never enables tracking. Cloud is authoritative; this
-    -- local row reflects the toggle immediately/offline and is reconciled from
-    -- the cloud belt-tracking read on sync. Keyed by (SubsystemId, DeviceName)
+    -- Read-only local MIRROR of the cloud belt-tracking ADDRESSED flag.
+    -- A mechanic who has physically fixed a blocked belt presses ADDRESSED on
+    -- the CLOUD app as a handoff signal ("re-run the VFD wizard"). It is an
+    -- ANNOTATION on a blocked belt — it never clears the block (only the wizard
+    -- clearing the Bump Blocker cell does that) and never enables tracking.
+    -- Marking happens ON THE CLOUD ONLY; the field tool PULLS this state down
+    -- (SSE reconnect / VFD tab open) and upserts it here so the VFD
+    -- Commissioning view can show it offline. Keyed by (SubsystemId, DeviceName)
     -- which is what the cloud /api/sync/vfd-addressed contract resolves on.
     CREATE TABLE IF NOT EXISTS VfdAddressed (
       SubsystemId INTEGER NOT NULL,
@@ -686,24 +687,6 @@ export function initializeSchema() {
       AddressedAt TEXT,
       PRIMARY KEY (SubsystemId, DeviceName)
     );
-
-    -- Offline push queue for the ADDRESSED toggle, mirroring
-    -- DeviceBlockerPendingSyncs. Drained oldest-first by the AutoSync loop and
-    -- POSTed to the cloud /api/sync/vfd-addressed endpoint, which lands it on
-    -- VfdCommissioningBlocker.addressed_* for the resolved (subsystem, device).
-    -- Same transient-vs-permanent failure classification + retry-cap behaviour.
-    CREATE TABLE IF NOT EXISTS VfdAddressedPendingSyncs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      SubsystemId INTEGER NOT NULL,
-      DeviceName  TEXT NOT NULL,
-      Addressed   INTEGER NOT NULL,            -- 0 | 1 (true = mark addressed, false = undo)
-      UpdatedBy   TEXT,
-      Timestamp   TEXT,
-      CreatedAt   TEXT DEFAULT (datetime('now')),
-      RetryCount  INTEGER DEFAULT 0,
-      LastError   TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_vfdaddressedsyncs_createdat ON VfdAddressedPendingSyncs(CreatedAt);
 
     -- Cloud-curated approved-firmware baseline, pulled from the cloud and
     -- cached locally so firmware compliance evaluates OFFLINE. Keyed by

@@ -1,5 +1,7 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
+import { parseBumpBlockerCell } from '@/lib/vfd-bump-blocker'
+import { listVfdAddressedStates } from '@/lib/db/repositories/vfd-addressed-sync-repository'
 
 /**
  * GET /api/vfd-commissioning/state
@@ -102,14 +104,20 @@ const emptyCells = (): CellSet => ({
 // once cloud has been updated, but the LEFT JOIN tolerates its absence).
 const stmtAllCells = db.prepare(`
   SELECT
+    d.id            AS deviceId,
     d.DeviceName    AS deviceName,
+    d.Mcm           AS mcm,
+    d.Subsystem     AS subsystem,
+    d.SubsystemId   AS deviceSubsystemId,
     s.Name          AS sheetName,
+    sub.id          AS resolvedSubsystemId,
     c.Name          AS columnName,
     cv.Value        AS value
   FROM L2Devices d
   JOIN L2Sheets   s ON s.id = d.SheetId
   JOIN L2Columns  c ON c.SheetId = d.SheetId
   LEFT JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
+  LEFT JOIN Subsystems   sub ON sub.Name = d.Subsystem
   WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Check Direction', 'Polarity', 'Belt Tracked', 'Speed Set Up', 'Bump Blocker')
     AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
 `)
@@ -122,8 +130,13 @@ const stmtControlsVerified = db.prepare(
 export async function GET(_req: Request, res: Response) {
   try {
     const rows = stmtAllCells.all() as Array<{
+      deviceId: number
       deviceName: string
+      mcm: string | null
+      subsystem: string | null
+      deviceSubsystemId: number | null
       sheetName: string
+      resolvedSubsystemId: number | null
       columnName: CommissioningColumn
       value: string | null
     }>
@@ -134,14 +147,38 @@ export async function GET(_req: Request, res: Response) {
     }>
     const cvMap = new Map(cvRows.map(r => [r.deviceName, r.completedBy || r.completedAt || 'yes']))
 
-    // Pivot rows → one record per (deviceName, sheetName) with a CellSet
-    type Acc = { deviceName: string; sheetName: string; cells: CellSet }
+    // Cloud-authoritative ADDRESSED mirror (read-only on the field tool), keyed
+    // by (subsystemId, deviceName) — the same key the cloud resolves on.
+    const addressedStates = listVfdAddressedStates()
+    const addressedMap = new Map(
+      addressedStates.map(a => [`${a.subsystemId}::${a.deviceName}`, a]),
+    )
+
+    // Pivot rows → one record per (deviceName, sheetName) with a CellSet + meta
+    type Acc = {
+      deviceId: number
+      deviceName: string
+      mcm: string | null
+      subsystem: string | null
+      sheetName: string
+      subsystemId: number
+      cells: CellSet
+    }
     const byKey = new Map<string, Acc>()
     for (const row of rows) {
       const key = `${row.deviceName}::${row.sheetName}`
       let acc = byKey.get(key)
       if (!acc) {
-        acc = { deviceName: row.deviceName, sheetName: row.sheetName, cells: emptyCells() }
+        acc = {
+          deviceId: row.deviceId,
+          deviceName: row.deviceName,
+          mcm: row.mcm,
+          subsystem: row.subsystem,
+          sheetName: row.sheetName,
+          // Fallback chain: explicit per-MCM id → name-matched subsystem → 0.
+          subsystemId: row.deviceSubsystemId ?? row.resolvedSubsystemId ?? 0,
+          cells: emptyCells(),
+        }
         byKey.set(key, acc)
       }
       const colKey = columnKey(row.columnName)
@@ -154,7 +191,33 @@ export async function GET(_req: Request, res: Response) {
       if (cv) acc.cells.controlsVerified = cv
     }
 
-    return res.json({ states: Array.from(byKey.values()) })
+    // Build the response: cells + device meta + blocked/addressed annotations so
+    // the VFD Commissioning view can render the BLOCKED + (read-only) ADDRESSED
+    // columns and self-load its device list without a separate fetch.
+    const states = Array.from(byKey.values()).map(acc => {
+      const blocker = parseBumpBlockerCell(acc.cells.bumpBlocker)
+      const blocked = blocker !== null
+      const local = addressedMap.get(`${acc.subsystemId}::${acc.deviceName}`)
+      return {
+        deviceId: acc.deviceId,
+        deviceName: acc.deviceName,
+        mcm: acc.mcm,
+        subsystem: acc.subsystem,
+        sheetName: acc.sheetName,
+        subsystemId: acc.subsystemId,
+        cells: acc.cells,
+        // Blocked state + parsed blocker party/reason from the Bump Blocker cell.
+        blocked,
+        blockerParty: blocker?.party ?? null,
+        blockerReason: blocker?.description ?? null,
+        // ADDRESSED is an annotation only meaningful while blocked.
+        addressed: blocked ? Boolean(local?.addressed) : false,
+        addressedBy: blocked ? local?.addressedBy ?? null : null,
+        addressedAt: blocked ? local?.addressedAt ?? null : null,
+      }
+    })
+
+    return res.json({ states })
   } catch (error) {
     console.error('[VFD State GET] Error:', error)
     return res.status(500).json({ error: `Failed to fetch VFD commissioning state: ${error instanceof Error ? error.message : error}` })
