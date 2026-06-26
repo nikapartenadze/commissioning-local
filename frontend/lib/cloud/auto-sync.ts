@@ -811,6 +811,14 @@ class AutoSyncService {
         console.warn('[AutoSync] Device blocker sync error:', err instanceof Error ? err.message : err)
       }
 
+      // Drain belt-tracking ADDRESSED toggles (mechanic handoff flag) on the
+      // same periodic cycle, with the same transient/permanent classification.
+      try {
+        await getCloudSyncService().pushVfdAddressedSyncs()
+      } catch (err) {
+        console.warn('[AutoSync] VFD addressed sync error:', err instanceof Error ? err.message : err)
+      }
+
       // Drain EStop EPC check results that never reached the cloud (offline at
       // the time of the write, or the immediate push failed). Subsystem-scoped,
       // version-aware; mirrors the L2 cell drain above.
