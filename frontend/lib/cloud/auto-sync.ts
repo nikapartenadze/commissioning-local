@@ -25,6 +25,7 @@ import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 import { getMcmStatus, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
+import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -160,6 +161,9 @@ class AutoSyncService {
             // in config.subsystemId — events missed during the disconnect could
             // belong to any MCM.
             void this.pullAllConfiguredMcms('SSE reconnect')
+            // Refresh the cloud-authoritative belt-tracking ADDRESSED flag
+            // (mechanic-set, cloud-only) so the field VFD page reflects it.
+            void this.pullVfdAddressedForConfigured('SSE reconnect')
           })
           // React to cloud-side CRUD hints (IO add/delete, network/estop/safety
           // import) the moment they happen — the io_updated result path doesn't
@@ -811,14 +815,6 @@ class AutoSyncService {
         console.warn('[AutoSync] Device blocker sync error:', err instanceof Error ? err.message : err)
       }
 
-      // Drain belt-tracking ADDRESSED toggles (mechanic handoff flag) on the
-      // same periodic cycle, with the same transient/permanent classification.
-      try {
-        await getCloudSyncService().pushVfdAddressedSyncs()
-      } catch (err) {
-        console.warn('[AutoSync] VFD addressed sync error:', err instanceof Error ? err.message : err)
-      }
-
       // Drain EStop EPC check results that never reached the cloud (offline at
       // the time of the write, or the immediate push failed). Subsystem-scoped,
       // version-aware; mirrors the L2 cell drain above.
@@ -1044,6 +1040,52 @@ class AutoSyncService {
       }
     } catch (e) {
       console.warn('[AutoSync] reconcile failed (non-fatal):', e instanceof Error ? e.message : e)
+    }
+  }
+
+  private _lastVfdAddressedPullAt = 0
+  /**
+   * Pull the cloud-authoritative belt-tracking ADDRESSED flag for every
+   * configured subsystem and mirror it into the local VfdAddressed table, so the
+   * field VFD Commissioning page shows what a MECHANIC marked on the cloud.
+   * Field is read-only here — marking happens cloud-side only. Throttled and
+   * best-effort; never throws. Falls back to the single configured subsystem on
+   * a field tablet (no MCM list).
+   */
+  private async pullVfdAddressedForConfigured(trigger: string): Promise<void> {
+    const THROTTLE_MS = 30_000
+    if (Date.now() - this._lastVfdAddressedPullAt < THROTTLE_MS) return
+    this._lastVfdAddressedPullAt = Date.now()
+    try {
+      const cfg = await configService.getConfig()
+      if (!cfg.remoteUrl) return
+
+      // Resolve subsystem ids: configured MCM list (central) or the single
+      // configured subsystem (field tablet).
+      const ids = new Set<number>()
+      try {
+        const mcms = await configService.getMcms()
+        for (const m of mcms) {
+          if (m.enabled === false) continue
+          const sid = parseInt(m.subsystemId, 10)
+          if (Number.isFinite(sid) && sid > 0) ids.add(sid)
+        }
+      } catch { /* fall through to single-subsystem */ }
+      if (ids.size === 0 && cfg.subsystemId) {
+        const sid = typeof cfg.subsystemId === 'number' ? cfg.subsystemId : parseInt(String(cfg.subsystemId), 10)
+        if (Number.isFinite(sid) && sid > 0) ids.add(sid)
+      }
+      if (ids.size === 0) return
+
+      let total = 0
+      for (const sid of Array.from(ids)) {
+        total += await pullVfdAddressed(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
+      }
+      if (total > 0) {
+        console.log(`[AutoSync] ${trigger}: mirrored ${total} VFD ADDRESSED row(s) from cloud`)
+      }
+    } catch (e) {
+      console.warn('[AutoSync] VFD addressed pull failed (non-fatal):', e instanceof Error ? e.message : e)
     }
   }
 

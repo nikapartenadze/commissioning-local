@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import {
   Zap, Search, X, Wifi, WifiOff, ArrowRight, CheckCircle2, Circle, CircleDot,
-  Trash2, Loader2,
+  Trash2, Loader2, AlertTriangle, Wrench,
 } from 'lucide-react'
 import { VfdWizardModal } from './vfd-wizard-modal'
 
@@ -15,8 +15,14 @@ import { VfdWizardModal } from './vfd-wizard-modal'
 interface VfdDevice { id: number; deviceName: string; mcm: string; subsystem: string; sheetName?: string }
 
 interface VfdCommissioningViewProps {
-  devices: VfdDevice[]
-  subsystemId: number
+  /**
+   * Optional explicit device list. When omitted/empty the view self-loads its
+   * devices from /api/vfd-commissioning/state (which carries device meta), so
+   * the commissioning workspace can mount this tab without pre-loading VFDs.
+   */
+  devices?: VfdDevice[]
+  /** Route subsystem id; used by the wizard for PLC writes + the ADDRESSED pull. */
+  subsystemId?: number
   plcConnected: boolean
 }
 
@@ -31,6 +37,8 @@ interface VfdCommissioningViewProps {
  *   - checkDirection / beltTracked → INITIALS DATE stamp (e.g. "ASH 9/5")
  *   - speedSetUp                   → enriched stamp from Step 5
  *                                     e.g. "ASH 9/5 · 200 FPM @ 25.30 RVS"
+ *   - bumpBlocker                  → "<stamp> · <party> · <description>" when a
+ *                                     Bump Test (Step 3) failure was recorded.
  */
 interface CellState {
   verifyIdentity:   string | null
@@ -39,13 +47,32 @@ interface CellState {
   checkDirection:   string | null
   beltTracked:      string | null
   speedSetUp:       string | null
+  bumpBlocker:      string | null
+}
+
+// Per-device row state: the L2 cells plus the BLOCKED + (read-only, cloud-set)
+// ADDRESSED annotations the /state route now returns.
+interface RowState {
+  cells: CellState
+  blocked: boolean
+  blockerParty: string | null
+  blockerReason: string | null
+  addressed: boolean
+  addressedBy: string | null
+  addressedAt: string | null
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
 
 const emptyCells = (): CellState => ({
   verifyIdentity: null, motorHpField: null, vfdHpField: null,
-  checkDirection: null, beltTracked: null, speedSetUp: null,
+  checkDirection: null, beltTracked: null, speedSetUp: null, bumpBlocker: null,
+})
+
+const emptyRow = (): RowState => ({
+  cells: emptyCells(),
+  blocked: false, blockerParty: null, blockerReason: null,
+  addressed: false, addressedBy: null, addressedAt: null,
 })
 
 function isNonEmpty(v: string | null): boolean {
@@ -74,7 +101,21 @@ function progressCount(s: CellState): number {
   return n
 }
 
+/** "Jun 26 · J. Smith" from an ISO stamp + name (either may be missing). */
+function formatStamp(at: string | null, by: string | null): string {
+  const parts: string[] = []
+  if (at) {
+    const d = new Date(at)
+    if (!isNaN(d.getTime())) parts.push(d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))
+  }
+  if (by) parts.push(by)
+  return parts.join(' · ')
+}
+
 type DoneFilter = 'all' | 'done' | 'notdone'
+// Block-status filter: narrow to blocked belts, or only those a mechanic
+// addressed on the cloud (the ones a tester should re-run the wizard on).
+type BlockFilter = 'all' | 'blocked' | 'addressed'
 
 // ── Sub-components ─────────────────────────────────────────────────
 
@@ -122,37 +163,47 @@ interface PersistedFilters {
   mcm: string
   subsystem: string
   done: DoneFilter
+  block: BlockFilter
 }
 
 function loadFilters(subsystemId: number): PersistedFilters {
-  if (typeof window === 'undefined') return { search: '', mcm: 'all', subsystem: 'all', done: 'all' }
+  const fallback: PersistedFilters = { search: '', mcm: 'all', subsystem: 'all', done: 'all', block: 'all' }
+  if (typeof window === 'undefined') return fallback
   try {
     const raw = localStorage.getItem(FILTER_STORAGE_KEY(subsystemId))
-    if (!raw) return { search: '', mcm: 'all', subsystem: 'all', done: 'all' }
+    if (!raw) return fallback
     const parsed = JSON.parse(raw)
     return {
       search: typeof parsed.search === 'string' ? parsed.search : '',
       mcm: typeof parsed.mcm === 'string' ? parsed.mcm : 'all',
       subsystem: typeof parsed.subsystem === 'string' ? parsed.subsystem : 'all',
       done: parsed.done === 'done' || parsed.done === 'notdone' ? parsed.done : 'all',
+      block: parsed.block === 'blocked' || parsed.block === 'addressed' ? parsed.block : 'all',
     }
   } catch {
-    return { search: '', mcm: 'all', subsystem: 'all', done: 'all' }
+    return fallback
   }
 }
 
 // ── Main Component ─────────────────────────────────────────────────
 
-export function VfdCommissioningView({ devices, subsystemId, plcConnected }: VfdCommissioningViewProps) {
-  const initialFilters = loadFilters(subsystemId)
-  const [states, setStates] = useState<Map<string, CellState>>(new Map())
+export function VfdCommissioningView({ devices: devicesProp, subsystemId, plcConnected }: VfdCommissioningViewProps) {
+  const filterKey = subsystemId ?? 0
+  const initialFilters = loadFilters(filterKey)
+  // Devices either come from the prop or are self-loaded from /state.
+  const [loadedDevices, setLoadedDevices] = useState<VfdDevice[]>([])
+  const [rows, setRows] = useState<Map<string, RowState>>(new Map())
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
   const [mcmFilter, setMcmFilter] = useState<string>(initialFilters.mcm)
   const [subsystemFilter, setSubsystemFilter] = useState<string>(initialFilters.subsystem)
   const [doneFilter, setDoneFilter] = useState<DoneFilter>(initialFilters.done)
+  const [blockFilter, setBlockFilter] = useState<BlockFilter>(initialFilters.block)
   const [wizardDevice, setWizardDevice] = useState<VfdDevice | null>(null)
   const [clearingName, setClearingName] = useState<string | null>(null)
   const [clearError, setClearError] = useState<string | null>(null)
+
+  const usePropDevices = Array.isArray(devicesProp) && devicesProp.length > 0
+  const devices = usePropDevices ? devicesProp! : loadedDevices
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
@@ -162,38 +213,78 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
-      localStorage.setItem(FILTER_STORAGE_KEY(subsystemId), JSON.stringify({
+      localStorage.setItem(FILTER_STORAGE_KEY(filterKey), JSON.stringify({
         search: searchTerm,
         mcm: mcmFilter,
         subsystem: subsystemFilter,
         done: doneFilter,
+        block: blockFilter,
       } satisfies PersistedFilters))
     } catch { /* ignore quota errors */ }
-  }, [subsystemId, searchTerm, mcmFilter, subsystemFilter, doneFilter])
+  }, [filterKey, searchTerm, mcmFilter, subsystemFilter, doneFilter, blockFilter])
 
-  // Load L2-cell-derived state. Pulled out so we can refresh after the wizard
-  // closes or after a Clear action.
+  // Load L2-cell-derived state + per-device meta + blocked/addressed annotations.
+  // Pulled out so we can refresh after the wizard closes or after a Clear.
   const loadStates = useCallback(() => {
     fetch(`/api/vfd-commissioning/state`)
       .then(r => r.json())
       .then(data => {
-        const map = new Map<string, CellState>()
+        const map = new Map<string, RowState>()
+        const devs: VfdDevice[] = []
         for (const row of (data.states || [])) {
           map.set(row.deviceName, {
-            verifyIdentity:   row.cells?.verifyIdentity   ?? null,
-            motorHpField:     row.cells?.motorHpField     ?? null,
-            vfdHpField:       row.cells?.vfdHpField       ?? null,
-            checkDirection:   row.cells?.checkDirection    ?? null,
-            beltTracked:      row.cells?.beltTracked      ?? null,
-            speedSetUp:       row.cells?.speedSetUp       ?? null,
+            cells: {
+              verifyIdentity:   row.cells?.verifyIdentity   ?? null,
+              motorHpField:     row.cells?.motorHpField     ?? null,
+              vfdHpField:       row.cells?.vfdHpField        ?? null,
+              checkDirection:   row.cells?.checkDirection    ?? null,
+              beltTracked:      row.cells?.beltTracked      ?? null,
+              speedSetUp:       row.cells?.speedSetUp       ?? null,
+              bumpBlocker:      row.cells?.bumpBlocker      ?? null,
+            },
+            blocked: Boolean(row.blocked),
+            blockerParty: row.blockerParty ?? null,
+            blockerReason: row.blockerReason ?? null,
+            addressed: Boolean(row.addressed),
+            addressedBy: row.addressedBy ?? null,
+            addressedAt: row.addressedAt ?? null,
           })
+          // Self-load device list from the state rows (meta included now).
+          if (row.deviceId != null && row.deviceName) {
+            devs.push({
+              id: row.deviceId,
+              deviceName: row.deviceName,
+              mcm: row.mcm ?? '',
+              subsystem: row.subsystem ?? '',
+              sheetName: row.sheetName ?? undefined,
+            })
+          }
         }
-        setStates(map)
+        setRows(map)
+        if (!usePropDevices) setLoadedDevices(devs)
       })
       .catch(() => {})
-  }, [])
+  }, [usePropDevices])
 
   useEffect(() => { loadStates() }, [loadStates])
+
+  // When the tab opens, refresh the cloud-authoritative ADDRESSED flag for this
+  // subsystem so a tech sees what a mechanic just marked on the cloud — without
+  // waiting for the next SSE-reconnect catch-up. Best-effort; reloads state on
+  // completion so any newly-mirrored ADDRESSED rows show immediately.
+  useEffect(() => {
+    if (!subsystemId || subsystemId <= 0) return
+    let cancelled = false
+    fetch('/api/vfd-commissioning/refresh-addressed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subsystemId }),
+    })
+      .then(r => r.json().catch(() => null))
+      .then(() => { if (!cancelled) loadStates() })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [subsystemId, loadStates])
 
   /**
    * Wipe commissioning state for one VFD so it can be re-tested.
@@ -240,9 +331,9 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
     setClearingName(null)
   }, [plcConnected, loadStates])
 
-  const getState = useCallback((name: string): CellState =>
-    states.get(name) || emptyCells(),
-  [states])
+  const getRow = useCallback((name: string): RowState =>
+    rows.get(name) || emptyRow(),
+  [rows])
 
   // Filters
   const mcmValues = useMemo(() => Array.from(new Set(devices.map(d => d.mcm).filter(Boolean))).sort(), [devices])
@@ -256,19 +347,30 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
       }
       if (mcmFilter !== 'all' && d.mcm !== mcmFilter) return false
       if (subsystemFilter !== 'all' && d.subsystem !== subsystemFilter) return false
+      const row = getRow(d.deviceName)
       if (doneFilter !== 'all') {
-        const done = isDone(getState(d.deviceName))
+        const done = isDone(row.cells)
         if (doneFilter === 'done' && !done) return false
         if (doneFilter === 'notdone' && done) return false
       }
+      if (blockFilter === 'blocked' && !row.blocked) return false
+      if (blockFilter === 'addressed' && !row.addressed) return false
       return true
     })
-  }, [devices, searchTerm, mcmFilter, subsystemFilter, doneFilter, getState])
+  }, [devices, searchTerm, mcmFilter, subsystemFilter, doneFilter, blockFilter, getRow])
 
   // Stats
   const doneCount = useMemo(
-    () => devices.reduce((acc, d) => acc + (isDone(getState(d.deviceName)) ? 1 : 0), 0),
-    [devices, getState],
+    () => devices.reduce((acc, d) => acc + (isDone(getRow(d.deviceName).cells) ? 1 : 0), 0),
+    [devices, getRow],
+  )
+  const blockedCount = useMemo(
+    () => devices.reduce((acc, d) => acc + (getRow(d.deviceName).blocked ? 1 : 0), 0),
+    [devices, getRow],
+  )
+  const addressedCount = useMemo(
+    () => devices.reduce((acc, d) => acc + (getRow(d.deviceName).addressed ? 1 : 0), 0),
+    [devices, getRow],
   )
 
   // Virtual scroll
@@ -309,7 +411,7 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
     )
   }
 
-  const hasActiveFilter = searchTerm || mcmFilter !== 'all' || subsystemFilter !== 'all' || doneFilter !== 'all'
+  const hasActiveFilter = searchTerm || mcmFilter !== 'all' || subsystemFilter !== 'all' || doneFilter !== 'all' || blockFilter !== 'all'
 
   return (
     <div className="flex flex-col h-full">
@@ -321,9 +423,16 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
         <Badge className="bg-green-100 text-green-800 border-green-200 dark:bg-green-900/40 dark:text-green-300 dark:border-green-800 font-mono text-xs px-2 py-0.5">
           {doneCount} done
         </Badge>
-        <Badge className="bg-muted text-muted-foreground border font-mono text-xs px-2 py-0.5">
-          {devices.length - doneCount} remaining
-        </Badge>
+        {blockedCount > 0 && (
+          <Badge className="bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800 font-mono text-xs px-2 py-0.5">
+            {blockedCount} blocked
+          </Badge>
+        )}
+        {addressedCount > 0 && (
+          <Badge className="bg-sky-100 text-sky-800 border-sky-200 dark:bg-sky-900/40 dark:text-sky-300 dark:border-sky-800 font-mono text-xs px-2 py-0.5">
+            {addressedCount} addressed
+          </Badge>
+        )}
         <div className="flex-1" />
         <div className={cn(
           "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border",
@@ -337,7 +446,7 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b bg-muted/30 shrink-0">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b bg-muted/30 shrink-0 flex-wrap">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input
@@ -379,6 +488,33 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
           })}
         </div>
 
+        {/* Block / Addressed filter — narrow to blocked belts or the ones a
+            mechanic addressed on the cloud (ready for a tester to re-run). */}
+        <div className="flex items-center rounded-md border bg-background overflow-hidden h-8">
+          {(['all', 'blocked', 'addressed'] as BlockFilter[]).map(opt => {
+            const label = opt === 'all' ? 'All' : opt === 'blocked' ? 'Blocked' : 'Addressed'
+            const active = blockFilter === opt
+            return (
+              <button
+                key={opt}
+                onClick={() => setBlockFilter(opt)}
+                className={cn(
+                  "px-2.5 text-xs h-full border-r last:border-r-0 transition-colors",
+                  active
+                    ? opt === 'blocked'
+                      ? "bg-amber-500 text-white"
+                      : opt === 'addressed'
+                        ? "bg-sky-500 text-white"
+                        : "bg-foreground text-background"
+                    : "text-muted-foreground hover:bg-muted"
+                )}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+
         {mcmValues.length > 1 && (
           <select value={mcmFilter} onChange={e => setMcmFilter(e.target.value)} className="h-8 rounded-md border bg-background px-2 text-xs">
             <option value="all">All MCMs</option>
@@ -393,7 +529,7 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
         )}
         {hasActiveFilter && (
           <button
-            onClick={() => { setSearchTerm(''); setMcmFilter('all'); setSubsystemFilter('all'); setDoneFilter('all') }}
+            onClick={() => { setSearchTerm(''); setMcmFilter('all'); setSubsystemFilter('all'); setDoneFilter('all'); setBlockFilter('all') }}
             className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
           >
             <X className="h-3 w-3" />Clear
@@ -408,7 +544,8 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
         <div style={{ height: totalHeight, position: 'relative' }}>
           <div style={{ transform: `translateY(${offsetY}px)` }}>
             {visibleRows.map(device => {
-              const state = getState(device.deviceName)
+              const row = getRow(device.deviceName)
+              const state = row.cells
               const done = isDone(state)
               const hasAnyState = progressCount(state) > 0
               const isClearing = clearingName === device.deviceName
@@ -420,14 +557,16 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
                     "border-b flex items-center gap-3 px-4 cursor-pointer transition-colors group",
                     done
                       ? "bg-green-100 hover:bg-green-200 dark:bg-green-900/40 dark:hover:bg-green-900/60 border-l-4 border-l-green-600 dark:border-l-green-500"
-                      : "hover:bg-muted/40"
+                      : row.blocked
+                        ? "bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/30 dark:hover:bg-amber-950/50 border-l-4 border-l-amber-500"
+                        : "hover:bg-muted/40"
                   )}
                   style={{ height: ROW_HEIGHT }}
                   onClick={() => setWizardDevice(device)}
                 >
                   <Zap className={cn(
                     "h-4 w-4 shrink-0",
-                    done ? "text-green-700 dark:text-green-300" : "text-amber-500"
+                    done ? "text-green-700 dark:text-green-300" : row.blocked ? "text-amber-600" : "text-amber-500"
                   )} />
                   <span className={cn(
                     "font-mono font-semibold text-sm w-[180px] truncate",
@@ -436,12 +575,43 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
                     {device.deviceName}
                   </span>
                   <span className={cn(
-                    "text-xs w-[160px] truncate",
+                    "text-xs w-[130px] truncate",
                     done ? "text-green-800/80 dark:text-green-200/80" : "text-muted-foreground"
                   )}>
                     {device.mcm}
                   </span>
                   <StatusBadge state={state} />
+
+                  {/* BLOCKED column — shows the blocker reason (party + description). */}
+                  <div className="w-[220px] shrink-0 min-w-0">
+                    {row.blocked && (
+                      <span
+                        className="inline-flex items-center gap-1 max-w-full text-[11px] text-amber-700 dark:text-amber-300"
+                        title={`${row.blockerParty ? row.blockerParty + ': ' : ''}${row.blockerReason ?? 'Blocked'}`}
+                      >
+                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                        <span className="truncate">
+                          {row.blockerParty ? <span className="font-semibold">{row.blockerParty}: </span> : null}
+                          {row.blockerReason || 'Blocked'}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* ADDRESSED column — read-only badge (mechanic marked on cloud).
+                      Only meaningful on blocked rows. */}
+                  <div className="w-[150px] shrink-0">
+                    {row.blocked && row.addressed && (
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-sky-100 text-sky-800 border border-sky-200 dark:bg-sky-900/40 dark:text-sky-200 dark:border-sky-800"
+                        title={`Mechanic marked addressed${row.addressedBy ? ` by ${row.addressedBy}` : ''}${row.addressedAt ? ` on ${new Date(row.addressedAt).toLocaleString()}` : ''} — re-run the wizard`}
+                      >
+                        <Wrench className="h-3 w-3 shrink-0" />
+                        Addressed{(() => { const s = formatStamp(row.addressedAt, row.addressedBy); return s ? ` · ${s}` : '' })()}
+                      </span>
+                    )}
+                  </div>
+
                   <div className="flex-1" />
 
                   {hasAnyState && (
@@ -502,7 +672,7 @@ export function VfdCommissioningView({ devices, subsystemId, plcConnected }: Vfd
       {wizardDevice && (
         <VfdWizardModal
           device={wizardDevice}
-          subsystemId={subsystemId}
+          subsystemId={subsystemId ?? 0}
           plcConnected={plcConnected}
           sheetName={wizardDevice.sheetName}
           onClose={() => {
