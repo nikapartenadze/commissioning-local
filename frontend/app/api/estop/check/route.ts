@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * POST /api/estop/check
@@ -202,6 +203,14 @@ export async function POST(req: Request, res: Response) {
     if (reset) {
       resetStmt.run(subsystemId, zoneName, checkTag, resolvedCheckType)
       enqueueEstopCheckSync(subsystemId, zoneName, checkTag, resolvedCheckType)
+      // Durable recovery trail — parity with the IO test path. E-stop results
+      // are safety data; a cleared check is recorded so divergence is auditable.
+      auditLog({
+        type: 'estop.check',
+        subsystemId,
+        result: 'Cleared',
+        detail: { zoneName, checkTag, checkType: resolvedCheckType, reset: true, testedBy: testedBy ?? undefined },
+      })
       return res.json({ success: true, reset: true, checkType: resolvedCheckType })
     }
 
@@ -223,6 +232,18 @@ export async function POST(req: Request, res: Response) {
       testedBy ?? null,
     )
     enqueueEstopCheckSync(subsystemId, zoneName, checkTag, resolvedCheckType)
+    // Durable recovery trail — parity with the IO test path (app/api/guided/test).
+    // E-stop EPC results are SAFETY data; this 2-week JSONL record is independent
+    // of the SQLite row and the cloud push, so a dropped/diverged result is
+    // recoverable. failureMode rides only on a fail.
+    auditLog({
+      type: 'estop.check',
+      subsystemId,
+      user: testedBy ?? null,
+      result: result === 'pass' ? 'Passed' : 'Failed',
+      reason: storedFailureMode ?? undefined,
+      detail: { zoneName, checkTag, checkType: resolvedCheckType, comments: comments ?? undefined },
+    })
     return res.json({ success: true, result, checkType: resolvedCheckType, failureMode: storedFailureMode, testedBy: testedBy ?? null })
   } catch (error) {
     console.error('[EStopCheck] Error:', error)

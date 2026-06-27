@@ -5,7 +5,16 @@ import type {
   SnapshotFunctional,
   SnapshotVfd,
 } from './snapshot-types'
-import type { Phase, Segment, Task, TaskPool, TaskPoolSummary, TaskState, TaskType } from './types'
+import type {
+  Phase,
+  Segment,
+  Task,
+  TaskPool,
+  TaskPoolReadiness,
+  TaskPoolSummary,
+  TaskState,
+  TaskType,
+} from './types'
 import { pickNextTask, priorityOf } from './priority'
 import { associatedIosFor, pendingAssociatedLabels } from './associations'
 import { precheckFailure } from '@/lib/guided/io-check-sequence'
@@ -30,6 +39,7 @@ export const SYSTEM_STOPPED_DEP = 'System must be started — all conveyors runn
 const PHASE: Phase = 'Commissioning'
 
 const SEGMENT_FOR: Record<TaskType, Segment> = {
+  firmware_check: 'Firmware Compliance',
   network_loop: 'Network Verification',
   vfd_setup: 'VFD Commissioning',
   io_check_safety: 'Safety Device I/O Check',
@@ -109,6 +119,27 @@ function buildNetworkTask(snapshot: DataSnapshot): RawTask | null {
     done: 0, // completion is manual (no data backing); see snapshot.manualTaskStatus
     total: 1,
     unmet,
+  }
+}
+
+/**
+ * Firmware-compliance gate — one task per subsystem, emitted only when the
+ * snapshot carries a firmware summary (i.e. firmware checking applies). It's a
+ * manual gate (the tester scans on the Firmware Compliance page and confirms),
+ * so completion is driven by manualTaskStatus exactly like the network loop —
+ * `done`/`total` here only seed available/in_progress. It blocks nothing
+ * downstream: wrong firmware is surfaced, not used to gate IO checks.
+ */
+function buildFirmwareTask(snapshot: DataSnapshot): RawTask | null {
+  const fw = snapshot.firmware
+  if (!fw) return null
+  return {
+    id: taskId('firmware_check', String(snapshot.subsystemId)),
+    type: 'firmware_check',
+    title: `Verify Firmware Compliance${snapshot.mcm ? ` — ${snapshot.mcm}` : ''}`,
+    done: 0, // completion is manual (tester confirms after scanning)
+    total: 1,
+    unmet: [],
   }
 }
 
@@ -199,8 +230,16 @@ function buildEstopTasks(
   return snapshot.estopZones
     .filter((z) => z.epcs.length > 0)
     .map((z: SnapshotEstopZone) => {
-      const total = z.epcs.length
-      const done = z.epcs.filter((e) => e.result === 'pass' || e.result === 'fail').length
+      // Dual-safety: each EPC has TWO checks (preliminary zone-stop + final
+      // selectivity). Count each as a progress unit so the task reads
+      // in_progress while half-done and completed only when BOTH are recorded
+      // for every EPC.
+      const total = z.epcs.length * 2
+      let done = 0
+      for (const e of z.epcs) {
+        if (e.result === 'pass' || e.result === 'fail') done++
+        if (e.finalResult === 'pass' || e.finalResult === 'fail') done++
+      }
       const unmet: string[] = []
       if (ringDegraded) unmet.push(RING_DEGRADED_DEP)
       // Prefer per-zone gating: only the safety devices in THIS zone must be
@@ -261,6 +300,61 @@ function buildFunctionalTasks(
     })
 }
 
+// ── Readiness diagnostics ──────────────────────────────────────────────────
+
+/**
+ * Compute up-front readiness from the snapshot. This is what stops guided mode
+ * from silently degrading: a missing/mismatched device map or a faulted ring is
+ * surfaced to the tester instead of producing a quietly-broken task list.
+ */
+export function computeReadiness(snapshot: DataSnapshot): TaskPoolReadiness {
+  const deviceCount = snapshot.devices.filter((d) => d.ios.length > 0).length
+  const blockers: string[] = []
+  const warnings: string[] = []
+
+  if (snapshot.mapSource === 'none') {
+    blockers.push(
+      'No device map is loaded for this MCM — guided I/O checks cannot be generated. ' +
+        "Set the project API key in Settings, then use “Pull diagram”.",
+    )
+  } else if (deviceCount === 0 && snapshot.ioCount > 0) {
+    // There ARE I/O points for this subsystem but the map resolved none of them
+    // → the loaded map's element ids don't match this MCM's device naming.
+    blockers.push(
+      `The loaded device map resolved 0 of ${snapshot.ioCount} I/O points for this MCM — ` +
+        'the map likely belongs to a different subsystem. Pull the correct diagram for this MCM.',
+    )
+  } else if (snapshot.mapSource === 'bundled-fallback' && deviceCount > 0) {
+    warnings.push(
+      'Using a generic bundled map (no per-MCM diagram found). Device positions may be ' +
+        'approximate — pull this subsystem’s diagram to be sure I/O checks are complete.',
+    )
+  }
+
+  if (!snapshot.plcConnected) {
+    warnings.push(
+      'PLC not connected — automatic device detection is unavailable. You can still record ' +
+        'results manually, but the live round-trip auto-pass will not fire.',
+    )
+  }
+
+  if (snapshot.ringHealth === 'degraded') {
+    warnings.push(
+      'DPM ring is FAULTED — every task downstream of the network loop is locked until the ' +
+        'ring is nominal.',
+    )
+  }
+
+  return {
+    ready: blockers.length === 0,
+    blockers,
+    warnings,
+    mapSource: snapshot.mapSource,
+    deviceCount,
+    plcConnected: snapshot.plcConnected,
+  }
+}
+
 // ── Orchestration ────────────────────────────────────────────────────────
 
 export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
@@ -270,6 +364,12 @@ export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
   // network loop ("guided mode cannot function if DPM ring health is not
   // nominal"). 'unknown'/null is non-blocking — no PLC or no DLR probe yet.
   const ringDegraded = snapshot.ringHealth === 'degraded'
+
+  // 0) Firmware compliance (priority 1, id tie-break hands it first) — a
+  // one-shot hardware gate. Independent: blocks nothing, gated by nothing.
+  // Only present when the snapshot carries a firmware summary.
+  const rawFirmware = buildFirmwareTask(snapshot)
+  if (rawFirmware) tasks.push(finalize(rawFirmware, snapshot))
 
   // 1) Network loop (priority 1) — gates everything downstream.
   const rawNetwork = buildNetworkTask(snapshot)
@@ -360,6 +460,7 @@ export function buildTaskPool(snapshot: DataSnapshot): TaskPool {
     tasks,
     nextTaskId: next ? next.id : null,
     summary,
+    readiness: computeReadiness(snapshot),
   }
 }
 

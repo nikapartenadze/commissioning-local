@@ -1,0 +1,4 @@
+services:
+  plc-sim:
+    ports:
+      - "44818:44818"

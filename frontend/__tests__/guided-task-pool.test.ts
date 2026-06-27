@@ -50,6 +50,9 @@ function emptySnapshot(overrides: Partial<DataSnapshot> = {}): DataSnapshot {
   return {
     subsystemId: 1,
     mcm: 'MCM09',
+    mapSource: 'mcm-diagram',
+    plcConnected: true,
+    ioCount: 0,
     devices: [],
     estopZones: [],
     vfds: [],
@@ -65,6 +68,46 @@ function emptySnapshot(overrides: Partial<DataSnapshot> = {}): DataSnapshot {
 }
 
 const byId = (tasks: Task[], id: string) => tasks.find((t) => t.id === id)
+
+// ── firmware compliance gate ─────────────────────────────────────────────────
+describe('firmware_check task', () => {
+  const fw = { scanned: true, deviceCount: 5, nonCompliantCount: 1, noBaselineCount: 0 }
+
+  it('is NOT generated when the snapshot carries no firmware summary', () => {
+    const pool = buildTaskPool(emptySnapshot())
+    expect(pool.tasks.find((t) => t.type === 'firmware_check')).toBeUndefined()
+  })
+
+  it('is generated (available, own segment) when a firmware summary is present', () => {
+    const pool = buildTaskPool(emptySnapshot({ firmware: fw }))
+    const t = byId(pool.tasks, taskId('firmware_check', '1'))
+    expect(t?.state).toBe('available')
+    expect(t?.segment).toBe('Firmware Compliance')
+  })
+
+  it('is handed first — priority 1, id tie-break beats the network loop', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({ firmware: fw, network: { hasRings: true, dpmsAllInstalled: null } }),
+    )
+    expect(pool.nextTaskId).toBe(taskId('firmware_check', '1'))
+  })
+
+  it('completes via manual status (manual gate, like the network loop)', () => {
+    const id = taskId('firmware_check', '1')
+    const pool = buildTaskPool(
+      emptySnapshot({ firmware: fw, manualTaskStatus: { [id]: { status: 'completed' } } }),
+    )
+    expect(byId(pool.tasks, id)?.state).toBe('completed')
+  })
+
+  it('builds an info scan step then an auto_detect verdict confirm step', () => {
+    const pool = buildTaskPool(emptySnapshot({ firmware: fw }))
+    const task = byId(pool.tasks, taskId('firmware_check', '1'))!
+    const steps = buildSteps(task)
+    expect(steps.map((s) => s.kind)).toEqual(['info', 'auto_detect'])
+    expect(steps[1].verdictSource).toBe('/api/firmware')
+  })
+})
 
 // ── priority ────────────────────────────────────────────────────────────────
 
@@ -261,7 +304,7 @@ describe('buildTaskPool — e-stop verification', () => {
   it('blocks e-stop verification until all safety IO checks are done', () => {
     const snap = emptySnapshot({
       devices: [device('SAFE1', 0, [io(1, null, true)], { isSafety: true })],
-      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }], safetyDeviceNames: [] }],
+      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null, finalResult: null }], safetyDeviceNames: [] }],
     })
     const t = byId(buildTaskPool(snap).tasks, taskId('estop_verification', 'Zone 1'))
     expect(t?.state).toBe('blocked')
@@ -271,7 +314,7 @@ describe('buildTaskPool — e-stop verification', () => {
   it('makes e-stop verification available once safety IO checks complete', () => {
     const snap = emptySnapshot({
       devices: [device('SAFE1', 0, [io(1, 'Passed', true)], { isSafety: true })],
-      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }], safetyDeviceNames: [] }],
+      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null, finalResult: null }], safetyDeviceNames: [] }],
     })
     const t = byId(buildTaskPool(snap).tasks, taskId('estop_verification', 'Zone 1'))
     expect(t?.state).toBe('available')
@@ -285,8 +328,8 @@ describe('buildTaskPool — e-stop verification', () => {
         device('SAFE_B', 1, [io(2, null, true)], { isSafety: true }),
       ],
       estopZones: [
-        { zoneName: 'Zone A', epcs: [{ name: 'EPC_A', checkTag: 'TA', result: null }], safetyDeviceNames: ['SAFE_A'] },
-        { zoneName: 'Zone B', epcs: [{ name: 'EPC_B', checkTag: 'TB', result: null }], safetyDeviceNames: ['SAFE_B'] },
+        { zoneName: 'Zone A', epcs: [{ name: 'EPC_A', checkTag: 'TA', result: null, finalResult: null }], safetyDeviceNames: ['SAFE_A'] },
+        { zoneName: 'Zone B', epcs: [{ name: 'EPC_B', checkTag: 'TB', result: null, finalResult: null }], safetyDeviceNames: ['SAFE_B'] },
       ],
     })
     const pool = buildTaskPool(snap)
@@ -298,14 +341,14 @@ describe('buildTaskPool — e-stop verification', () => {
     expect(zb?.unmetDependencies.join(' ')).toContain('SAFE_B')
   })
 
-  it('completes an e-stop zone when every EPC has a result', () => {
+  it('completes an e-stop zone only when every EPC has BOTH checks (dual-safety)', () => {
     const snap = emptySnapshot({
       estopZones: [
         {
           zoneName: 'Zone 1',
           epcs: [
-            { name: 'EPC1', checkTag: 'T1', result: 'pass' },
-            { name: 'EPC2', checkTag: 'T2', result: 'fail' },
+            { name: 'EPC1', checkTag: 'T1', result: 'pass', finalResult: 'pass' },
+            { name: 'EPC2', checkTag: 'T2', result: 'fail', finalResult: 'pass' },
           ],
           safetyDeviceNames: [],
         },
@@ -313,6 +356,21 @@ describe('buildTaskPool — e-stop verification', () => {
     })
     expect(byId(buildTaskPool(snap).tasks, taskId('estop_verification', 'Zone 1'))?.state).toBe(
       'completed',
+    )
+  })
+
+  it('stays in_progress when an EPC has only the preliminary check (final missing)', () => {
+    const snap = emptySnapshot({
+      estopZones: [
+        {
+          zoneName: 'Zone 1',
+          epcs: [{ name: 'EPC1', checkTag: 'T1', result: 'pass', finalResult: null }],
+          safetyDeviceNames: [],
+        },
+      ],
+    })
+    expect(byId(buildTaskPool(snap).tasks, taskId('estop_verification', 'Zone 1'))?.state).toBe(
+      'in_progress',
     )
   })
 })
@@ -664,7 +722,7 @@ describe('D5 — degraded DPM ring gates everything downstream', () => {
         device('SAFE1', 0, [io(1, null, true)], { isSafety: true }),
         device('PE1', 1, [io(2, null, false)], { isSafety: false }),
       ],
-      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null }], safetyDeviceNames: [] }],
+      estopZones: [{ zoneName: 'Zone 1', epcs: [{ name: 'EPC1', checkTag: 'T1', result: null, finalResult: null }], safetyDeviceNames: [] }],
       functional: [
         { sheetName: 'SS', displayName: 'Start/Stop', deviceName: 'SS1', order: 0, completedChecks: 0, totalChecks: 2 },
       ],
@@ -772,16 +830,101 @@ describe('buildEstopSteps', () => {
     progress: 0,
   }
 
-  it('makes the zone nominal then one auto-detect step per pending EPC', () => {
+  it('makes the zone nominal then BOTH dual-safety steps per pending EPC', () => {
     const steps = buildEstopSteps(estop, 'Zone 1', [
-      { name: 'EPC1', checkTag: 'T1', result: null },
-      { name: 'EPC2', checkTag: 'T2', result: 'pass' },
+      { name: 'EPC1', checkTag: 'T1', result: null, finalResult: null },
+      { name: 'EPC2', checkTag: 'T2', result: 'pass', finalResult: 'pass' },
     ])
     expect(steps[0].kind).toBe('manual_confirm')
-    // only the pending EPC (EPC1) gets a step
+    // only the pending EPC (EPC1) gets steps; EPC2 has both checks → none.
+    const epcSteps = steps.filter((s) => s.kind === 'auto_detect')
+    expect(epcSteps).toHaveLength(2)
+    expect(epcSteps.every((s) => s.estopCheckTag === 'T1')).toBe(true)
+    expect(epcSteps.map((s) => s.estopCheckType)).toEqual(['preliminary', 'final'])
+  })
+
+  it('emits only the MISSING check when one of the two is already recorded', () => {
+    const steps = buildEstopSteps(estop, 'Zone 1', [
+      { name: 'EPC1', checkTag: 'T1', result: 'pass', finalResult: null },
+    ])
     const epcSteps = steps.filter((s) => s.kind === 'auto_detect')
     expect(epcSteps).toHaveLength(1)
-    expect(epcSteps[0].estopCheckTag).toBe('T1')
-    expect(epcSteps[0].estopZone).toBe('Zone 1')
+    expect(epcSteps[0].estopCheckType).toBe('final')
+  })
+})
+
+// ── readiness diagnostics ────────────────────────────────────────────────────
+
+describe('buildTaskPool readiness', () => {
+  it('is ready with a real per-MCM map, devices, PLC, and a nominal ring', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        mapSource: 'mcm-diagram',
+        plcConnected: true,
+        ioCount: 2,
+        devices: [device('D1', 0, [io(1, null), io(2, null)])],
+      }),
+    )
+    expect(pool.readiness.ready).toBe(true)
+    expect(pool.readiness.blockers).toEqual([])
+    expect(pool.readiness.warnings).toEqual([])
+    expect(pool.readiness.deviceCount).toBe(1)
+  })
+
+  it('BLOCKS when no map is loaded at all', () => {
+    const pool = buildTaskPool(emptySnapshot({ mapSource: 'none', ioCount: 5 }))
+    expect(pool.readiness.ready).toBe(false)
+    expect(pool.readiness.blockers.join(' ')).toMatch(/no device map/i)
+  })
+
+  it('BLOCKS when a map is loaded but resolves 0 of the subsystem’s I/O (wrong MCM)', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({ mapSource: 'mcm-diagram', ioCount: 40, devices: [] }),
+    )
+    expect(pool.readiness.ready).toBe(false)
+    expect(pool.readiness.blockers.join(' ')).toMatch(/0 of 40/)
+  })
+
+  it('does NOT block when the subsystem genuinely has no I/O (ioCount 0)', () => {
+    const pool = buildTaskPool(emptySnapshot({ mapSource: 'mcm-diagram', ioCount: 0, devices: [] }))
+    expect(pool.readiness.ready).toBe(true)
+    expect(pool.readiness.blockers).toEqual([])
+  })
+
+  it('WARNS (not blocks) when using the bundled fallback map with devices resolved', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        mapSource: 'bundled-fallback',
+        ioCount: 1,
+        devices: [device('D1', 0, [io(1, null)])],
+      }),
+    )
+    expect(pool.readiness.ready).toBe(true)
+    expect(pool.readiness.warnings.join(' ')).toMatch(/bundled map/i)
+  })
+
+  it('WARNS when the PLC is not connected (manual entry still works)', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        mapSource: 'mcm-diagram',
+        plcConnected: false,
+        ioCount: 1,
+        devices: [device('D1', 0, [io(1, null)])],
+      }),
+    )
+    expect(pool.readiness.ready).toBe(true)
+    expect(pool.readiness.warnings.join(' ')).toMatch(/PLC not connected/i)
+  })
+
+  it('WARNS when the DPM ring is degraded', () => {
+    const pool = buildTaskPool(
+      emptySnapshot({
+        mapSource: 'mcm-diagram',
+        ringHealth: 'degraded',
+        ioCount: 1,
+        devices: [device('D1', 0, [io(1, null)])],
+      }),
+    )
+    expect(pool.readiness.warnings.join(' ')).toMatch(/ring is FAULTED/i)
   })
 })
