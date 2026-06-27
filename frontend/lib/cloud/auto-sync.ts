@@ -1292,14 +1292,20 @@ class AutoSyncService {
         return
       }
 
-      // No granular local endpoint for network/estop/safety config — refresh
-      // those via the scoped full pull (rare: only on a config import). L2 has a
-      // granular pull-l2 route.
+      // Re-pull the config sections the delta flagged. vfd-addressed (ADDRESSED
+      // handoff + VFD blocker) and L2 have granular local routes; network/estop/
+      // safety and the rarer punchlist/change-request/roadmap have no granular
+      // pull, so a scoped full pull refreshes them (gated; skips if local work
+      // pending). guided_task is field-authored — nothing to pull back.
       const s = result.sections
-      if (s.network || s.estop || s.safety) {
-        await this.scopedFullPull(subsystemId)
-      } else if (s.l2) {
+      if (s.vfdBlocker) {
+        await pullVfdAddressed(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
+      }
+      if (s.l2) {
         await this.pullL2Scoped(subsystemId, cfg.remoteUrl, cfg.apiPassword)
+      }
+      if (s.network || s.estop || s.safety || s.punchlist || s.changeRequest || s.roadmap) {
+        await this.scopedFullPull(subsystemId)
       }
 
       this._lastPullAt = new Date()
@@ -1418,7 +1424,13 @@ class AutoSyncService {
               // returns the snapshot inline (applyDelta applies it + seeds).
               return `${sid}:resync->${await mcmFullPull(sid)}`
             }
-            if (result.sections.network || result.sections.estop || result.sections.safety) {
+            const s = result.sections
+            // ADDRESSED / VFD blocker has a granular route — refresh it without a
+            // (gated, destructive) full pull.
+            if (s.vfdBlocker) {
+              try { await pullVfdAddressed(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword }) } catch { /* best-effort */ }
+            }
+            if (s.network || s.estop || s.safety || s.punchlist || s.changeRequest || s.roadmap) {
               return `${sid}:delta(+${result.applied}/-${result.deleted})+sect->${await mcmFullPull(sid)}`
             }
             return `${sid}:delta(+${result.applied}/-${result.deleted})`

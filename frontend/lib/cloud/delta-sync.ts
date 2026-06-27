@@ -46,7 +46,13 @@ export interface DeltaPayload {
   fromSeq?: number
   toSeq?: number
   ios?: { upserts?: DeltaIo[]; deletes?: number[] }
-  sections?: { network: boolean; estop: boolean; safety: boolean; l2: boolean }
+  sections?: {
+    network: boolean; estop: boolean; safety: boolean; l2: boolean
+    // Added 2026-06: the cloud now flags these too. Optional so an older cloud
+    // (4-key payload) still type-checks; absent reads as falsy → no re-pull.
+    punchlist?: boolean; vfdBlocker?: boolean; changeRequest?: boolean
+    roadmap?: boolean; guidedTask?: boolean
+  }
 }
 
 export interface ApplyDeltaResult {
@@ -54,7 +60,11 @@ export interface ApplyDeltaResult {
   applied: number
   deleted: number
   skippedDeletes: number[]
-  sections: { network: boolean; estop: boolean; safety: boolean; l2: boolean }
+  sections: {
+    network: boolean; estop: boolean; safety: boolean; l2: boolean
+    punchlist?: boolean; vfdBlocker?: boolean; changeRequest?: boolean
+    roadmap?: boolean; guidedTask?: boolean
+  }
   toSeq: number
 }
 
