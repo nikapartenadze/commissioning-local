@@ -49,7 +49,10 @@ export interface SnapshotDevice {
 export interface SnapshotEpc {
   name: string
   checkTag: string
+  /** PRELIMINARY (zone-stop / positive) check result. */
   result: 'pass' | 'fail' | null
+  /** FINAL (selectivity / negative) check result. Dual-safety verification. */
+  finalResult: 'pass' | 'fail' | null
 }
 
 export interface SnapshotEstopZone {
@@ -86,6 +89,22 @@ export interface SnapshotFunctional {
   totalChecks: number
 }
 
+/**
+ * Firmware-compliance state for the guided firmware-check gate, summarised from
+ * the last on-demand scan (GET /api/firmware). Optional on the snapshot: when
+ * absent, no firmware task is generated (e.g. firmware checking not applicable).
+ */
+export interface SnapshotFirmware {
+  /** A firmware scan has run this session (a cached scan exists). */
+  scanned: boolean
+  /** Devices read in the last scan (controller + networked). */
+  deviceCount: number
+  /** Devices below their approved minimum revision. */
+  nonCompliantCount: number
+  /** Devices read but with no matching baseline entry (unknown hardware). */
+  noBaselineCount: number
+}
+
 export interface SnapshotNetwork {
   /** Network rings exist for this subsystem (there is a loop to verify). */
   hasRings: boolean
@@ -105,11 +124,31 @@ export interface ManualTaskStatus {
 export interface DataSnapshot {
   subsystemId: number
   mcm: string | null
+  /**
+   * Where the device-map SVG came from. 'mcm-diagram' = the real per-MCM
+   * diagram (McmDiagrams); 'bundled-fallback' = the generic shipped SVG (its
+   * ids likely DON'T match this MCM's I/O → few/no devices resolve); 'none' =
+   * no SVG at all. Drives the readiness diagnostics in the builder.
+   */
+  mapSource: 'mcm-diagram' | 'bundled-fallback' | 'none'
+  /** Live PLC tag data was flowing when the snapshot was taken. */
+  plcConnected: boolean
+  /**
+   * Count of non-spare I/O rows for this subsystem (before map matching). Lets
+   * the builder tell "map doesn't match this MCM" (ioCount > 0 but 0 devices
+   * resolved) apart from "subsystem genuinely has no I/O" (ioCount === 0).
+   */
+  ioCount: number
   devices: SnapshotDevice[]
   estopZones: SnapshotEstopZone[]
   vfds: SnapshotVfd[]
   functional: SnapshotFunctional[]
   network: SnapshotNetwork
+  /**
+   * Firmware-compliance summary for the guided firmware-check gate. Optional —
+   * absent means no firmware task is generated for this subsystem.
+   */
+  firmware?: SnapshotFirmware
   /** All "Belt Tracked" functional cells pass. `null` when no VFD/belt data. */
   beltsTracked: boolean | null
   /** All networked items communicating. `null` when unknown (no live PLC). */

@@ -100,6 +100,14 @@ try {
     // instead so the local value + reason survive and the row is excluded from
     // the active push loop and the pull gate.
     'ALTER TABLE L2PendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
+    // Same dead-letter parity for the guided-mode sync queues. These rows
+    // (e-stop EPC check results — SAFETY data — and guided task skip/complete
+    // overrides) used to be DELETEd at the retry cap, silently losing a result
+    // the local UI showed as "done" (the MCM11 silent-loss class). Park them
+    // (DeadLettered=1) instead so the local value survives and the row is
+    // excluded from the active push loop.
+    'ALTER TABLE EStopCheckPendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
     // First-run hardening: the seeded default admin (Admin/111111) is flagged
     // MustChangePin=1 so the UI forces a new PIN on first admin login under
     // enforced auth. Additive + backward-safe: existing users default to 0.

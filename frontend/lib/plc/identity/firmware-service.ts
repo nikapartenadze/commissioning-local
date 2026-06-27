@@ -166,6 +166,78 @@ export async function scanController(): Promise<FirmwareDeviceResult | null> {
 }
 
 /**
+ * Snapshot-shaped controller Identity, folded into the network-diagnostics push
+ * so the cloud's fleet firmware compliance can see the PLC itself (it's not a
+ * network node, so it's otherwise invisible to the cloud). Mirrors the device
+ * snapshot fields the cloud reads, plus `isController` so the per-port topology
+ * view filters it out (it has no ports). `subsystemId` present on central.
+ */
+export interface ControllerPushSnapshot {
+  tagName: string
+  deviceName: string
+  productCode: number
+  firmwareMajor: number
+  firmwareMinor: number
+  capturedAt: number
+  isController: true
+  ports: never[]
+  subsystemId?: string
+}
+
+// Controller firmware is static for the life of a connection, so cache the
+// Identity per (ip|path) and reuse it on every 60s push — the diagnostics push
+// must not add a recurring @raw CIP read. Keyed by ip+path so a central server
+// caches each MCM's controller independently. Cleared implicitly on restart.
+const controllerIdentityCache = new Map<string, DeviceIdentity>()
+
+async function readControllerIdentityCached(ip: string, path: string): Promise<DeviceIdentity | null> {
+  const key = `${ip}|${path}`
+  const cached = controllerIdentityCache.get(key)
+  if (cached) return cached
+  const identity = await readIdentity(ip, path)
+  if (identity) controllerIdentityCache.set(key, identity)
+  return identity
+}
+
+/**
+ * Build controller push-snapshots for every connected controller (one cached
+ * @raw Identity read per controller, then free). Central-aware: enumerates each
+ * connected MCM and tags its subsystemId; single-MCM tablets return the sole
+ * controller untagged. Empty when nothing is connected / Identity unreadable.
+ */
+export async function getControllerPushSnapshots(): Promise<ControllerPushSnapshot[]> {
+  const now = Date.now()
+  const build = (identity: DeviceIdentity, deviceName: string, tagName: string, subsystemId?: string): ControllerPushSnapshot => ({
+    tagName,
+    deviceName,
+    productCode: identity.productCode,
+    firmwareMajor: identity.revMajor,
+    firmwareMinor: identity.revMinor,
+    capturedAt: now,
+    isController: true,
+    ports: [],
+    ...(subsystemId !== undefined ? { subsystemId } : {}),
+  })
+
+  if (hasAnyMcm()) {
+    const out: ControllerPushSnapshot[] = []
+    for (const mcm of listMcms().filter((m) => m.connected)) {
+      const identity = await readControllerIdentityCached(mcm.ip, mcm.path)
+      if (!identity) continue
+      const label = mcm.name ? `Controller (${mcm.name})` : `Controller (MCM ${mcm.subsystemId})`
+      out.push(build(identity, label, mcm.path, mcm.subsystemId))
+    }
+    return out
+  }
+
+  const status = getPlcStatus()
+  if (!status.connected || !status.connectionConfig) return []
+  const identity = await readControllerIdentityCached(status.connectionConfig.ip, status.connectionConfig.path)
+  if (!identity) return []
+  return [build(identity, 'Controller', status.connectionConfig.path)]
+}
+
+/**
  * Run a firmware scan: read the controller's Identity (@raw, one request) and
  * fold in the firmware the diagnostics poller has already captured for every
  * networked device. Judge each against the cached baseline. Returns (and caches)

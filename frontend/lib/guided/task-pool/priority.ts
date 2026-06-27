@@ -17,6 +17,10 @@ import type { Task, TaskType } from './types'
  * Phase 1 (network → IO → e-stop → VFD) via the phase gate in task-builder.
  */
 export const TASK_PRIORITY: Record<TaskType, number> = {
+  // Firmware compliance is a one-shot hardware gate, verified up front (shares
+  // rank 1 with the network loop; the id tie-break hands it first). It blocks
+  // nothing downstream — it's independent verification, not a dependency.
+  firmware_check: 1,
   network_loop: 1,
   io_check_safety: 2,
   estop_verification: 3,

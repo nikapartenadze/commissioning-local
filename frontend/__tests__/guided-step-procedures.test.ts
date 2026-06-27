@@ -175,17 +175,18 @@ describe('buildEstopSteps — per-EPC walk-to navigate steps (KK example)', () =
     progress: 0,
   }
 
-  it('reset → (navigate EPC1 → verify EPC1) → (navigate EPC2 → verify EPC2)', () => {
+  it('reset → navigate → BOTH dual-safety verifies, per EPC', () => {
     const steps = buildEstopSteps(estop, 'Zone 1', [
-      { name: 'EPC1', checkTag: 'T1', result: null },
-      { name: 'EPC2', checkTag: 'T2', result: null },
+      { name: 'EPC1', checkTag: 'T1', result: null, finalResult: null },
+      { name: 'EPC2', checkTag: 'T2', result: null, finalResult: null },
     ])
     expect(steps[0].kind).toBe('manual_confirm') // make zone nominal
 
     const navs = steps.filter((s) => s.kind === 'navigate')
     const verifies = steps.filter((s) => s.kind === 'auto_detect')
     expect(navs).toHaveLength(2)
-    expect(verifies).toHaveLength(2)
+    // dual-safety: each EPC gets a preliminary + a final verify
+    expect(verifies).toHaveLength(4)
 
     // each navigate carries the EPC's deviceName so the map zooms to it
     expect(navs[0].deviceName).toBe('EPC1')
@@ -193,21 +194,28 @@ describe('buildEstopSteps — per-EPC walk-to navigate steps (KK example)', () =
     expect(navs[0].instruction).toMatch(/i'm there/i)
     expect(navs[1].deviceName).toBe('EPC2')
 
-    // navigate precedes its EPC's verify step, ordering preserved
+    // navigate precedes its EPC's two verify steps, ordering preserved
     const order = steps.map((s) => s.kind)
-    expect(order).toEqual(['manual_confirm', 'navigate', 'auto_detect', 'navigate', 'auto_detect'])
+    expect(order).toEqual([
+      'manual_confirm',
+      'navigate', 'auto_detect', 'auto_detect',
+      'navigate', 'auto_detect', 'auto_detect',
+    ])
 
-    // the existing auto-verdict polling is kept
+    // EPC1's two verifies are preliminary then final, both polling the verdict
+    expect(verifies[0].estopCheckType).toBe('preliminary')
+    expect(verifies[1].estopCheckType).toBe('final')
     expect(verifies[0].verdictSource).toBe('/api/estop/status')
     expect(verifies[0].verdictKey).toBe('T1')
   })
 
   it('only pending EPCs get steps (resume a half-finished zone)', () => {
     const steps = buildEstopSteps(estop, 'Zone 1', [
-      { name: 'EPC1', checkTag: 'T1', result: 'pass' },
-      { name: 'EPC2', checkTag: 'T2', result: null },
+      { name: 'EPC1', checkTag: 'T1', result: 'pass', finalResult: 'pass' }, // fully done
+      { name: 'EPC2', checkTag: 'T2', result: null, finalResult: null },
     ])
-    expect(steps.filter((s) => s.kind === 'auto_detect')).toHaveLength(1)
+    // EPC2 is pending on both checks → 2 verifies; EPC1 done → none.
+    expect(steps.filter((s) => s.kind === 'auto_detect')).toHaveLength(2)
     expect(steps.filter((s) => s.kind === 'navigate')).toHaveLength(1)
     expect(steps.find((s) => s.kind === 'navigate')!.deviceName).toBe('EPC2')
   })

@@ -10,6 +10,7 @@ const DiagramPage = lazy(() => import('../app/diagram/page'))
 const GuidedPage = lazy(() => import('../app/commissioning/[id]/guided/page'))
 // central-tool: multi-MCM landing + settings
 const McmLandingPage = lazy(() => import('../app/mcm/page'))
+const FirmwarePage = lazy(() => import('../app/firmware/page'))
 const McmSettingsPage = lazy(() => import('../app/settings/mcms/page'))
 const UsersSettingsPage = lazy(() => import('../app/settings/users/page'))
 
@@ -42,6 +43,7 @@ export const router = createBrowserRouter([
   { path: '/diagram', element: <LazyPage Component={DiagramPage} /> },
   // central-tool: multi-MCM landing + settings
   { path: '/mcm', element: <LazyPage Component={McmLandingPage} /> },
+  { path: '/firmware', element: <LazyPage Component={FirmwarePage} /> },
   { path: '/settings/mcms', element: <LazyPage Component={McmSettingsPage} /> },
   { path: '/settings/users', element: <LazyPage Component={UsersSettingsPage} /> },
 ])
