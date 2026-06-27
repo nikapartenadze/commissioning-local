@@ -449,11 +449,14 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     XLSX.writeFile(wb, `Functional-Validation-${date}.xlsx`)
   }, [data, cellValues])
 
+  // User-facing label: this same component powers both the Functional tab and
+  // the VFD Commissioning tab (vfdMode).
+  const fvLabel = vfdMode ? 'VFD Commissioning' : 'Functional Validation'
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin mr-2" />
-        Loading functional validation data...
+        Loading {fvLabel} data...
       </div>
     )
   }
@@ -476,8 +479,8 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-4">
         <ClipboardCheck className="h-10 w-10 opacity-40" />
         <div className="text-center space-y-1">
-          <p className="text-sm font-medium">No functional validation data available</p>
-          <p className="text-xs">Pull from cloud to load FV sheets, or retry if you just pulled.</p>
+          <p className="text-sm font-medium">No {fvLabel} data available</p>
+          <p className="text-xs">Pull from cloud to load {vfdMode ? 'the VFD/APF sheet' : 'FV sheets'}, or retry if you just pulled.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={fetchData} className="gap-2">
@@ -486,7 +489,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
           </Button>
           <Button variant="outline" size="sm" onClick={handleManualL2Pull} disabled={l2Pulling} className="gap-2">
             <CloudDownload className="h-4 w-4" />
-            {l2Pulling ? 'Pulling Functional Validation...' : 'Pull Functional Validation from Cloud'}
+            {l2Pulling ? `Pulling ${fvLabel}...` : `Pull ${fvLabel} from Cloud`}
           </Button>
         </div>
         {l2PullError && (
