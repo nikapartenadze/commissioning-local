@@ -141,3 +141,56 @@ Severity = blocking risk for a site deploy. **BLOCKER** = do not ship without it
 7. **Auth-enabled** runs once the central tool turns auth on.
 
 **Process rule:** the installer build step should be **gated on a green `central` + `s2` + `s3` + a built-artifact smoke**, and this doc reviewed, before any site deploy.
+
+---
+
+## Part 4 — Cloud↔field per-data-type sync coverage (2026-06-27)
+
+A coverage-keeper sweep asked the direct question: is **every kind of data** synced
+both directions actually tested? Result — IO pass/fail was solid; the rest had no
+**unit** coverage of the sync path itself. Five new unit-test files now gate the
+sync LOGIC for each data type (in-memory SQLite + mocked cloud; run by
+`frontend-verify` in CI). The remaining gap for every one is the same: the
+**live end-to-end propagation under chaos**, which only the battle rig can reach.
+
+| Data type | Direction now UNIT-gated | Test file | Battle (live propagation) |
+|---|---|---|---|
+| IO pass/fail + comments | both | (pre-existing) | ✅ I4 / I11 / I12 |
+| **VFD ADDRESSED** | cloud→field pull + cloud-authoritative upsert | `vfd-addressed-sync.test.ts` | ❌ gap (this Part) |
+| **L2 / FV cell** | field→cloud push+drain **and** cloud→field version-gated LWW merge | `l2-fv-sync-coverage.test.ts` | ❌ gap (this Part) |
+| **E-stop definitions** | cloud→field zone→EPC tree pull + no-op-no-wipe | `estop-sync-coverage.test.ts` | ❌ gap (this Part) |
+| **Network topology** | cloud→field cascade-replace pull + port-id remap | `network-sync-coverage.test.ts` | ❌ gap (this Part) |
+| **Firmware baseline** | cloud→field wholesale-replace pull/cache | `firmware-sync-coverage.test.ts` | n/a (field→cloud fw is live-PLC `ControllerPushSnapshot`, hardware-only) |
+
+### The one battle scenario that closes the live-propagation gaps: `crud-propagation`
+
+All five gaps share a root cause documented in the delta-sync note: **cloud SSE
+emits result updates, not definition/CRUD changes** — so an ADDRESSED mark, an L2
+cell edit, an e-stop zone edit, or a network change reaches a tablet only via a
+(scoped) pull. Author ONE scenario that drives each cloud-side and asserts arrival:
+
+- **Scenario (`crud-propagation`)** — extend `cloud-mutator` to, on a real subsystem:
+  (a) mark a belt VFD blocker **ADDRESSED**, (b) edit an **L2/FV cell** value,
+  (c) edit an **e-stop zone/EPC**, (d) edit a **network ring/port**. Run with a
+  drained queue (like `delta`/`mutate`, `HOT_FRACTION=0`) so the scoped pull fires.
+- **Observer invariants (REPORT-ONLY first; green ×2 before gating, skill rule #4):**
+  - **I14 ADDRESSED-propagation** — field `VfdAddressed` for the subsystem matches
+    the cloud mark; other MCMs untouched.
+  - **I15 L2/FV-propagation** — field `L2CellValues` row converges to cloud
+    value+version; an **older**-version cloud echo never clobbers a locally-newer
+    cell (the LWW negative case).
+  - **I16 estop-def-propagation** — field `EStopZones` for the edited subsystem
+    converges; **other MCMs' zones are NOT wiped** (the legacy global
+    `/api/cloud/pull-estop` wipes globally vs. the per-MCM scoped pull — pin which
+    path runs so a cross-MCM wipe reds the build).
+  - **I17 network-propagation** — field `NetworkRings/Nodes/Ports` converge for the
+    subsystem; cascade leaves no orphan ports; no cross-MCM wipe.
+- **Seeder need** — cloud-stage must carry **distinct per-MCM** L2 cells, e-stop
+  trees, and network rings (today it has none/!per-MCM), and a mutation injector
+  to emit each edit. This is the same "seed cloud-stage with per-MCM L2" item in
+  Part 3 #2, generalized to all four data types.
+
+Until `crud-propagation` runs green, the live cloud→field delivery of these data
+types is **unit-proven (the merge/pull logic) but not integration-gated** — state
+that honestly in any release note. The push direction for L2/FV is unit-gated;
+its multi-MCM drain-to-cloud is still the Part 3 #2 item.
