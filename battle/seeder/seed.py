@@ -436,11 +436,144 @@ def gen_cloud_seed(cur, names: dict[int, str] | None = None) -> None:
     lines.append("SELECT setval(pg_get_serial_sequence('projects','id'), (SELECT MAX(id) FROM projects));")
     lines.append("COMMIT;")
 
+    # ── crud-propagation seed (I14-I17) ────────────────────────────────────
+    # Distinct per-MCM cloud-stage rows for the four CRUD/definition data types
+    # the field PULLS (VFD ADDRESSED blocker, L2/FV cell, e-stop zone tree,
+    # network ring). The cloud-mutator (crud-propagation scenario) edits these;
+    # the observer drives the field's pull and asserts arrival (report-only).
+    # Idempotent (ON CONFLICT DO NOTHING) so a re-seed is safe. Appended as its
+    # own transaction so a schema mismatch here can't corrupt the IO seed above.
+    gen_crud_seed(lines, subs, names or {})
+
     os.makedirs(os.path.dirname(CLOUD_SQL_OUT), exist_ok=True)
     with open(CLOUD_SQL_OUT, "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"seeder: wrote {CLOUD_SQL_OUT}: project 1 (api_key set), "
-          f"{len(subs)} subsystem(s), {len(ios)} ios")
+          f"{len(subs)} subsystem(s), {len(ios)} ios, + crud-propagation seed (I14-I17)")
+
+
+# Fixed cloud-stage ids for the crud-propagation seed. Kept FAR above the field
+# id space (which the IO seed mirrors 1:1) so they never collide with real rows.
+# Per-MCM rows are offset by subsystemId so every MCM gets DISTINCT targets and a
+# cross-MCM wipe (I16/I17) is detectable.
+CRUD_BASE = 9_000_000
+
+
+def gen_crud_seed(lines: list, subs: list, names: dict) -> None:
+    """Emit the per-MCM cloud-stage seed for I14-I17. Each subsystem gets:
+      - a Device + VfdCommissioningBlocker (so a mechanic can mark ADDRESSED),
+      - an L2 template/sheet/column/device/cell (so a cell value can be edited),
+      - an e-stop zone→epc tree (so a zone/EPC can be edited),
+      - a network ring→node→port chain (so a ring/port can be edited).
+    Postgres table/column names are the Prisma @@map/@map names in
+    commissioning-cloud/prisma/schema.prisma. All inserts are ON CONFLICT DO
+    NOTHING and wrapped in their own transaction.
+
+    NOTE (TODO-verify-on-soak): exact column lists/NOT-NULL constraints are taken
+    from the schema at authoring time and have NOT been run against a live
+    cloud-stage Postgres. A column/constraint drift will surface as a psql error
+    in the seeder log on the first soak — treat that as the validation step.
+    """
+    lines.append("")
+    lines.append("-- ── crud-propagation per-MCM seed (I14-I17) ──")
+    lines.append("BEGIN;")
+    # One shared L2 template + sheet + column for the project (templates/sheets/
+    # columns are project-global; devices + cells are per-MCM).
+    tpl = CRUD_BASE
+    sheet = CRUD_BASE
+    col = CRUD_BASE
+    lines.append(
+        "INSERT INTO l2_templates (id, project_id, name, version) "
+        f"VALUES ({tpl}, 1, 'BATTLE CRUD TEMPLATE', 1) ON CONFLICT (id) DO NOTHING;"
+    )
+    lines.append(
+        "INSERT INTO l2_sheets (id, template_id, name, display_name, display_order, discipline, device_count) "
+        f"VALUES ({sheet}, {tpl}, 'APF', 'APF', 0, 'VFD', 0) ON CONFLICT (id) DO NOTHING;"
+    )
+    # A progress-counted, editable text column the mutator can set a value on.
+    lines.append(
+        "INSERT INTO l2_columns (id, sheet_id, name, column_type, input_type, display_order, "
+        "is_system, is_editable, include_in_progress, is_required) "
+        f"VALUES ({col}, {sheet}, 'Direction', 'text', 'text', 0, false, true, true, false) "
+        "ON CONFLICT (id) DO NOTHING;"
+    )
+    for sid in subs:
+        sid = int(sid)
+        off = CRUD_BASE + sid
+        sub_name = (names or {}).get(sid, "MCM02")
+        dev = off          # Device.id (shared/devices) + L2Device.id
+        l2dev = off
+        cell = off
+        ring = off
+        node = off
+        port = off
+        zone = off
+        epc = off
+        bn = sql_str(f"CBT_CRUD_{sid}_VFD")  # belt/device name keyed per MCM
+
+        # 1) Device + VfdCommissioningBlocker (ADDRESSED starts NULL = not yet
+        #    addressed; the mutator stamps addressed_at/by → I14 expects it).
+        lines.append(
+            "INSERT INTO \"Devices\" (\"Id\", \"Name\", \"ProjectId\", \"NewOrExisting\", \"DeviceType\") "
+            f"VALUES ({dev}, {bn}, 1, 0, 'VFD') ON CONFLICT (\"Id\") DO NOTHING;"
+        )
+        lines.append(
+            "INSERT INTO \"VfdCommissioningBlocker\" (device_id, subsystem_id, device_name, "
+            "responsible_party, description, updated_at) "
+            f"VALUES ({dev}, {sid}, {bn}, 'Mechanical', 'battle crud blocker', now()) "
+            "ON CONFLICT (device_id) DO NOTHING;"
+        )
+
+        # 2) L2 device + cell (subsystem name match drives the field pull's
+        #    device filter; set both mcm + subsystem to the MCM name).
+        lines.append(
+            "INSERT INTO l2_devices (id, sheet_id, device_name, mcm, subsystem, display_order, "
+            "completed_checks, total_checks) "
+            f"VALUES ({l2dev}, {sheet}, {bn}, {sql_str(sub_name)}, {sql_str(sub_name)}, 0, 0, 1) "
+            "ON CONFLICT (id) DO NOTHING;"
+        )
+        lines.append(
+            "INSERT INTO l2_cell_values (id, device_id, column_id, value, version, updated_at) "
+            f"VALUES ({cell}, {l2dev}, {col}, 'Forward', 1, now()) ON CONFLICT (id) DO NOTHING;"
+        )
+
+        # 3) E-stop zone → epc (per MCM; I16 asserts OTHER MCMs survive a pull).
+        lines.append(
+            "INSERT INTO estop_zones (id, subsystem_id, name) "
+            f"VALUES ({zone}, {sid}, {sql_str(f'CRUD_ZONE_{sid}')}) ON CONFLICT (id) DO NOTHING;"
+        )
+        lines.append(
+            "INSERT INTO estop_epcs (id, zone_id, name, check_tag) "
+            f"VALUES ({epc}, {zone}, {sql_str(f'CRUD_EPC_{sid}')}, {sql_str(f'CRUD_EPC_{sid}_Check')}) "
+            "ON CONFLICT (id) DO NOTHING;"
+        )
+
+        # 4) Network ring → node → port (per MCM).
+        lines.append(
+            "INSERT INTO network_rings (id, subsystem_id, name, mcm_name) "
+            f"VALUES ({ring}, {sid}, {sql_str(f'CRUD_RING_{sid}')}, {sql_str(sub_name)}) "
+            "ON CONFLICT (id) DO NOTHING;"
+        )
+        lines.append(
+            "INSERT INTO network_nodes (id, ring_id, name, position, total_ports) "
+            f"VALUES ({node}, {ring}, {sql_str(f'CRUD_NODE_{sid}')}, 0, 28) ON CONFLICT (id) DO NOTHING;"
+        )
+        lines.append(
+            "INSERT INTO network_ports (id, node_id, port_number, device_name) "
+            f"VALUES ({port}, {node}, '1', {sql_str(f'CRUD_PORT_{sid}')}) ON CONFLICT (id) DO NOTHING;"
+        )
+
+    # Keep sequences ahead of our explicit crud ids so admin/API inserts don't
+    # collide. (Best-effort: tables the cloud-stage may lack are guarded by the
+    # transaction; a missing table aborts only THIS block, logged by psql.)
+    for tbl in ("l2_templates", "l2_sheets", "l2_columns", "l2_devices",
+                "l2_cell_values", "estop_zones", "estop_epcs", "network_rings",
+                "network_nodes", "network_ports"):
+        lines.append(
+            f"SELECT setval(pg_get_serial_sequence('{tbl}','id'), "
+            f"GREATEST((SELECT MAX(id) FROM {tbl}), 1));"
+        )
+    lines.append("COMMIT;")
 
 
 if __name__ == "__main__":

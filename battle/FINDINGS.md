@@ -4,6 +4,42 @@ Living log of what the battle environment has found. The environment's job is
 to **reproduce, in an automated soak, the bug classes that have hit the field**
 — and then catch their regressions forever.
 
+## crud-propagation scenario + I14-I17 authored (2026-06-27) — REPORT-ONLY, PENDING first soak
+
+Closes the live cloud→field propagation gap for the four data types the field
+**pulls** (not the result path): VFD **ADDRESSED** blocker, **L2/FV** cell,
+**e-stop** zone tree, **network** ring/port (TEST-COVERAGE.md Part 4). Authored
+**on a machine with no Docker — NOT yet run.** All four invariants are
+**REPORT-ONLY** (recorded in `verdict.json`, never gate) until proven green ×2 on
+a real soak (skill rule #4).
+
+- `battle/ci/run_scenario.sh` — new `crud-propagation` case: `MUTATE_MODE=crud`,
+  `COMPOSE_PROFILES=mutate`, `HOT_FRACTION=0` (drained queue so the scoped pull
+  fires), light cloud flap, 4 bots. Modeled on `mutate`/`delta`.
+- `battle/cloud-mutator/mutate.sh` — new `crud_loop`: raw-psql edits keyed to the
+  seeder's per-MCM CRUD rows (mark blocker ADDRESSED; bump an L2 cell
+  value+version strictly newer than seed v1; rename an e-stop zone; rename a
+  network ring + port). Per-kind `mode:"crud"` journal lines so the observer
+  knows the exact value/version to expect.
+- `battle/seeder/seed.py` — new `gen_crud_seed`: distinct per-MCM cloud-stage rows
+  (Device+VfdCommissioningBlocker, L2 template/sheet/column/device/cell, e-stop
+  zone→epc, network ring→node→port) at fixed ids `9_000_000 + subsystemId`.
+- `battle/observer/probe.py` — `check_i14..check_i17`, mirroring the I11/I12
+  mechanism (parse journal → POST the tool's real local pull endpoint → poll the
+  tool's local SQLite → compare). I15 includes the LWW-older-echo observation
+  (full e2e older-echo needs the SSE path — see note). I16/I17 snapshot OTHER
+  MCMs' zone/ring counts before/after to catch a cross-MCM wipe (the legacy
+  `pull-estop` does a GLOBAL `DELETE FROM EStopZones`).
+
+Syntax-checked clean (`py_compile` ×2, `sh -n` ×2). **TODO-verify-on-soak:**
+(1) cloud-stage Postgres column lists/NOT-NULL for the 6 seeded tables are taken
+from the cloud Prisma schema, not run — a drift surfaces as a psql error in the
+seeder log; (2) the four field pull endpoints are driven by the observer over
+HTTP (SQL-mode edits fire no SSE hint) — confirm they exist + accept these
+bodies; (3) I16/I17 cross-MCM wipe is only observable on a MULTI-MCM run (single
+MCM → vacuously []); (4) I15's older-echo negative case is contract-observed
+here, fully exercised by the `l2-fv-sync-coverage.test.ts` unit test.
+
 ## Orphan-result reconciler + backup-churn fix (2026-06-22) — code done, battle scenario PENDING image rebuild
 
 **Problem (field report).** After a long offline stint / flapping link, operators

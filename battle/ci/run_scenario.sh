@@ -234,6 +234,23 @@ case "$SCENARIO" in
         export CLOUD_NODE_ENV=development
         export CLOUD_DEV_BYPASS=true
         export HOT_FRACTION=0 ;;                       # light queue → propagation observable
+    crud-propagation)                                 # cloud→field CRUD/DEFINITION propagation
+        # The four data types the field PULLS (not the result path): VFD
+        # ADDRESSED blocker, L2/FV cell, e-stop zone/EPC, network ring/port.
+        # Mirrors `mutate`/`delta`: cloud-mutator profile on, drained queue
+        # (HOT_FRACTION=0) so the scoped pull fires. Raw-SQL edits (MUTATE_MODE=
+        # crud) keyed to the seeder's per-MCM CRUD rows; the observer drives the
+        # field's local pull endpoints and asserts arrival (I14-I17, REPORT-ONLY).
+        # A light cloud flap gives the SSE-reconnect catch-up a chance to fire
+        # the vfd-addressed pull on its own, but I14-I17 don't depend on it —
+        # the observer forces each pull deterministically.
+        export COMPOSE_PROFILES=mutate
+        export MUTATE_MODE=crud
+        export MUTATE_PERIOD_SEC="${MUTATE_PERIOD_SEC:-60}"
+        export CLOUD_FLAP="${CLOUD_FLAP:-4,12}"; export FLAP_BUDGET=60
+        export BOTS="${BOTS:-4}"
+        export HOT_FRACTION=0
+        export THINK_MIN_MS=700; export THINK_MAX_MS=3000 ;;
     *) echo "unknown scenario $SCENARIO" >&2; exit 2 ;;
 esac
 

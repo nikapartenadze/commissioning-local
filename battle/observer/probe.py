@@ -673,6 +673,301 @@ def check_cold_start_cursor() -> dict:
     return {"pass": max_seq > 0, "max_cursor": max_seq}
 
 
+# ── crud-propagation (I14-I17, REPORT-ONLY) ──────────────────────────────────
+# The four data types the field PULLS (definition/CRUD, NOT the result path):
+# VFD ADDRESSED blocker, L2/FV cell, e-stop zone tree, network ring. The
+# cloud-mutator (MUTATE_MODE=crud) edits each on cloud-stage Postgres and writes
+# a per-kind line to cloud-mutations.jsonl; here we DRIVE the field's scoped pull
+# (its real local HTTP endpoints) then read the tool's local SQLite and compare
+# to the latest cloud edit. Mirrors the I11/I12 mechanism exactly:
+# parse-journal → trigger → poll local DB → compare. REPORT-ONLY (skill rule #4).
+
+
+def _crud_mutations(kind: str) -> list[dict]:
+    """All crud-mode mutator journal rows of one `kind`, in emit order."""
+    out: list[dict] = []
+    p = os.path.join(RUNS_DIR, RUN_ID, "cloud-mutations.jsonl")
+    if not os.path.exists(p):
+        return out
+    for line in open(p, errors="replace"):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("mode") == "crud" and e.get("kind") == kind:
+            out.append(e)
+    return out
+
+
+def _latest_crud_per_subsystem(kind: str) -> dict[int, dict]:
+    """The LAST crud edit of `kind` per subsystem (the value the field must hold
+    after a converged pull). Keyed by subsystemId."""
+    latest: dict[int, dict] = {}
+    for e in _crud_mutations(kind):
+        try:
+            sid = int(e.get("subsystemId"))
+        except (TypeError, ValueError):
+            continue
+        latest[sid] = e  # journal is append-order → last wins
+    return latest
+
+
+def _tool_post(path: str, body: dict | None = None, timeout: float = 60.0) -> bool:
+    """POST to one of the tool's local pull endpoints (drives the field's scoped
+    pull deterministically — the SQL-mode mutator fires no SSE hint, so we
+    trigger the same way I7 forces a reconnect). True on a 2xx."""
+    data = None
+    headers = {}
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"{TOOL_URL}{path}", data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            r.read()
+            return 200 <= r.status < 300
+    except urllib.error.HTTPError as e:
+        print(f"observer: tool POST {path} -> HTTP {e.code}")
+        return False
+    except Exception as e:
+        print(f"observer: tool POST {path} failed: {e}")
+        return False
+
+
+def _local_query(sql: str, params: tuple = ()) -> list[tuple]:
+    """Read the tool's local SQLite (read-only mount). [] on any failure."""
+    db_path = os.path.join(DATA_DIR, "database.db")
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+        try:
+            return list(con.execute(sql, params))
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        print(f"observer: local query failed: {e}")
+        return []
+
+
+def check_i14_vfd_addressed() -> dict:
+    """I14 — a belt VFD marked ADDRESSED on the cloud reaches the field's
+    VfdAddressed mirror; other MCMs untouched. Drives the field's
+    /api/vfd-commissioning/refresh-addressed pull per subsystem."""
+    latest = _latest_crud_per_subsystem("vfd_addressed")
+    if not latest:
+        return {"pass": True, "checked": 0, "note": "no vfd_addressed mutations"}
+    for sid in latest:
+        _tool_post("/api/vfd-commissioning/refresh-addressed", {"subsystemId": sid})
+    missing: list[dict] = []
+    for _ in range(18):  # ~3 min
+        missing = []
+        for sid, e in latest.items():
+            dev = e.get("key")
+            rows = _local_query(
+                "SELECT Addressed FROM VfdAddressed WHERE SubsystemId=? AND DeviceName=?",
+                (sid, dev),
+            )
+            if not rows or int(rows[0][0]) != 1:
+                missing.append({"subsystem": sid, "device": dev})
+        if not missing:
+            break
+        for sid in latest:
+            _tool_post("/api/vfd-commissioning/refresh-addressed", {"subsystemId": sid})
+        time.sleep(10)
+    return {
+        "pass": len(missing) == 0,
+        "checked": len(latest),
+        "not_propagated": len(missing),
+        "missing_samples": missing[:10],
+    }
+
+
+def check_i15_l2_cell() -> dict:
+    """I15 — an L2/FV cell edited on the cloud (newer version) converges in the
+    field's L2CellValues; an OLDER-version cloud echo must NOT clobber a
+    locally-newer cell (the LWW negative case). Drives /api/cloud/pull-l2.
+
+    The cloud cell id == the field's CloudCellId (the seeder mirrors ids). We
+    locate the local cell by CloudCellId and compare Value+Version."""
+    latest = _latest_crud_per_subsystem("l2_cell")
+    cfg = _read_local_config()
+    remote = cfg.get("remoteUrl") or CLOUD_URL
+    api_key = cfg.get("apiPassword") or CLOUD_API_KEY
+    if not latest:
+        return {"pass": True, "checked": 0, "note": "no l2_cell mutations"}
+    for sid in latest:
+        _tool_post("/api/cloud/pull-l2", {"remoteUrl": remote, "apiPassword": api_key, "subsystemId": sid})
+    not_conv: list[dict] = []
+    for _ in range(18):
+        not_conv = []
+        for sid, e in latest.items():
+            cloud_cell_id = e.get("key")
+            want_val, want_ver = e.get("value"), int(e.get("version", 0))
+            rows = _local_query(
+                "SELECT Value, Version FROM L2CellValues WHERE CloudCellId=?",
+                (cloud_cell_id,),
+            )
+            if not rows or rows[0][0] != want_val or int(rows[0][1]) < want_ver:
+                not_conv.append({"subsystem": sid, "cloud_cell_id": cloud_cell_id,
+                                 "want": want_val, "want_ver": want_ver,
+                                 "have": (rows[0] if rows else None)})
+        if not not_conv:
+            break
+        for sid in latest:
+            _tool_post("/api/cloud/pull-l2", {"remoteUrl": remote, "apiPassword": api_key, "subsystemId": sid})
+        time.sleep(10)
+
+    # Negative case: an OLDER cloud echo must not clobber a locally-newer cell.
+    # We assert it on the merge SQL's contract (version-gated LWW): take the
+    # converged local cell, prove its Version is >= the cloud version we last
+    # saw — i.e. a stale-version cloud value can never have overwritten it.
+    # NOTE (TODO-verify-on-soak): a true end-to-end negative drive would require
+    # the mutator to push an OLDER version AND a live SSE l2_cell_updated echo
+    # (the destructive pull-l2 ignores versions — it wholesale-replaces). That
+    # SSE-echo path is exercised by the unit test l2-fv-sync-coverage.test.ts;
+    # here we record the contract observation rather than fake it via the
+    # version-blind pull. Reported, never gated.
+    lww_ok = True
+    lww_detail: list[dict] = []
+    for sid, e in latest.items():
+        cloud_cell_id = e.get("key")
+        want_ver = int(e.get("version", 0))
+        rows = _local_query("SELECT Version FROM L2CellValues WHERE CloudCellId=?", (cloud_cell_id,))
+        if rows and int(rows[0][0]) < want_ver:
+            lww_ok = False
+            lww_detail.append({"cloud_cell_id": cloud_cell_id, "local_ver": int(rows[0][0]), "cloud_ver": want_ver})
+    return {
+        "pass": len(not_conv) == 0,
+        "checked": len(latest),
+        "not_converged": len(not_conv),
+        "lww_older_echo_no_clobber": lww_ok,
+        "lww_negative_case": "contract-observed (full e2e older-echo needs SSE path; see note + unit test)",
+        "not_converged_samples": not_conv[:10],
+        "lww_detail": lww_detail[:5],
+    }
+
+
+def check_i16_estop() -> dict:
+    """I16 — an e-stop zone edited on the cloud converges in the field's
+    EStopZones for that subsystem AND other MCMs' zones are NOT wiped. The
+    legacy /api/cloud/pull-estop does `DELETE FROM EStopZones` GLOBALLY — so on
+    a multi-MCM run a single pull would wipe every other MCM's zones. We snapshot
+    OTHER subsystems' zone counts before/after to catch exactly that."""
+    latest = _latest_crud_per_subsystem("estop_zone")
+    if not latest:
+        return {"pass": True, "checked": 0, "note": "no estop_zone mutations"}
+    edited_sids = set(latest)
+    # Baseline: zone count for OTHER (non-edited) subsystems before any pull.
+    before = {}
+    for (sid, c) in _local_query("SELECT SubsystemId, COUNT(*) FROM EStopZones GROUP BY SubsystemId"):
+        if sid is not None and int(sid) not in edited_sids:
+            before[int(sid)] = int(c)
+
+    for sid in latest:
+        _tool_post("/api/cloud/pull-estop")  # reads config's subsystemId
+    converged: list[dict] = []
+    for _ in range(18):
+        converged = []
+        for sid, e in latest.items():
+            want_name = e.get("value")
+            rows = _local_query(
+                "SELECT 1 FROM EStopZones WHERE SubsystemId=? AND Name=?", (sid, want_name))
+            if not rows:
+                converged.append({"subsystem": sid, "want_zone": want_name})
+        if not converged:
+            break
+        for sid in latest:
+            _tool_post("/api/cloud/pull-estop")
+        time.sleep(10)
+
+    after = {}
+    for (sid, c) in _local_query("SELECT SubsystemId, COUNT(*) FROM EStopZones GROUP BY SubsystemId"):
+        if sid is not None and int(sid) not in edited_sids:
+            after[int(sid)] = int(c)
+    cross_wipes = [
+        {"subsystem": sid, "before": before[sid], "after": after.get(sid, 0)}
+        for sid in before if after.get(sid, 0) < before[sid]
+    ]
+    return {
+        # Report-only: the global-DELETE cross-MCM wipe is a KNOWN hazard of the
+        # legacy route; on a single-MCM run `before` is empty so cross_wipes is
+        # vacuously []. Pin the path on a multi-MCM soak to make a wipe show up.
+        "pass": len(converged) == 0 and len(cross_wipes) == 0,
+        "checked": len(latest),
+        "not_converged": len(converged),
+        "cross_mcm_wipes": len(cross_wipes),
+        "cross_wipe_detail": cross_wipes[:10],
+        "other_mcms_observed": len(before),
+        "not_converged_samples": converged[:10],
+    }
+
+
+def check_i17_network() -> dict:
+    """I17 — a network ring edited on the cloud converges in the field's
+    NetworkRings for that subsystem; the cascade leaves no orphan ports and no
+    cross-MCM wipe (pull-network DELETEs only WHERE SubsystemId = this one).
+    Drives /api/cloud/pull-network."""
+    latest = _latest_crud_per_subsystem("network_ring")
+    if not latest:
+        return {"pass": True, "checked": 0, "note": "no network_ring mutations"}
+    edited_sids = set(latest)
+    before = {}
+    for (sid, c) in _local_query(
+        "SELECT SubsystemId, COUNT(*) FROM NetworkRings GROUP BY SubsystemId"):
+        if sid is not None and int(sid) not in edited_sids:
+            before[int(sid)] = int(c)
+
+    for sid in latest:
+        _tool_post("/api/cloud/pull-network")  # reads config's subsystemId
+    converged: list[dict] = []
+    for _ in range(18):
+        converged = []
+        for sid, e in latest.items():
+            want_name = e.get("value")
+            rows = _local_query(
+                "SELECT 1 FROM NetworkRings WHERE SubsystemId=? AND Name=?", (sid, want_name))
+            if not rows:
+                converged.append({"subsystem": sid, "want_ring": want_name})
+        if not converged:
+            break
+        for sid in latest:
+            _tool_post("/api/cloud/pull-network")
+        time.sleep(10)
+
+    # Orphan ports: a port whose node no longer exists (cascade left a dangling
+    # row). Should always be 0 after a clean cascade-replace.
+    orphans = _local_query(
+        "SELECT COUNT(*) FROM NetworkPorts WHERE NodeId NOT IN (SELECT id FROM NetworkNodes)")
+    orphan_ports = int(orphans[0][0]) if orphans else -1
+    after = {}
+    for (sid, c) in _local_query(
+        "SELECT SubsystemId, COUNT(*) FROM NetworkRings GROUP BY SubsystemId"):
+        if sid is not None and int(sid) not in edited_sids:
+            after[int(sid)] = int(c)
+    cross_wipes = [
+        {"subsystem": sid, "before": before[sid], "after": after.get(sid, 0)}
+        for sid in before if after.get(sid, 0) < before[sid]
+    ]
+    return {
+        "pass": len(converged) == 0 and orphan_ports == 0 and len(cross_wipes) == 0,
+        "checked": len(latest),
+        "not_converged": len(converged),
+        "orphan_ports": orphan_ports,
+        "cross_mcm_wipes": len(cross_wipes),
+        "cross_wipe_detail": cross_wipes[:10],
+        "other_mcms_observed": len(before),
+        "not_converged_samples": converged[:10],
+    }
+
+
+def _read_local_config() -> dict:
+    """The tool's /data/config.json (remoteUrl / apiPassword / subsystemId)."""
+    try:
+        with open(os.path.join(DATA_DIR, "config.json")) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def rss_slope_mb_per_h(samples: list[tuple[float, float, float]], skip_first_s: float) -> float | None:
     if not samples:
         return None
@@ -996,6 +1291,16 @@ def main() -> None:
             invariants["I11_delta_propagation"] = check_delta_propagation(mut_path)
             invariants["I12_delete_propagation"] = check_delete_propagation(mut_path)
             invariants["I13_cold_start_cursor"] = check_cold_start_cursor()
+        # crud-propagation scenario (MUTATE_MODE=crud): cloud→field DEFINITION/
+        # CRUD propagation for the four data types the field PULLS. The mutator
+        # writes per-kind `mode:"crud"` journal rows; if none are present these
+        # are no-op passes. REPORT-ONLY (see REPORT_ONLY below).
+        if _crud_mutations("vfd_addressed") or _crud_mutations("l2_cell") \
+                or _crud_mutations("estop_zone") or _crud_mutations("network_ring"):
+            invariants["I14_vfd_addressed_propagation"] = check_i14_vfd_addressed()
+            invariants["I15_l2_cell_propagation"] = check_i15_l2_cell()
+            invariants["I16_estop_def_propagation"] = check_i16_estop()
+            invariants["I17_network_propagation"] = check_i17_network()
 
     # I8 cloud live-channel (SSE) auth — only when a cloud is attached. Gates on
     # an HTTP 401/403 auth break (the 2026-06-16 MCM11 incident class), not on
@@ -1020,8 +1325,14 @@ def main() -> None:
     # gate. See FINDINGS B10.
     # I11/I12/I13 (delta-sync) start REPORT-ONLY until proven non-flaky across
     # two clean runs (skill rule #4); promote to gating once stable.
+    # I14-I17 (crud-propagation) start REPORT-ONLY too: new invariants must be
+    # proven green twice on a real soak before they gate (skill rule #4), and
+    # some carry TODO-verify-on-soak unknowns (exact cloud columns, the SSE-echo
+    # negative case for I15). Recorded in verdict.json, never affect the gate.
     REPORT_ONLY = {"I7_cloud_propagation", "I11_delta_propagation",
-                   "I12_delete_propagation", "I13_cold_start_cursor"}
+                   "I12_delete_propagation", "I13_cold_start_cursor",
+                   "I14_vfd_addressed_propagation", "I15_l2_cell_propagation",
+                   "I16_estop_def_propagation", "I17_network_propagation"}
     gating = {k: v for k, v in invariants.items() if k not in REPORT_ONLY}
     verdict = {
         "run": RUN_ID,
