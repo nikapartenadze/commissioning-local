@@ -58,8 +58,8 @@ frontend-verify:
     - npm ci
     # Advisory (non-blocking) — printed for visibility; a failure here never reds
     # the gate (matches cloud/tracker, which mark lint + typecheck allow_failure).
-    - npm run lint || echo "WARN: lint reported issues (advisory, non-blocking)"
-    - npx tsc --noEmit || echo "WARN: typecheck reported errors (advisory, non-blocking)"
+    - 'npm run lint || echo "WARN - lint reported issues (advisory, non-blocking)"'
+    - 'npx tsc --noEmit || echo "WARN - typecheck reported errors (advisory, non-blocking)"'
     # The HARD gate: all field-tool unit tests must pass.
     - npm test
   timeout: 20m
