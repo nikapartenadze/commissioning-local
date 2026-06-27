@@ -59,11 +59,19 @@ the `frontend-verify` job (`.gitlab-ci.yml`, `verify` stage): `npm test` is the
 hard gate; lint + typecheck advisory. Plain Node job (no DinD) so it doesn't hit
 the runner disk limit. Runs on every push / MR.
 
-### Gap 2 — System-under-test image is built by hand — ⛔ OPEN (needs §4)
-CI only *pulls* `tool:latest`; the shared `tracker-ci-dind` runner's DinD disk is
-too small to build it (pipelines 622/624 died on `/var/cache/apt`). So someone
-must run `battle/ci/build_and_push.sh` from a dev box, or **the nightly soaks a
-stale binary.** Fixed by adding a disk-rich runner (§4) + an auto-build job.
+### Gap 2 — System-under-test image is built by hand — 🟡 unblocked, auto-build pending
+CI only *pulls* `tool:latest`; someone must run `battle/ci/build_and_push.sh`
+from a dev box, or **the nightly soaks a stale binary.** The pipelines 622/624
+"disk full" failures had a concrete root cause, confirmed 2026-06-27 by SSH to
+the runner: the shared **ci-runner (VM 103, `.13`, 60 GB)** had **no docker GC** —
+3 projects' images + buildkit cache piled up until `/` hit **99–100%**, an outage
+for *all* CI on it (cloud + tracker deploys too), not just battle. **Fixed:** a
+tiered, guarded GC systemd timer (`/usr/local/bin/ci-runner-gc.sh` +
+`ci-runner-gc.timer`, hourly) — gentle prune ≥80%, removes unused images >24h when
+≥95%; age filters never touch an in-flight build. First run took `/` from
+**99% → 65%** (~20 GB freed). The runner now self-heals, so the heavy `tool`
+build fits in the existing 60 GB **without** a risky disk grow.
+**Remaining:** add the auto-build job (§4) so merge→main rebuilds+pushes the image.
 
 ### Gap 3 — Nothing tests the shipped installer/EXE — ⛔ OPEN (BLOCKER)
 Battle tests the *Docker image*, never the Windows NSIS installer / portable ZIP.
@@ -77,38 +85,34 @@ artifact that actually lands on tablets. This is the standing biggest gap in
 
 - **GitLab is enough** — it already hosts all three repos and runs real CI/CD for
   two. Do not switch platforms.
-- **The single shared `tracker-ci-dind` runner (runner 10) is NOT enough** — it's
-  disk-constrained (can't build heavy images) and shared with two apps' deploys,
-  so long soaks must run off-hours to avoid colliding with work-hours builds.
-- **Add ONE disk + CPU-rich GitLab runner VM** for two jobs: (a) auto-build the
-  heavy `tool`/`plc-sim` images on merge → main (kills Gap 2), and (b) run the
-  19-MCM `central-cdw5` soaks with headroom — the I1 perf "failures" were partly
-  one laptop running 19 sims + cloud + tool + bots, so a beefier host also
-  *improves fidelity*.
+- **You do NOT need a new VM right now — and you can't safely make one.** The
+  Proxmox thin pool `local-lvm` is at **94.4% used** (3.34 TB, ~191 GB free) as of
+  2026-06-27 — a 🔴 estate-wide risk (a thin pool hitting 100% can freeze/corrupt
+  *every* VM on it). Until it's reclaimed, **do not grow any VM disk or create a
+  large new VM.** The `docker-for-stream` cleanup candidate (150 GB) is already gone.
+- **The runner disk problem is fixed without more disk** — see Gap 2. The
+  ci-runner (`.13`) was hitting 100% purely from un-collected docker garbage; the
+  new hourly guarded GC timer keeps it healthy (now 65%/20 GB free), which is
+  enough to build the heavy `tool` image **provided the build job cleans up after
+  itself** (build → push → `rmi`/`buildx prune`).
+- **Order of operations:** (1) **reclaim the thin pool** — the owner's call on what
+  to delete (old PBS backup chains, stale VM disks/snapshots, unused volumes); this
+  is hard-to-reverse, so it is NOT automated here. (2) *Then*, if the 19-MCM
+  `central-cdw5` soak needs more CPU/RAM headroom for fidelity (the I1 perf
+  "failures" were partly one host running 19 sims + cloud + tool + bots), grow the
+  ci-runner (`qm resize 103 scsi0 +Ng` on pve → `growpart`/`pvresize`/`lvextend`/
+  `resize2fs` in the VM) or stand up a dedicated `build-heavy` runner. Both are
+  safe only *after* the pool is back under ~80%.
 
-### Runner VM runbook
+### Auto-build job (Gap 2) — ready to enable
 
-**Sizing:** ~8 vCPU / 16 GB RAM / **200 GB disk** (heavy multi-stage Docker
-builds + a 19-MCM soak that spins up 19 sims + cloud + tool concurrently).
-Could also register on the existing disk-rich `dockerhost`/`dh1`, but isolate it
-(separate runner, concurrency caps) so CI builds never contend with prod.
-
-**Register** (docker executor, privileged for DinD), tagged so only heavy jobs
-target it:
-```sh
-gitlab-runner register \
-  --url https://gitlab.lci.ge --registration-token <project-or-group-token> \
-  --executor docker --docker-image docker:27 --docker-privileged \
-  --tag-list build-heavy --description "build-soak-vm" --locked=false
-```
-
-**Then add the auto-build job** to `.gitlab-ci.yml` (kept out for now — it would
-hang with no runner to pick up the `build-heavy` tag). Copy-paste once the VM is
-registered:
+With the GC timer in place, this can run on the **existing** `tracker-ci-dind`
+runner (no new VM, no `build-heavy` tag needed) as long as it cleans up. Add to
+`.gitlab-ci.yml` (left out until you've watched it run green once so a heavy build
+doesn't collide with a cloud/tracker deploy on the shared runner):
 ```yaml
 build-tool-image:
   stage: prebuild
-  tags: [build-heavy]            # only the disk-rich VM
   image: docker:27
   services: [docker:27-dind]
   variables: { DOCKER_TLS_CERTDIR: "/certs" }
@@ -121,11 +125,15 @@ build-tool-image:
     - docker push "$CI_REGISTRY_IMAGE/tool:latest"
     - docker build -t "$CI_REGISTRY_IMAGE/plc-sim:latest" battle/plc-sim
     - docker push "$CI_REGISTRY_IMAGE/plc-sim:latest"
+  after_script:                  # keep the shared runner lean (Gap 2 root cause)
+    - docker rmi "$CI_REGISTRY_IMAGE/tool:latest" "$CI_REGISTRY_IMAGE/plc-sim:latest" || true
+    - docker buildx prune -f --filter until=24h || true
   timeout: 60m
 ```
 This replaces the manual `battle/ci/build_and_push.sh` step; the nightly then
-always pulls a fresh image. (Building `central`/`cloud-dev` images can stay on
-the branch/dev-box flow or get their own tagged jobs later.)
+always pulls a fresh image. The `after_script` cleanup + the GC timer keep the
+60 GB runner from re-accumulating. (Building `central`/`cloud-dev` images can stay
+on the branch/dev-box flow or get their own jobs later.)
 
 ## 5. Keeping coverage in step — the `coverage-keeper` skill
 
@@ -140,7 +148,11 @@ three buckets: now-covered / pending / not-covered-by-CI. Invoke with
 ## 6. Rollout order
 
 1. ✅ **Gap 1 — `frontend-verify` CI gate** (done; watch the first GitLab run go green).
-2. **Runner VM** (§4) → add `build-tool-image` → nightly soaks the real latest binary.
-3. **Gap 3 — installer/EXE smoke** (Windows runner + checklist) — the BLOCKER before
+2. ✅ **ci-runner disk-full root cause fixed** — guarded GC timer installed (Gap 2 unblocked).
+3. 🔴 **Reclaim the Proxmox thin pool** (94% → <80%) — estate-wide risk; owner-driven
+   (decide what's safe to delete). Prerequisite for ANY disk growth.
+4. **Enable `build-tool-image`** (§4) on the existing runner → nightly soaks the real
+   latest binary, no more hand-pushing. Watch the first run before relying on it.
+5. **Gap 3 — installer/EXE smoke** (Windows runner + checklist) — the BLOCKER before
    any site deploy; see `battle/TEST-COVERAGE.md` §F and Part 3.
-4. Per-feature: run `/coverage-keeper`; keep `battle/TEST-COVERAGE.md` honest.
+6. Per-feature: run `/coverage-keeper`; keep `battle/TEST-COVERAGE.md` honest.
