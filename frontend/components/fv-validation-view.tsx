@@ -546,9 +546,16 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   // clamp below only catches up on the *next* render. Without this guard,
   // `data.sheets[activeSheet]` returns undefined and the `.id` deref below
   // throws before the effect ever fires.
+  // On the Functional page (non-VFD mode) the VFD/APF sheet is intentionally
+  // hidden — it lives on the dedicated VFD tab — so the active sheet must be a
+  // NON-VFD sheet. Redirect off a VFD/APF sheet (or a stale/out-of-range index)
+  // to the first functional sheet.
+  const firstFvSheetIndex = data.sheets.findIndex(s => !vfdSheetIds.has(s.id))
   const safeActiveSheet = vfdMode
     ? (vfdSheetIndex >= 0 ? vfdSheetIndex : 0)
-    : (activeSheet >= 0 && activeSheet < data.sheets.length ? activeSheet : 0)
+    : (activeSheet >= 0 && activeSheet < data.sheets.length && !vfdSheetIds.has(data.sheets[activeSheet]?.id)
+        ? activeSheet
+        : (firstFvSheetIndex >= 0 ? firstFvSheetIndex : 0))
   // VFD mode but no VFD/APF sheet exists in the pulled L2 data.
   if (vfdMode && vfdSheetIndex < 0) {
     return (
@@ -833,8 +840,11 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       {!vfdMode && (
       <div className="flex gap-1 overflow-x-auto px-3 py-1.5 border-b shrink-0 bg-muted/30">
         {data.sheets.map((sheet, idx) => {
+          // The VFD/APF sheet is owned by the dedicated VFD tab — never list it
+          // as a Functional Validation sheet tab.
+          if (vfdSheetIds.has(sheet.id)) return null
           const stats = sheetStats[idx]
-          const isActive = idx === activeSheet
+          const isActive = idx === safeActiveSheet
           const isVfd = vfdSheetIds.has(sheet.id)
           return (
             <button
