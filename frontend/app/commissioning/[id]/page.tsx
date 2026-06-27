@@ -23,7 +23,6 @@ import NetworkTopologyView from "@/components/network-topology-view"
 import EStopCheckView from "@/components/estop-check-view"
 import SafetyIoView from "@/components/safety-io-view"
 import { FVValidationView } from "@/components/fv-validation-view"
-import { VfdCommissioningView } from "@/components/vfd-commissioning-view"
 import { ErrorLogPanel } from "@/components/error-log-panel"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Card } from "@/components/ui/card"
@@ -2246,11 +2245,15 @@ export default function CommissioningPage() {
         </div>
       ) : activeTab === 'vfd' ? (
         <div className="flex-1 min-h-0 overflow-hidden">
-          {/* VFD Commissioning self-loads its device list + blocked/addressed
-              state from /api/vfd-commissioning/state. subsystemId scopes the
-              wizard's PLC writes + the cloud ADDRESSED pull (route param, NOT the
-              singleton plcConfig — see the Network/EStop tabs above). */}
-          <VfdCommissioningView subsystemId={parseInt(paramId) || undefined} plcConnected={plcStatus.isConnected} />
+          {/* VFD Commissioning reuses the SAME typed FV grid (locked to the
+              VFD/APF sheet) via vfdMode, so pass/fail pills, numeric/text cells,
+              filters, search, virtualization and the wizard launch all match the
+              Functional Validation tab. vfdMode appends the read-only Blocked +
+              Addressed handoff columns (from /api/vfd-commissioning/state) and an
+              Addressed quick-filter. subsystemId scopes the wizard's PLC writes +
+              the cloud ADDRESSED pull (route param, NOT the singleton plcConfig —
+              see the Network/EStop tabs above). */}
+          <FVValidationView subsystemId={parseInt(paramId) || undefined} plcConnected={plcStatus.isConnected} vfdMode />
         </div>
       ) : activeTab === 'l2' ? (
         <div className="flex-1 min-h-0 overflow-hidden">

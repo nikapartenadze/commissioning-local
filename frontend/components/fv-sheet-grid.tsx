@@ -53,6 +53,22 @@ interface FVSheetGridProps {
   onOpenWizard?: (device: FVDevice) => void
   /** Message to show when devices array is empty */
   emptyMessage?: string
+  /**
+   * Synthetic, non-L2 columns appended after the real sheet columns. Used by the
+   * VFD view to bolt the read-only "Blocked" + "Addressed" handoff columns onto
+   * the reused FV typed grid without touching the L2 cell model. Each column owns
+   * its own width and a custom per-device renderer; the grid renders the header
+   * and a non-editable cell body for it just like a real column slot.
+   */
+  extraColumns?: ExtraColumn[]
+}
+
+/** A synthetic (non-L2) trailing column with a custom renderer. */
+export interface ExtraColumn {
+  key: string
+  label: string
+  width: number
+  render: (device: FVDevice) => React.ReactNode
 }
 
 const ROW_HEIGHT = 44
@@ -300,6 +316,7 @@ export function FVSheetGrid({
   isVfdSheet = false,
   onOpenWizard,
   emptyMessage,
+  extraColumns = [],
 }: FVSheetGridProps) {
   const allDevs = allDevices || devices
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -403,7 +420,8 @@ export function FVSheetGrid({
   }, [columns, containerWidth, totalFixed, widthOverrides])
 
   const totalScrollWidth = scrollColWidths.reduce((sum, w) => sum + w, 0)
-  const totalContentWidth = totalFixed + totalScrollWidth
+  const extraWidth = extraColumns.reduce((sum, c) => sum + c.width, 0)
+  const totalContentWidth = totalFixed + totalScrollWidth + extraWidth
 
   // ─── Resize starters ───────────────────────────────────────────────
 
@@ -668,6 +686,18 @@ export function FVSheetGrid({
                 </div>
               )
             })}
+
+            {/* Synthetic (non-L2) trailing column headers — e.g. VFD Blocked/Addressed */}
+            {extraColumns.map((ec) => (
+              <div
+                key={ec.key}
+                className="relative flex items-center px-2 text-xs font-semibold text-muted-foreground border-r shrink-0 select-none"
+                style={{ width: ec.width }}
+                title={ec.label}
+              >
+                <span className="truncate">{ec.label}</span>
+              </div>
+            ))}
           </div>
 
           {/* ── Virtualized rows ──────────────────────────────── */}
@@ -732,6 +762,17 @@ export function FVSheetGrid({
                       style={{ width: scrollColWidths[colIdx] }}
                     >
                       {renderCell(device, col)}
+                    </div>
+                  ))}
+
+                  {/* Synthetic (non-L2) trailing cells — custom-rendered */}
+                  {extraColumns.map((ec) => (
+                    <div
+                      key={ec.key}
+                      className="flex items-center px-2 text-xs border-r shrink-0 min-w-0"
+                      style={{ width: ec.width }}
+                    >
+                      {ec.render(device)}
                     </div>
                   ))}
                 </div>
