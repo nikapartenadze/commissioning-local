@@ -1,4 +1,7 @@
 {
+  "env": {
+    "ECC_GATEGUARD": "off"
+  },
   "permissions": {
     "allow": [
       "Bash(npx -y pg-connection-string --help)",

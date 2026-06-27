@@ -143,6 +143,29 @@ export function buildSteps(task: Task, ios: StepIo[] = [], ctx: BuildStepsContex
       break
     }
 
+    case 'firmware_check': {
+      // Hardware firmware gate. Pure prompt/confirm so it rides the existing
+      // runner paths (no new auto_detect verdict source needed): scan on the
+      // Firmware Compliance page, then confirm pass/fail. A live auto_detect
+      // verdict (poll /api/firmware) is a documented follow-on.
+      steps.push({
+        id: `${task.id}:scan`,
+        kind: 'info',
+        title: 'STEP 1: SCAN FIRMWARE',
+        instruction:
+          'Open Firmware Compliance and run a scan. The tool reads the controller and every networked device and checks each against the cloud-approved minimum version. Tap Continue once the scan has run.',
+      })
+      steps.push({
+        id: `${task.id}:confirm`,
+        kind: 'auto_detect',
+        title: 'STEP 2: CONFIRM COMPLIANCE',
+        instruction:
+          'The tool scans and shows a live verdict: every device must meet its approved minimum firmware (none flagged "Below minimum"). Confirm to record Pass, or Fail if any device is non-compliant.',
+        verdictSource: '/api/firmware',
+      })
+      break
+    }
+
     case 'network_loop': {
       const ringVerdict = ctx.ringVerdict ?? null
       const dpmsCommunicating = ctx.dpmsCommunicating ?? null
@@ -320,13 +343,21 @@ export function buildFunctionalSteps(
 export interface EstopEpcStep {
   name: string
   checkTag: string
+  /** PRELIMINARY (zone-stop) check result. */
   result: 'pass' | 'fail' | null
+  /** FINAL (selectivity) check result. */
+  finalResult: 'pass' | 'fail' | null
 }
 
 /**
  * E-Stop Verification, walked one EPC at a time (Guided Mode spec example:
  * make the zone nominal, then walk to each EPC, pull the cord, verify the
- * drop). Each EPC step polls the live auto-verdict and records pass/fail.
+ * drop). Dual-safety: each EPC is verified TWICE per pull — a PRELIMINARY
+ * (zone-stop / positive: this EPC's own drives go to STO) check and a FINAL
+ * (selectivity / negative: other zones keep running) check. The tester pulls
+ * the cord once, confirms the zone-stop verdict, then confirms the selectivity
+ * verdict. Each auto_detect step polls its own live verdict and records its
+ * own checkType. Only the checks still missing for an EPC are emitted.
  */
 export function buildEstopSteps(task: Task, zoneName: string, epcs: EstopEpcStep[]): Step[] {
   const steps: Step[] = []
@@ -337,13 +368,14 @@ export function buildEstopSteps(task: Task, zoneName: string, epcs: EstopEpcStep
     instruction:
       'Reset every EPC in this zone and confirm the zone is nominal (all conveyors able to run). Tap Continue when ready.',
   })
-  const pending = epcs.filter((e) => e.result == null)
+  // An EPC is pending while EITHER check is unrecorded.
+  const pending = epcs.filter((e) => e.result == null || e.finalResult == null)
   const list = pending.length > 0 ? pending : epcs
   for (const e of list) {
     // KK's worked example: "Zone nominal, walk to EPC1 (I'm There)" → verify →
     // "walk to EPC2 (I'm There)" → verify. Each EPC gets an explicit navigate
     // step carrying its deviceName so the map zooms to it, then the
-    // auto-detect verify step.
+    // auto-detect verify step(s).
     steps.push({
       id: `${task.id}:nav:${e.checkTag}`,
       kind: 'navigate',
@@ -354,18 +386,38 @@ export function buildEstopSteps(task: Task, zoneName: string, epcs: EstopEpcStep
       estopCheckTag: e.checkTag,
       estopEpcName: e.name,
     })
-    steps.push({
-      id: `${task.id}:epc:${e.checkTag}`,
-      kind: 'auto_detect',
-      title: `STEP ${steps.length + 1}: PULL ${e.name.toUpperCase()}`,
-      instruction: `Pull the cord at ${e.name}. The tool watches the safe-torque-off signals and shows the verdict; confirm to record it.`,
-      deviceName: e.name,
-      estopZone: zoneName,
-      estopCheckTag: e.checkTag,
-      estopEpcName: e.name,
-      verdictSource: '/api/estop/status',
-      verdictKey: e.checkTag,
-    })
+    // PRELIMINARY (zone-stop) — emit only if not yet recorded.
+    if (e.result == null) {
+      steps.push({
+        id: `${task.id}:epc:${e.checkTag}:preliminary`,
+        kind: 'auto_detect',
+        title: `STEP ${steps.length + 1}: PULL ${e.name.toUpperCase()} — ZONE STOP`,
+        instruction: `Pull the cord at ${e.name}. Verify THIS zone's drives go to safe-torque-off. The tool shows the verdict; confirm to record it.`,
+        deviceName: e.name,
+        estopZone: zoneName,
+        estopCheckTag: e.checkTag,
+        estopEpcName: e.name,
+        estopCheckType: 'preliminary',
+        verdictSource: '/api/estop/status',
+        verdictKey: e.checkTag,
+      })
+    }
+    // FINAL (selectivity) — emit only if not yet recorded.
+    if (e.finalResult == null) {
+      steps.push({
+        id: `${task.id}:epc:${e.checkTag}:final`,
+        kind: 'auto_detect',
+        title: `STEP ${steps.length + 1}: ${e.name.toUpperCase()} — SELECTIVITY`,
+        instruction: `With ${e.name} still pulled, verify OTHER zones keep running (only this zone stopped). The tool shows the selectivity verdict; confirm to record it.`,
+        deviceName: e.name,
+        estopZone: zoneName,
+        estopCheckTag: e.checkTag,
+        estopEpcName: e.name,
+        estopCheckType: 'final',
+        verdictSource: '/api/estop/status',
+        verdictKey: e.checkTag,
+      })
+    }
   }
   return steps
 }
