@@ -1,12 +1,12 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FVSheetGrid } from './fv-sheet-grid'
+import { FVSheetGrid, type ExtraColumn } from './fv-sheet-grid'
 import { FVOverviewMatrix } from './fv-overview-matrix'
 import { Badge } from '@/components/ui/badge'
 import { authFetch, getSignalRHubUrl } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
-import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter, Zap, Search, RefreshCw, AlertTriangle, CloudDownload } from 'lucide-react'
+import { Loader2, ClipboardCheck, Info, X, PanelRightClose, GripVertical, LayoutGrid, Table2, Download, Filter, Zap, Search, RefreshCw, AlertTriangle, CloudDownload, Wrench } from 'lucide-react'
 import { VfdWizardModal } from './vfd-wizard-modal'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
@@ -58,6 +58,25 @@ interface FVData {
 interface FVValidationViewProps {
   subsystemId?: number
   plcConnected?: boolean
+  /**
+   * VFD mode — repurposes this same typed FV grid as the VFD Commissioning tab.
+   * When on, the view locks to the VFD/APF sheet (no sheet tabs, no overview),
+   * appends the read-only Blocked + Addressed handoff columns sourced from
+   * /api/vfd-commissioning/state, and adds an "Addressed" quick-filter option.
+   * All typed-cell rendering, filters, search, virtualization and the wizard
+   * launch are reused unchanged.
+   */
+  vfdMode?: boolean
+}
+
+/** Per-device blocked/addressed annotations from /api/vfd-commissioning/state. */
+interface VfdAnnotation {
+  blocked: boolean
+  blockerParty: string | null
+  blockerReason: string | null
+  addressed: boolean
+  addressedBy: string | null
+  addressedAt: string | null
 }
 
 const COL_TYPE_STYLES: Record<string, string> = {
@@ -93,30 +112,43 @@ interface FVPersistedState {
   viewMode: 'sheets' | 'overview'
 }
 
-function loadFVState(subsystemId?: number): Partial<FVPersistedState> {
+// `scope` distinguishes persisted filter state per subsystem AND per mode, so the
+// VFD tab (vfdMode) never inherits the FV tab's sheet selection or its
+// VFD-only "addressed" quick-filter, and vice-versa.
+function fvStorageKey(scope: string): string {
+  return scope ? `${FV_STORAGE_KEY}-${scope}` : FV_STORAGE_KEY
+}
+
+function loadFVState(scope: string): Partial<FVPersistedState> {
   try {
-    const key = subsystemId ? `${FV_STORAGE_KEY}-${subsystemId}` : FV_STORAGE_KEY
-    const raw = localStorage.getItem(key)
+    const raw = localStorage.getItem(fvStorageKey(scope))
     if (!raw) return {}
     return JSON.parse(raw) as Partial<FVPersistedState>
   } catch { return {} }
 }
 
-function saveFVState(state: FVPersistedState, subsystemId?: number): void {
+function saveFVState(state: FVPersistedState, scope: string): void {
   try {
-    const key = subsystemId ? `${FV_STORAGE_KEY}-${subsystemId}` : FV_STORAGE_KEY
-    localStorage.setItem(key, JSON.stringify(state))
+    localStorage.setItem(fvStorageKey(scope), JSON.stringify(state))
   } catch { /* quota exceeded or private mode — ignore */ }
 }
 
-export function FVValidationView({ subsystemId, plcConnected = false }: FVValidationViewProps) {
+export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = false }: FVValidationViewProps) {
   const { currentUser } = useUser()
   const [data, setData] = useState<FVData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // VFD mode: per-device blocked/addressed annotations keyed by deviceName,
+  // merged onto the reused FV grid as the Blocked + Addressed columns.
+  const [vfdAnnotations, setVfdAnnotations] = useState<Map<string, VfdAnnotation>>(new Map())
+
+  // Persisted-state scope: per-subsystem AND per-mode so VFD and FV tabs keep
+  // independent sheet selection + filters.
+  const persistScope = `${vfdMode ? 'vfd-' : ''}${subsystemId ?? ''}`
+
   // Restore persisted state on mount
-  const _saved = useRef(loadFVState(subsystemId))
+  const _saved = useRef(loadFVState(persistScope))
   const [activeSheet, setActiveSheet] = useState(_saved.current.activeSheet ?? 0)
   const [showGuide, setShowGuide] = useState(false)
   const [viewMode, setViewMode] = useState<'sheets' | 'overview'>(_saved.current.viewMode ?? 'sheets')
@@ -134,7 +166,7 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
   // VFD wizard state — opened from either the VFD tab or the sheet grid
   const [wizardDevice, setWizardDevice] = useState<{ id: number; deviceName: string; mcm: string; subsystem: string; sheetName?: string } | null>(null)
 
-  type QuickFilter = "all" | "complete" | "incomplete" | "has_failures" | "all_passed"
+  type QuickFilter = "all" | "complete" | "incomplete" | "has_failures" | "all_passed" | "addressed"
   const [quickFilter, setQuickFilter] = useState<QuickFilter>((_saved.current.quickFilter as QuickFilter) ?? "all")
   const [columnFilters, setColumnFilters] = useState<Record<string, any>>(_saved.current.columnFilters ?? {})
   const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>(_saved.current.fixedFilters ?? { device: null, mcm: null, subsystem: null })
@@ -142,8 +174,8 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
 
   // Persist filter state whenever it changes
   useEffect(() => {
-    saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode }, subsystemId)
-  }, [activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, subsystemId])
+    saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode }, persistScope)
+  }, [activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, persistScope])
 
   // Detect narrow viewport (tablet)
   useEffect(() => {
@@ -187,8 +219,14 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
       // Scope to THIS MCM on a central server so the FV page shows the selected
       // subsystem's devices (not whichever MCM was pulled last). Omitted on a
       // single-MCM tablet (no subsystemId) → returns all, as before.
-      // Cache-bust to ensure we get fresh data after wizard writes.
-      const scope = subsystemId ? `subsystemId=${subsystemId}&` : ''
+      //
+      // VFD mode does NOT scope: /api/l2?subsystemId=N filters L2 devices by
+      // their owning subsystem, but the VFD/APF belts may be keyed to a different
+      // subsystem than the route :id (e.g. cloud set them to 38 while the page is
+      // /commissioning/16). Scoping would return the APF sheet with ZERO devices.
+      // The VFD tab wants every VFD/APF device regardless of the route id, so we
+      // omit the scope and let the VFD/APF sheet filter happen client-side.
+      const scope = (subsystemId && !vfdMode) ? `subsystemId=${subsystemId}&` : ''
       const res = await authFetch(`/api/l2?${scope}_t=${Date.now()}`)
       if (!res.ok) throw new Error(`Failed to fetch functional validation data: ${res.status}`)
       const json: FVData = await res.json()
@@ -205,7 +243,7 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
     } finally {
       setLoading(false)
     }
-  }, [subsystemId])
+  }, [subsystemId, vfdMode])
 
   const handleManualL2Pull = useCallback(async () => {
     setL2Pulling(true)
@@ -252,7 +290,52 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
     }
   }, [subsystemId, fetchData])
 
+  // VFD mode: load per-device blocked/addressed annotations from the dedicated
+  // VFD state endpoint and key them by deviceName for an O(1) merge in the grid.
+  const loadVfdAnnotations = useCallback(async () => {
+    if (!vfdMode) return
+    try {
+      const res = await authFetch('/api/vfd-commissioning/state')
+      if (!res.ok) return
+      const json = await res.json()
+      const map = new Map<string, VfdAnnotation>()
+      for (const row of (json.states || [])) {
+        if (!row.deviceName) continue
+        map.set(row.deviceName, {
+          blocked: Boolean(row.blocked),
+          blockerParty: row.blockerParty ?? null,
+          blockerReason: row.blockerReason ?? null,
+          addressed: Boolean(row.addressed),
+          addressedBy: row.addressedBy ?? null,
+          addressedAt: row.addressedAt ?? null,
+        })
+      }
+      setVfdAnnotations(map)
+    } catch { /* best-effort; columns simply show "—" */ }
+  }, [vfdMode])
+
   useEffect(() => { fetchData() }, [fetchData])
+
+  // VFD mode: pull the cloud-authoritative ADDRESSED flag for this subsystem on
+  // open (so a tech sees what a mechanic just marked), then load annotations.
+  useEffect(() => {
+    if (!vfdMode) return
+    let cancelled = false
+    const run = async () => {
+      if (subsystemId && subsystemId > 0) {
+        try {
+          await authFetch('/api/vfd-commissioning/refresh-addressed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subsystemId }),
+          })
+        } catch { /* best-effort */ }
+      }
+      if (!cancelled) await loadVfdAnnotations()
+    }
+    run()
+    return () => { cancelled = true }
+  }, [vfdMode, subsystemId, loadVfdAnnotations])
 
   // Re-fetch FV data when switching back to sheets view (e.g. after using the
   // VFD wizard which writes cells directly via write-l2-cells endpoint).
@@ -454,12 +537,29 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
       sheetName: sheetNameById.get(d.SheetId) || '',
     }))
 
+  // VFD mode locks the view to the first VFD/APF sheet regardless of the
+  // persisted activeSheet (there are no sheet tabs to switch in this mode).
+  const vfdSheetIndex = vfdMode ? data.sheets.findIndex(s => vfdSheetIds.has(s.id)) : -1
+
   // Clamp at render time. The persisted `activeSheet` index can outlive its
   // data — e.g. switching subsystems shrinks `data.sheets` and the useEffect
   // clamp below only catches up on the *next* render. Without this guard,
   // `data.sheets[activeSheet]` returns undefined and the `.id` deref below
   // throws before the effect ever fires.
-  const safeActiveSheet = activeSheet >= 0 && activeSheet < data.sheets.length ? activeSheet : 0
+  const safeActiveSheet = vfdMode
+    ? (vfdSheetIndex >= 0 ? vfdSheetIndex : 0)
+    : (activeSheet >= 0 && activeSheet < data.sheets.length ? activeSheet : 0)
+  // VFD mode but no VFD/APF sheet exists in the pulled L2 data.
+  if (vfdMode && vfdSheetIndex < 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-3">
+        <Zap className="h-10 w-10 opacity-40" />
+        <p className="text-sm font-medium">No VFD/APF sheet in the pulled Functional Validation data</p>
+        <p className="text-xs">Pull from cloud to load the VFD/APF sheet.</p>
+      </div>
+    )
+  }
+
   const activeSheetData = data.sheets[safeActiveSheet]
   if (!activeSheetData) {
     return (
@@ -536,6 +636,9 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
       } else if (quickFilter === "all_passed") {
         const allPassed = pfCols.length > 0 && pfCols.every((c) => cellValues.get(`${device.id}-${c.id}`)?.Value === "pass")
         if (!allPassed) return false
+      } else if (quickFilter === "addressed") {
+        // VFD handoff: belts a mechanic marked addressed on the cloud (ready to re-run).
+        if (!vfdAnnotations.get(device.DeviceName)?.addressed) return false
       }
     }
 
@@ -554,6 +657,60 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
       sheetName: sheetNameById.get(activeSheetData.id) || '',
     })
   }
+
+  // VFD mode: read-only Blocked + Addressed handoff columns appended to the
+  // reused FV typed grid. Sourced from /api/vfd-commissioning/state (parsed
+  // Bump Blocker cell + cloud ADDRESSED mirror), merged by deviceName.
+  const vfdExtraColumns: ExtraColumn[] = vfdMode ? [
+    {
+      key: 'vfd-blocked',
+      label: 'Blocked',
+      width: 240,
+      render: (device) => {
+        const a = vfdAnnotations.get(device.DeviceName)
+        if (!a?.blocked) return <span className="text-muted-foreground/50">—</span>
+        return (
+          <span
+            className="inline-flex items-center gap-1 max-w-full text-[11px] text-amber-700 dark:text-amber-300"
+            title={`${a.blockerParty ? a.blockerParty + ': ' : ''}${a.blockerReason ?? 'Blocked'}`}
+          >
+            <AlertTriangle className="h-3 w-3 shrink-0" />
+            <span className="truncate">
+              {a.blockerParty ? <span className="font-semibold">{a.blockerParty}: </span> : null}
+              {a.blockerReason || 'Blocked'}
+            </span>
+          </span>
+        )
+      },
+    },
+    {
+      key: 'vfd-addressed',
+      label: 'Addressed',
+      width: 180,
+      render: (device) => {
+        const a = vfdAnnotations.get(device.DeviceName)
+        if (!a?.blocked || !a.addressed) return <span className="text-muted-foreground/50">—</span>
+        const stamp = (() => {
+          const parts: string[] = []
+          if (a.addressedAt) {
+            const d = new Date(a.addressedAt)
+            if (!isNaN(d.getTime())) parts.push(d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))
+          }
+          if (a.addressedBy) parts.push(a.addressedBy)
+          return parts.join(' · ')
+        })()
+        return (
+          <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-sky-100 text-sky-800 border border-sky-200 dark:bg-sky-900/40 dark:text-sky-200 dark:border-sky-800 max-w-full"
+            title={`Mechanic marked addressed${a.addressedBy ? ` by ${a.addressedBy}` : ''}${a.addressedAt ? ` on ${new Date(a.addressedAt).toLocaleString()}` : ''} — re-run the wizard`}
+          >
+            <Wrench className="h-3 w-3 shrink-0" />
+            <span className="truncate">Addressed{stamp ? ` · ${stamp}` : ''}</span>
+          </span>
+        )
+      },
+    },
+  ] : []
 
   const guideContent = (
     <>
@@ -627,20 +784,22 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
         <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
           <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${overallPercent}%` }} />
         </div>
-        <div className="flex items-center border rounded-md overflow-hidden h-9">
-          <button
-            className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'sheets' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
-            onClick={() => setViewMode('sheets')}
-          >
-            <Table2 className="h-3.5 w-3.5 inline mr-1.5" />Sheets
-          </button>
-          <button
-            className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'overview' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
-            onClick={() => setViewMode('overview')}
-          >
-            <LayoutGrid className="h-3.5 w-3.5 inline mr-1.5" />Overview
-          </button>
-        </div>
+        {!vfdMode && (
+          <div className="flex items-center border rounded-md overflow-hidden h-9">
+            <button
+              className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'sheets' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+              onClick={() => setViewMode('sheets')}
+            >
+              <Table2 className="h-3.5 w-3.5 inline mr-1.5" />Sheets
+            </button>
+            <button
+              className={cn("px-3 h-full text-sm font-medium transition-colors flex items-center", viewMode === 'overview' ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}
+              onClick={() => setViewMode('overview')}
+            >
+              <LayoutGrid className="h-3.5 w-3.5 inline mr-1.5" />Overview
+            </button>
+          </div>
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -664,13 +823,14 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
         </Button>
       </div>
 
-      {viewMode === 'overview' ? (
+      {(viewMode === 'overview' && !vfdMode) ? (
         <div className="flex-1 min-h-0">
           <FVOverviewMatrix />
         </div>
       ) : (
       <>
-      {/* Sheet tabs */}
+      {/* Sheet tabs — hidden in VFD mode (locked to the VFD/APF sheet) */}
+      {!vfdMode && (
       <div className="flex gap-1 overflow-x-auto px-3 py-1.5 border-b shrink-0 bg-muted/30">
         {data.sheets.map((sheet, idx) => {
           const stats = sheetStats[idx]
@@ -698,6 +858,7 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
           )
         })}
       </div>
+      )}
 
       {/* Search + quick filters */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b shrink-0">
@@ -733,6 +894,21 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
             </button>
           )
         })}
+        {vfdMode && (
+          <button
+            onClick={() => setQuickFilter(quickFilter === "addressed" ? "all" : "addressed")}
+            className={cn(
+              "rounded-md border px-2 py-1 text-[11px] font-medium transition-colors flex items-center gap-1",
+              quickFilter === "addressed"
+                ? "border-sky-500 bg-sky-500 text-white"
+                : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+            )}
+            title="Show only belts a mechanic addressed on the cloud (ready to re-run)"
+          >
+            <Wrench className="h-3 w-3" />
+            Addressed
+          </button>
+        )}
         {hasActiveFilters && (
           <button
             onClick={() => { setQuickFilter("all"); setColumnFilters({}); setFixedFilters({ device: null, mcm: null, subsystem: null }); setSearchQuery("") }}
@@ -772,6 +948,7 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
             onFixedFilterChange={(field, value) => setFixedFilters((p) => ({ ...p, [field]: value }))}
             isVfdSheet={isActiveSheetVfd}
             onOpenWizard={isActiveSheetVfd ? handleOpenWizardFromGrid : undefined}
+            extraColumns={vfdExtraColumns}
             emptyMessage={activeDevices.length === 0 ? "No devices in this sheet" : "No devices match the current filters"}
           />
         </div>
@@ -842,6 +1019,8 @@ export function FVValidationView({ subsystemId, plcConnected = false }: FVValida
             setWizardDevice(null)
             // Wizard may have written cells — refresh the grid.
             fetchData()
+            // VFD mode: a Bump Test failure may have set/cleared the blocker.
+            loadVfdAnnotations()
           }}
         />
       )}
