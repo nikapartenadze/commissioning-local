@@ -18,7 +18,51 @@
 #     https://gitlab.lci.ge/api/v4/projects/<id>/packages/generic/battle-seed/1/database.db
 # ============================================================================
 
-stages: [prebuild, battle]
+stages: [verify, prebuild, battle]
+
+# ── frontend-verify ───────────────────────────────────────────────────────────
+# Fast on-commit gate for the field tool. The 503 vitest unit tests are the HARD
+# gate (npm test); lint + typecheck run advisory (surfaced in the job log, never
+# fail the pipeline) — the same split commissioning-cloud and installation-tracker
+# use. Runs on every push / MR / web run.
+#
+# This is a PLAIN NODE job — NO Docker-in-Docker — so it does NOT touch the DinD
+# disk limit that forces the heavy tool/plc-sim images to be built off-runner. It
+# only does `npm ci` + vitest. Native deps: better-sqlite3 compiles from source
+# (python3/make/g++), ffi-rs ships prebuilt napi binaries; image is
+# node:20-trixie-slim to match the tool Dockerfile's glibc/ABI (frontend/Dockerfile).
+frontend-verify:
+  stage: verify
+  image: node:20-trixie-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  variables:
+    # Cache npm's download tarballs across runs (better-sqlite3 still recompiles,
+    # but dependency downloads are reused).
+    npm_config_cache: "$CI_PROJECT_DIR/.npm-cache"
+  cache:
+    key:
+      files:
+        - frontend/package-lock.json
+    paths:
+      - .npm-cache/
+  before_script:
+    - apt-get update
+      && apt-get install -y --no-install-recommends python3 make g++ ca-certificates
+      && rm -rf /var/lib/apt/lists/*
+  script:
+    - cd frontend
+    # prisma/ is present in the repo, so the npm postinstall `prisma generate` works.
+    - npm ci
+    # Advisory (non-blocking) — printed for visibility; a failure here never reds
+    # the gate (matches cloud/tracker, which mark lint + typecheck allow_failure).
+    - npm run lint || echo "WARN: lint reported issues (advisory, non-blocking)"
+    - npx tsc --noEmit || echo "WARN: typecheck reported errors (advisory, non-blocking)"
+    # The HARD gate: all field-tool unit tests must pass.
+    - npm test
+  timeout: 20m
 
 # ── refresh-cloud-image ──────────────────────────────────────────────────────
 # Copies the current prod commissioning-cloud image into THIS project's
