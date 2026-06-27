@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Cpu, Wifi, WifiOff, PlugZap, Plug, Power, Download, Settings, Users,
   DownloadCloud, Search, Loader2, Network, Hash, Tag, ArrowUpRight,
-  Save, CheckCircle2, XCircle, AlertTriangle, UploadCloud,
+  Save, CheckCircle2, XCircle, AlertTriangle, UploadCloud, ShieldCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -130,12 +130,15 @@ export default function McmLandingPage() {
               </Button>
             </div>
           )}
-          {canConfigure && (
-            <div className="flex items-center gap-0.5 border-l border-border pl-2 ml-1">
-              <Button asChild size="icon" variant="ghost" title="Accounts"><a href="/settings/users"><Users className="h-4 w-4" /></a></Button>
-              <Button asChild size="icon" variant="ghost" title="Configure"><a href="/settings/mcms"><Settings className="h-4 w-4" /></a></Button>
-            </div>
-          )}
+          <div className="flex items-center gap-0.5 border-l border-border pl-2 ml-1">
+            <Button asChild size="icon" variant="ghost" title="Firmware compliance"><a href="/firmware"><ShieldCheck className="h-4 w-4" /></a></Button>
+            {canConfigure && (
+              <>
+                <Button asChild size="icon" variant="ghost" title="Accounts"><a href="/settings/users"><Users className="h-4 w-4" /></a></Button>
+                <Button asChild size="icon" variant="ghost" title="Configure"><a href="/settings/mcms"><Settings className="h-4 w-4" /></a></Button>
+              </>
+            )}
+          </div>
           <ThemeToggle />
         </div>
         {fleetMsg && <div className="mx-auto max-w-7xl px-6 pb-2 -mt-1"><p className="text-xs text-muted-foreground">{fleetMsg}</p></div>}

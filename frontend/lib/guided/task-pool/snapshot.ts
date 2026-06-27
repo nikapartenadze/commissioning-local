@@ -4,6 +4,7 @@ import { readBundledSvg } from '@/app/api/maps/subsystem/[id]/route'
 import { isOutputIo, isSafetyOutput } from '@/lib/io-classification'
 import { classifyIoCircuit } from '@/lib/guided/io-check-sequence'
 import { deriveSystemRunning } from '@/lib/guided/system-running'
+import { getLastFirmwareScan } from '@/lib/plc/identity/firmware-service'
 import type {
   DataSnapshot,
   ManualTaskStatus,
@@ -55,6 +56,29 @@ function ringHealthNow(): 'healthy' | 'degraded' | 'unknown' | null {
   }
 }
 
+/**
+ * Firmware-compliance summary for the guided firmware-check gate, from the last
+ * on-demand scan (firmware-service cache). Scoped to this subsystem on a central
+ * server (each scanned device carries its subsystemId); single-MCM devices carry
+ * none → all count. Always returns a summary so the gate task appears
+ * (scanned:false prompts the tester to run a scan).
+ */
+function firmwareSummary(subsystemId: number) {
+  const scan = getLastFirmwareScan()
+  if (!scan || !scan.connected) {
+    return { scanned: false, deviceCount: 0, nonCompliantCount: 0, noBaselineCount: 0 }
+  }
+  const mine = scan.devices.filter(
+    (d) => d.subsystemId == null || String(d.subsystemId) === String(subsystemId),
+  )
+  return {
+    scanned: true,
+    deviceCount: mine.length,
+    nonCompliantCount: mine.filter((d) => d.verdict === 'non_compliant').length,
+    noBaselineCount: mine.filter((d) => d.verdict === 'no_baseline').length,
+  }
+}
+
 export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
   const sub = db.prepare('SELECT Name FROM Subsystems WHERE id = ?').get(subsystemId) as
     | SubRow
@@ -63,13 +87,20 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
 
   // ── SVG device ordering ──────────────────────────────────────────────
   let svg: string | null = null
+  let mapSource: 'mcm-diagram' | 'bundled-fallback' | 'none' = 'none'
   if (mcm) {
     const row = db.prepare('SELECT SvgContent FROM McmDiagrams WHERE McmName = ?').get(mcm) as
       | { SvgContent: string }
       | undefined
-    if (row?.SvgContent) svg = row.SvgContent
+    if (row?.SvgContent) {
+      svg = row.SvgContent
+      mapSource = 'mcm-diagram'
+    }
   }
-  if (svg === null) svg = await readBundledSvg()
+  if (svg === null) {
+    svg = await readBundledSvg()
+    if (svg) mapSource = 'bundled-fallback'
+  }
   const orderedIds = svg ? parseDeviceIdsFromSvg(svg) : []
 
   // ── IOs (non-spare) ──────────────────────────────────────────────────
@@ -204,10 +235,24 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
       .prepare('SELECT id, Name FROM EStopZones WHERE SubsystemId = ? ORDER BY id')
       .all(subsystemId) as { id: number; Name: string }[]
     const checkRows = db
-      .prepare('SELECT ZoneName, CheckTag, Result FROM EStopEpcChecks WHERE SubsystemId = ?')
-      .all(subsystemId) as { ZoneName: string; CheckTag: string; Result: string | null }[]
-    const resultFor = (zone: string, tag: string): 'pass' | 'fail' | null => {
-      const m = checkRows.find((c) => c.ZoneName === zone && c.CheckTag === tag)
+      .prepare('SELECT ZoneName, CheckTag, CheckType, Result FROM EStopEpcChecks WHERE SubsystemId = ?')
+      .all(subsystemId) as {
+      ZoneName: string
+      CheckTag: string
+      CheckType: string | null
+      Result: string | null
+    }[]
+    // Dual-safety verification: each EPC carries TWO independent results keyed
+    // by CheckType. A row from an old build may have CheckType NULL/empty —
+    // treat that as 'preliminary' (backward-compat with the single-check era).
+    const resultFor = (
+      zone: string,
+      tag: string,
+      checkType: 'preliminary' | 'final',
+    ): 'pass' | 'fail' | null => {
+      const m = checkRows.find(
+        (c) => c.ZoneName === zone && c.CheckTag === tag && (c.CheckType || 'preliminary') === checkType,
+      )
       if (m?.Result === 'pass') return 'pass'
       if (m?.Result === 'fail') return 'fail'
       return null
@@ -256,7 +301,8 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
         epcs: epcs.map((e) => ({
           name: e.Name,
           checkTag: e.CheckTag,
-          result: resultFor(z.Name, e.CheckTag),
+          result: resultFor(z.Name, e.CheckTag, 'preliminary'),
+          finalResult: resultFor(z.Name, e.CheckTag, 'final'),
         })),
         safetyDeviceNames: [...zoneDevices],
       })
@@ -400,11 +446,15 @@ export async function loadSnapshot(subsystemId: number): Promise<DataSnapshot> {
   return {
     subsystemId,
     mcm,
+    mapSource,
+    plcConnected: live.length > 0,
+    ioCount: ios.length,
     devices,
     estopZones,
     vfds,
     functional,
     network: { hasRings, dpmsAllInstalled },
+    firmware: firmwareSummary(subsystemId),
     beltsTracked,
     allNetworkedCommunicating,
     systemRunning: deriveSystemRunning(live),

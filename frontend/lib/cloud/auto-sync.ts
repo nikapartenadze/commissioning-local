@@ -853,7 +853,7 @@ class AutoSyncService {
     const PENDING_RETRY_CAP = 10
 
     const pending = db.prepare(
-      'SELECT * FROM EStopCheckPendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+      'SELECT * FROM EStopCheckPendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT 50'
     ).all() as Array<{
       id: number; SubsystemId: number; ZoneName: string; CheckTag: string
       CheckType: string | null
@@ -895,8 +895,22 @@ class AutoSyncService {
 
     for (const p of Array.from(byCheck.values())) {
       if (p.RetryCount >= PENDING_RETRY_CAP) {
-        try { db.prepare('DELETE FROM EStopCheckPendingSyncs WHERE id = ?').run(p.id) } catch { /* best-effort */ }
-        console.warn(`[AutoSync] Dropped EStop check pending row id=${p.id} (${p.ZoneName}/${p.CheckTag}) — exceeded retry cap`)
+        // PARK, don't DELETE — e-stop results are SAFETY data. Deleting at the
+        // cap left zero trace while the local UI still read "checked" (the
+        // MCM11 silent-loss class). Keep the row (DeadLettered=1), out of the
+        // active loop, and audit it for attention/recovery.
+        try {
+          db.prepare("UPDATE EStopCheckPendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'estop retry cap exhausted') WHERE id = ?").run(p.id)
+        } catch { /* best-effort */ }
+        try {
+          auditLog({
+            type: 'sync.push.park',
+            subsystemId: p.SubsystemId,
+            reason: 'estop check retry cap exhausted',
+            detail: { zoneName: p.ZoneName, checkTag: p.CheckTag, checkType: ct(p), result: p.Result, retries: p.RetryCount },
+          })
+        } catch { /* best-effort */ }
+        console.warn(`[AutoSync] PARKED EStop check pending row id=${p.id} (${p.ZoneName}/${p.CheckTag}) — exceeded retry cap (kept for recovery)`)
         continue
       }
       const latest = readLatest.get(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) as
@@ -948,7 +962,7 @@ class AutoSyncService {
     const PENDING_RETRY_CAP = 10
 
     const pending = db.prepare(
-      'SELECT * FROM GuidedTaskStatePendingSyncs ORDER BY CreatedAt ASC LIMIT 50'
+      'SELECT * FROM GuidedTaskStatePendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT 50'
     ).all() as Array<{
       id: number; SubsystemId: number; TaskId: string; Status: string
       Reason: string | null; ActorName: string | null; UpdatedAt: string | null; RetryCount: number
@@ -979,8 +993,20 @@ class AutoSyncService {
 
     for (const p of Array.from(byTask.values())) {
       if (p.RetryCount >= PENDING_RETRY_CAP) {
-        try { db.prepare('DELETE FROM GuidedTaskStatePendingSyncs WHERE id = ?').run(p.id) } catch { /* best-effort */ }
-        console.warn(`[AutoSync] Dropped guided task-state pending row id=${p.id} (task ${p.TaskId}) — exceeded retry cap`)
+        // PARK, don't DELETE — keep the skip/complete override + reason for
+        // recovery instead of silently dropping it at the cap.
+        try {
+          db.prepare("UPDATE GuidedTaskStatePendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'guided task-state retry cap exhausted') WHERE id = ?").run(p.id)
+        } catch { /* best-effort */ }
+        try {
+          auditLog({
+            type: 'sync.push.park',
+            subsystemId: p.SubsystemId,
+            reason: 'guided task-state retry cap exhausted',
+            detail: { taskId: p.TaskId, status: p.Status, retries: p.RetryCount },
+          })
+        } catch { /* best-effort */ }
+        console.warn(`[AutoSync] PARKED guided task-state pending row id=${p.id} (task ${p.TaskId}) — exceeded retry cap (kept for recovery)`)
         continue
       }
 
@@ -2065,22 +2091,39 @@ class AutoSyncService {
       const remoteMode = process.env.PLC_MODE === 'remote'
       const centralMode = remoteMode || active.length > 1
 
+      // Controller Identity folded into the batch so the cloud's fleet firmware
+      // compliance sees the PLC itself (not a network node). Cached after the
+      // first read → no recurring CIP load. Tagged isController so the cloud's
+      // per-port topology view filters it out.
+      const { getControllerPushSnapshots } = await import('@/lib/plc/identity/firmware-service')
+
       if (centralMode) {
         const { getAllNetworkSnapshots } = await import('@/lib/mcm-registry')
         const all = getAllNetworkSnapshots()
-        if (!Array.isArray(all) || all.length === 0) return
+        const allArr = Array.isArray(all) ? all : []
+        const controllerSnaps = await getControllerPushSnapshots()
+        if (allArr.length === 0 && controllerSnaps.length === 0) return
 
         // Group snapshots by their decorated subsystemId.
         const bySubsystem = new Map<number, any[]>()
-        for (const snap of all) {
+        const addToSubsystem = (sidNum: number, rest: any) => {
+          const list = bySubsystem.get(sidNum)
+          if (list) list.push(rest)
+          else bySubsystem.set(sidNum, [rest])
+        }
+        for (const snap of allArr) {
           const sidNum = parseInt(String(snap.subsystemId), 10)
           if (!Number.isFinite(sidNum)) continue
           // Strip the routing-only `subsystemId` field — the cloud receives it
           // as the top-level batch key, not per-snapshot.
           const { subsystemId: _drop, ...rest } = snap
-          const list = bySubsystem.get(sidNum)
-          if (list) list.push(rest)
-          else bySubsystem.set(sidNum, [rest])
+          addToSubsystem(sidNum, rest)
+        }
+        for (const cs of controllerSnaps) {
+          const sidNum = parseInt(String(cs.subsystemId), 10)
+          if (!Number.isFinite(sidNum)) continue
+          const { subsystemId: _drop, ...rest } = cs
+          addToSubsystem(sidNum, rest)
         }
 
         for (const [sidNum, snapshots] of bySubsystem) {
@@ -2102,13 +2145,16 @@ class AutoSyncService {
       if (!hasPlcClient() || !getPlcClient().isConnected) return
 
       const snapshots = getLatestNetworkDeviceSnapshots()
-      if (!Array.isArray(snapshots) || snapshots.length === 0) return
+      // Append the controller so the cloud sees the PLC's firmware too.
+      const controllerSnaps = await getControllerPushSnapshots()
+      const batch = [...(Array.isArray(snapshots) ? snapshots : []), ...controllerSnaps]
+      if (batch.length === 0) return
 
       await this.postNetworkDiagnostics(
         remoteUrl,
         apiPassword,
         parseInt(String(subsystemId), 10),
-        snapshots,
+        batch,
       )
     } catch (err) {
       // Best-effort; don't spam logs on every transient HTTP failure.

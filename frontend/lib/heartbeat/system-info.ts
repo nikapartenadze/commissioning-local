@@ -59,6 +59,14 @@ export interface HeartbeatSystemInfo {
       subsystemId: string
       name: string
       ip: string
+      /**
+       * CIP routing path to the controller (e.g. "1,0" = local chassis slot 0).
+       * A path of only the backplane slot ("1,0"/"1,1") means the tool is
+       * cabled directly to this MCM; a longer/routed path means it reaches the
+       * controller through other modules. Lets the cloud distinguish the local
+       * MCM from routed/remote ones without guessing from the IP.
+       */
+      path: string
       connected: boolean
       tagCount: number
     }>
@@ -67,6 +75,19 @@ export interface HeartbeatSystemInfo {
   }
   pendingSyncCount?: number
   lastCloudSyncAt?: string | null
+  /**
+   * True when this process is a centralized server deployment (one Node
+   * process holding N live MCM connections, PLC_MODE=remote) rather than a
+   * single-PLC field tablet. Lets the cloud flag the Central Server instance.
+   */
+  central?: boolean
+  /**
+   * Operator display names currently running tests through this tool. On a
+   * central server this is "who is connected and working right now" across all
+   * MCMs; on a field tablet it's the local operator(s). Sourced from the
+   * in-process testing registry, not persisted auth.
+   */
+  activeOperators?: string[]
   /**
    * Most recent UDT_NETWORK_NODE_DATA snapshot per discovered device.
    * Populated when the poller has completed at least one cycle on a PLC
@@ -156,6 +177,7 @@ function collectPlcStatus(): HeartbeatSystemInfo['plc'] {
           subsystemId: m.subsystemId,
           name: m.name,
           ip: m.ip,
+          path: m.path,
           connected: m.connected,
           tagCount: m.tagCount,
         })),
@@ -227,6 +249,29 @@ function collectLastCloudSyncAt(): string | null {
 }
 
 /**
+ * Centralized server deployment? The central installer runs the app with
+ * PLC_MODE=remote (PLC work split into a separate gateway service); the field
+ * tablet runs embedded. This is the authoritative deployment-mode signal.
+ */
+function isCentralDeployment(): boolean {
+  return String(process.env.PLC_MODE ?? '').trim().toLowerCase() === 'remote'
+}
+
+/**
+ * Operator display names currently running tests through this tool, read from
+ * the in-process testing registry (globalThis.isTestingUsers). Best-effort and
+ * read-only — never let a missing/!Set global break the heartbeat.
+ */
+function collectActiveOperators(): string[] {
+  try {
+    const g = globalThis as unknown as { isTestingUsers?: Set<string> }
+    return g.isTestingUsers instanceof Set ? Array.from(g.isTestingUsers) : []
+  } catch {
+    return []
+  }
+}
+
+/**
  * Build the full systemInfo blob for a heartbeat payload. Pure read-only.
  */
 export function collectSystemInfo(): HeartbeatSystemInfo {
@@ -237,6 +282,7 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
   const disk = collectDisk()
   const dbSizeMb = collectDbSizeMb()
   const networkDevices = collectNetworkDevices()
+  const activeOperators = collectActiveOperators()
 
   return {
     os: {
@@ -264,6 +310,9 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
     plc: collectPlcStatus(),
     pendingSyncCount: collectPendingSyncCount(),
     lastCloudSyncAt: collectLastCloudSyncAt(),
+    // Only emitted on central servers, so field-tablet payloads are unchanged.
+    ...(isCentralDeployment() ? { central: true } : {}),
+    ...(activeOperators.length > 0 ? { activeOperators } : {}),
     ...(networkDevices.length > 0 ? { networkDevices } : {}),
   }
 }

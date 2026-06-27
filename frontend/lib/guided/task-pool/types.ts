@@ -27,6 +27,7 @@ export type Phase =
 
 /** Segments of the Commissioning phase, in commissioning flow order. */
 export type Segment =
+  | 'Firmware Compliance'
   | 'Network Verification'
   | 'VFD Commissioning'
   | 'Safety Device I/O Check'
@@ -39,6 +40,7 @@ export type Segment =
  * Priority follows the flow of commissioning (see priority.ts).
  */
 export type TaskType =
+  | 'firmware_check'
   | 'network_loop'
   | 'vfd_setup'
   | 'io_check_safety'
@@ -120,6 +122,15 @@ export interface Step {
   estopZone?: string
   estopCheckTag?: string
   estopEpcName?: string
+  /**
+   * Which of the dual-safety checks this auto_detect step records. The guided
+   * walk verifies BOTH per EPC: 'preliminary' = the POSITIVE zone-stop check
+   * (this EPC's own drives go to STO); 'final' = the NEGATIVE selectivity check
+   * (other zones keep running). The runner reads the matching verdict from
+   * /api/estop/status (preliminaryVerdict / finalVerdict) and posts the
+   * matching `checkType` to /api/estop/check. Defaults to 'preliminary'.
+   */
+  estopCheckType?: 'preliminary' | 'final'
 
   /**
    * IO ids whose live PLC transitions should be watched on this step
@@ -184,10 +195,39 @@ export interface TaskPoolSummary {
   skipped: number
 }
 
+/** Where the device map (SVG) that drives IO-check tasks came from. */
+export type MapSource = 'mcm-diagram' | 'bundled-fallback' | 'none'
+
+/**
+ * Readiness diagnostics — answers "can guided mode actually run for this MCM,
+ * and is anything silently degraded?". Computed purely from the snapshot.
+ *
+ * Historically guided mode degraded silently: a missing or mismatched device
+ * map produced 0 IO-check tasks with no feedback, so functional checks (the
+ * lowest priority) looked "first" and the tester assumed guided mode was
+ * broken. This block makes those conditions visible up-front.
+ */
+export interface TaskPoolReadiness {
+  /** True when nothing blocks guided mode from generating its core tasks. */
+  ready: boolean
+  /** Hard problems that make whole categories of tasks impossible. */
+  blockers: string[]
+  /** Soft issues the tester can work around (manual entry still works). */
+  warnings: string[]
+  /** Where the device map came from (drives IO-check task generation). */
+  mapSource: MapSource
+  /** Devices (with at least one I/O point) the map resolved for this MCM. */
+  deviceCount: number
+  /** Live PLC tag data is flowing (required for auto-detect; not for manual). */
+  plcConnected: boolean
+}
+
 export interface TaskPool {
   subsystemId: number
   tasks: Task[]
   /** Id of the highest-priority available/in-progress task, or null. */
   nextTaskId: string | null
   summary: TaskPoolSummary
+  /** Up-front diagnostics on whether guided mode is set up + ready to run. */
+  readiness: TaskPoolReadiness
 }

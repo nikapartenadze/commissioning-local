@@ -1,0 +1,25 @@
+{
+  "ip": "",
+  "path": "1,0",
+  "remoteUrl": "http://localhost:13001",
+  "ApiPassword": "battle-key-mcm02",
+  "subsystemId": "38",
+  "updateManifestUrl": "",
+  "orderMode": "sequential",
+  "syncBatchSize": 50,
+  "syncBatchDelayMs": 500,
+  "showStateColumn": true,
+  "showResultColumn": true,
+  "showTimestampColumn": true,
+  "showHistoryColumn": true,
+  "lastConnectedSubsystemId": "38",
+  "mcms": [
+    {
+      "subsystemId": "38",
+      "name": "MCM 38",
+      "ip": "",
+      "path": "1,0",
+      "enabled": false
+    }
+  ]
+}

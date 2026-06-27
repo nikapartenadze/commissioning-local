@@ -67,6 +67,9 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const [busy, setBusy] = useState(false)
   const [inputValue, setInputValue] = useState('')
   const [estopVerdict, setEstopVerdict] = useState<EstopVerdict>(null)
+  const [firmwareVerdict, setFirmwareVerdict] = useState<FirmwareVerdict>(null)
+  // Readiness banner: warnings can be dismissed; hard blockers always show.
+  const [readinessDismissed, setReadinessDismissed] = useState(false)
   // D4/D5 live gates — polled every 5 s while the runner is open.
   const [sysStatus, setSysStatus] = useState<SystemStatus>({ ring: null, systemRunning: null })
 
@@ -207,6 +210,9 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               subsystemId,
               zoneName: step.estopZone,
               checkTag: step.estopCheckTag,
+              // Dual-safety: record against the step's check type (zone-stop vs
+              // selectivity). Defaults server-side to 'preliminary' if omitted.
+              checkType: step.estopCheckType ?? 'preliminary',
               result: result === 'Passed' ? 'pass' : 'fail',
               failureMode: result === 'Failed' ? opts?.failureMode ?? 'No Drop' : undefined,
               testedBy: user,
@@ -264,22 +270,38 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       if (!step?.l2Column || !effectiveTask?.deviceName) return
       setBusy(true)
       try {
-        await fetch('/api/vfd-commissioning/write-l2-cells', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            deviceName: effectiveTask.deviceName,
-            updatedBy: initialsOf(currentUser?.fullName) || currentUser?.fullName,
-            cells: [{ columnName: step.l2Column, value }],
-          }),
-        }).catch(() => {})
+        // Only advance if the cell ACTUALLY persisted. A missing column (e.g.
+        // L2 schema not yet pulled) makes the server drop the write and return
+        // success:false — previously we swallowed that and advanced anyway, so
+        // the tester's value was silently lost (the CDW5 polarity class). Now
+        // we surface it and keep the step so the value isn't lost.
+        let ok = false
+        try {
+          const res = await fetch('/api/vfd-commissioning/write-l2-cells', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              deviceName: effectiveTask.deviceName,
+              updatedBy: initialsOf(currentUser?.fullName) || currentUser?.fullName,
+              cells: [{ columnName: step.l2Column, value }],
+            }),
+          })
+          const body = await res.json().catch(() => null)
+          ok = res.ok && body?.success !== false
+        } catch {
+          ok = false
+        }
+        if (!ok) {
+          showToast(`Couldn't save "${step.l2Column}" — not advancing. Pull the latest L2 data and retry.`)
+          return
+        }
         setInputValue('')
         advanceStep()
       } finally {
         setBusy(false)
       }
     },
-    [currentStep, effectiveTask, currentUser, advanceStep],
+    [currentStep, effectiveTask, currentUser, advanceStep, showToast],
   )
 
   const recordVfdControls = useCallback(async () => {
@@ -362,10 +384,18 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         const res = await fetch('/api/estop/status')
         if (!res.ok || !active) return
         const data = await res.json()
+        // Dual-safety: show the verdict matching THIS step's check type. The
+        // status route exposes both preliminaryVerdict (zone-stop) and
+        // finalVerdict (selectivity); reading the dead `autoVerdict` left the
+        // step stuck on "unknown" forever (pre-fix).
+        const wantFinal = currentStep?.estopCheckType === 'final'
         for (const z of data.zones ?? []) {
           for (const e of z.epcs ?? []) {
             if (e.checkTag === tag) {
-              setEstopVerdict({ autoVerdict: e.autoVerdict, checkTagValue: e.checkTagValue })
+              setEstopVerdict({
+                autoVerdict: wantFinal ? e.finalVerdict : e.preliminaryVerdict,
+                checkTagValue: e.checkTagValue,
+              })
               return
             }
           }
@@ -382,6 +412,43 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       clearInterval(id)
     }
   }, [currentStep?.id])
+
+  // poll the firmware-compliance verdict for the firmware-check auto_detect step.
+  // NEEDS LIVE VERIFICATION (battle sim / real MCM) before release — the polling,
+  // scan trigger and task completion can't be exercised without a connected PLC.
+  useEffect(() => {
+    if (currentStep?.kind !== 'auto_detect' || currentStep.verdictSource !== '/api/firmware') return
+    let active = true
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/firmware')
+        if (!res.ok || !active) return
+        const scan = (await res.json())?.scan
+        if (!scan || !scan.connected) {
+          setFirmwareVerdict({ verdict: 'unknown', nonCompliant: 0, deviceCount: 0, scanned: false })
+          return
+        }
+        // Scope to this subsystem on a central server (devices carry subsystemId);
+        // single-MCM devices carry none → all count.
+        const devs = (scan.devices ?? []).filter(
+          (d: { subsystemId?: string }) => d.subsystemId == null || String(d.subsystemId) === String(subsystemId),
+        )
+        const nonCompliant = devs.filter((d: { verdict?: string }) => d.verdict === 'non_compliant').length
+        setFirmwareVerdict({ verdict: nonCompliant > 0 ? 'fail' : 'pass', nonCompliant, deviceCount: devs.length, scanned: true })
+      } catch {
+        /* ignore — next tick retries */
+      }
+    }
+    setFirmwareVerdict(null)
+    // Kick a fresh scan so the verdict is live, then poll the cached result.
+    void fetch('/api/firmware/scan', { method: 'POST' }).catch(() => {}).then(() => poll())
+    const id = setInterval(poll, 2500)
+    return () => {
+      active = false
+      clearInterval(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep?.id, subsystemId])
 
   // ── skip (D9: preset reason + optional note) ───────────────────────────────
   const skipReasonValid = skipPreset != null && (skipPreset !== 'Other' || skipNote.trim().length > 0)
@@ -499,6 +566,44 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         </div>
       </header>
 
+      {pool?.readiness && pool.readiness.blockers.length > 0 && (
+        // Hard blockers: guided mode can't generate its core (IO-check) tasks.
+        // This is the fix for the silent-degradation gotcha — a missing or
+        // wrong-MCM map used to produce an empty/misleading task list with no
+        // explanation. Always shown (not dismissible) until resolved.
+        <div className="gt-readiness gt-readiness-blocked" role="alert">
+          <div className="gt-readiness-title">⚠ Guided mode is not fully set up</div>
+          <ul className="gt-readiness-list">
+            {pool.readiness.blockers.map((b, i) => (
+              <li key={i}>{b}</li>
+            ))}
+          </ul>
+          <div className="gt-readiness-actions">
+            <Link className="gt-btn gt-btn-ghost gt-chip" to={`/commissioning/${subsystemId}`}>
+              Open Settings / Pull diagram
+            </Link>
+          </div>
+        </div>
+      )}
+      {pool?.readiness &&
+        pool.readiness.blockers.length === 0 &&
+        pool.readiness.warnings.length > 0 &&
+        !readinessDismissed && (
+          <div className="gt-readiness gt-readiness-warn" role="status">
+            <ul className="gt-readiness-list">
+              {pool.readiness.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+            <button
+              className="gt-btn gt-btn-ghost gt-chip"
+              onClick={() => setReadinessDismissed(true)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
       <div className="gt-body">
         <div className="gt-map-layer">
           {svgMarkup ? (
@@ -560,6 +665,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
                 liveState,
                 seqPhase,
                 estopVerdict,
+                firmwareVerdict,
                 inputValue,
                 setInputValue,
                 subsystemId,
@@ -730,6 +836,14 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 
 // ── step body renderer ───────────────────────────────────────────────────
 
+/** Live firmware-compliance verdict for the firmware-check auto_detect step. */
+type FirmwareVerdict = {
+  verdict: 'pass' | 'fail' | 'unknown'
+  nonCompliant: number
+  deviceCount: number
+  scanned: boolean
+} | null
+
 interface BodyProps {
   step: Step
   isLast: boolean
@@ -737,6 +851,7 @@ interface BodyProps {
   liveState: string | null
   seqPhase: RoundTrip['phase']
   estopVerdict: EstopVerdict
+  firmwareVerdict: FirmwareVerdict
   inputValue: string
   setInputValue: (v: string) => void
   subsystemId: number
@@ -844,7 +959,33 @@ function renderStepBody(p: BodyProps) {
     )
   }
 
-  // 3) E-stop EPC (live auto-verdict + record)
+  // 3) auto_detect — firmware compliance (live verdict from /api/firmware) or
+  //    e-stop EPC (live auto-verdict + record).
+  if (step.kind === 'auto_detect' && step.verdictSource === '/api/firmware') {
+    const fv = p.firmwareVerdict
+    const v = fv?.verdict ?? 'unknown'
+    const tone = v === 'pass' ? 'gt-verdict-pass' : v === 'fail' ? 'gt-verdict-fail' : 'gt-verdict-unknown'
+    const label = !fv || !fv.scanned
+      ? 'SCANNING…'
+      : v === 'pass'
+        ? `ALL ${fv.deviceCount} COMPLIANT`
+        : `${fv.nonCompliant} NON-COMPLIANT`
+    return (
+      <>
+        <div className={`gt-verdict ${tone}`}>
+          Firmware: <strong>{label}</strong>
+        </div>
+        <div className="gt-actions-center">
+          <button className="gt-btn gt-btn-pass gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Passed')}>
+            RECORD PASS
+          </button>
+          <button className="gt-btn gt-btn-warn gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Failed', 'Firmware non-compliant')}>
+            RECORD FAIL
+          </button>
+        </div>
+      </>
+    )
+  }
   if (step.kind === 'auto_detect') {
     const v = p.estopVerdict?.autoVerdict ?? 'unknown'
     const tone = v === 'pass' ? 'gt-verdict-pass' : v === 'fail' ? 'gt-verdict-fail' : v === 'ready' ? 'gt-verdict-ready' : 'gt-verdict-unknown'
