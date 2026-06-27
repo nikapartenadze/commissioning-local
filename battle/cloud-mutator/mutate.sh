@@ -47,6 +47,14 @@ wait_period() {
 
 journal() { echo "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"mode\":\"$MODE\",\"seq\":$1,\"added\":\"$2\",\"deleted\":\"$3\",\"edited\":\"$4\"}" >> "$JOURNAL"; }
 
+# crud-propagation journal line: one row per data type the field PULLS, so the
+# observer (I14-I17) knows the exact cloud value/version it must find locally.
+# kind ∈ {vfd_addressed, l2_cell, estop_zone, network_ring}.
+crud_journal() {  # $1=seq $2=subsystemId $3=kind $4=key $5=value $6=version
+  printf '{"ts":"%s","mode":"crud","kind":"%s","seq":%s,"subsystemId":%s,"key":"%s","value":"%s","version":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" "$1" "$2" "$4" "$5" "${6:-0}" >> "$JOURNAL"
+}
+
 # ── SQL mode (original) ──────────────────────────────────────────────────────
 sql_loop() {
   until $PSQL -c "SELECT 1 FROM ios LIMIT 1" >/dev/null 2>&1; do sleep 3; done
@@ -106,8 +114,59 @@ api_loop() {
   echo "cloud-mutator[api]: STOP — exiting"
 }
 
+# ── CRUD mode (cloud→field definition/CRUD propagation: I14-I17) ──────────────
+# Edits the four data types the field PULLS (not the result path): a belt VFD
+# blocker marked ADDRESSED, an L2/FV cell value+version, an e-stop zone/EPC, and
+# a network ring/port. Raw psql (SQL mode) keyed to the seeder's per-MCM CRUD
+# rows (CRUD_BASE=9000000, offset by subsystemId). The observer drives the
+# field's scoped pull and verifies arrival. NEVER touches IO `result`.
+#
+# CRUD_BASE must match battle/seeder/seed.py.
+CRUD_BASE=9000000
+crud_loop() {
+  until $PSQL -c "SELECT 1 FROM ios LIMIT 1" >/dev/null 2>&1; do sleep 3; done
+  off=$((CRUD_BASE + SUBSYSTEM_ID))   # per-MCM seeded id for this subsystem
+  seq=0
+  while wait_period; do
+    seq=$((seq + 1)); stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    # (a) VFD ADDRESSED — mark the seeded belt blocker addressed (cloud-only
+    #     handoff; the GET /api/sync/vfd-addressed pull mirrors it into the
+    #     field's VfdAddressed table). device_name is the I14 key.
+    bname="CBT_CRUD_${SUBSYSTEM_ID}_VFD"
+    $PSQL -c "UPDATE \"VfdCommissioningBlocker\" SET addressed_at = now(), addressed_by = 'battle-mechanic' WHERE device_id = ${off};" >/dev/null 2>&1 || true
+    crud_journal "$seq" "$SUBSYSTEM_ID" "vfd_addressed" "$bname" "1" "0"
+
+    # (b) L2/FV cell — bump value + version so the cloud is strictly newer than
+    #     the field's seeded v1 (version-gated LWW must apply it). key = the
+    #     cloud cell id; value/version are what the field cell must converge to.
+    newver=$((seq + 2))   # seeded cell is v1; always strictly newer
+    val="crud-${seq}"
+    $PSQL -c "UPDATE l2_cell_values SET value = '${val}', version = ${newver}, updated_at = now() WHERE id = ${off};" >/dev/null 2>&1 || true
+    crud_journal "$seq" "$SUBSYSTEM_ID" "l2_cell" "${off}" "$val" "$newver"
+
+    # (c) E-stop zone — rename the seeded zone; the field's pull-estop rebuilds
+    #     the tree, so I16 expects this zone name AND other MCMs' zones intact.
+    zname="CRUD_ZONE_${SUBSYSTEM_ID}_v${seq}"
+    $PSQL -c "UPDATE estop_zones SET name = '${zname}' WHERE id = ${off};" >/dev/null 2>&1 || true
+    crud_journal "$seq" "$SUBSYSTEM_ID" "estop_zone" "$zname" "$zname" "0"
+
+    # (d) Network ring — rename the seeded ring + add a port label; pull-network
+    #     cascade-replaces this subsystem's chain. I17 expects the new name and
+    #     no cross-MCM wipe.
+    rname="CRUD_RING_${SUBSYSTEM_ID}_v${seq}"
+    $PSQL -c "UPDATE network_rings SET name = '${rname}' WHERE id = ${off};" >/dev/null 2>&1 || true
+    $PSQL -c "UPDATE network_ports SET device_name = 'CRUD_PORT_${SUBSYSTEM_ID}_v${seq}' WHERE id = ${off};" >/dev/null 2>&1 || true
+    crud_journal "$seq" "$SUBSYSTEM_ID" "network_ring" "$rname" "$rname" "0"
+
+    echo "cloud-mutator[crud]: seq=$seq subsystem=$SUBSYSTEM_ID addressed=$bname l2=$val/$newver zone=$zname ring=$rname"
+  done
+  echo "cloud-mutator[crud]: STOP — exiting"
+}
+
 echo "cloud-mutator: mode=$MODE every ${PERIOD}s add ${ADD_N} (subsystem ${SUBSYSTEM_ID})"
 case "$MODE" in
-  api) api_loop ;;
-  *)   sql_loop ;;
+  api)  api_loop ;;
+  crud) crud_loop ;;
+  *)    sql_loop ;;
 esac
