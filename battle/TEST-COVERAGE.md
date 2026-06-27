@@ -72,6 +72,7 @@ Severity = blocking risk for a site deploy. **BLOCKER** = do not ship without it
 | Backup **restore** path works | ❌ creation/retention tested, restore not | MED |
 | Schema migration on upgrade (old DB → new cols) | ❌ not tested (e.g. the new `L2Devices.SubsystemId`) | HIGH |
 | Concurrent same-cell L2 edits / version conflict | ❌ hot-set is IO-only | MED |
+| Cloud→field **VFD ADDRESSED** propagation (mechanic marks on cloud → field VFD tab pulls it) | ❌ proven MANUALLY end-to-end (2026-06-27); no battle gate. Needs a `mutate`-style step that marks a blocker addressed on cloud + an observer check that the field `VfdAddressed` mirror got it. Closest is I7 (general cloud→field, report-only). | HIGH |
 
 ### C. Connectivity / auth
 | Situation | Status | Sev |
