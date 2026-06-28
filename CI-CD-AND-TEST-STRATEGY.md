@@ -59,7 +59,7 @@ the `frontend-verify` job (`.gitlab-ci.yml`, `verify` stage): `npm test` is the
 hard gate; lint + typecheck advisory. Plain Node job (no DinD) so it doesn't hit
 the runner disk limit. Runs on every push / MR.
 
-### Gap 2 — System-under-test image is built by hand — 🟡 unblocked, auto-build pending
+### Gap 2 — System-under-test image is built by hand — ✅ CLOSED (`build-tool-image` enabled 2026-06-28)
 CI only *pulls* `tool:latest`; someone must run `battle/ci/build_and_push.sh`
 from a dev box, or **the nightly soaks a stale binary.** The pipelines 622/624
 "disk full" failures had a concrete root cause, confirmed 2026-06-27 by SSH to
@@ -71,7 +71,10 @@ tiered, guarded GC systemd timer (`/usr/local/bin/ci-runner-gc.sh` +
 ≥95%; age filters never touch an in-flight build. First run took `/` from
 **99% → 65%** (~20 GB freed). The runner now self-heals, so the heavy `tool`
 build fits in the existing 60 GB **without** a risky disk grow.
-**Remaining:** add the auto-build job (§4) so merge→main rebuilds+pushes the image.
+**DONE 2026-06-28:** the `build-tool-image` job (§4) now rebuilds+pushes `tool:latest`
++ `plc-sim:latest` on every merge→main, with an `after_script` cleanup + the GC timer
+keeping the runner lean. The disk constraint is also gone — the ci-runner FS was grown
+to **117 GB (76 GB free)** and the thin pool recovered to **84.6%**. No more hand-pushing.
 
 ### Gap 3 — Nothing tests the shipped installer/EXE — ⛔ OPEN (BLOCKER)
 Battle tests the *Docker image*, never the Windows NSIS installer / portable ZIP.
@@ -151,8 +154,8 @@ three buckets: now-covered / pending / not-covered-by-CI. Invoke with
 2. ✅ **ci-runner disk-full root cause fixed** — guarded GC timer installed (Gap 2 unblocked).
 3. 🔴 **Reclaim the Proxmox thin pool** (94% → <80%) — estate-wide risk; owner-driven
    (decide what's safe to delete). Prerequisite for ANY disk growth.
-4. **Enable `build-tool-image`** (§4) on the existing runner → nightly soaks the real
-   latest binary, no more hand-pushing. Watch the first run before relying on it.
+4. ✅ **`build-tool-image` enabled** (§4) on the existing runner (2026-06-28) → nightly
+   soaks the real latest binary, no more hand-pushing. Watch the first merge→main run go green.
 5. **Gap 3 — installer/EXE smoke** (Windows runner + checklist) — the BLOCKER before
    any site deploy; see `battle/TEST-COVERAGE.md` §F and Part 3.
 6. Per-feature: run `/coverage-keeper`; keep `battle/TEST-COVERAGE.md` honest.
