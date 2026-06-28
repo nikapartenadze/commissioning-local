@@ -56,7 +56,7 @@ async function writeTag(
   deviceName: string,
   field: string,
   value: number,
-  dataType: 'BOOL' | 'REAL' | 'INT',
+  dataType: 'BOOL' | 'REAL' | 'INT' | 'DINT',
   pathScope?: 'HMI',
 ) {
   const res = await fetch('/api/vfd-commissioning/write-tag', {
@@ -1264,10 +1264,18 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       //    failure here (HTTP error response OR a thrown fetch/parse error)
       //    becomes a soft amber warning, not a red error, and we fall through
       //    to stamp L2 anyway.
+      //
+      //    TYPE: HMI.Speed_At_30rev is a DINT on the controller. It MUST be
+      //    written as a numeric integer ('DINT'), not as a REAL float-bit
+      //    pattern — the latter landed garbage (~1.1e9) and over-drove belts.
+      //    A DINT can't hold the fraction, so we round the measured RVS to the
+      //    nearest whole number. The server-side write also reads the value
+      //    back and fails loudly if the controller didn't store what we sent.
       let plcWarning: string | null = null
       const tagPath = `${deviceName}.HMI.Speed_At_30rev`
+      const rvsToWrite = Math.round(capturedRvs)
       try {
-        const plcResult = await writeTag(subsystemId, deviceName, 'Speed_At_30rev', capturedRvs, 'REAL', 'HMI')
+        const plcResult = await writeTag(subsystemId, deviceName, 'Speed_At_30rev', rvsToWrite, 'DINT', 'HMI')
         if (plcResult?.success === false || plcResult?.error) {
           plcWarning = `Couldn't write ${tagPath} on the controller (${plcResult?.error || 'tag missing'}). The measurement was still saved to the spreadsheet — set the RVS in the AOI manually if this drive needs it.`
           console.warn(`[Step5] ${plcWarning}`)
@@ -1758,12 +1766,10 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setHpFieldsFilled(false)
       setIdentityDone(false)
       setDirectionDone(false)
-      // Re-arm the auto-backfill so it can run again if STS is still high.
+      // Re-arm the L2-cell auto-backfill so it can run again if STS is still high.
       backfilledRef.current = false
-      // Same for the HMI.Speed_At_30rev backfill — the L2 stamp it reads
-      // from is about to be NULL'd, so it will naturally no-op on re-run,
-      // but resetting the guard keeps the logic symmetric.
-      speedBackfilledRef.current = false
+      // (The on-open speed backfill was removed — see note above the L2-cell
+      // auto-backfill effect — so there's no speed guard to reset here.)
       // Refresh from L2 — cells should all be NULL now; mirror the mount
       // useEffect's restore logic so any racing cell still in flight is
       // honoured rather than ignored.
@@ -1812,48 +1818,20 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     if (activeStep === 0 && sts.Check_Allowed === true) setActiveStep(1)
   }, [sts.Check_Allowed, activeStep])
 
-  // Inverse-backfill: push the cached RVS from a prior wizard session into
-  // the drive's HMI.Speed_At_30rev tag. The L2 "Speed Set Up" cell already
-  // carries the RVS inside its enriched stamp ("ASH 9/5 · 200 FPM @ 25.30
-  // RVS"), so VFDs that were calibrated before this PLC write was wired up
-  // can be brought into sync without a re-run.
+  // NOTE: the on-open "inverse speed backfill" was REMOVED.
   //
-  // One-shot per wizard open (re-armed by Clear Test). Best-effort: a
-  // missing/older AOI without the HMI struct returns tag-not-found, which
-  // we log but do NOT surface — the operator can still re-run Step 5 to
-  // get a clean error path.
-  const speedBackfilledRef = useRef(false)
-  useEffect(() => {
-    if (speedBackfilledRef.current) return
-    if (!plcConnected) return
-    speedBackfilledRef.current = true
-    readL2CellsForDevice(device.deviceName).then(cells => {
-      const parsed = parseSpeedStamp(cells?.speedSetUp)
-      if (!parsed) return
-      console.log(`[VfdWizard] Backfilling ${device.deviceName}.HMI.Speed_At_30rev = ${parsed.rvs} from cached stamp`)
-      fetch('/api/vfd-commissioning/write-tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          subsystemId,
-          deviceName: device.deviceName,
-          field: 'Speed_At_30rev',
-          value: parsed.rvs,
-          dataType: 'REAL',
-          pathScope: 'HMI',
-        }),
-      })
-        .then(r => r.json().catch(() => ({})))
-        .then(result => {
-          if (result?.success) {
-            console.log(`[VfdWizard] Backfill OK: ${device.deviceName}.HMI.Speed_At_30rev = ${parsed.rvs}`)
-          } else {
-            console.warn(`[VfdWizard] Backfill failed for ${device.deviceName}.HMI.Speed_At_30rev:`, result?.error)
-          }
-        })
-        .catch(err => console.warn(`[VfdWizard] Backfill request error for ${device.deviceName}:`, err))
-    }).catch(() => { /* best-effort */ })
-  }, [plcConnected, device.deviceName])
+  // It used to push the cached RVS from the L2 "Speed Set Up" stamp into the
+  // drive's HMI.Speed_At_30rev tag automatically, on every wizard open, with no
+  // operator action. That was unsafe on two counts:
+  //   1. It wrote a SPEED SETPOINT to a live drive silently — merely opening
+  //      the wizard could change a belt's speed. If a value had been corrected
+  //      manually outside the tool, opening the wizard reverted it to the stale
+  //      cached number.
+  //   2. It wrote 'REAL' into HMI.Speed_At_30rev, which is a DINT on the
+  //      controller — overflowing to garbage (~1.1e9) and over-driving belts.
+  // Speed is now written ONLY from Step 5's explicit "Save Measurement" click
+  // (handleLog), as a DINT, with server-side read-back verification. No code
+  // path may write a speed setpoint without a deliberate operator action.
 
   // Auto-backfill L2 cells for steps the PLC has already validated. The
   // wizard's Confirm buttons normally write the audit stamps, but if a VFD
