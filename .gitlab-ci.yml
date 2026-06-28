@@ -96,6 +96,42 @@ refresh-cloud-image:
     - docker tag "$CLOUD_SRC" "$CI_REGISTRY_IMAGE/cloud:latest"
     - docker push "$CI_REGISTRY_IMAGE/cloud:latest"
 
+# ── build-tool-image ─────────────────────────────────────────────────────────
+# Auto-build the heavy system-under-test images (tool + plc-sim) on merge→main
+# and push them to THIS project's registry as :latest, so the nightly always
+# soaks the CURRENT binary instead of a hand-pushed (possibly stale) one. This
+# replaces the manual `battle/ci/build_and_push.sh` step for tool + plc-sim
+# (cloud/cloud-dev/central still come from refresh-cloud-image / the dev box).
+#
+# Now safe on the shared ci-runner (VM 103): the guarded GC timer reclaims docker
+# garbage hourly AND the runner FS was grown to 117 GB (76 GB free, 2026-06-28),
+# so a heavy build no longer fills `/`. The after_script still removes the built
+# images + prunes stale buildx cache so a build never re-accumulates disk and
+# collides with a cloud/tracker deploy on the shared runner.
+build-tool-image:
+  stage: prebuild
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE/tool:latest" -f frontend/Dockerfile frontend
+    - docker push "$CI_REGISTRY_IMAGE/tool:latest"
+    - docker build -t "$CI_REGISTRY_IMAGE/plc-sim:latest" battle/plc-sim
+    - docker push "$CI_REGISTRY_IMAGE/plc-sim:latest"
+  after_script:                  # keep the shared runner lean (Gap 2 root cause)
+    - docker rmi "$CI_REGISTRY_IMAGE/tool:latest" "$CI_REGISTRY_IMAGE/plc-sim:latest" || true
+    - docker buildx prune -f --filter until=24h || true
+  timeout: 60m
+
 .battle-base:
   stage: battle
   image: docker:27
