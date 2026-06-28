@@ -32,6 +32,7 @@ import {
   plc_tag_set_int16,
   plc_tag_set_int32,
   plc_tag_get_int16,
+  plc_tag_get_int32,
   plc_tag_get_float32,
   readTagAsync,
   writeTagAsync,
@@ -53,8 +54,21 @@ function floatToInt32Bits(value: number): number {
   return _f32view.getInt32(0, true);
 }
 
+/**
+ * Supported scalar PLC data types for typed by-name reads/writes.
+ *
+ * DINT is a TRUE 32-bit integer: written as a NUMBER via plc_tag_set_int32,
+ * never as a float32 bit-pattern (that's REAL). Writing a REAL bit-pattern into
+ * a DINT controller tag is exactly what overflowed the speed setpoint — e.g.
+ * 30.0 RVS landed as ~1.1e9 — so the type the tool declares MUST match the
+ * controller tag. See writeTypedTag's read-back verify, which catches a
+ * mismatch loudly instead of leaving a garbage value on a live drive.
+ */
+export type PlcScalarType = 'BOOL' | 'REAL' | 'INT' | 'DINT';
+
 /** Element size in bytes per supported scalar PLC data type. */
-function elemSizeFor(dataType: 'BOOL' | 'REAL' | 'INT'): number {
+function elemSizeFor(dataType: PlcScalarType): number {
+  // BOOL=1, INT(16-bit)=2, REAL=4, DINT(32-bit)=4.
   return dataType === 'BOOL' ? 1 : dataType === 'INT' ? 2 : 4;
 }
 
@@ -628,10 +642,10 @@ export class PlcClient extends EventEmitter {
   writeTypedTag(
     tagName: string,
     value: number,
-    dataType: 'BOOL' | 'REAL' | 'INT'
+    dataType: PlcScalarType
   ): { success: boolean; error?: string } {
     if (!this.connectionConfig) return { success: false, error: 'No connection config' };
-    if (dataType !== 'BOOL' && dataType !== 'REAL' && dataType !== 'INT') {
+    if (dataType !== 'BOOL' && dataType !== 'REAL' && dataType !== 'INT' && dataType !== 'DINT') {
       return { success: false, error: `Unsupported dataType: ${dataType}` };
     }
 
@@ -652,13 +666,22 @@ export class PlcClient extends EventEmitter {
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to read before write: ${getStatusMessage(readStatus)}` };
       }
+      // Whole-number value for integer tag types. DINT/INT cannot hold a
+      // fraction, so round once here (e.g. 25.3 RVS -> 25) and reuse for both
+      // the setter and the read-back verify below.
+      const intValue = Math.round(value);
       let setStatus: number;
       if (dataType === 'BOOL') {
         setStatus = plc_tag_set_int8(handle, 0, value ? 1 : 0);
       } else if (dataType === 'REAL') {
+        // REAL: float32 bit-pattern (ffi-rs DataType.Float is broken).
         setStatus = plc_tag_set_int32(handle, 0, floatToInt32Bits(value));
+      } else if (dataType === 'DINT') {
+        // DINT: the NUMERIC integer, NOT the float bit-pattern. Writing float
+        // bits into a DINT is what overflowed the speed setpoint to ~1.1e9.
+        setStatus = plc_tag_set_int32(handle, 0, intValue);
       } else {
-        setStatus = plc_tag_set_int16(handle, 0, value);
+        setStatus = plc_tag_set_int16(handle, 0, intValue);
       }
       if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to set value: ${getStatusMessage(setStatus)}` };
@@ -666,6 +689,35 @@ export class PlcClient extends EventEmitter {
       const writeStatus = plc_tag_write(handle, 5000);
       if (writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to write tag: ${getStatusMessage(writeStatus)}` };
+      }
+
+      // ── Read-back verification (value tags only) ──────────────────────
+      // "Be sure it wrote": re-read the tag and confirm the controller stored
+      // what we sent. BOOL writes are EXCLUDED — many are consumed by the AOI
+      // on a rising edge (ONS pulses), so an immediate re-read legitimately
+      // differs and would false-fail. For a value tag, a read-back mismatch is
+      // the signature of a data-type mismatch (e.g. REAL bytes interpreted as a
+      // DINT) — fail LOUDLY so a garbage speed is never left on a live drive.
+      if (dataType !== 'BOOL') {
+        const verifyStatus = plc_tag_read(handle, 5000);
+        if (verifyStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          return { success: false, error: `Write verify read failed: ${getStatusMessage(verifyStatus)}` };
+        }
+        const readBack =
+          dataType === 'REAL' ? plc_tag_get_float32(handle, 0)
+          : dataType === 'DINT' ? plc_tag_get_int32(handle, 0)
+          : plc_tag_get_int16(handle, 0);
+        const mismatch =
+          dataType === 'REAL' ? Math.abs(readBack - value) > 1e-3
+          : readBack !== intValue;
+        if (mismatch) {
+          const wrote = dataType === 'REAL' ? value : intValue;
+          return {
+            success: false,
+            error: `Write verify failed on ${tagName}: wrote ${wrote} but tag reads back ${readBack}. ` +
+              `The tool's data type (${dataType}) likely does not match the controller tag — value NOT trusted.`,
+          };
+        }
       }
       return { success: true };
     } catch (error) {
@@ -681,7 +733,7 @@ export class PlcClient extends EventEmitter {
    */
   readTypedTag(
     tagName: string,
-    dataType: 'BOOL' | 'REAL' | 'INT'
+    dataType: PlcScalarType
   ): { success: boolean; value?: number | boolean; error?: string } {
     if (!this.connectionConfig) return { success: false, error: 'No connection config' };
     const handle = createTag({
@@ -701,6 +753,7 @@ export class PlcClient extends EventEmitter {
       let value: number | boolean;
       if (dataType === 'BOOL') value = plc_tag_get_bit(handle, 0) === 1;
       else if (dataType === 'REAL') value = plc_tag_get_float32(handle, 0);
+      else if (dataType === 'DINT') value = plc_tag_get_int32(handle, 0);
       else value = plc_tag_get_int16(handle, 0);
       return { success: true, value };
     } catch (error) {
@@ -721,7 +774,7 @@ export class PlcClient extends EventEmitter {
    * temporary-handle semantics and value decoding as readTypedTag.
    */
   async readTypedTags(
-    reads: Array<{ name: string; dataType: 'BOOL' | 'REAL' | 'INT' }>,
+    reads: Array<{ name: string; dataType: PlcScalarType }>,
     timeoutMs: number = 5000,
   ): Promise<Array<{ name: string; success: boolean; value?: number | boolean; error?: string }>> {
     if (!this.connectionConfig) {
@@ -763,7 +816,9 @@ export class PlcClient extends EventEmitter {
             ? plc_tag_get_bit(created[i].handle, 0) === 1
             : dt === 'REAL'
               ? plc_tag_get_float32(created[i].handle, 0)
-              : plc_tag_get_int16(created[i].handle, 0);
+              : dt === 'DINT'
+                ? plc_tag_get_int32(created[i].handle, 0)
+                : plc_tag_get_int16(created[i].handle, 0);
           out[i].success = true;
         } catch (err) {
           out[i].error = err instanceof Error ? err.message : String(err);
@@ -786,7 +841,7 @@ export class PlcClient extends EventEmitter {
    * buffer, typed setter, write, temporary handles destroyed afterwards.
    */
   async writeTypedTags(
-    writes: Array<{ name: string; value: number; dataType: 'BOOL' | 'REAL' | 'INT' }>,
+    writes: Array<{ name: string; value: number; dataType: PlcScalarType }>,
     timeoutMs: number = 5000,
   ): Promise<Array<{ name: string; success: boolean; error?: string }>> {
     if (!this.connectionConfig) {
@@ -831,8 +886,11 @@ export class PlcClient extends EventEmitter {
             setStatus = plc_tag_set_int8(created[i].handle, 0, w.value ? 1 : 0);
           } else if (w.dataType === 'REAL') {
             setStatus = plc_tag_set_int32(created[i].handle, 0, floatToInt32Bits(w.value));
+          } else if (w.dataType === 'DINT') {
+            // Numeric int32 — NOT float bits. See writeTypedTag (speed-overflow fix).
+            setStatus = plc_tag_set_int32(created[i].handle, 0, Math.round(w.value));
           } else {
-            setStatus = plc_tag_set_int16(created[i].handle, 0, w.value);
+            setStatus = plc_tag_set_int16(created[i].handle, 0, Math.round(w.value));
           }
         } catch (err) {
           out[i].error = err instanceof Error ? err.message : String(err);
@@ -873,7 +931,7 @@ export class PlcClient extends EventEmitter {
    */
   hammerWriteTags(
     deviceName: string,
-    writes: Array<{ field: string; value: number; dataType: 'BOOL' | 'REAL' | 'INT' }>,
+    writes: Array<{ field: string; value: number; dataType: PlcScalarType }>,
     durationMs = 1000
   ): { success: boolean; iterations: number; writes: Array<{ tagPath: string; ok: boolean }>; error?: string } {
     if (!this.connectionConfig) return { success: false, iterations: 0, writes: [], error: 'No connection config' };
@@ -884,7 +942,7 @@ export class PlcClient extends EventEmitter {
       for (const w of writes) {
         const isStatus = w.field === 'Speed_FPM' && w.dataType !== 'BOOL';
         const tagPath = isStatus ? `CBT_${deviceName}.CTRL.STS.${w.field}` : `CBT_${deviceName}.CTRL.CMD.${w.field}`;
-        const elemSize = w.dataType === 'BOOL' ? 1 : w.dataType === 'REAL' ? 4 : 2;
+        const elemSize = w.dataType === 'BOOL' ? 1 : (w.dataType === 'REAL' || w.dataType === 'DINT') ? 4 : 2;
         const handle = createTag({ gateway: ip, path, name: tagPath, elemSize, elemCount: 1, timeout });
         if (handle < 0) throw new Error(`Failed to create tag ${tagPath}: ${getStatusMessage(handle)}`);
         handles.push({ handle, field: w.field, dataType: w.dataType, value: w.value, tagPath });
@@ -904,7 +962,9 @@ export class PlcClient extends EventEmitter {
           // declares broken; both write paths must agree. (Behavior change vs
           // the original write-tags-batch — re-verify REAL hammer on a drive.)
           else if (h.dataType === 'REAL') plc_tag_set_int32(h.handle, 0, floatToInt32Bits(h.value));
-          else plc_tag_set_int16(h.handle, 0, h.value);
+          // DINT: numeric int32, NOT float bits (speed-overflow fix).
+          else if (h.dataType === 'DINT') plc_tag_set_int32(h.handle, 0, Math.round(h.value));
+          else plc_tag_set_int16(h.handle, 0, Math.round(h.value));
         }
         let ok = true;
         for (const h of handles) {
