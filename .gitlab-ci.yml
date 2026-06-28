@@ -80,8 +80,13 @@ refresh-cloud-image:
     - docker:27-dind
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
-    # Bump to a newer commissioning-cloud SHA to refresh cloud-stage.
-    CLOUD_SRC: registry.gitlab.lci.ge/commissioning/commissioning-cloud:c3e44ea1f11f866585cd2f4387d0833a80dbde60
+    # Bump to a newer commissioning-cloud SHA to refresh cloud-stage. MUST be
+    # recent enough that its Prisma schema has every table/column the battle seed
+    # writes — an older image makes cloud-seed fail (psql exit 3) on missing
+    # tables (e.g. VfdCommissioningBlocker, subsystem_change_log, addressed_at,
+    # punchlist_status). Bumped 2026-06-28 from c3e44ea (06-05, pre-VFD-store)
+    # to 7a2ecfab (06-27 main HEAD) which has the full schema.
+    CLOUD_SRC: registry.gitlab.lci.ge/commissioning/commissioning-cloud:7a2ecfab4763f7585462720925951b3594d0a317
   rules:
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - if: '$RUN_PREBUILD == "1"'        # API/scheduled trigger with this var
