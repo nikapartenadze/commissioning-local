@@ -72,6 +72,44 @@ function elemSizeFor(dataType: PlcScalarType): number {
   return dataType === 'BOOL' ? 1 : dataType === 'INT' ? 2 : 4;
 }
 
+/**
+ * Encode a scalar value into the integer payload + libplctag setter for its
+ * type. Pure (no FFI) so the safety-critical type handling is unit-testable.
+ *
+ *   BOOL → int8  (0/1)
+ *   INT  → int16 (rounded — a 16-bit int can't hold a fraction)
+ *   DINT → int32 with the NUMERIC value (rounded)        ← speed setpoints
+ *   REAL → int32 with the float32 BIT-PATTERN
+ *
+ * The REAL vs DINT distinction is the whole fix: a REAL writes float bits, a
+ * DINT writes the number. Writing float bits into a DINT tag is what produced
+ * the ~1.1e9 speed overflow.
+ */
+export function encodeScalarWrite(
+  dataType: PlcScalarType,
+  value: number,
+): { kind: 'int8' | 'int16' | 'int32'; raw: number } {
+  if (dataType === 'BOOL') return { kind: 'int8', raw: value ? 1 : 0 };
+  if (dataType === 'REAL') return { kind: 'int32', raw: floatToInt32Bits(value) };
+  if (dataType === 'DINT') return { kind: 'int32', raw: Math.round(value) };
+  return { kind: 'int16', raw: Math.round(value) }; // INT
+}
+
+/**
+ * Read-back verification predicate: did the controller store what we sent?
+ * REAL compares with a small tolerance (float round-trip); INT/DINT compare
+ * the rounded integer exactly. A false return is the signature of a data-type
+ * mismatch (e.g. our REAL bytes read back as a DINT integer). Pure — testable.
+ */
+export function scalarReadBackMatches(
+  dataType: PlcScalarType,
+  intendedValue: number,
+  readBack: number,
+): boolean {
+  if (dataType === 'REAL') return Math.abs(readBack - intendedValue) <= 1e-3;
+  return readBack === Math.round(intendedValue);
+}
+
 // IO tag definition (matches backend Io model)
 export interface IoTag {
   id: number;
@@ -666,23 +704,13 @@ export class PlcClient extends EventEmitter {
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to read before write: ${getStatusMessage(readStatus)}` };
       }
-      // Whole-number value for integer tag types. DINT/INT cannot hold a
-      // fraction, so round once here (e.g. 25.3 RVS -> 25) and reuse for both
-      // the setter and the read-back verify below.
-      const intValue = Math.round(value);
+      // Encode by type (pure helper — REAL writes float bits, DINT writes the
+      // number; see encodeScalarWrite). This is the speed-overflow fix.
+      const enc = encodeScalarWrite(dataType, value);
       let setStatus: number;
-      if (dataType === 'BOOL') {
-        setStatus = plc_tag_set_int8(handle, 0, value ? 1 : 0);
-      } else if (dataType === 'REAL') {
-        // REAL: float32 bit-pattern (ffi-rs DataType.Float is broken).
-        setStatus = plc_tag_set_int32(handle, 0, floatToInt32Bits(value));
-      } else if (dataType === 'DINT') {
-        // DINT: the NUMERIC integer, NOT the float bit-pattern. Writing float
-        // bits into a DINT is what overflowed the speed setpoint to ~1.1e9.
-        setStatus = plc_tag_set_int32(handle, 0, intValue);
-      } else {
-        setStatus = plc_tag_set_int16(handle, 0, intValue);
-      }
+      if (enc.kind === 'int8') setStatus = plc_tag_set_int8(handle, 0, enc.raw);
+      else if (enc.kind === 'int16') setStatus = plc_tag_set_int16(handle, 0, enc.raw);
+      else setStatus = plc_tag_set_int32(handle, 0, enc.raw);
       if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to set value: ${getStatusMessage(setStatus)}` };
       }
@@ -707,11 +735,8 @@ export class PlcClient extends EventEmitter {
           dataType === 'REAL' ? plc_tag_get_float32(handle, 0)
           : dataType === 'DINT' ? plc_tag_get_int32(handle, 0)
           : plc_tag_get_int16(handle, 0);
-        const mismatch =
-          dataType === 'REAL' ? Math.abs(readBack - value) > 1e-3
-          : readBack !== intValue;
-        if (mismatch) {
-          const wrote = dataType === 'REAL' ? value : intValue;
+        if (!scalarReadBackMatches(dataType, value, readBack)) {
+          const wrote = dataType === 'REAL' ? value : Math.round(value);
           return {
             success: false,
             error: `Write verify failed on ${tagName}: wrote ${wrote} but tag reads back ${readBack}. ` +
