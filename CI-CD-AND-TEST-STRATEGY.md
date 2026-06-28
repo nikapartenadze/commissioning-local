@@ -76,13 +76,13 @@ build fits in the existing 60 GB **without** a risky disk grow.
 keeping the runner lean. The disk constraint is also gone — the ci-runner FS was grown
 to **117 GB (76 GB free)** and the thin pool recovered to **84.6%**. No more hand-pushing.
 
-### Gap 3 — Nothing tests the shipped installer/EXE — ⛔ OPEN (BLOCKER)
-Battle tests the *Docker image*, never the Windows NSIS installer / portable ZIP.
-Fresh-install boot, upgrade-over-existing with schema migration, and the
-`vcruntime140.dll`/`plctag.dll` "os error 126" class are all untested on the
-artifact that actually lands on tablets. This is the standing biggest gap in
-`battle/TEST-COVERAGE.md` §F. Needs a Windows runner + a smoke checklist
-(install → boot → connect a PLC sim → upgrade-over-existing → data preserved).
+### Gap 3 — Installer/EXE smoke test — ⚪ OUT OF SCOPE (decided 2026-06-28)
+Battle tests the *Docker image*, not the Windows NSIS installer / portable ZIP.
+**This is intentional, not a gap.** The thing we validate in CI is *functionality*
+— push / pull / sync, multi-MCM, data-safety — and that runs fully in Docker
+containers, which is the chosen strategy. Packaging concerns (fresh-install boot,
+upgrade-over-existing, `vcruntime140.dll`/`plctag.dll` "os error 126") are handled
+out-of-band per release, not gated by CI. No Windows runner is being added.
 
 ## 4. Infrastructure: do we need a VM? Is GitLab enough?
 
@@ -156,6 +156,7 @@ three buckets: now-covered / pending / not-covered-by-CI. Invoke with
    (decide what's safe to delete). Prerequisite for ANY disk growth.
 4. ✅ **`build-tool-image` enabled** (§4) on the existing runner (2026-06-28) → nightly
    soaks the real latest binary, no more hand-pushing. Watch the first merge→main run go green.
-5. **Gap 3 — installer/EXE smoke** (Windows runner + checklist) — the BLOCKER before
-   any site deploy; see `battle/TEST-COVERAGE.md` §F and Part 3.
+5. ⚪ **Gap 3 — installer/EXE smoke** — OUT OF SCOPE by decision (2026-06-28). CI
+   validates functionality in Docker (push/pull/sync); Windows packaging is handled
+   per-release out-of-band, not in CI. No Windows runner.
 6. Per-feature: run `/coverage-keeper`; keep `battle/TEST-COVERAGE.md` honest.
