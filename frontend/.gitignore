@@ -52,3 +52,6 @@ database.db-shm
 # Build outputs
 dist/
 dist-server/
+
+# vitest JUnit output (CI artifact)
+test-results/
