@@ -121,21 +121,34 @@ test.describe('connected: field tool ⇄ cloud', () => {
     const row = await scrollIoRowIntoView(page, target.name)
     await failIoRow(row)
 
-    // The FailCommentDialog appears (the tool prompts for a fail reason). Submit
-    // it. Confirmed against frontend/components/fail-comment-dialog.tsx
-    // (2026-06-29): it is a Radix Dialog (role=dialog) and the submit button is
-    // labelled "Mark as Failed" (regular fail) or "Unpass" (unpass mode). The
-    // comment is optional for a regular failure (only required when reason =
-    // "Other"), so a default-reason submit goes through with no text entered.
+    // The FailCommentDialog appears (the tool prompts for a fail reason).
+    // Confirmed against frontend/components/fail-comment-dialog.tsx +
+    // app/commissioning/[id]/page.tsx (2026-06-29):
+    //   - Radix Dialog (role=dialog); submit button is labelled "Mark as Failed".
+    //   - "Failure Reason" is a REQUIRED Radix Select (handleSubmit toasts and
+    //     refuses to submit without it) — options come from FAILURE_REASON_GROUPS
+    //     (e.g. "Wrong wiring" under Electrical).
+    //   - The page passes requireDiscipline, so a "Discipline" Radix Select
+    //     (Electrical/Controls/Mechanical) is ALSO required.
+    //   - The comment is optional unless the reason is "Other", so we pick a
+    //     non-Other reason and submit with no comment text.
     const failDialog = page.getByRole('dialog')
-    if (await failDialog.isVisible().catch(() => false)) {
-      const submit = failDialog
-        .getByRole('button', { name: /mark as failed|unpass/i })
-        .first()
-      await expect(submit).toBeVisible({ timeout: 10_000 })
-      await submit.click()
-      await expect(failDialog).toBeHidden({ timeout: 10_000 })
+    await expect(failDialog).toBeVisible({ timeout: 10_000 })
+    // Pick the Failure Reason (Radix Select trigger → option).
+    await failDialog.getByRole('combobox').first().click()
+    await page.getByRole('option', { name: 'Wrong wiring', exact: true }).click()
+    // Pick the Discipline (second Select; required because requireDiscipline).
+    const combos = failDialog.getByRole('combobox')
+    if ((await combos.count()) > 1) {
+      await combos.nth(1).click()
+      await page.getByRole('option', { name: 'Controls', exact: true }).click()
     }
+    const submit = failDialog
+      .getByRole('button', { name: /^mark as failed$/i })
+      .first()
+    await expect(submit).toBeEnabled({ timeout: 10_000 })
+    await submit.click()
+    await expect(failDialog).toBeHidden({ timeout: 10_000 })
 
     // field-tool badge flips to Failed
     await expectFieldResult(row, 'Failed')
