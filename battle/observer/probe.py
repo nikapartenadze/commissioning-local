@@ -325,6 +325,27 @@ def mutator_edited_ids() -> set[int]:
     return edited
 
 
+def mutator_deleted_ids() -> set[int]:
+    """IO ids the cloud-mutator DELETED on the cloud authority. A field result
+    queued for one of these can NEVER sync — the IO is gone, so the cloud rejects
+    the push (404/403) and the tool correctly gives up. That drop is expected,
+    NOT field-work loss, so it is excluded from I4's suspect-drop check — the same
+    way mutator-EDITED ids are excluded from the divergence check. A 403/version
+    drop on a STILL-EXISTING io is untouched and still flagged as real loss."""
+    deleted: set[int] = set()
+    mut_path = os.path.join(RUNS_DIR, RUN_ID, "cloud-mutations.jsonl")
+    if not os.path.exists(mut_path):
+        return deleted
+    for line in open(mut_path, errors="replace"):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("deleted"):
+            deleted |= {int(x) for x in str(e["deleted"]).split(",") if x}
+    return deleted
+
+
 def quiesce_crew() -> None:
     """Signal every bot to stop (sentinel the crew polls each loop) and wait for
     in-flight writes to land, so the journal stops growing before we snapshot.
@@ -362,6 +383,16 @@ def check_data_loss() -> dict:
     if mutated:
         journaled = {i: r for i, r in journaled.items() if i not in mutated}
     rejected, suspect_drops = scrape_permanent_drops()
+
+    # A drop for an IO the mutator DELETED cloud-side is expected — the result
+    # has nowhere to land — so it is not loss. Drops for still-existing IOs (a
+    # genuine auth/version reject = the MCM11/B1 class) remain suspect. Also drop
+    # those ids from `journaled` so the wipe/divergence checks below don't flag a
+    # vanished-IO as a wipe.
+    deleted_cloud = mutator_deleted_ids()
+    if deleted_cloud:
+        suspect_drops = [d for d in suspect_drops if d.get("io") not in deleted_cloud]
+        journaled = {i: r for i, r in journaled.items() if i not in deleted_cloud}
 
     # Tell chaos to stop flapping/storming and restore connectivity, so the
     # system can converge for an honest final judgment (otherwise an ongoing
