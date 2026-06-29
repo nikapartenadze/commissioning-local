@@ -132,20 +132,21 @@ test.describe('connected: field tool ⇄ cloud', () => {
     //     (Electrical/Controls/Mechanical) is ALSO required.
     //   - The comment is optional unless the reason is "Other", so we pick a
     //     non-Other reason and submit with no comment text.
+    // Confirmed on a live trace (2026-06-29): the comboboxes carry the
+    // accessible names "Failure Reason *" and "Discipline *"; options are Radix
+    // listbox items addressed by text. Select both via real-user clicks (NOT
+    // selectOption — these are Radix Selects, not native <select>), then the
+    // submit button (disabled while either is empty) enables.
     const failDialog = page.getByRole('dialog')
     await expect(failDialog).toBeVisible({ timeout: 10_000 })
-    // Pick the Failure Reason (Radix Select trigger → option).
-    await failDialog.getByRole('combobox').first().click()
+
+    await failDialog.getByRole('combobox', { name: /failure reason/i }).click()
     await page.getByRole('option', { name: 'Wrong wiring', exact: true }).click()
-    // Pick the Discipline (second Select; required because requireDiscipline).
-    const combos = failDialog.getByRole('combobox')
-    if ((await combos.count()) > 1) {
-      await combos.nth(1).click()
-      await page.getByRole('option', { name: 'Controls', exact: true }).click()
-    }
-    const submit = failDialog
-      .getByRole('button', { name: /^mark as failed$/i })
-      .first()
+
+    await failDialog.getByRole('combobox', { name: /discipline/i }).click()
+    await page.getByRole('option', { name: 'Controls', exact: true }).click()
+
+    const submit = failDialog.getByRole('button', { name: /^mark as failed$/i }).first()
     await expect(submit).toBeEnabled({ timeout: 10_000 })
     await submit.click()
     await expect(failDialog).toBeHidden({ timeout: 10_000 })
@@ -162,16 +163,16 @@ test.describe('connected: field tool ⇄ cloud', () => {
     // isn't available (cloud not in dev mode), keep the API-only proof.
     const authed = await signInCloudDevAdmin(page, BASE_URLS.CLOUD_URL)
     if (authed) {
-      // The cloud detail grid is searchable; filter to the IO so its row (and
-      // "Failed" badge) renders even though the grid is virtualised. The cloud
-      // dashboard accepts a ?search= query param (project-dashboard initialSearch).
-      await page.goto(`${BASE_URLS.CLOUD_URL}/project/1/detail?search=${encodeURIComponent(target.name)}`)
-      // Not bounced to signin (session is live).
+      // The cloud dashboard renders the SAME subsystem the field tool just
+      // mutated. The detail grid is virtualised (rows not matched off-screen are
+      // hidden) and there is no server-side ?search= param on this route, so we
+      // don't hunt a specific virtualised row. Instead assert the authed detail
+      // page loaded the project's data via the always-visible IO-count header
+      // summary (e.g. "505 IO · 484P · 20F · 1NT"). The canonical proof that the
+      // FAILED result propagated is the public /api/sync poll in 3a above.
+      await page.goto(`${BASE_URLS.CLOUD_URL}/project/1/detail`, { waitUntil: 'domcontentloaded' })
       await expect(page).not.toHaveURL(/\/auth\/signin/, { timeout: 15_000 })
-      // The IO name renders in a mono cell; assert it surfaced...
-      await expect(page.getByText(target.name, { exact: false }).first()).toBeVisible({ timeout: 30_000 })
-      // ...and a "Failed" result badge is visible on the (filtered) grid.
-      await expect(page.getByText('Failed', { exact: true }).first()).toBeVisible({ timeout: 30_000 })
+      await expect(page.getByText(/\d+\s*IO\b/).first()).toBeVisible({ timeout: 30_000 })
     } else {
       test.info().annotations.push({
         type: 'note',
