@@ -172,7 +172,10 @@ test.describe('connected: field tool ⇄ cloud', () => {
       // FAILED result propagated is the public /api/sync poll in 3a above.
       await page.goto(`${BASE_URLS.CLOUD_URL}/project/1/detail`, { waitUntil: 'domcontentloaded' })
       await expect(page).not.toHaveURL(/\/auth\/signin/, { timeout: 15_000 })
-      await expect(page.getByText(/\d+\s*IO\b/).first()).toBeVisible({ timeout: 30_000 })
+      // VISIBLE-filtered: the header is responsive-duplicated (hidden + shown).
+      await expect(
+        page.getByText(/\d+\s*IO\b/).filter({ visible: true }).first(),
+      ).toBeVisible({ timeout: 30_000 })
     } else {
       test.info().annotations.push({
         type: 'note',
