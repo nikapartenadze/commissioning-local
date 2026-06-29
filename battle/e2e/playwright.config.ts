@@ -43,6 +43,9 @@ export default defineConfig({
     ['list'],
     ['html', { outputFolder: `${ARTIFACT_ROOT}/html-report`, open: 'never' }],
     ['json', { outputFile: `${ARTIFACT_ROOT}/results.json` }],
+    // JUnit XML so the GitLab pipeline "Tests" tab populates from the
+    // `artifacts: reports: junit:` declaration on the battle-e2e job.
+    ['junit', { outputFile: `${ARTIFACT_ROOT}/junit.xml` }],
   ],
 
   use: {

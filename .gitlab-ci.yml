@@ -60,9 +60,16 @@ frontend-verify:
     # the gate (matches cloud/tracker, which mark lint + typecheck allow_failure).
     - 'npm run lint || echo "WARN - lint reported issues (advisory, non-blocking)"'
     - 'npx tsc --noEmit || echo "WARN - typecheck reported errors (advisory, non-blocking)"'
-    # The HARD gate: all field-tool unit tests must pass.
-    - npm test
+    # The HARD gate: all field-tool unit tests must pass. Emit JUnit XML too so
+    # the GitLab pipeline "Tests" tab populates (keep the default console
+    # reporter for the inline log). cwd is frontend/, so the path is relative.
+    - npx vitest run --reporter=default --reporter=junit --outputFile=test-results/junit.xml
   timeout: 20m
+  artifacts:
+    when: always   # upload the report even when the gate fails
+    reports:
+      junit: frontend/test-results/junit.xml
+    expire_in: 30 days
 
 # ── refresh-cloud-image ──────────────────────────────────────────────────────
 # Copies the current prod commissioning-cloud image into THIS project's
@@ -296,6 +303,15 @@ battle-e2e:
     - docker logs battle-cloud-1 > battle-artifacts/e2e/cloud-console.log 2>&1 || true
     - docker logs battle-tool-1 > battle-artifacts/e2e/tool-console.log 2>&1 || true
     - docker compose -f battle/docker-compose.battle.yml -p battle down -v || true
+  artifacts:
+    when: always
+    # Keep the browsable Playwright html report + videos/traces, AND feed the
+    # GitLab pipeline "Tests" tab from the Playwright JUnit XML.
+    paths:
+      - battle-artifacts/
+    reports:
+      junit: battle-artifacts/e2e/junit.xml
+    expire_in: 30 days
 
 # ── central-battle ────────────────────────────────────────────────────────────
 # Centralized-server scenarios (central / central-cdw5 / central-cdw5-split)
