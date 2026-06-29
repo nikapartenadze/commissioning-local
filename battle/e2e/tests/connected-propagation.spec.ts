@@ -9,6 +9,7 @@ import {
   failIoRow,
   clearIoRow,
   expectFieldResult,
+  signInCloudDevAdmin,
 } from './helpers'
 
 /**
@@ -120,14 +121,20 @@ test.describe('connected: field tool ⇄ cloud', () => {
     const row = await scrollIoRowIntoView(page, target.name)
     await failIoRow(row)
 
-    // A FailCommentDialog may appear (the tool prompts for a fail reason). If it
-    // does, submit it. The dialog component is FailCommentDialog.
-    // TODO(confirm-on-live): confirm the submit control label below ("Save"/
-    // "Confirm"/"Submit"). It is wrapped in a role=dialog.
+    // The FailCommentDialog appears (the tool prompts for a fail reason). Submit
+    // it. Confirmed against frontend/components/fail-comment-dialog.tsx
+    // (2026-06-29): it is a Radix Dialog (role=dialog) and the submit button is
+    // labelled "Mark as Failed" (regular fail) or "Unpass" (unpass mode). The
+    // comment is optional for a regular failure (only required when reason =
+    // "Other"), so a default-reason submit goes through with no text entered.
     const failDialog = page.getByRole('dialog')
     if (await failDialog.isVisible().catch(() => false)) {
-      const submit = failDialog.getByRole('button', { name: /save|confirm|submit|ok/i }).first()
-      if (await submit.count()) await submit.click()
+      const submit = failDialog
+        .getByRole('button', { name: /mark as failed|unpass/i })
+        .first()
+      await expect(submit).toBeVisible({ timeout: 10_000 })
+      await submit.click()
+      await expect(failDialog).toBeHidden({ timeout: 10_000 })
     }
 
     // field-tool badge flips to Failed
@@ -136,19 +143,26 @@ test.describe('connected: field tool ⇄ cloud', () => {
     // ── 3a. canonical: assert propagation via the public cloud pull endpoint ───
     await waitForCloudResult(request, target.id, 'Failed')
 
-    // ── 3b. optional: assert the cloud DASHBOARD UI shows it (if not auth-walled)
-    await page.goto(`${BASE_URLS.CLOUD_URL}/project/1/detail`)
-    if (!/\/auth\/signin/.test(page.url())) {
-      // Locate the IO's row by its name and assert a Failed badge is present.
-      // The cloud grid is virtualised; search by the mono name cell.
-      // TODO(confirm-on-live): tighten this to the specific row once the cloud
-      // grid row selector is confirmed. For now assert the name is present and a
-      // Failed badge is visible on the page after filtering to it is future work.
+    // ── 3b. assert the cloud DASHBOARD UI shows it (sign in via dev-admin) ──────
+    // The cloud dashboard is behind NextAuth middleware; sign in via the
+    // dev-admin provider (cloud-dev image + DEV_BYPASS_AUTH). If the provider
+    // isn't available (cloud not in dev mode), keep the API-only proof.
+    const authed = await signInCloudDevAdmin(page, BASE_URLS.CLOUD_URL)
+    if (authed) {
+      // The cloud detail grid is searchable; filter to the IO so its row (and
+      // "Failed" badge) renders even though the grid is virtualised. The cloud
+      // dashboard accepts a ?search= query param (project-dashboard initialSearch).
+      await page.goto(`${BASE_URLS.CLOUD_URL}/project/1/detail?search=${encodeURIComponent(target.name)}`)
+      // Not bounced to signin (session is live).
+      await expect(page).not.toHaveURL(/\/auth\/signin/, { timeout: 15_000 })
+      // The IO name renders in a mono cell; assert it surfaced...
       await expect(page.getByText(target.name, { exact: false }).first()).toBeVisible({ timeout: 30_000 })
+      // ...and a "Failed" result badge is visible on the (filtered) grid.
+      await expect(page.getByText('Failed', { exact: true }).first()).toBeVisible({ timeout: 30_000 })
     } else {
       test.info().annotations.push({
         type: 'note',
-        description: 'Cloud dashboard auth-walled; propagation verified via public /api/sync read only. Set CLOUD_DEV_BYPASS=1 for the UI assertion.',
+        description: 'Cloud dev-admin sign-in unavailable (cloud not in dev mode); propagation verified via public /api/sync read only. Run with cloud-dev + CLOUD_DEV_BYPASS=true for the UI assertion.',
       })
     }
 

@@ -106,3 +106,46 @@ export async function clearIoRow(row: Locator) {
 export async function expectFieldResult(row: Locator, result: 'Passed' | 'Failed') {
   await expect(row.getByText(result, { exact: true })).toBeVisible()
 }
+
+/**
+ * Sign in to the cloud dashboard via the dev-admin NextAuth credentials provider.
+ *
+ * Confirmed against commissioning-cloud source (2026-06-29):
+ *   - lib/auth.ts registers a `dev-admin` CredentialsProvider ONLY when
+ *     NODE_ENV=development AND DEV_BYPASS_AUTH=true (the battle cloud-dev image
+ *     run with CLOUD_NODE_ENV=development + CLOUD_DEV_BYPASS=true).
+ *   - middleware.ts redirects every dashboard route to /auth/signin UNLESS a
+ *     NextAuth JWT cookie is present — the env flag alone does NOT create a
+ *     session, so we must actually sign in.
+ *   - The signin PAGE only shows the dev-admin button when the *build-time*
+ *     NEXT_PUBLIC_DEV_BYPASS_AUTH=true, which the battle image does not set, so
+ *     we drive the NextAuth credentials callback directly (CSRF → callback),
+ *     which works whenever the provider is registered.
+ *
+ * Returns true if a session cookie was established, false if dev-admin is not
+ * available (cloud not in dev mode) — callers then keep the API-only path.
+ */
+export async function signInCloudDevAdmin(page: Page, cloudUrl: string): Promise<boolean> {
+  const ctx = page.context()
+  // 1. CSRF token (NextAuth requires it on the credentials callback POST).
+  const csrfRes = await ctx.request.get(`${cloudUrl}/api/auth/csrf`)
+  if (!csrfRes.ok()) return false
+  const { csrfToken } = await csrfRes.json()
+  if (!csrfToken) return false
+
+  // 2. POST the dev-admin credentials callback (no credentials fields needed —
+  //    the provider's authorize() returns the synthetic admin unconditionally).
+  const cbRes = await ctx.request.post(`${cloudUrl}/api/auth/callback/dev-admin`, {
+    form: { csrfToken, json: 'true', callbackUrl: `${cloudUrl}/` },
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    maxRedirects: 0,
+  })
+  // NextAuth returns 200/302 and Set-Cookie for the session on success.
+  const sessionOk = cbRes.status() < 400 || cbRes.status() === 302
+
+  // 3. Verify a real session exists (the cookie is now on the shared context).
+  const sessionRes = await ctx.request.get(`${cloudUrl}/api/auth/session`)
+  if (!sessionRes.ok()) return false
+  const session = await sessionRes.json().catch(() => null)
+  return Boolean(sessionOk && session && session.user)
+}

@@ -222,6 +222,81 @@ battle-delta:
   script:
     - sh battle/ci/run_scenario.sh
 
+# ── battle-e2e ──────────────────────────────────────────────────────────────
+# Playwright BROWSER E2E against the CONNECTED battle stack (battle/e2e/). Drives
+# both UIs — field tool (:3000) and cloud dashboard (:3000, dev-bypass) — and
+# asserts a field-tool Fail propagates to the cloud (the real sync path), plus
+# cloud-dashboard smoke. Brings up ONLY the connected services (no chaos/crew/
+# observer/mutator). Uses cloud-dev:latest in dev mode (DEV_BYPASS_AUTH) so the
+# dashboard UI is reachable; the test signs in via the dev-admin provider.
+# Trigger: E2E=1 schedule/API, or manually on a push pipeline.
+# allow_failure:true until two consecutive green runs promote it to a gate.
+battle-e2e:
+  extends: .battle-base
+  rules:
+    - if: '$E2E == "1"'
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: manual
+      allow_failure: true
+  timeout: 40m
+  variables:
+    # dev-mode cloud so the dashboard UI is reachable (the test signs in via the
+    # dev-admin credentials provider; the public /api/sync read is key-auth).
+    CLOUD_IMAGE: $CI_REGISTRY_IMAGE/cloud-dev:latest
+    CLOUD_NODE_ENV: development
+    CLOUD_DEV_BYPASS: "true"
+    SUBSYSTEM_ID: "38"
+    CLOUD_API_KEY: battle-key-mcm02
+  script:
+    # 1. Bring up ONLY the connected services (no chaos/crew/observer/mutator).
+    #    The tiny python/node images (seeder) build; the heavy ones are already
+    #    pulled by .battle-base. cloud-schema/cloud-seed are one-shot deps.
+    - export RUN_ID="e2e-${CI_PIPELINE_ID:-local}"
+    - docker compose -f battle/docker-compose.battle.yml -p battle build seeder
+    - docker compose -f battle/docker-compose.battle.yml -p battle up -d
+        seeder cloud-db cloud-schema cloud-seed cloud plc-sim tool
+    # 2. Wait for tool + cloud to answer (bounded ~5 min). The cloud's
+    #    /api/health is public (excluded from the auth middleware matcher);
+    #    the tool serves its SPA + /api/ios.
+    - |
+      ok=0
+      for i in $(seq 1 60); do
+        if docker run --rm --network battle_battle curlimages/curl:8.10.1 -fsS "http://tool:3000/api/ios?subsystemId=${SUBSYSTEM_ID}" >/dev/null 2>&1 \
+        && docker run --rm --network battle_battle curlimages/curl:8.10.1 -fsS "http://cloud:3000/api/health" >/dev/null 2>&1; then
+          echo "stack healthy after $((i*5))s"; ok=1; break
+        fi
+        echo "waiting for stack ($i/60)"; sleep 5
+      done
+      [ "$ok" = "1" ] || { echo "stack did not become healthy"; docker compose -f battle/docker-compose.battle.yml -p battle ps; docker logs battle-cloud-1 2>&1 | tail -n 40; docker logs battle-tool-1 2>&1 | tail -n 40; exit 1; }
+    # 3. Run Playwright from the official image (pinned to the lockfile version),
+    #    joined to the battle network, addressing services by their in-network
+    #    names. Artifacts land in the mounted battle-artifacts/ so the base job's
+    #    artifacts: rule collects them.
+    - mkdir -p battle-artifacts/e2e
+    - docker run --rm
+        --network battle_battle
+        -v "$CI_PROJECT_DIR/battle/e2e:/e2e"
+        -v "$CI_PROJECT_DIR/battle-artifacts:/battle-artifacts"
+        -w /e2e
+        -e TOOL_URL=http://tool:3000
+        -e CLOUD_URL=http://cloud:3000
+        -e CLOUD_API_KEY="$CLOUD_API_KEY"
+        -e E2E_SUBSYSTEM_ID="$SUBSYSTEM_ID"
+        -e E2E_ARTIFACT_DIR=/battle-artifacts/e2e
+        -e CI=1
+        mcr.microsoft.com/playwright:v1.61.1-noble
+        sh -c "npm ci && npx playwright test"
+  after_script:
+    # Capture cloud/tool consoles for diagnosing a failure, then tear down.
+    - mkdir -p battle-artifacts/e2e
+    - docker logs battle-cloud-1 > battle-artifacts/e2e/cloud-console.log 2>&1 || true
+    - docker logs battle-tool-1 > battle-artifacts/e2e/tool-console.log 2>&1 || true
+    - docker compose -f battle/docker-compose.battle.yml -p battle down -v || true
+
 # ── central-battle ────────────────────────────────────────────────────────────
 # Centralized-server scenarios (central / central-cdw5 / central-cdw5-split)
 # on the central-tool-latest branch ref. Pulls the BRANCH-built tool image
