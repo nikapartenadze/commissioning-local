@@ -1,0 +1,74 @@
+# ============================================================================
+# DRAFT CI job — Playwright browser E2E against the battle stack.
+#
+# DO NOT paste this verbatim into the real .gitlab-ci.yml without review. It is
+# a starting point modelled on the existing `.battle-base` job (docker:27 +
+# docker:27-dind, pulls pre-built images, exports battle-artifacts/).
+#
+# `allow_failure: true` initially — promote to a hard gate only after the
+# selectors flagged TODO(confirm-on-live) in the specs are confirmed green on a
+# live run.
+#
+# Run it MANUALLY from the GitLab UI first (web pipeline), exactly like the
+# existing `battle-smoke` job.
+# ============================================================================
+
+e2e-playwright:
+  extends: .battle-base          # reuses image, dind service, registry login,
+                                 # seed-DB download, and artifacts: battle-artifacts/
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true        # advisory until selectors are confirmed live
+    - if: '$RUN_E2E == "1"'
+      allow_failure: true
+  variables:
+    # Unlock the cloud dashboard UI so the cloud-side UI assertions run instead
+    # of only the public /api/sync read. Maps to the cloud service env in
+    # docker-compose.battle.yml (NODE_ENV / DEV_BYPASS_AUTH).
+    CLOUD_NODE_ENV: development
+    CLOUD_DEV_BYPASS: "1"
+    # Short-lived stack: we only need it up long enough to run the suite.
+    SOAK_MINUTES: "5"
+    BOTS: "0"
+  script:
+    # 1. Bring up the connected stack (tool :3000, cloud :3000 on the battle net).
+    #    No host port publishing needed — the Playwright container joins the same
+    #    docker network and addresses services by name.
+    - export RUN_ID="e2e-${CI_PIPELINE_ID}"
+    - docker compose -f battle/docker-compose.battle.yml -p battle up -d
+        seeder cloud-db cloud-schema cloud-seed cloud plc-sim tool
+    # 2. Wait for tool + cloud to answer health (bounded).
+    - |
+      for i in $(seq 1 60); do
+        if docker run --rm --network battle_battle curlimages/curl:8.10.1 -fsS http://tool:3000/api/health >/dev/null 2>&1 \
+        && docker run --rm --network battle_battle curlimages/curl:8.10.1 -fsS http://cloud:3000/api/health >/dev/null 2>&1; then
+          echo "stack healthy"; break
+        fi
+        echo "waiting for stack ($i)"; sleep 5
+      done
+    # 3. Run Playwright from the official image, joined to the battle network,
+    #    addressing services by their in-network names. Artifacts written into
+    #    the mounted battle-artifacts/ dir so the base job's artifacts: rule
+    #    collects them.
+    - mkdir -p battle-artifacts/e2e
+    - docker run --rm
+        --network battle_battle
+        -v "$CI_PROJECT_DIR/battle/e2e:/e2e"
+        -v "$CI_PROJECT_DIR/battle-artifacts:/battle-artifacts"
+        -w /e2e
+        -e TOOL_URL=http://tool:3000
+        -e CLOUD_URL=http://cloud:3000
+        -e CLOUD_API_KEY=battle-key-mcm02
+        -e E2E_ARTIFACT_DIR=/battle-artifacts/e2e
+        -e CI=1
+        mcr.microsoft.com/playwright:v1.49.0-noble
+        sh -c "npm ci && npx playwright test"
+  after_script:
+    - docker compose -f battle/docker-compose.battle.yml -p battle down -v || true
+  artifacts:
+    when: always
+    paths:
+      - battle-artifacts/e2e/
+    expire_in: 30 days
+  timeout: 30m
