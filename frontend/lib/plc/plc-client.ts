@@ -218,6 +218,24 @@ export class PlcClient extends EventEmitter {
       return { success: false, plcReachable: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: 'Already connecting' };
     }
 
+    // No-IP guard. A blank/whitespace gateway address can never connect, and
+    // libplctag would spin its worker thread retrying an empty host forever.
+    // Crucially we DO NOT scheduleReconnect() here: an MCM with no configured
+    // IP must come to rest in a clear "no IP" state instead of hammering the
+    // tag reader (and broadcasting a disconnect storm) every 5 s. This is the
+    // single choke point every connect() — legacy singleton AND per-MCM
+    // registry client — passes through, so guarding here stops the blank-IP
+    // retry loop for all callers. (Central deployments leave most mcms[].ip
+    // blank until the operator fills each one in.)
+    if (!config.ip || config.ip.trim().length === 0) {
+      this.connectionConfig = null;
+      this.cancelReconnect();
+      const errorMsg = 'No PLC IP configured';
+      this.setConnectionStatus('error');
+      this.emit('error', new Error(errorMsg));
+      return { success: false, plcReachable: false, tagsSuccessful: 0, tagsFailed: 0, failedTags: [], error: errorMsg };
+    }
+
     // Destroy any prior native tag handles before creating new ones.
     // Without this, auto-reconnect after a network blip — and operators clicking
     // Connect while still connected — orphan every libplctag handle on the C side,

@@ -155,6 +155,22 @@ export async function connectMcm(
     return gatewayClient.connect(subsystemId, name, { ip: config.ip, path: config.path }, tags);
   }
 
+  // No-IP guard. An MCM with a blank/whitespace IP can never connect; without
+  // this it would fall through to client.connect(''), which fails and (in the
+  // legacy path) schedules a reconnect that hammers the empty host every few
+  // seconds, spamming disconnect broadcasts. Surface a clear, terminal "no IP
+  // configured" state instead and never create/dial a client for it. Field
+  // central deployments leave most mcms[].ip blank until the operator fills
+  // each station in, so this is the common case, not an edge.
+  if (!config.ip || config.ip.trim().length === 0) {
+    return {
+      success: false,
+      status: 'disconnected',
+      plcReachable: false,
+      error: `No PLC IP configured for ${name || subsystemId}`,
+    };
+  }
+
   try {
     ensureLibrary();
   } catch (err) {
