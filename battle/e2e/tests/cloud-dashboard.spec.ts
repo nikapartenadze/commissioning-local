@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { BASE_URLS } from '../playwright.config'
-import { SUBSYSTEM_ID } from './helpers'
+import { SUBSYSTEM_ID, signInCloudDevAdmin } from './helpers'
 
 /**
  * Cloud dashboard smoke journeys (commissioning-cloud, Next.js, host :13001).
@@ -31,6 +31,13 @@ async function isAuthWalled(page: import('@playwright/test').Page): Promise<bool
 }
 
 test.describe('cloud dashboard — smoke', () => {
+  // Establish a dev-admin session before each UI test so the NextAuth middleware
+  // (which gates all dashboard routes) lets us through. No-op if the cloud isn't
+  // in dev mode — the per-test isAuthWalled() branches still handle that case.
+  test.beforeEach(async ({ page }) => {
+    await signInCloudDevAdmin(page, BASE_URLS.CLOUD_URL).catch(() => false)
+  })
+
   test('home loads (project directory or signin)', async ({ page }) => {
     await page.goto('/')
     // Either the project directory renders, or we are redirected to signin.
