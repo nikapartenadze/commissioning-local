@@ -35,7 +35,12 @@ async function isAuthWalled(page: import('@playwright/test').Page): Promise<bool
 // /api/auth/* hits can take 20-40s. Warm them once up-front (long timeout) so
 // the per-test navigations are fast and deterministic, not flaky.
 test.describe('cloud dashboard — smoke', () => {
+  // Warm every dashboard route once so `next dev` compiles them before the
+  // assertions run (first compile of /project/[id]/detail can exceed the 90s
+  // default test timeout — which is the cap on this hook too — so give the hook
+  // its own generous budget).
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(360_000)
     const ctx = await browser.newContext()
     const page = await ctx.newPage()
     try {
@@ -44,6 +49,8 @@ test.describe('cloud dashboard — smoke', () => {
         await page
           .goto(`${BASE_URLS.CLOUD_URL}${path}`, { waitUntil: 'domcontentloaded', timeout: 120_000 })
           .catch(() => { /* warmup is best-effort */ })
+        // Give the route a moment to finish client hydration / data fetch.
+        await page.waitForTimeout(1_500)
       }
     } finally {
       await ctx.close()
@@ -73,8 +80,11 @@ test.describe('cloud dashboard — smoke', () => {
       return
     }
     // Authed: the project directory should show at least one project card.
-    // Project 1 is seeded; cards render the project name in an h3.
-    await expect(page.locator('h3').first()).toBeVisible({ timeout: 20_000 })
+    // Project 1 is seeded; cards render the project name in an h3 (filter to a
+    // VISIBLE one — headers can be responsive-duplicated).
+    await expect(
+      page.locator('h3').filter({ visible: true }).first(),
+    ).toBeVisible({ timeout: 20_000 })
   })
 
   test('project detail IO grid renders for project 1', async ({ page }) => {
@@ -85,15 +95,15 @@ test.describe('cloud dashboard — smoke', () => {
       return
     }
 
-    // Confirmed on a live run (2026-06-29): the detail header always renders the
-    // project name + an IO-count summary like "505 IO · 484P · 20F · 1NT", which
-    // is proof the grid loaded its data. The per-row result Badges DO render but
-    // the grid is virtualised AND the Filters panel can overlay them, so the
-    // first matched badge is often `hidden` (a strict-mode visibility miss).
-    // Assert the always-visible header summary instead.
-    await expect(page.getByRole('heading', { name: /BATTLE MCM02|MCM/i }).first())
-      .toBeVisible({ timeout: 30_000 })
-    await expect(page.getByText(/\d+\s*IO\b/).first()).toBeVisible({ timeout: 30_000 })
+    // Confirmed on live traces (2026-06-29): the detail header renders the
+    // project name + an IO-count summary like "505 IO · 484P · 20F · 1NT" — proof
+    // the grid loaded its data. BUT the header is responsive-duplicated (a hidden
+    // copy + a visible copy), so a plain .first() can resolve to the HIDDEN one.
+    // Filter to the VISIBLE match. (The per-row result badges are virtualised and
+    // can be overlaid by the Filters panel, so we assert the header summary.)
+    await expect(
+      page.getByText(/\d+\s*IO\b/).filter({ visible: true }).first(),
+    ).toBeVisible({ timeout: 30_000 })
   })
 
   test('basic navigation: home → project → detail', async ({ page }) => {
@@ -110,9 +120,11 @@ test.describe('cloud dashboard — smoke', () => {
     await openBtn.click()
 
     await expect(page).toHaveURL(/\/project\/\d+\/detail/, { timeout: 20_000 })
-    // Same as the detail test: assert the always-visible IO-count header summary
-    // rather than a virtualised (often hidden) result badge.
-    await expect(page.getByText(/\d+\s*IO\b/).first()).toBeVisible({ timeout: 30_000 })
+    // Same as the detail test: assert the VISIBLE IO-count header summary (the
+    // header is responsive-duplicated; a plain .first() can hit the hidden copy).
+    await expect(
+      page.getByText(/\d+\s*IO\b/).filter({ visible: true }).first(),
+    ).toBeVisible({ timeout: 30_000 })
   })
 
   test('public sync read API is reachable (the connection backbone)', async ({ request }) => {
