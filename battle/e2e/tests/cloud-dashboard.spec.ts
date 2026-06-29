@@ -30,7 +30,26 @@ async function isAuthWalled(page: import('@playwright/test').Page): Promise<bool
   return /\/auth\/signin/.test(page.url())
 }
 
+// The battle cloud-dev image runs `next dev`, which COMPILES each route on its
+// first request — the first /, /project/[id], /project/[id]/detail and
+// /api/auth/* hits can take 20-40s. Warm them once up-front (long timeout) so
+// the per-test navigations are fast and deterministic, not flaky.
 test.describe('cloud dashboard — smoke', () => {
+  test.beforeAll(async ({ browser }) => {
+    const ctx = await browser.newContext()
+    const page = await ctx.newPage()
+    try {
+      await signInCloudDevAdmin(page, BASE_URLS.CLOUD_URL).catch(() => false)
+      for (const path of ['/', '/project/1', '/project/1/detail']) {
+        await page
+          .goto(`${BASE_URLS.CLOUD_URL}${path}`, { waitUntil: 'domcontentloaded', timeout: 120_000 })
+          .catch(() => { /* warmup is best-effort */ })
+      }
+    } finally {
+      await ctx.close()
+    }
+  })
+
   // Establish a dev-admin session before each UI test so the NextAuth middleware
   // (which gates all dashboard routes) lets us through. No-op if the cloud isn't
   // in dev mode — the per-test isAuthWalled() branches still handle that case.
@@ -39,7 +58,7 @@ test.describe('cloud dashboard — smoke', () => {
   })
 
   test('home loads (project directory or signin)', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
     // Either the project directory renders, or we are redirected to signin.
     // Both are valid "the app is up" outcomes — assert the app responded with
     // a recognisable shell, not a 5xx/blank.
@@ -59,40 +78,41 @@ test.describe('cloud dashboard — smoke', () => {
   })
 
   test('project detail IO grid renders for project 1', async ({ page }) => {
-    await page.goto('/project/1/detail')
+    await page.goto('/project/1/detail', { waitUntil: 'domcontentloaded' })
 
     if (await isAuthWalled(page)) {
       test.skip(true, 'Cloud auth wall active — run with CLOUD_DEV_BYPASS=1 to test the dashboard UI.')
       return
     }
 
-    // The detail grid shares the row class convention with the field tool
-    // (row-passed / row-failed / row-default) and renders result Badges.
-    // Assert the grid surfaced data: either a result/Not Tested badge is visible
-    // or at least one IO row exists.
-    // TODO(confirm-on-live): confirm the grid container/row selector; the cloud
-    // grid is virtualised (absolutely-positioned rows) like the field tool.
-    const anyResultBadge = page.getByText(/^(Passed|Failed|Not Tested)$/).first()
-    await expect(anyResultBadge).toBeVisible({ timeout: 30_000 })
+    // Confirmed on a live run (2026-06-29): the detail header always renders the
+    // project name + an IO-count summary like "505 IO · 484P · 20F · 1NT", which
+    // is proof the grid loaded its data. The per-row result Badges DO render but
+    // the grid is virtualised AND the Filters panel can overlay them, so the
+    // first matched badge is often `hidden` (a strict-mode visibility miss).
+    // Assert the always-visible header summary instead.
+    await expect(page.getByRole('heading', { name: /BATTLE MCM02|MCM/i }).first())
+      .toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText(/\d+\s*IO\b/).first()).toBeVisible({ timeout: 30_000 })
   })
 
   test('basic navigation: home → project → detail', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
     if (await isAuthWalled(page)) {
       test.skip(true, 'Cloud auth wall active — run with CLOUD_DEV_BYPASS=1 to test navigation.')
       return
     }
 
-    // Click into a project. Cards expose an "Open" button that routes to
-    // /project/{id}/detail (see components/project-list.tsx).
-    // TODO(confirm-on-live): if the card itself is the click target rather than
-    // an "Open" button, switch to clicking the card's heading link.
+    // Click into a project. Cards expose an "Open" button (confirmed live) that
+    // routes to /project/{id}/detail.
     const openBtn = page.getByRole('button', { name: /open/i }).first()
     await expect(openBtn).toBeVisible({ timeout: 20_000 })
     await openBtn.click()
 
     await expect(page).toHaveURL(/\/project\/\d+\/detail/, { timeout: 20_000 })
-    await expect(page.getByText(/^(Passed|Failed|Not Tested)$/).first()).toBeVisible({ timeout: 30_000 })
+    // Same as the detail test: assert the always-visible IO-count header summary
+    // rather than a virtualised (often hidden) result badge.
+    await expect(page.getByText(/\d+\s*IO\b/).first()).toBeVisible({ timeout: 30_000 })
   })
 
   test('public sync read API is reachable (the connection backbone)', async ({ request }) => {
