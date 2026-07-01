@@ -256,10 +256,16 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       const config = await configRes.json()
       const remoteUrl = config.remoteUrl || config.cloudUrl
       const apiPassword = config.apiPassword
-      const subId = subsystemId || config.subsystemId
+      // Scope the manual L2 pull to THIS view's route subsystem only. Never
+      // fall back to the singleton config.subsystemId: on a central server that
+      // is the last-connected MCM, and /api/cloud/pull-l2 does a scoped
+      // delete+reinsert — a wrong subId here would wipe another MCM's L2 (the
+      // v2.42.1 per-MCM wiring bug class). If the prop is absent the guard
+      // below errors cleanly instead of pulling the wrong subsystem.
+      const subId = subsystemId
 
       if (!remoteUrl) throw new Error('No cloud URL configured — go to Settings and set Remote URL')
-      if (!subId) throw new Error('No subsystem ID configured')
+      if (!subId) throw new Error('No subsystem ID configured for this view')
 
       console.log(`[FV Pull] Pulling L2 from ${remoteUrl}/api/sync/l2/${subId}`)
 
