@@ -927,7 +927,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
       if (pullFromCloud) {
         setRefreshing(true)
         try {
-          await authFetch('/api/cloud/pull-network', { method: 'POST' })
+          await authFetch('/api/cloud/pull-network', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subsystemId ? { subsystemId } : {}) })
         } catch {
           // Cloud pull failed — fall through to show local data
         }
@@ -946,7 +946,7 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
       // No local data — try pulling from cloud automatically
       if (!pullFromCloud) {
         try {
-          const pullRes = await authFetch('/api/cloud/pull-network', { method: 'POST' })
+          const pullRes = await authFetch('/api/cloud/pull-network', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subsystemId ? { subsystemId } : {}) })
           const pullData = await pullRes.json()
 
           if (pullData.success && pullData.rings > 0) {

@@ -260,7 +260,11 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
           triedCloudPull.current = true
           try {
             setPulling(true)
-            const pullRes = await authFetch('/api/cloud/pull-estop', { method: 'POST' })
+            const pullRes = await authFetch('/api/cloud/pull-estop', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(subsystemId ? { subsystemId } : {}),
+            })
             const pullData = await pullRes.json()
             if (pullData.success && pullData.zones > 0) {
               const res2 = await authFetch(url, { signal: controller.signal })

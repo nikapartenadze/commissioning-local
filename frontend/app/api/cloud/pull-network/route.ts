@@ -7,12 +7,18 @@ export async function POST(req: Request, res: Response) {
     const config = await configService.getConfig()
     const remoteUrl = config.remoteUrl
     const apiPassword = config.apiPassword
-    const subsystemId = typeof config.subsystemId === 'string' ? parseInt(config.subsystemId, 10) : config.subsystemId
+    // Scope by the REQUESTED subsystem (central multi-MCM), not the singleton
+    // config.subsystemId. Central pages MUST pass subsystemId in the body;
+    // single-MCM tablets fall back to config.
+    const bodySubsystemId = req.body?.subsystemId
+    const rawSubsystemId = bodySubsystemId != null ? bodySubsystemId
+      : (typeof config.subsystemId === 'string' ? parseInt(config.subsystemId, 10) : config.subsystemId)
+    const subsystemId = typeof rawSubsystemId === 'string' ? parseInt(rawSubsystemId, 10) : rawSubsystemId
 
     if (!remoteUrl) {
       return res.status(400).json({ success: false, error: 'Cloud URL not configured' })
     }
-    if (!subsystemId) {
+    if (!subsystemId || !Number.isFinite(subsystemId)) {
       return res.status(400).json({ success: false, error: 'Subsystem ID not configured' })
     }
 
