@@ -24,6 +24,13 @@ interface VfdBumpFailDialogProps {
   /** description is FINAL (Other already folded in via buildVfdBlockerDescription) */
   onSubmit: (party: VfdBlockerParty, description: string) => void
   onCancel: () => void
+  /**
+   * Optional dialog title. Defaults to the original bump-specific copy. The
+   * reworked Test Run step reuses this same blocker dialog to record an
+   * electrical/controls fault that stops the drive from running, so it passes a
+   * fault-specific title. The underlying blocker payload is identical.
+   */
+  title?: string
 }
 
 // 'Other' is stored/matched as 'Other' but shown with a please-specify hint.
@@ -35,6 +42,7 @@ export function VfdBumpFailDialog({
   deviceName,
   onSubmit,
   onCancel,
+  title = "Bump didn't work — record blocker",
 }: VfdBumpFailDialogProps) {
   const [party, setParty] = useState<VfdBlockerParty | "">("")
   const [description, setDescription] = useState<string>("")
@@ -99,7 +107,7 @@ export function VfdBumpFailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Bump didn&apos;t work — record blocker</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4">

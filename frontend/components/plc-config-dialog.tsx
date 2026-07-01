@@ -487,7 +487,11 @@ export function PlcConfigDialog({
       addPullLog(`Response: ${response.status} ${response.statusText}`)
 
       if (response.ok) {
-        const result = await response.json()
+        const result = await response.json().catch(() => null)
+        if (!result) {
+          addPullLog('Cloud returned an empty or non-JSON response.')
+          throw new Error('Cloud returned an empty response — check the Cloud URL and API key.')
+        }
         addPullLog(`${result.ioCount || 0} IOs retrieved`)
 
         // ── Browser console: full pull breakdown ──

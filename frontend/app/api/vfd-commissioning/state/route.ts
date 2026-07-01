@@ -55,6 +55,11 @@ const COMMISSIONING_COLUMNS = [
   'Verify Identity',
   'Motor HP (Field)',
   'VFD HP (Field)',
+  // "Run Verified" — written by the reworked Test Run / Verify Controls step.
+  // It is the cloud's 4th readiness control (replaced "Check Direction"). Read
+  // here so the wizard can durably restore its Test Run completion across
+  // laptops. Tolerant of the column not yet existing (LEFT JOIN + IN-list).
+  'Run Verified',
   'Check Direction',
   'Polarity',
   'Belt Tracked',
@@ -69,6 +74,7 @@ function columnKey(name: CommissioningColumn): keyof CellSet {
     case 'Verify Identity':    return 'verifyIdentity'
     case 'Motor HP (Field)':   return 'motorHpField'
     case 'VFD HP (Field)':     return 'vfdHpField'
+    case 'Run Verified':       return 'runVerified'
     case 'Check Direction':    return 'checkDirection'
     case 'Polarity':           return 'polarity'
     case 'Belt Tracked':       return 'beltTracked'
@@ -81,6 +87,9 @@ interface CellSet {
   verifyIdentity:      string | null
   motorHpField:        string | null
   vfdHpField:          string | null
+  // Test Run / Verify Controls step. Cloud's 4th readiness control (replaced
+  // "Check Direction"). Tolerant of the column not existing yet on a sheet.
+  runVerified:         string | null
   checkDirection:      string | null
   polarity:            string | null
   beltTracked:         string | null
@@ -94,6 +103,7 @@ interface CellSet {
 
 const emptyCells = (): CellSet => ({
   verifyIdentity: null, motorHpField: null, vfdHpField: null,
+  runVerified: null,
   checkDirection: null, polarity: null, beltTracked: null, speedSetUp: null,
   controlsVerified: null, bumpBlocker: null,
 })
@@ -118,7 +128,7 @@ const stmtAllCells = db.prepare(`
   JOIN L2Columns  c ON c.SheetId = d.SheetId
   LEFT JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
   LEFT JOIN Subsystems   sub ON sub.Name = d.Subsystem
-  WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Check Direction', 'Polarity', 'Belt Tracked', 'Speed Set Up', 'Bump Blocker')
+  WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Run Verified', 'Check Direction', 'Polarity', 'Belt Tracked', 'Speed Set Up', 'Bump Blocker')
     AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
 `)
 
