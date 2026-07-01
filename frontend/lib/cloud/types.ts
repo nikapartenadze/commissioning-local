@@ -89,6 +89,13 @@ export interface IoUpdateDto {
    * stores and displays read-only. Null = unset (treated as 'No').
    */
   hasDependencies?: boolean | null
+  /**
+   * Operator force-overwrite (opt-in). When true the cloud applies this update
+   * even if its version ran ahead of the tablet's base — local becomes
+   * authority. Used to push a "stuck" result the operator has confirmed is
+   * correct. Absent/false = normal optimistic-version push.
+   */
+  force?: boolean
 }
 
 export interface IoSyncBatchDto {
