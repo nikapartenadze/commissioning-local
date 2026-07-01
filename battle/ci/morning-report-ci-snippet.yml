@@ -1,0 +1,93 @@
+# ============================================================================
+# DRAFT CI job — Overnight CI "morning report".
+#
+# DO NOT paste this verbatim into the real .gitlab-ci.yml without review. The
+# main agent will wire it in. It is a self-contained, light job (no docker-in-
+# docker, no battle stack) that just runs a stdlib-only python script against
+# the GitLab API and publishes a Markdown + HTML summary of everything that ran
+# overnight (nightly soak, delta/smoke/central, e2e, frontend-verify).
+#
+# It is meant to fire on its OWN pipeline schedule at ~07:00 Asia/Tbilisi, AFTER
+# the 02:00 soak + the early-morning delta/e2e/verify runs have finished, so the
+# window catches them all. The schedule carries the var MORNING_REPORT=1.
+# ----------------------------------------------------------------------------
+# HOW TO CREATE THE SCHEDULE (pipeline_schedules API; gitlab.lci.ge is internal,
+# so run the curl through the CI runner per battle/ci/MORNING-REPORT.md):
+#
+#   curl --request POST --header "PRIVATE-TOKEN: <token>" \
+#     "https://gitlab.lci.ge/api/v4/projects/24/pipeline_schedules" \
+#     --form description="Morning CI report (07:00 Tbilisi)" \
+#     --form ref="main" \
+#     --form cron="0 7 * * *" \
+#     --form cron_timezone="Asia/Tbilisi" \
+#     --form active="true"
+#
+#   # then attach the trigger variable that selects THIS job:
+#   curl --request POST --header "PRIVATE-TOKEN: <token>" \
+#     "https://gitlab.lci.ge/api/v4/projects/24/pipeline_schedules/<schedule_id>/variables" \
+#     --form "key=MORNING_REPORT" --form "value=1"
+#
+# (The existing nightly/central/delta schedules are created the same way; this
+#  is just one more schedule with its own var so its rule below matches.)
+# ============================================================================
+
+morning-report:
+  stage: verify                     # cheap; runs on the shared runner with no dind
+  image: python:3.12-slim           # stdlib-only script → no pip install needed
+  rules:
+    # Primary trigger: the 07:00 Tbilisi schedule carrying MORNING_REPORT=1.
+    - if: '$MORNING_REPORT == "1"'
+    # Convenience: let a human run it from the GitLab UI (web pipeline).
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+  variables:
+    # Window: the report looks back this many hours. 16h from a 07:00 run reaches
+    # back to ~15:00 the previous day — comfortably covering the 02:00 soak and
+    # all the early-morning delta/e2e/verify runs. Bump if schedules move.
+    LOOKBACK_HOURS: "16"
+    GL_PROJECT_ID: "$CI_PROJECT_ID"
+    # CI_API_V4_URL + CI_JOB_TOKEN are injected by GitLab; the script reads them
+    # automatically (JOB-TOKEN header). The job token can read this project's own
+    # pipelines/jobs/artifacts, which is all the report needs.
+  script:
+    - python3 battle/ci/morning_report.py
+  # The script exits non-zero when there were failing runs. That is informational
+  # for the report job — don't let it red the schedule pipeline.
+  allow_failure: true
+  artifacts:
+    when: always
+    paths:
+      - battle-artifacts/morning-report.md
+      - battle-artifacts/morning-report.html
+    expire_in: 30 days
+  timeout: 15m
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # DELIVERY (pick one; artifact link works out of the box) — see
+  # battle/ci/MORNING-REPORT.md for the full rundown.
+  #
+  # Option A — Artifact link (zero extra setup). The report is at:
+  #   .../-/jobs/<job_id>/artifacts/file/battle-artifacts/morning-report.html
+  # or browse it from the job's "Browse" button. Good enough to start.
+  #
+  # Option B — Email via GitLab. GitLab has no built-in "email this artifact",
+  #   but you can add a pipeline-email or a notify step. Simplest: a `notify`
+  #   job (needs an SMTP relay reachable from the runner) that mails the .md.
+  #
+  # Option C — Zulip (org has a Zulip at 192.168.5.81). Post the summary to a
+  #   stream via an incoming webhook / bot. CREDS NOT AVAILABLE YET — leave as a
+  #   documented TODO. When a bot token + stream exist, append something like:
+  #
+  #     after_script:
+  #       - |
+  #         # TODO(zulip): set ZULIP_SITE / ZULIP_BOT_EMAIL / ZULIP_API_KEY as
+  #         #   masked CI variables, then POST the report summary. Example:
+  #         # SUMMARY=$(head -5 battle-artifacts/morning-report.md)
+  #         # curl -sS -X POST "https://zulip.lci.ge/api/v1/messages" \
+  #         #   -u "$ZULIP_BOT_EMAIL:$ZULIP_API_KEY" \
+  #         #   --data-urlencode type=stream \
+  #         #   --data-urlencode "to=ci" \
+  #         #   --data-urlencode "topic=Overnight battle" \
+  #         #   --data-urlencode "content=$SUMMARY  ($CI_JOB_URL/artifacts/file/battle-artifacts/morning-report.html)"
+  # ──────────────────────────────────────────────────────────────────────────
