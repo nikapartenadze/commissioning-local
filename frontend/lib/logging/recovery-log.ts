@@ -38,6 +38,7 @@ export type AuditEventType =
   | 'sync.push.defer'
   | 'sync.push.drop' // a pending push was discarded — the recovery-critical case
   | 'sync.push.park' // a pending push was PARKED (cloud-rejected/cap) — kept for attention, not lost
+  | 'sync.push.force' // operator force-overwrite: local pushed to cloud past the version gate
   | 'sync.reconcile.enqueue' // an orphaned local result/comment (cloud-missing, no queue row) was re-enqueued
   | 'sync.pull'
   | 'plc.connect'
