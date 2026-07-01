@@ -137,7 +137,17 @@ interface L2CommissioningCells {
   beltTracked:         string | null
   speedSetUp:          string | null
   controlsVerified:    string | null
-  /** Step 3 "Bump didn't work?" blocker stamp: "<stamp> · <party> · <description>". */
+  /**
+   * Test Run / Verify Controls (new step 3) — cloud-synced stamp written when
+   * the operator confirms the drive ran without an immediate fault. This is the
+   * 4th readiness control the cloud reads (it replaced "Check Direction" in the
+   * cloud's Ready gate — see lib/belt-tracking/derive-ready.ts). Non-empty,
+   * non-"fail" ⇒ pass. Durable across laptops (unlike the local-only
+   * VfdControlsVerified SQLite stamp). May be null on sheets that haven't yet
+   * received the "Run Verified" column from cloud.
+   */
+  runVerified:         string | null
+  /** Bump Test "Bump didn't work?" blocker stamp: "<stamp> · <party> · <description>". */
   bumpBlocker:         string | null
 }
 
@@ -944,12 +954,13 @@ function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, she
   return (
     <div className="space-y-4">
       <p className="text-sm text-foreground/80 leading-relaxed">
-        Bump the motor to see which way it spins, then confirm the polarity. The drive
-        warms up for a few seconds before pulsing for 1 second — that's the PLC's
+        The belt is now tracked. Bump the motor to see which way it spins, then confirm the polarity.
+        The drive warms up for a few seconds before pulsing for 1 second — that's the PLC's
         safety pre-roll. After bumping, click <strong>Forward → Set Normal</strong> if it
         spun the right way, or <strong>Reverse → Invert Polarity</strong> if it spun
         the opposite way. The PLC routes <code className="font-mono">DirectionCmd_0/1</code>
-        accordingly and re-bumping verifies the new direction.
+        accordingly and re-bumping verifies the new direction. Once direction and speed are
+        set, the VFD is configured.
       </p>
 
       <div className="flex items-center gap-3">
@@ -1065,7 +1076,7 @@ function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, she
       {sts.Valid_Direction === true && chosen && (
         <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
           <CheckCircle2 className="h-4 w-4" />
-          Direction confirmed — polarity set to <strong>{chosen}</strong>. Continue to step 4.
+          Direction confirmed — polarity set to <strong>{chosen}</strong>. Continue to Calibrate Speed.
         </div>
       )}
 
@@ -1081,19 +1092,110 @@ function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, she
 }
 
 
-function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, onComplete, isComplete }: {
+function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onComplete, isComplete }: {
   sts: StsState
   stsErrors: StsErrors
   loading: boolean
   deviceName: string
+  subsystemId: number
   plcConnected: boolean
+  sheetName?: string
+  userName?: string
   onComplete: () => void
   isComplete: boolean
 }) {
+  const [sending, setSending] = useState(false)
+  const [writeError, setWriteError] = useState<string | null>(null)
+  // Electrical/controls fault path: the drive faulted or won't run during the
+  // Test Run. Reuses the same device-blocker dialog + sync op as the post-track
+  // Bump Test, so a pre-track electrical/controls fault is routed to the
+  // responsible vendor exactly like a bump failure.
+  const [faultDialogOpen, setFaultDialogOpen] = useState(false)
+  const [faultBlocker, setFaultBlocker] = useState<BumpBlocker | null>(null)
+
+  // Record a Test Run fault blocker. Mirrors Step3Content.handleBumpFailSubmit:
+  // durable "Bump Blocker" L2 cell (graceful skip if absent) + the device-level
+  // 'set' sync op so the shared Devices.Blocker* columns light up. Best-effort,
+  // never fatal.
+  const handleFaultSubmit = async (party: VfdBlockerParty, description: string) => {
+    const stamp = buildInitialsStamp(userName)
+    const cellValue = formatBumpBlockerCell(stamp, party, description)
+    try {
+      const l2 = await writeL2Cells(deviceName, sheetName, userName, [
+        { columnName: 'Bump Blocker', value: cellValue },
+      ])
+      const failed = (l2?.written || []).filter((w: any) => !w.ok)
+      if (failed.length > 0) {
+        console.warn(
+          `[Step4/TestRun] "Bump Blocker" L2 cell not saved (${failed.map((w: any) => w.error || 'write failed').join(', ')}). ` +
+          `The blocker still propagates to the device row.`,
+        )
+      }
+    } catch (err) {
+      console.warn('[Step4/TestRun] "Bump Blocker" L2 cell write error:', err instanceof Error ? err.message : err)
+    }
+    void postBumpBlockerOp({
+      subsystemId,
+      deviceName,
+      op: 'set',
+      blockerResponsibleParty: party,
+      blockerDescription: description,
+      updatedBy: userName,
+    })
+    setFaultBlocker({ party, description })
+  }
+
+  // Confirm the drive runs without an immediate fault → READY FOR TRACKING.
+  // Writes the cloud-synced "Run Verified" L2 cell (the cloud's 4th readiness
+  // control — see lib/belt-tracking/derive-ready.ts), then calls onComplete so
+  // the parent persists the local SQLite VfdControlsVerified flag and flips
+  // check4Complete. The L2 cell is the durable, cross-laptop record; the local
+  // table is kept as a belt-and-suspenders fallback.
+  const handleConfirm = async () => {
+    setSending(true)
+    setWriteError(null)
+    try {
+      // Stamp "Run Verified" — any non-empty, non-"fail" value reads as pass on
+      // the cloud. Same write path + auto-sync as every other commissioning cell.
+      const stamp = buildInitialsStamp(userName)
+      const l2 = await writeL2Cells(deviceName, sheetName, userName, [
+        { columnName: 'Run Verified', value: stamp },
+      ])
+      const failed = (l2?.written || []).filter((w: any) => !w.ok)
+      if (failed.length > 0) {
+        // Column may not be deployed to this sheet yet. Warn (not fatal) — the
+        // local SQLite flag still records readiness; only the cloud Ready gate
+        // misses it until the column is pulled from cloud.
+        console.warn(
+          `[Step3/TestRun] "Run Verified" L2 cell not saved ` +
+          `(${failed.map((w: any) => w.error || 'write failed').join(', ')}). ` +
+          `The conveyor is still marked ready locally; the cloud Ready gate will ` +
+          `not see it until the "Run Verified" column is pulled from cloud.`,
+        )
+        setWriteError(
+          'Marked ready locally, but the "Run Verified" record did not sync to cloud ' +
+          '(column missing on this sheet). Pull the latest L2 data from cloud so the ' +
+          'cloud Ready gate picks it up.',
+        )
+      }
+    } catch (err) {
+      console.warn('[Step3/TestRun] "Run Verified" L2 write error:', err instanceof Error ? err.message : err)
+      setWriteError(
+        `Marked ready locally, but saving the "Run Verified" record failed ` +
+        `(${err instanceof Error ? err.message : String(err)}).`,
+      )
+    } finally {
+      setSending(false)
+    }
+    // Always flip local state + persist the local SQLite flag, even if the L2
+    // write degraded — readiness must NEVER be blocked by a sync hiccup.
+    onComplete()
+  }
+
   return (
     <div className="space-y-4">
       <p className="text-sm text-foreground/80 leading-relaxed">
-        Confirm that the VFD keypad controls (F0 / F1 / F2) are working correctly on this conveyor before handing over to the mechanical team for belt tracking.
+        Run the drive and confirm it starts <strong>without an immediate fault</strong>, and that the VFD keypad controls (F0 / F1 / F2) respond. This catches electrical / controls problems <em>before</em> the mechanical team tracks the belt. When it runs clean, mark the conveyor <strong>Ready for Tracking</strong>.
       </p>
 
       <div className="rounded-lg border bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 p-4 space-y-2">
@@ -1133,34 +1235,91 @@ function Step4Content({ sts, stsErrors, loading, deviceName, plcConnected, onCom
         )}
       </div>
 
+      {/* Electrical / controls fault path — record a device blocker if the drive
+          faults or won't run during the Test Run. Same dialog + sync op as the
+          post-track Bump Test step. */}
+      <div className="flex items-center gap-3">
+        <Button
+          variant="outline"
+          onClick={() => setFaultDialogOpen(true)}
+          className="h-10 px-4 text-sm font-semibold gap-2 border-2 border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+        >
+          <Ban className="h-4 w-4" />
+          Drive faulted / won&apos;t run?
+        </Button>
+      </div>
+
+      {faultBlocker && (
+        <div className="rounded-lg border border-red-300 bg-red-50/60 dark:bg-red-950/30 dark:border-red-800 p-3 flex items-start gap-2">
+          <Ban className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="text-xs font-semibold text-red-800 dark:text-red-300">
+              Blocked — assigned to {faultBlocker.party}: {faultBlocker.description}
+            </p>
+            <p className="text-xs text-red-700/80 dark:text-red-400/80">
+              Resolve the fault, then re-run the drive and mark it ready. This blocker is recorded against the device row.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/*
+        TODO(PLC): The pre-track Test Run needs the motor to actually run so the
+        operator can see it start without a fault — but at this point in the new
+        flow Valid_Direction has NOT been committed yet (polarity is set in the
+        post-track Bump Test step). If the run/jog command (Bump / a run
+        setpoint) is gated on Valid_Direction at the PLC/AOI level, the drive
+        won't move here. Permitting a provisional jog before Valid_Direction is a
+        hardware / L5X question for the PLC owner — out of scope for this UI
+        change. This step does NOT hard-require Valid_Direction in the cascade.
+      */}
       <div className="pt-2 border-t">
         {isComplete ? (
           <div className="rounded-lg border border-green-300 bg-green-50/50 dark:border-green-800 dark:bg-green-950/20 p-4">
             <div className="flex items-center gap-2 mb-1">
               <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
-              <p className="text-sm font-semibold text-green-800 dark:text-green-200">Controls verified</p>
+              <p className="text-sm font-semibold text-green-800 dark:text-green-200">Run verified — Ready for Tracking</p>
             </div>
             <p className="text-sm text-green-700 dark:text-green-300">
-              Notify the mechanical team that this conveyor is ready for belt tracking.
+              The drive ran without an immediate fault. Notify the mechanical team that this conveyor is ready for belt tracking. Bump / polarity and speed calibration unlock after the belt is tracked.
             </p>
           </div>
         ) : (
           <>
             <p className="text-sm text-muted-foreground mb-3">
-              Once you've confirmed F0 / F1 / F2 controls are working, mark this conveyor as ready for tracking.
+              Once the drive runs clean and F0 / F1 / F2 controls respond, mark this conveyor <strong>Ready for Tracking</strong>.
             </p>
             <ActionButton
-              label="Controls Verified — Ready for Tracking"
+              label="Run Verified — Ready for Tracking"
               icon={CheckCircle2}
-              onClick={onComplete}
+              onClick={handleConfirm}
+              disabled={!plcConnected}
+              sending={sending}
               variant="primary"
             />
           </>
         )}
+
+        {writeError && (
+          <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400 rounded-lg border border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20 p-3">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <span>{writeError}</span>
+          </div>
+        )}
+
         <p className="text-xs text-muted-foreground mt-3">
-          The mechanical team will mark the <strong>Belt Tracked</strong> column when tracking is complete. Speed calibration unlocks after that.
+          The mechanical team will mark the <strong>Belt Tracked</strong> column when tracking is complete. <strong>Bump Test / polarity</strong> and <strong>speed calibration</strong> unlock after that.
         </p>
       </div>
+
+      <VfdBumpFailDialog
+        open={faultDialogOpen}
+        onOpenChange={setFaultDialogOpen}
+        deviceName={deviceName}
+        title="Drive faulted / won't run — record blocker"
+        onSubmit={handleFaultSubmit}
+        onCancel={() => { /* nothing to undo — dialog just closes */ }}
+      />
     </div>
   )
 }
@@ -1411,16 +1570,41 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
 
 // ── Step definitions ───────────────────────────────────────────────
 
+// ── New (reworked) flow ordering ────────────────────────────────────
+// The wizard was reordered (2026-06) so polarity/direction is set AFTER the
+// mechanic tracks the belt, not before. The new sequence is:
+//
+//   0 VFD Online
+//   1 Identity Check
+//   2 Horsepower Check
+//   3 Test Run / Verify Controls   — confirm the drive RUNS without an
+//                                     immediate fault → READY FOR TRACKING.
+//                                     Writes the cloud-synced "Run Verified" L2
+//                                     cell (the cloud's 4th readiness control,
+//                                     which replaced "Check Direction").
+//   --- [GATE: Belt Tracked] mechanic tracks the belt (reversible) ---
+//   4 Bump Test / Polarity         — was step 3; now gated on beltTrackedDone.
+//                                     Still writes Valid_Direction + "Check
+//                                     Direction" + "Polarity" and keeps the
+//                                     bump-fail blocker path.
+//   5 Calibrate Speed              — still gated on beltTrackedDone.
+//
+// IMPORTANT: the *component* names (Step3Content/Step4Content) are deliberately
+// NOT renamed to keep the diff reviewable. The mapping is:
+//   STEPS[3] "Test Run / Verify Controls" → Step4Content (the old controls step)
+//   STEPS[4] "Bump Test"                  → Step3Content (the old bump step)
+// The render switch (activeStep===N) below wires each index to its component.
 const STEPS = [
   { num: 0, label: 'VFD Online', icon: Signal },
   { num: 1, label: 'Identity Check', icon: Fingerprint },
   { num: 2, label: 'Horsepower Check', icon: Settings2 },
+  // Test Run: prove the drive runs without an immediate electrical/controls
+  // fault, then hand the conveyor to the mechanical team for belt tracking.
+  { num: 3, label: 'Test Run', icon: Play },
   // Bump Test now ALSO captures polarity — the "Set Normal" / "Invert Polarity"
   // buttons confirm direction and write the Polarity L2 cell in the same action.
-  // Earlier wizard had a separate Step 4 "Polarity Check"; merging keeps the
-  // operator in one screen for the full direction-related decision.
-  { num: 3, label: 'Bump Test', icon: Zap },
-  { num: 4, label: 'Verify Controls', icon: Play },
+  // It now happens AFTER belt tracking, so it is gated on beltTrackedDone.
+  { num: 4, label: 'Bump Test', icon: Zap },
   { num: 5, label: 'Calibrate Speed', icon: Gauge },
 ]
 
@@ -1444,17 +1628,20 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   })
   const [stsErrors, setStsErrors] = useState<StsErrors>({})
   const [stsLoading, setStsLoading] = useState(true)
-  // Step 5 "Verify Controls" — persisted in a local DB table (controls-verified
-  // endpoint). Re-numbered from the previous Step 4. Naming kept as
-  // `check4Complete` / `setCheck4Complete` to avoid churning unrelated callers,
-  // but it now gates Step 5 in the new ordering.
+  // Test Run / Verify Controls (step index 3 in the reworked order) — the
+  // operator confirmed the drive ran without an immediate fault → Ready for
+  // Tracking. Cloud-synced via the "Run Verified" L2 cell, and also persisted
+  // in the local VfdControlsVerified DB table (same-laptop fallback). The flag
+  // name `check4Complete` / `setCheck4Complete` is kept to avoid churning
+  // unrelated callers; it now means "Test Run done" and gates belt tracking.
   const [check4Complete, setCheck4Complete] = useState(false)
-  // Step 4 "Polarity Check" — derived from the L2 cell `Polarity` (Normal | Inverter).
-  // Locked open after the operator commits a choice; gates entry to Step 5.
+  // Polarity — derived from the L2 cell `Polarity` (Normal | Inverter). Set in
+  // the post-track Bump Test step (index 4). Locked open after the operator
+  // commits a choice; surfaced in the sidebar at-a-glance.
   const [polaritySetDone, setPolaritySetDone] = useState<Polarity | null>(null)
-  // Step 3 "Bump didn't work?" blocker — restored from the `Bump Blocker` L2 cell.
-  // Held at the parent so the red state survives step navigation and feeds the
-  // Step3Content banner the same way `initialPolarity` flows.
+  // Bump Test "Bump didn't work?" blocker — restored from the `Bump Blocker` L2
+  // cell. Held at the parent so the red state survives step navigation and feeds
+  // the Step3Content banner the same way `initialPolarity` flows.
   const [bumpBlocker, setBumpBlocker] = useState<BumpBlocker | null>(null)
   // Step 2 (HP) is "really done" only when both HP cells are filled in L2 *and*
   // the PLC has Valid_HP=true. Tracking the cells here so the cascade can gate
@@ -1471,10 +1658,11 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // step survive read blips, exactly like HP/Controls/Speed already do.
   const [identityDone, setIdentityDone] = useState(false)
   const [directionDone, setDirectionDone] = useState(false)
-  // Belt Tracked is now a manual entry (filled by mechanical team, not from PLC).
-  // Step 6 (Calibrate Speed) is locked until the Belt Tracked L2 cell is filled.
+  // Belt Tracked is a manual entry (filled by the mechanical team, not from
+  // PLC). In the reworked flow BOTH the Bump Test (index 4) and Calibrate Speed
+  // (index 5) steps are locked until the Belt Tracked L2 cell is filled.
   const [beltTrackedDone, setBeltTrackedDone] = useState(false)
-  // Speed Set Up tracks whether step 6 (Calibrate Speed) was completed.
+  // Speed Set Up tracks whether Calibrate Speed (index 5) was completed.
   const [speedSetUpDone, setSpeedSetUpDone] = useState(false)
   // ── Clear Test button (header) ───────────────────────────────────
   // Inline two-click confirm so we don't need a confirm-modal component.
@@ -1509,19 +1697,21 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
 
       if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
-      // Step 5 "Controls Verified" is persisted in a local DB table (no L2
-      // column), so a fresh pull on a different laptop won't see the explicit
-      // flag. Trust downstream proof instead: if Belt Tracked or Speed Set Up
-      // are filled, Step 5 *must* have been done — those steps are gated on
-      // it in the wizard. We deliberately do NOT infer Step 5 from the four
-      // ready-gate cells alone, because mid-workflow they are filled by Step
-      // 3 even though the F0/F1/F2 control verification hasn't happened yet.
-      const inferredStepFiveDone =
+      // Test Run / Verify Controls (step 3) — now has a cloud-synced "Run
+      // Verified" L2 cell, so it restores durably across laptops (the local
+      // VfdControlsVerified stamp is a same-laptop fallback). Also infer from
+      // downstream proof: if Belt Tracked or Speed Set Up are filled, Test Run
+      // *must* have happened — those steps gate on it. (The "Run Verified" cell
+      // is itself a ready-gate control, but unlike Check Direction it is ONLY
+      // ever written by this step, so trusting it does not create the
+      // false-positive the old four-cell inference avoided.)
+      const inferredTestRunDone =
+        Boolean(cells?.runVerified?.trim()) ||
         Boolean(cells?.controlsVerified) ||
         Boolean(cells?.beltTracked?.trim()) ||
         Boolean(cells?.speedSetUp?.trim())
-      if (inferredStepFiveDone) setCheck4Complete(true)
-      // Step 6 "Calibrate Speed" — mark done if the L2 cell already has a value.
+      if (inferredTestRunDone) setCheck4Complete(true)
+      // Calibrate Speed (step 5) — mark done if the L2 cell already has a value.
       if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
     })
   }, [device.deviceName])
@@ -1659,7 +1849,20 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // locked on a null; only an explicit `false` regresses it. Without
   // this latch, a momentary STS glitch flashes the cascade red and
   // snaps the operator back to step 1.
-  // Six steps now: polarity choice was merged into Bump Test.
+  // Six steps, REWORKED ORDER (2026-06). Index → step:
+  //   0 VFD Online      — Check_Allowed
+  //   1 Identity Check  — identityDone || Valid_Map
+  //   2 Horsepower      — Valid_HP AND both HP cells filled
+  //   3 Test Run        — check4Complete (drive ran clean → Ready for Tracking).
+  //                       Durably restored from the "Run Verified" L2 cell (and
+  //                       the local VfdControlsVerified fallback).
+  //   4 Bump Test       — (directionDone || Valid_Direction) AND beltTrackedDone.
+  //                       Polarity/direction is now set AFTER the mechanic tracks
+  //                       the belt, so this step is GATED on the Belt Tracked
+  //                       cell being filled. Until then it stays `null` (locked),
+  //                       NOT `false` (which would flash the cascade red).
+  //   5 Calibrate Speed — speedSetUpDone AND beltTrackedDone (still post-track).
+  //
   // For steps that require an operator-typed/clicked record AND a PLC bit:
   //   Step 2 (HP)   — gated on Valid_HP AND both HP cells filled. The PLC bit
   //                   alone is too loose; on test data Valid_HP can be true
@@ -1667,9 +1870,11 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   //                   actually types HP and clicks Confirm, the spreadsheet
   //                   stays blank. Without this, the cascade marks the step
   //                   green and the operator walks past without typing.
-  //   Step 3 (Bump) — gated on Valid_Direction ALONE. Pressing Forward/Reverse
-  //                   records the polarity choice (and is what writes
-  //                   Valid_Direction to the PLC on a fresh device), but a
+  //   Step 4 (Bump) — gated on Valid_Direction ALONE for the polarity record
+  //                   (Polarity L2 cell optional — see below) AND on
+  //                   beltTrackedDone for the new post-track ordering. Pressing
+  //                   Forward/Reverse records the polarity choice (and is what
+  //                   writes Valid_Direction to the PLC on a fresh device), but a
   //                   recorded polarity is NOT required to advance. On a
   //                   reopened/already-tracked device the PLC has
   //                   Valid_Direction latched while the Polarity L2 cell may
@@ -1686,12 +1891,21 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     sts.Valid_HP === true && hpFieldsFilled ? true
       : sts.Valid_HP === false ? false
       : null,
-    // Direction: same durable-L2-wins treatment as Identity.
-    directionDone || sts.Valid_Direction === true ? true
-      : sts.Valid_Direction === false ? false
-      : null,
+    // Test Run / Verify Controls — operator confirmed the drive ran without an
+    // immediate fault. No PLC bit gates this (the drive may run before
+    // Valid_Direction is committed — see TODO(PLC) in Step4Content).
     check4Complete ? true : null,
-    speedSetUpDone ? true : null,
+    // Bump Test / Polarity — now GATED on beltTrackedDone. Even with
+    // Valid_Direction latched, the step stays locked (null) until the mechanic
+    // fills the Belt Tracked cell. Direction itself uses the durable-L2-wins
+    // treatment (directionDone || Valid_Direction) like Identity.
+    beltTrackedDone
+      ? (directionDone || sts.Valid_Direction === true ? true
+         : sts.Valid_Direction === false ? false
+         : null)
+      : null,
+    // Calibrate Speed — also gated on beltTrackedDone (unchanged post-track gate).
+    beltTrackedDone && speedSetUpDone ? true : null,
   ]
   const lastTrueRef = useRef<boolean[]>([false, false, false, false, false, false])
   const stepKey = stepDoneOwn.map(v => v === true ? '1' : v === false ? '0' : '?').join('')
@@ -1776,11 +1990,12 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
         if (cells?.checkDirection?.trim()) setDirectionDone(true)
         setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
         if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
-        const inferredStepFiveDone =
+        const inferredTestRunDone =
+          Boolean(cells?.runVerified?.trim()) ||
           Boolean(cells?.controlsVerified) ||
           Boolean(cells?.beltTracked?.trim()) ||
           Boolean(cells?.speedSetUp?.trim())
-        if (inferredStepFiveDone) setCheck4Complete(true)
+        if (inferredTestRunDone) setCheck4Complete(true)
         if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
       })
     } catch (err) {
@@ -1923,12 +2138,12 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
           </div>
 
           {/* At-a-glance status — visible on every step so the operator doesn't
-              have to navigate back to Bump Test or Verify Controls to find out
+              have to navigate back to Bump Test or Test Run to find out
               whether polarity was reversed or whether the belt is ready for
               the mechanical team to track. Polarity comes from the L2 cell
-              committed in Step 3; tracking state combines the operator's
-              "Controls Verified" click (Step 4) with the mechanical team's
-              Belt Tracked stamp. */}
+              committed in the post-track Bump Test step; tracking state combines
+              the operator's Test Run / "Run Verified" click with the mechanical
+              team's Belt Tracked stamp. */}
           <div className="px-4 py-3 border-b space-y-2.5 bg-muted/20">
             <div>
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">Polarity</p>
@@ -1950,7 +2165,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                       ? 'Drive direction was reversed — DirectionCmd_1 routed by the AOI'
                       : polaritySetDone === 'Normal'
                         ? 'Drive runs forward — DirectionCmd_0 routed by the AOI'
-                        : 'Polarity not yet committed in Step 3 (Bump Test)'
+                        : 'Polarity not yet committed in the Bump Test step (after belt tracking)'
                   }
                 >
                   {polaritySetDone === null ? 'Not set' : polaritySetDone === 'Normal' ? 'Normal' : 'Reversed'}
@@ -1974,10 +2189,10 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 )}
                   title={
                     beltTrackedDone
-                      ? 'Mechanical team marked Belt Tracked — Step 5 unlocked'
+                      ? 'Mechanical team marked Belt Tracked — Bump Test + Calibrate Speed unlocked'
                       : check4Complete
-                        ? 'Controls verified — waiting for the mechanical team to track the belt'
-                        : 'Finish Step 4 (Verify Controls) before handing over for tracking'
+                        ? 'Run verified — waiting for the mechanical team to track the belt'
+                        : 'Finish the Test Run step before handing over for tracking'
                   }
                 >
                   {beltTrackedDone ? 'Tracked' : check4Complete ? 'Ready' : 'Not ready'}
@@ -2069,10 +2284,14 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             {activeStep === 0 && <Step0Content sts={sts} loading={stsLoading} />}
             {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
             {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onHpFilled={() => setHpFieldsFilled(true)} />}
-            {activeStep === 3 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} initialBumpBlocker={bumpBlocker} onBumpBlockerChange={setBumpBlocker} />}
-            {activeStep === 4 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} plcConnected={plcConnected} onComplete={() => {
+            {/* REWORKED ORDER: index 3 = Test Run / Verify Controls (Step4Content),
+                index 4 = Bump Test / Polarity (Step3Content, now post-track). The
+                component names are unchanged for a reviewable diff. */}
+            {activeStep === 3 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onComplete={() => {
               setCheck4Complete(true)
-              // Persist to local DB so reopening the wizard remembers this
+              // Persist to local DB so reopening the wizard remembers this even
+              // if the cloud-synced "Run Verified" L2 cell didn't land (column
+              // missing on the sheet). The L2 write happens inside Step4Content.
               fetch('/api/vfd-commissioning/controls-verified', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2084,6 +2303,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 })
                 .catch(err => console.error('[VFD Controls] POST error:', err))
             }} isComplete={check4Complete} />}
+            {activeStep === 4 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} initialBumpBlocker={bumpBlocker} onBumpBlockerChange={setBumpBlocker} />}
             {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
           </div>
 
