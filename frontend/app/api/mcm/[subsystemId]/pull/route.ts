@@ -7,6 +7,30 @@ import { getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { createBackup } from '@/lib/db/backup';
 import { computeAtRiskResults, computeAtRiskComments } from '@/lib/cloud/pull-guard';
 import { auditLog } from '@/lib/logging/recovery-log';
+import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls';
+
+/**
+ * L2/FV self-call — kept out of runConfigSidePulls so that helper has no
+ * HTTP-server dependency. /api/cloud/pull-l2 does its own scoped delete+insert,
+ * so this is idempotent and safe to call in both the full-pull and no-op paths.
+ * Best-effort: an L2 failure must never fail (or throw out of) the IO pull.
+ */
+async function pullL2SelfCall(subsystemId: number, remoteUrl: string, apiPassword: string): Promise<number> {
+  try {
+    const port = process.env.PORT || '3000';
+    const l2Res = await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remoteUrl, apiPassword, subsystemId }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const l2Data = await l2Res.json().catch(() => ({} as { l2Pulled?: number; devices?: number }));
+    return l2Data.l2Pulled || l2Data.devices || 0;
+  } catch (e) {
+    console.warn(`[MCM ${subsystemId} Pull] L2 pull failed:`, e instanceof Error ? e.message : e);
+    return 0;
+  }
+}
 
 /**
  * POST /api/mcm/:subsystemId/pull
@@ -191,12 +215,25 @@ export async function POST(req: Request, res: Response) {
         `${io.id}:${io.version ?? 0}:${io.result || '-'}`)
       .join('|');
     if (!force && pullHashStore.get(subsystemId) === versionHash) {
+      // IO set unchanged → skip the destructive IO backup + delete/reinsert
+      // (the MCM11 churn protection). But STILL refresh the config/FV sections:
+      // network/estop/safety/L2 changes on the cloud do NOT move the IO hash, so
+      // before this they were skipped here too and only reached the field after a
+      // service restart cleared this in-memory hash. runConfigSidePulls is a
+      // scoped, idempotent delete+reinsert per section, so this is safe.
+      const side = await runConfigSidePulls(subsystemId, remoteUrl, apiPassword, { db });
+      const l2Pulled = await pullL2SelfCall(subsystemId, remoteUrl, apiPassword);
       return res.json({
         success: true,
         unchanged: true,
-        message: `No changes for MCM ${mcm.name} — skipped backup + rewrite`,
+        message: `No IO changes for MCM ${mcm.name} — refreshed config/FV only`,
         iosCount: cloudIos.length,
         subsystemId,
+        networkPulled: side.networkPulled,
+        estopPulled: side.estopPulled,
+        safetyPulled: side.safetyPulled,
+        punchlistsPulled: side.punchlistsPulled,
+        l2Pulled,
       });
     }
 
@@ -336,53 +373,11 @@ export async function POST(req: Request, res: Response) {
       const deletedCount = db.prepare('DELETE FROM Ios WHERE SubsystemId = ?').run(subsystemId).changes;
       console.log(`[MCM ${subsystemIdStr} Pull] Cleared ${deletedCount} existing IOs for subsystem ${subsystemId}`);
 
-      // Scoped clears for related per-subsystem data.
-      db.prepare(`
-        DELETE FROM EStopIoPoints WHERE EpcId IN (
-          SELECT id FROM EStopEpcs WHERE ZoneId IN (
-            SELECT id FROM EStopZones WHERE SubsystemId = ?
-          )
-        )
-      `).run(subsystemId);
-      db.prepare(`
-        DELETE FROM EStopVfds WHERE EpcId IN (
-          SELECT id FROM EStopEpcs WHERE ZoneId IN (
-            SELECT id FROM EStopZones WHERE SubsystemId = ?
-          )
-        )
-      `).run(subsystemId);
-      db.prepare(`
-        DELETE FROM EStopEpcs WHERE ZoneId IN (
-          SELECT id FROM EStopZones WHERE SubsystemId = ?
-        )
-      `).run(subsystemId);
-      db.prepare('DELETE FROM EStopZones WHERE SubsystemId = ?').run(subsystemId);
-      db.prepare(`
-        DELETE FROM SafetyZoneDrives WHERE ZoneId IN (
-          SELECT id FROM SafetyZones WHERE SubsystemId = ?
-        )
-      `).run(subsystemId);
-      db.prepare('DELETE FROM SafetyZones WHERE SubsystemId = ?').run(subsystemId);
-      db.prepare('DELETE FROM SafetyOutputs WHERE SubsystemId = ?').run(subsystemId);
-      db.prepare(`
-        DELETE FROM NetworkPorts WHERE NodeId IN (
-          SELECT id FROM NetworkNodes WHERE RingId IN (
-            SELECT id FROM NetworkRings WHERE SubsystemId = ?
-          )
-        )
-      `).run(subsystemId);
-      db.prepare(`
-        DELETE FROM NetworkNodes WHERE RingId IN (
-          SELECT id FROM NetworkRings WHERE SubsystemId = ?
-        )
-      `).run(subsystemId);
-      db.prepare('DELETE FROM NetworkRings WHERE SubsystemId = ?').run(subsystemId);
-      db.prepare(`
-        DELETE FROM PunchlistItems WHERE PunchlistId IN (
-          SELECT id FROM Punchlists WHERE SubsystemId = ?
-        )
-      `).run(subsystemId);
-      db.prepare('DELETE FROM Punchlists WHERE SubsystemId = ?').run(subsystemId);
+      // NOTE: the network/estop/safety/punchlist scoped clears used to live here,
+      // inside the IO transaction. They moved into runConfigSidePulls (called
+      // below) so each config section is a self-contained delete+reinsert that
+      // runs in BOTH the full-pull and the no-op-refresh path. Safety in
+      // particular was previously deleted here but never re-inserted (data loss).
 
       let upserted = 0;
       for (const cloudIo of cloudIos) {
@@ -447,136 +442,14 @@ export async function POST(req: Request, res: Response) {
     // ── Side pulls (subsystem-scoped on cloud, additive in local DB) ─────
     // Network topology, EStop, Safety, Punchlists, L2 — copy the legacy
     // behavior, just without the global wipes.
-    let networkPulled = 0;
-    let estopPulled = 0;
-    let punchlistsPulled = 0;
-    let l2Pulled = 0;
-
-    try {
-      const netRes = await fetch(`${remoteUrl}/api/network?subsystemId=${subsystemId}`, {
-        headers,
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (netRes.ok) {
-        const netData = await netRes.json();
-        if (netData.success && netData.rings?.length > 0) {
-          const insertRing = db.prepare(
-            'INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)',
-          );
-          const insertNode = db.prepare(
-            'INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          );
-          const insertPort = db.prepare(
-            'INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceType, DeviceIp, StatusTag, ParentPortId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          );
-          for (const ring of netData.rings) {
-            const rr = insertRing.run(subsystemId, ring.name, ring.mcmName, ring.mcmIp || null, ring.mcmTag || null);
-            const ringId = rr.lastInsertRowid;
-            for (const node of ring.nodes || []) {
-              const nr = insertNode.run(
-                ringId, node.name, node.position, node.ipAddress || null,
-                node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28,
-              );
-              const nodeId = nr.lastInsertRowid;
-              for (const port of node.ports || []) {
-                insertPort.run(
-                  nodeId, port.portNumber, port.cableLabel || null,
-                  port.deviceName || null, port.deviceType || null, port.deviceIp || null,
-                  port.statusTag || null, null,
-                );
-              }
-            }
-          }
-          networkPulled = netData.rings.length;
-        }
-      }
-    } catch (e) {
-      console.warn(`[MCM ${subsystemIdStr} Pull] network pull failed:`,
-        e instanceof Error ? e.message : e);
-    }
-
-    try {
-      const estopRes = await fetch(`${remoteUrl}/api/sync/estop?subsystemId=${subsystemId}`, {
-        headers,
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (estopRes.ok) {
-        const estopData = await estopRes.json();
-        if (estopData.success && estopData.zones?.length > 0) {
-          const insertZone = db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)');
-          const insertEpc = db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)');
-          const insertIoPoint = db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)');
-          const insertVfd = db.prepare(
-            'INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)',
-          );
-          for (const zone of estopData.zones) {
-            const zr = insertZone.run(subsystemId, zone.name);
-            const zoneId = zr.lastInsertRowid;
-            for (const epc of zone.epcs || []) {
-              const er = insertEpc.run(zoneId, epc.name, epc.checkTag);
-              const epcId = er.lastInsertRowid;
-              for (const io of epc.ioPoints || []) insertIoPoint.run(epcId, io.tag);
-              for (const vfd of epc.vfds || []) insertVfd.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0);
-            }
-          }
-          estopPulled = estopData.zones.length;
-        }
-      }
-    } catch (e) {
-      console.warn(`[MCM ${subsystemIdStr} Pull] estop pull failed:`,
-        e instanceof Error ? e.message : e);
-    }
-
-    try {
-      const plRes = await fetch(`${remoteUrl}/api/sync/punchlists?subsystemId=${subsystemId}`, {
-        headers,
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (plRes.ok) {
-        const plData = await plRes.json();
-        if (plData.punchlists?.length > 0) {
-          const insertPunchlist = db.prepare(
-            'INSERT OR REPLACE INTO Punchlists (id, Name, SubsystemId) VALUES (?, ?, ?)',
-          );
-          const insertItem = db.prepare(
-            'INSERT OR IGNORE INTO PunchlistItems (PunchlistId, IoId) VALUES (?, ?)',
-          );
-          for (const pl of plData.punchlists) {
-            insertPunchlist.run(pl.id, pl.name, subsystemId);
-            for (const ioId of pl.ioIds || []) insertItem.run(pl.id, ioId);
-            punchlistsPulled++;
-          }
-        }
-      }
-    } catch (e) {
-      console.warn(`[MCM ${subsystemIdStr} Pull] punchlist pull failed:`,
-        e instanceof Error ? e.message : e);
-    }
-
-    // L2/FV pull, scoped to THIS subsystem. Previously skipped here — which
-    // left every MCM EXCEPT the server's own subsystem with an empty Functional
-    // Validation tab on a central server, because connect-all / pull-all only
-    // ever call this route and never pulled L2. That skip predated the
-    // L2Devices.SubsystemId scoping: /api/cloud/pull-l2 now deletes/inserts only
-    // this subsystem's devices/cells and upserts the project-global
-    // L2Sheets/Columns by CloudId, so per-MCM pulls no longer clobber each
-    // other. Self-call it (mirrors how pull-all self-calls this route).
-    // Best-effort — an L2 failure must not fail the IO pull. (l2Pulled is
-    // already declared with the other counters near the top of the handler.)
-    try {
-      const port = process.env.PORT || '3000';
-      const l2Res = await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId }),
-        signal: AbortSignal.timeout(60_000),
-      });
-      const l2Data = await l2Res.json().catch(() => ({}));
-      l2Pulled = l2Data.l2Pulled || l2Data.devices || 0;
-    } catch (e) {
-      console.warn(`[MCM ${subsystemIdStr} Pull] L2 pull failed:`,
-        e instanceof Error ? e.message : e);
-    }
+    // Config side-pulls: network / estop / safety / punchlist. One scoped,
+    // idempotent delete+reinsert per section, shared verbatim with the no-op
+    // branch above so config/FV data refreshes on every pull (safety included —
+    // it used to be deleted in the IO txn and never re-inserted). See
+    // lib/cloud/config-side-pulls.ts. L2/FV is a separate self-call.
+    const side = await runConfigSidePulls(subsystemId, remoteUrl, apiPassword, { db });
+    const { networkPulled, estopPulled, safetyPulled, punchlistsPulled } = side;
+    const l2Pulled = await pullL2SelfCall(subsystemId, remoteUrl, apiPassword);
 
     // Broadcast IOsUpdated so live UIs refresh.
     try {
@@ -594,7 +467,7 @@ export async function POST(req: Request, res: Response) {
     // short-circuit if nothing changed (see no-op check above).
     pullHashStore.set(subsystemId, versionHash);
 
-    console.log(`[MCM ${subsystemIdStr} Pull] DONE — ios=${result}, network=${networkPulled}, estop=${estopPulled}, punchlists=${punchlistsPulled}`);
+    console.log(`[MCM ${subsystemIdStr} Pull] DONE — ios=${result}, network=${networkPulled}, estop=${estopPulled}, safety=${safetyPulled}, punchlists=${punchlistsPulled}`);
 
     // Durable recovery-log trace of this DESTRUCTIVE pull (the no-op short-
     // circuit above rewrote nothing and is intentionally not logged). Log-only.
@@ -605,6 +478,7 @@ export async function POST(req: Request, res: Response) {
         iosCount: result,
         networkPulled,
         estopPulled,
+        safetyPulled,
       },
     });
 
@@ -615,6 +489,7 @@ export async function POST(req: Request, res: Response) {
       iosCount: result,
       networkPulled,
       estopPulled,
+      safetyPulled,
       punchlistsPulled,
       l2Pulled,
     });
