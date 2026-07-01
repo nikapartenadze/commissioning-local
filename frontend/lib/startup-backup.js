@@ -82,15 +82,46 @@ function createStartupBackup() {
   createBackup('startup');
 }
 
+// ms from now until the next local `hour`:00 (default 3 AM) — used to align the
+// daily snapshot to a quiet overnight window instead of "24h after boot".
+function msUntilNextHour(hour) {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(hour, 0, 0, 0);
+  if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
 let periodicTimer = null;
+let overnightTimeout = null;
+/**
+ * Default: ONE overnight snapshot/day (~3 AM local), then every 24h. This
+ * replaces the old every-6h cadence that (with permissive retention) piled up
+ * hundreds of files on central boxes. Set BACKUP_INTERVAL_HOURS to force the
+ * legacy fixed-interval behavior; pass intervalHours to override explicitly.
+ */
 function startPeriodicBackups(intervalHours) {
-  if (periodicTimer) return;
-  const hrs = Number(intervalHours) > 0
+  if (periodicTimer || overnightTimeout) return;
+  const forcedHrs = Number(intervalHours) > 0
     ? Number(intervalHours)
-    : (parseFloat(process.env.BACKUP_INTERVAL_HOURS || '') || 6);
-  periodicTimer = setInterval(() => createBackup('periodic'), hrs * 60 * 60 * 1000);
-  if (periodicTimer.unref) periodicTimer.unref();
-  console.log(`[Backup] Periodic backups every ${hrs}h, retention ${RETENTION_DAYS} days (min ${MIN_KEEP} kept)`);
+    : parseFloat(process.env.BACKUP_INTERVAL_HOURS || '');
+
+  if (Number.isFinite(forcedHrs) && forcedHrs > 0) {
+    periodicTimer = setInterval(() => createBackup('periodic'), forcedHrs * 60 * 60 * 1000);
+    if (periodicTimer.unref) periodicTimer.unref();
+    console.log(`[Backup] Periodic backups every ${forcedHrs}h, retention ${RETENTION_DAYS} days (min ${MIN_KEEP} kept)`);
+    return;
+  }
+
+  const hour = 3;
+  const firstDelay = msUntilNextHour(hour);
+  overnightTimeout = setTimeout(() => {
+    createBackup('overnight');
+    periodicTimer = setInterval(() => createBackup('overnight'), 24 * 60 * 60 * 1000);
+    if (periodicTimer.unref) periodicTimer.unref();
+  }, firstDelay);
+  if (overnightTimeout.unref) overnightTimeout.unref();
+  console.log(`[Backup] Overnight daily backup scheduled (~${Math.round(firstDelay / 3_600_000)}h from now, then every 24h), retention ${RETENTION_DAYS} days (min ${MIN_KEEP} kept)`);
 }
 
 module.exports = { createStartupBackup, createBackup, startPeriodicBackups, pruneBackups };

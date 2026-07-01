@@ -15,9 +15,9 @@ import path from 'path'
 let tmpRoot: string
 let backupsDir: string
 
-function writeBackup(name: string, ageMs: number): string {
+function writeBackup(name: string, ageMs: number, bytes = 1): string {
   const p = path.join(backupsDir, name)
-  fs.writeFileSync(p, 'x')
+  fs.writeFileSync(p, Buffer.alloc(bytes, 0x78))
   const t = (Date.now() - ageMs) / 1000
   fs.utimesSync(p, t, t)
   return p
@@ -73,6 +73,45 @@ describe('pruneBackups', () => {
     const res = pruneBackups()
     expect(res.deleted).toBe(0)
     expect(fs.readdirSync(backupsDir).filter((f) => f.startsWith('database-'))).toHaveLength(5)
+  })
+
+  it('enforces the total-size cap by deleting oldest backups past the byte budget', async () => {
+    // Count never triggers (keep high); age guard off; cap = 100 bytes.
+    process.env.BACKUP_RETENTION_KEEP = '100'
+    process.env.BACKUP_RETENTION_MIN_AGE_MS = '0'
+    process.env.BACKUP_RETENTION_MAX_BYTES = '100'
+    const { pruneBackups } = await import('@/lib/db/backup')
+
+    // 4 backups × 40 bytes = 160 bytes, ages 4h..1h. Cap 100 → keep newest
+    // two (80 bytes), delete the two oldest.
+    writeBackup('database-2026-06-16T00-01-00-000Z-pre-pull-mcm47.db', 4 * 60 * 60 * 1000, 40)
+    writeBackup('database-2026-06-16T00-02-00-000Z-pre-pull-mcm47.db', 3 * 60 * 60 * 1000, 40)
+    writeBackup('database-2026-06-16T00-03-00-000Z-pre-pull-mcm47.db', 2 * 60 * 60 * 1000, 40)
+    writeBackup('database-2026-06-16T00-04-00-000Z-pre-pull-mcm47.db', 1 * 60 * 60 * 1000, 40)
+
+    pruneBackups()
+    const remaining = fs.readdirSync(backupsDir).filter((f) => f.startsWith('database-')).sort()
+    expect(remaining).toEqual([
+      'database-2026-06-16T00-03-00-000Z-pre-pull-mcm47.db',
+      'database-2026-06-16T00-04-00-000Z-pre-pull-mcm47.db',
+    ])
+
+    delete process.env.BACKUP_RETENTION_MAX_BYTES
+  })
+
+  it('the size cap still respects the min-age guard (won’t drop fresh backups to fit)', async () => {
+    process.env.BACKUP_RETENTION_KEEP = '100'
+    process.env.BACKUP_RETENTION_MIN_AGE_MS = String(60 * 60 * 1000) // 1h
+    process.env.BACKUP_RETENTION_MAX_BYTES = '50'
+    const { pruneBackups } = await import('@/lib/db/backup')
+
+    // Two fresh 40-byte backups (80 bytes > 50 cap) but both < 1h old → protected.
+    writeBackup('database-2026-06-16T02-01-00-000Z-pre-pull-mcm38.db', 60 * 1000, 40)
+    writeBackup('database-2026-06-16T02-02-00-000Z-pre-pull-mcm38.db', 60 * 1000, 40)
+    const res = pruneBackups()
+    expect(res.deleted).toBe(0)
+
+    delete process.env.BACKUP_RETENTION_MAX_BYTES
   })
 
   it('only touches database-*.db files — leaves the live DB and unrelated files alone', async () => {

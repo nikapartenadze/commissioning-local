@@ -57,22 +57,32 @@ export async function createBackup(reason: string): Promise<{ filename: string; 
 }
 
 /**
- * Retention policy for auto-created backups.
+ * Retention policy for auto-created backups. Two independent bounds, both
+ * applied, both respecting a minimum-age guard:
  *
- * Keeps at most BACKUP_RETENTION_KEEP newest backups (default 100 — ample
- * recovery history while bounding disk at ~100 × DB size; the churn that made
- * this matter is removed by the background-pull backup skip in the MCM pull
- * route). Backups younger
- * than BACKUP_RETENTION_MIN_AGE_MS (default 1 h) are NEVER pruned, so a burst
- * of pulls can't immediately delete a just-made recovery point. Only files
- * matching the auto-backup naming pattern are ever touched; the live
- * database.db is in a different directory and is never a candidate.
+ *  - COUNT: keep at most BACKUP_RETENTION_KEEP newest backups (default 30).
+ *  - SIZE:  keep total backup bytes under BACKUP_RETENTION_MAX_BYTES
+ *           (default 5 GB) — deletes the oldest until the survivors fit.
+ *
+ * Backups younger than BACKUP_RETENTION_MIN_AGE_MS (default 1 h) are NEVER
+ * pruned, so a burst of pulls can't immediately delete a just-made recovery
+ * point (the size cap honors this too — it won't drop fresh backups to fit).
+ * Only files matching the auto-backup naming pattern are ever touched; the live
+ * database.db lives in a different directory and is never a candidate.
+ *
+ * Field context (2026-07-01): central boxes accumulated hundreds of files under
+ * the old count-only (keep 100) policy + a second disagreeing time-based pruner.
+ * This is now the single retention authority; the size cap is the hard bound.
  */
 export function pruneBackups(): { deleted: number; kept: number } {
-  const keep = Math.max(1, parseInt(process.env.BACKUP_RETENTION_KEEP || '', 10) || 100)
+  const keep = Math.max(1, parseInt(process.env.BACKUP_RETENTION_KEEP || '', 10) || 30)
   const minAgeMs = Math.max(
     0,
     parseInt(process.env.BACKUP_RETENTION_MIN_AGE_MS || '', 10) || 60 * 60 * 1000,
+  )
+  const maxBytes = Math.max(
+    0,
+    parseInt(process.env.BACKUP_RETENTION_MAX_BYTES || '', 10) || 5 * 1024 * 1024 * 1024,
   )
   const backupsDir = getBackupDbPath()
   if (!fs.existsSync(backupsDir)) return { deleted: 0, kept: 0 }
@@ -83,18 +93,37 @@ export function pruneBackups(): { deleted: number; kept: number } {
     .filter((f) => f.endsWith('.db') && f.startsWith('database-'))
     .map((filename) => {
       const filePath = path.join(backupsDir, filename)
-      const mtime = fs.statSync(filePath).mtimeMs
-      return { filePath, mtime }
+      const stat = fs.statSync(filePath)
+      return { filePath, mtime: stat.mtimeMs, size: stat.size }
     })
     .sort((a, b) => b.mtime - a.mtime) // newest first
 
-  let deleted = 0
-  // Everything past the keep window is a deletion candidate, except files
-  // still inside the minimum-age guard.
+  const toDelete = new Set<string>()
+  const deletable = (f: { mtime: number }) => now - f.mtime >= minAgeMs
+
+  // Count bound: everything past the keep window (that's old enough).
   for (const f of files.slice(keep)) {
-    if (now - f.mtime < minAgeMs) continue
+    if (deletable(f)) toDelete.add(f.filePath)
+  }
+
+  // Size bound: sum survivors; if over budget, drop the oldest deletable ones
+  // (oldest = end of the newest-first array) until under budget or none remain.
+  let survivingBytes = files
+    .filter((f) => !toDelete.has(f.filePath))
+    .reduce((sum, f) => sum + f.size, 0)
+  if (survivingBytes > maxBytes) {
+    for (let i = files.length - 1; i >= 0 && survivingBytes > maxBytes; i--) {
+      const f = files[i]
+      if (toDelete.has(f.filePath) || !deletable(f)) continue
+      toDelete.add(f.filePath)
+      survivingBytes -= f.size
+    }
+  }
+
+  let deleted = 0
+  for (const filePath of toDelete) {
     try {
-      fs.unlinkSync(f.filePath)
+      fs.unlinkSync(filePath)
       deleted++
     } catch {
       // best-effort — skip files we can't remove (locked / permissions)
