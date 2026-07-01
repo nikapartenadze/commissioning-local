@@ -7,12 +7,18 @@ export async function POST(req: Request, res: Response) {
     const config = await configService.getConfig()
     const remoteUrl = config.remoteUrl
     const apiPassword = config.apiPassword
-    const subsystemId = typeof config.subsystemId === 'string' ? parseInt(config.subsystemId, 10) : config.subsystemId
+    // Scope by the REQUESTED subsystem (central multi-MCM), not the singleton
+    // config.subsystemId. Falling back to config only preserves single-MCM
+    // tablet behavior. Central pages MUST pass subsystemId in the body.
+    const bodySubsystemId = req.body?.subsystemId
+    const rawSubsystemId = bodySubsystemId != null ? bodySubsystemId
+      : (typeof config.subsystemId === 'string' ? parseInt(config.subsystemId, 10) : config.subsystemId)
+    const subsystemId = typeof rawSubsystemId === 'string' ? parseInt(rawSubsystemId, 10) : rawSubsystemId
 
     if (!remoteUrl) {
       return res.status(400).json({ success: false, error: 'Cloud URL not configured' })
     }
-    if (!subsystemId) {
+    if (!subsystemId || !Number.isFinite(subsystemId)) {
       return res.status(400).json({ success: false, error: 'Subsystem ID not configured' })
     }
 
@@ -37,7 +43,14 @@ export async function POST(req: Request, res: Response) {
       return res.json({ success: true, zones: 0, message: 'No EStop data on cloud' })
     }
 
-    db.prepare('DELETE FROM EStopZones').run()
+    // SCOPED cascade delete — only this subsystem's e-stop data. A global
+    // `DELETE FROM EStopZones` here wiped every OTHER MCM's zones on a central
+    // server (data-loss). Delete children first, then zones for this subsystem.
+    db.prepare(`DELETE FROM EStopIoPoints WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?))`).run(subsystemId)
+    db.prepare(`DELETE FROM EStopVfds WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?))`).run(subsystemId)
+    db.prepare(`DELETE FROM EStopRelatedEpcs WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?))`).run(subsystemId)
+    db.prepare(`DELETE FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?)`).run(subsystemId)
+    db.prepare('DELETE FROM EStopZones WHERE SubsystemId = ?').run(subsystemId)
 
     const insertZoneStmt = db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)')
     const insertEpcStmt = db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)')
