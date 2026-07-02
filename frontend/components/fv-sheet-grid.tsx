@@ -49,6 +49,9 @@ interface FVSheetGridProps {
   onFixedFilterChange?: (field: "device" | "mcm" | "subsystem", value: string[] | null) => void
   /** When true, each device row shows a VFD wizard launch icon */
   isVfdSheet?: boolean
+  /** Per-row tone: 'blocked' → red row, 'complete' → green row, null → default.
+   *  Used on the VFD Commissioning view. Blocked takes precedence over complete. */
+  rowTone?: (device: FVDevice) => 'blocked' | 'complete' | null
   /** Called when user clicks the VFD wizard icon on a device row */
   onOpenWizard?: (device: FVDevice) => void
   /** Message to show when devices array is empty */
@@ -314,6 +317,7 @@ export function FVSheetGrid({
   onColumnFilterChange,
   onFixedFilterChange,
   isVfdSheet = false,
+  rowTone,
   onOpenWizard,
   emptyMessage,
   extraColumns = [],
@@ -715,12 +719,19 @@ export function FVSheetGrid({
             {virtualizer.getVirtualItems().map(virtualRow => {
               const device = devices[virtualRow.index]
               const rowIdx = virtualRow.index
+              // Row tone (VFD Commissioning): blocker → red, all checks done →
+              // green, else default zebra. Blocked wins over complete.
+              const tone = rowTone?.(device) ?? null
               return (
                 <div
                   key={device.id}
                   className={cn(
                     "absolute left-0 flex border-b",
-                    rowIdx % 2 === 0 ? "bg-card" : "bg-muted/20"
+                    tone === 'blocked'
+                      ? "bg-red-100 dark:bg-red-950/40"
+                      : tone === 'complete'
+                        ? "bg-green-100 dark:bg-green-950/40"
+                        : rowIdx % 2 === 0 ? "bg-card" : "bg-muted/20"
                   )}
                   style={{ top: virtualRow.start, height: ROW_HEIGHT, minWidth: totalContentWidth }}
                 >

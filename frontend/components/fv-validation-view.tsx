@@ -604,13 +604,53 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       </div>
     )
   }
-  const activeColumns = data.columns
-    .filter(c => c.SheetId === activeSheetData.id)
-    .sort((a, b) => a.DisplayOrder - b.DisplayOrder)
+  // VFD Commissioning column order: match the wizard step sequence, then push
+  // Notes/comment + any blocker/responsible-party/description columns to the
+  // very end. Name-based, so a column not present on the sheet (e.g. the
+  // synthetic "Run Verified" before it's provisioned) is simply skipped. The
+  // plain Functional Validation tab keeps the cloud DisplayOrder unchanged.
+  const VFD_COL_RANK: Record<string, number> = {
+    'verify identity': 0, 'motor hp (field)': 1, 'vfd hp (field)': 2,
+    'run verified': 3, 'belt tracked': 4, 'check direction': 5,
+    'polarity': 6, 'speed set up': 7,
+  }
+  const vfdColRank = (name: string): number => {
+    const n = (name || '').trim().toLowerCase()
+    if (n in VFD_COL_RANK) return VFD_COL_RANK[n]
+    if (/note|comment|blocker|responsible|party|description/.test(n)) return 900
+    return 500
+  }
+  const activeColumns = (() => {
+    const cols = data.columns
+      .filter(c => c.SheetId === activeSheetData.id)
+      .sort((a, b) => a.DisplayOrder - b.DisplayOrder)
+    if (!vfdMode) return cols
+    return [...cols].sort((a, b) => vfdColRank(a.Name) - vfdColRank(b.Name) || a.DisplayOrder - b.DisplayOrder)
+  })()
   const activeDevices = data.devices
     .filter(d => d.SheetId === activeSheetData.id)
     .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
   const activeStats = sheetStats[safeActiveSheet]
+
+  // VFD row tone: a device with an open blocker paints the whole row RED; a
+  // device whose wizard-check columns are ALL filled paints it GREEN; partial
+  // stays default (the values are visible in the columns). Blocked wins.
+  const vfdCheckColIds = vfdMode
+    ? activeColumns.filter(c => ((c.Name || '').trim().toLowerCase()) in VFD_COL_RANK).map(c => c.id)
+    : []
+  const rowTone = vfdMode
+    ? (device: { id: number; DeviceName: string }): 'blocked' | 'complete' | null => {
+        if (vfdAnnotations.get(device.DeviceName)?.blocked) return 'blocked'
+        if (
+          vfdCheckColIds.length > 0 &&
+          vfdCheckColIds.every(cid => {
+            const v = cellValues.get(`${device.id}-${cid}`)?.Value
+            return v != null && String(v).trim() !== ''
+          })
+        ) return 'complete'
+        return null
+      }
+    : undefined
 
   // Is the currently selected sheet a VFD/APF sheet?
   const isActiveSheetVfd = vfdSheetIds.has(activeSheetData.id)
@@ -991,6 +1031,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
             isVfdSheet={isActiveSheetVfd}
             onOpenWizard={isActiveSheetVfd ? handleOpenWizardFromGrid : undefined}
             extraColumns={vfdExtraColumns}
+            rowTone={rowTone}
             emptyMessage={activeDevices.length === 0 ? "No devices in this sheet" : "No devices match the current filters"}
           />
         </div>
