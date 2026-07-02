@@ -628,7 +628,10 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     // Fixed column filters
     if (fixedFilters.device !== null && fixedFilters.device.length > 0 && !fixedFilters.device.includes(device.DeviceName)) return false
     if (fixedFilters.mcm !== null && fixedFilters.mcm.length > 0 && !fixedFilters.mcm.includes(device.Mcm || "")) return false
-    if (fixedFilters.subsystem !== null && fixedFilters.subsystem.length > 0 && !fixedFilters.subsystem.includes(device.Subsystem || "")) return false
+    // VFD mode hides the Subsystem column/filter entirely (MCM is the axis), so
+    // never apply a subsystem filter there — otherwise a value persisted before
+    // this change would silently filter rows with no visible control to clear it.
+    if (!vfdMode && fixedFilters.subsystem !== null && fixedFilters.subsystem.length > 0 && !fixedFilters.subsystem.includes(device.Subsystem || "")) return false
 
     // Per-column filters
     for (const [key, filter] of Object.entries(columnFilters)) {

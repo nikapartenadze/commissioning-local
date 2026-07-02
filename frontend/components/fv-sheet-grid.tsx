@@ -398,7 +398,8 @@ export function FVSheetGrid({
     subsystem: widthOverrides.get('fixed-subsystem') ?? DEFAULT_FIXED.subsystem,
   }), [widthOverrides])
 
-  const totalFixed = fixedW.deviceName + fixedW.mcm + fixedW.subsystem
+  // Subsystem column is hidden in VFD mode, so it contributes no width there.
+  const totalFixed = fixedW.deviceName + fixedW.mcm + (isVfdSheet ? 0 : fixedW.subsystem)
 
   // Scroll column widths: user override > auto-scaled > base default
   const scrollColWidths = useMemo(() => {
@@ -591,7 +592,10 @@ export function FVSheetGrid({
                 </div>
                 <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'mcm', fixedW.mcm)} />
               </div>
-              {/* Subsystem */}
+              {/* Subsystem column — hidden on the MCM-centric VFD Commissioning
+                  view (its free-text zone-label values, e.g. "Fluid Inbound",
+                  are noise there; MCM is the meaningful axis). */}
+              {!isVfdSheet && (
               <div className="relative flex items-center justify-between px-2 text-xs font-semibold text-muted-foreground border-r" style={{ width: fixedW.subsystem }}>
                 <span>Subsystem</span>
                 <div className="flex items-center gap-0.5">
@@ -614,6 +618,7 @@ export function FVSheetGrid({
                 </div>
                 <ResizeHandle onResizeStart={(e) => startFixedResize(e, 'subsystem', fixedW.subsystem)} />
               </div>
+              )}
             </div>
 
             {/* Scrollable header columns */}
@@ -746,12 +751,18 @@ export function FVSheetGrid({
                     >
                       {device.Mcm}
                     </div>
-                    <div
-                      className="flex items-center px-2 text-xs text-muted-foreground border-r"
-                      style={{ width: fixedW.subsystem }}
-                    >
-                      {device.Subsystem}
-                    </div>
+                    {/* Subsystem is the free-text zone label ("Fluid Inbound…") —
+                        meaningless on the VFD Commissioning view, which is
+                        MCM-centric. Hidden in VFD mode; the MCM column above
+                        already carries the MCMXX value. */}
+                    {!isVfdSheet && (
+                      <div
+                        className="flex items-center px-2 text-xs text-muted-foreground border-r"
+                        style={{ width: fixedW.subsystem }}
+                      >
+                        {device.Subsystem}
+                      </div>
+                    )}
                   </div>
 
                   {/* Scrollable data columns */}
