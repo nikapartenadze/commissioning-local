@@ -220,13 +220,16 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       // subsystem's devices (not whichever MCM was pulled last). Omitted on a
       // single-MCM tablet (no subsystemId) → returns all, as before.
       //
-      // VFD mode does NOT scope: /api/l2?subsystemId=N filters L2 devices by
-      // their owning subsystem, but the VFD/APF belts may be keyed to a different
-      // subsystem than the route :id (e.g. cloud set them to 38 while the page is
-      // /commissioning/16). Scoping would return the APF sheet with ZERO devices.
-      // The VFD tab wants every VFD/APF device regardless of the route id, so we
-      // omit the scope and let the VFD/APF sheet filter happen client-side.
-      const scope = (subsystemId && !vfdMode) ? `subsystemId=${subsystemId}&` : ''
+      // VFD mode scopes by SHEET, not subsystem: /api/l2?subsystemId=N would
+      // filter L2 devices by their owning subsystem, but VFD/APF belts may be
+      // keyed to a different subsystem than the route :id (cloud set them to 38
+      // while the page is /commissioning/16) — subsystem-scoping would show the
+      // APF sheet with ZERO devices. Instead ?vfd=1 returns ONLY the VFD/APF
+      // sheet's devices + their cells (all subsystems), which is the exact set
+      // this tab renders — a fraction of the payload vs the old unscoped fetch
+      // that pulled every sheet's devices + the whole cell-values table (the
+      // multi-second empty-grid delay on large projects like CDW5).
+      const scope = vfdMode ? 'vfd=1&' : (subsystemId ? `subsystemId=${subsystemId}&` : '')
       const res = await authFetch(`/api/l2?${scope}_t=${Date.now()}`)
       if (!res.ok) throw new Error(`Failed to fetch functional validation data: ${res.status}`)
       const json: FVData = await res.json()
@@ -459,10 +462,27 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   // the VFD Commissioning tab (vfdMode).
   const fvLabel = vfdMode ? 'VFD Commissioning' : 'Functional Validation'
   if (loading) {
+    // Grid-shaped skeleton (not an empty pane): a toolbar bar + header row +
+    // placeholder rows so the layout is stable and it reads as "loading the
+    // grid", matching where the real data lands.
     return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground">
-        <Loader2 className="h-5 w-5 animate-spin mr-2" />
-        Loading {fvLabel} data...
+      <div className="p-3 space-y-3" aria-busy="true" aria-label={`Loading ${fvLabel} data`}>
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">Loading {fvLabel}…</span>
+          <div className="ml-auto h-8 w-40 rounded-md bg-muted animate-pulse" />
+        </div>
+        <div className="rounded-md border overflow-hidden">
+          <div className="h-9 bg-muted/60 animate-pulse border-b" />
+          {Array.from({ length: 10 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 px-3 h-11 border-b last:border-b-0">
+              <div className="h-4 w-40 rounded bg-muted animate-pulse" />
+              <div className="h-4 w-24 rounded bg-muted/70 animate-pulse" />
+              <div className="h-6 w-16 rounded-full bg-muted/70 animate-pulse" />
+              <div className="h-4 w-20 rounded bg-muted/60 animate-pulse ml-auto" />
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
