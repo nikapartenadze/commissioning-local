@@ -22,6 +22,24 @@ const stmts = {
        JOIN L2Devices d ON d.id = cv.DeviceId
       WHERE d.SubsystemId = ? OR d.SubsystemId IS NULL`,
   ),
+  // VFD-only scope (?vfd=1) — the VFD Commissioning tab. It deliberately does
+  // NOT scope by subsystem (VFD/APF devices may be keyed to a different
+  // subsystem than the route), but it only needs the VFD/APF sheet — so scope
+  // by SHEET here instead of returning every sheet's devices + the whole
+  // L2CellValues table. Matches the client's filter exactly (sheet name VFD/APF
+  // OR device name contains VFD), so the visible set is identical but the
+  // payload is a fraction (one sheet vs all sheets across all MCMs).
+  devicesVfd: db.prepare(
+    `SELECT d.* FROM L2Devices d
+      WHERE (d.SheetId IN (SELECT id FROM L2Sheets WHERE UPPER(Name) LIKE '%VFD%' OR UPPER(Name) LIKE '%APF%') OR UPPER(d.DeviceName) LIKE '%VFD%')
+      ORDER BY d.DisplayOrder`,
+  ),
+  cellsVfd: db.prepare(
+    `SELECT cv.DeviceId, cv.ColumnId, cv.Value, cv.Version
+       FROM L2CellValues cv
+       JOIN L2Devices d ON d.id = cv.DeviceId
+      WHERE (d.SheetId IN (SELECT id FROM L2Sheets WHERE UPPER(Name) LIKE '%VFD%' OR UPPER(Name) LIKE '%APF%') OR UPPER(d.DeviceName) LIKE '%VFD%')`,
+  ),
 }
 
 export async function GET(req: Request, res: Response) {
@@ -29,11 +47,16 @@ export async function GET(req: Request, res: Response) {
     const sidRaw = req.query.subsystemId
     const sid = sidRaw != null ? parseInt(String(sidRaw), 10) : NaN
     const scoped = Number.isFinite(sid)
+    const vfdOnly = req.query.vfd === '1' || req.query.vfd === 'true'
 
     const sheets = stmts.sheets.all()
     const columns = stmts.columns.all()
-    const devices = scoped ? stmts.devicesScoped.all(sid) : stmts.devicesAll.all()
-    const cellValues = scoped ? stmts.cellsScoped.all(sid) : stmts.cellsAll.all()
+    const devices = vfdOnly
+      ? stmts.devicesVfd.all()
+      : scoped ? stmts.devicesScoped.all(sid) : stmts.devicesAll.all()
+    const cellValues = vfdOnly
+      ? stmts.cellsVfd.all()
+      : scoped ? stmts.cellsScoped.all(sid) : stmts.cellsAll.all()
 
     return res.json({ sheets, columns, devices, cellValues, hasData: (sheets as any[]).length > 0 })
   } catch (error) {
