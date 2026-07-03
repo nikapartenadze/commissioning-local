@@ -108,6 +108,11 @@ try {
     // excluded from the active push loop.
     'ALTER TABLE EStopCheckPendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
+    // Same dead-letter parity for the VFD device-blocker queue (F7, 2026-07-03
+    // sync audit): it was the ONE queue with no retry cap at all — a
+    // permanently-rejected blocker re-POSTed every 10s forever and never
+    // surfaced anywhere. Park it like every other queue.
+    'ALTER TABLE DeviceBlockerPendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
     // First-run hardening: the seeded default admin (Admin/111111) is flagged
     // MustChangePin=1 so the UI forces a new PIN on first admin login under
     // enforced auth. Additive + backward-safe: existing users default to 0.

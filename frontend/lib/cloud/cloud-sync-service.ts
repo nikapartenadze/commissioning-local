@@ -33,7 +33,14 @@ import {
   deleteDeviceBlockerSync,
   recordDeviceBlockerSyncFailure,
   recordDeviceBlockerSyncTransientFailure,
+  parkDeviceBlockerSync,
 } from '@/lib/db/repositories/device-blocker-sync-repository'
+import { auditLog } from '@/lib/logging/recovery-log'
+
+// Retry cap for device-blocker queue rows (F7, 2026-07-03 sync audit): same
+// 10-strike park policy as every other queue. Before this, a permanently-
+// rejected blocker re-POSTed every 10s FOREVER and never surfaced anywhere.
+const DEVICE_BLOCKER_RETRY_CAP = 10
 
 /**
  * Outcome of attempting to push a single IO update to cloud.
@@ -996,12 +1003,12 @@ export class CloudSyncService {
           }
 
           if (data && data.ok === false) {
-            // Explicit cloud rejection — burns a strike (retry cap will drop it).
+            // Explicit cloud rejection — burns a strike; the cap PARKS the row.
             log.warn(
               `[CloudSync] Device blocker row ${row.id} rejected by cloud: ${data.reason ?? 'unknown'} ` +
               `(device=${row.deviceName}, op=${row.op})`,
             )
-            recordDeviceBlockerSyncFailure(row.id, `cloud-rejected: ${data.reason ?? 'unknown'}`)
+            this.strikeOrParkDeviceBlocker(row, `cloud-rejected: ${data.reason ?? 'unknown'}`)
             continue
           }
 
@@ -1027,9 +1034,9 @@ export class CloudSyncService {
         }
 
         // 4xx (other than 401): malformed/validation — retrying won't help.
-        // Burn a strike so the retry cap eventually drops it.
+        // Burn a strike; at the cap the row is PARKED for attention.
         log.warn(`[CloudSync] Device blocker row ${row.id} got HTTP ${response.status} — counting a strike`)
-        recordDeviceBlockerSyncFailure(row.id, `HTTP ${response.status}`)
+        this.strikeOrParkDeviceBlocker(row, `HTTP ${response.status}`)
       } catch (error) {
         // fetch threw (DNS / connect timeout / aborted) — never reached the
         // cloud, so no strike. Stop the batch.
@@ -1045,6 +1052,34 @@ export class CloudSyncService {
       log.info(`Pushed ${synced} device blocker sync row(s) to cloud`)
     }
     return synced
+  }
+
+  /**
+   * Burn a retry strike on a device-blocker queue row; at the cap, PARK it
+   * (DeadLettered=1) instead of retrying forever — the row and its values
+   * survive for operator attention, journaled to the recovery log. (F7)
+   */
+  private strikeOrParkDeviceBlocker(
+    row: { id: number; subsystemId: number; deviceName: string; op: string; retryCount: number; updatedBy: string | null },
+    error: string,
+  ): void {
+    const newCount = row.retryCount + 1
+    if (newCount < DEVICE_BLOCKER_RETRY_CAP) {
+      recordDeviceBlockerSyncFailure(row.id, error)
+      return
+    }
+    parkDeviceBlockerSync(row.id, `${error} — parked after ${newCount} retries`)
+    log.error(
+      `[CloudSync] Device blocker row ${row.id} PARKED after ${newCount} retries ` +
+      `(device=${row.deviceName}, op=${row.op}, subsystem=${row.subsystemId}): ${error}`,
+    )
+    auditLog({
+      type: 'sync.push.park',
+      subsystemId: row.subsystemId,
+      user: row.updatedBy,
+      reason: `device-blocker retry-cap (${DEVICE_BLOCKER_RETRY_CAP}) — parked for attention: ${error}`,
+      detail: { kind: 'device-blocker', pendingId: row.id, deviceName: row.deviceName, op: row.op },
+    })
   }
 
   // ===========================================================================

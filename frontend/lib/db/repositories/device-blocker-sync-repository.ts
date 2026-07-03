@@ -122,16 +122,49 @@ export function enqueueDeviceBlockerClear(input: {
 }
 
 /**
- * List queued blocker syncs, oldest-first (drain order). Optional limit.
+ * List ACTIVE queued blocker syncs, oldest-first (drain order). Optional limit.
+ * Parked rows (DeadLettered=1) are excluded — they exhausted the retry cap or
+ * were permanently rejected and only leave via operator action.
  */
 export function listDeviceBlockerSyncs(limit?: number): DeviceBlockerSyncRow[] {
   const sql =
-    'SELECT * FROM DeviceBlockerPendingSyncs ORDER BY CreatedAt ASC, id ASC' +
+    'SELECT * FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC, id ASC' +
     (limit !== undefined ? ' LIMIT ?' : '')
   const rows = (limit !== undefined
     ? db.prepare(sql).all(limit)
     : db.prepare(sql).all()) as RawRow[]
   return rows.map(mapRow)
+}
+
+/**
+ * List PARKED (dead-lettered) blocker syncs for the stuck-sync surface.
+ */
+export function listParkedDeviceBlockerSyncs(subsystemId?: number): DeviceBlockerSyncRow[] {
+  const rows = (subsystemId !== undefined
+    ? db.prepare('SELECT * FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 AND SubsystemId = ? ORDER BY CreatedAt ASC').all(subsystemId)
+    : db.prepare('SELECT * FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 ORDER BY CreatedAt ASC').all()) as RawRow[]
+  return rows.map(mapRow)
+}
+
+/**
+ * PARK a blocker sync (retry cap exhausted / permanent cloud rejection).
+ * The row and its values survive for operator attention — never deleted.
+ */
+export function parkDeviceBlockerSync(id: number, error: string): void {
+  db.prepare(
+    'UPDATE DeviceBlockerPendingSyncs SET DeadLettered = 1, LastError = ? WHERE id = ?',
+  ).run(error, id)
+}
+
+/** Un-park a blocker sync so the push loop retries it (operator action). */
+export function unparkDeviceBlockerSync(id: number): void {
+  db.prepare(
+    'UPDATE DeviceBlockerPendingSyncs SET DeadLettered = 0, RetryCount = 0 WHERE id = ?',
+  ).run(id)
+}
+
+export function countParkedDeviceBlockerSyncs(): number {
+  return (db.prepare('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
 }
 
 /**

@@ -36,7 +36,8 @@ const { memDb } = vi.hoisted(() => {
       Timestamp TEXT,
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
-      LastError TEXT
+      LastError TEXT,
+      DeadLettered INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
   `)
@@ -49,9 +50,13 @@ import {
   enqueueDeviceBlockerSet,
   enqueueDeviceBlockerClear,
   listDeviceBlockerSyncs,
+  listParkedDeviceBlockerSyncs,
   deleteDeviceBlockerSync,
   recordDeviceBlockerSyncFailure,
   recordDeviceBlockerSyncTransientFailure,
+  parkDeviceBlockerSync,
+  unparkDeviceBlockerSync,
+  countParkedDeviceBlockerSyncs,
 } from '@/lib/db/repositories/device-blocker-sync-repository'
 
 describe('device-blocker-sync-repository', () => {
@@ -157,5 +162,38 @@ describe('device-blocker-sync-repository', () => {
     const row = listDeviceBlockerSyncs().find(r => r.id === id)!
     expect(row.retryCount).toBe(0)
     expect(row.lastError).toBe('offline')
+  })
+
+  // F7 (2026-07-03 sync audit): the blocker queue was the ONE queue with no
+  // dead-letter — a permanently-rejected row re-POSTed every 10s forever.
+  it('parkDeviceBlockerSync removes the row from the active drain but keeps it (never deleted)', () => {
+    const id = enqueueDeviceBlockerSet({ subsystemId: 40, deviceName: 'UL9_9_VFD1', party: 'Controls', description: 'VFD did not turn on' })
+    parkDeviceBlockerSync(id, 'cloud-rejected: bad-party — parked after 10 retries')
+
+    expect(listDeviceBlockerSyncs()).toHaveLength(0) // excluded from drain
+    const parked = listParkedDeviceBlockerSyncs()
+    expect(parked).toHaveLength(1)
+    expect(parked[0].id).toBe(id)
+    expect(parked[0].lastError).toContain('parked after 10 retries')
+    expect(countParkedDeviceBlockerSyncs()).toBe(1)
+  })
+
+  it('listParkedDeviceBlockerSyncs can scope by subsystem', () => {
+    const a = enqueueDeviceBlockerSet({ subsystemId: 40, deviceName: 'A', party: 'Controls', description: 'x' })
+    const b = enqueueDeviceBlockerSet({ subsystemId: 41, deviceName: 'B', party: 'Controls', description: 'x' })
+    parkDeviceBlockerSync(a, 'err')
+    parkDeviceBlockerSync(b, 'err')
+    expect(listParkedDeviceBlockerSyncs(40).map(r => r.id)).toEqual([a])
+  })
+
+  it('unparkDeviceBlockerSync returns the row to the active drain with strikes cleared', () => {
+    const id = enqueueDeviceBlockerSet({ subsystemId: 40, deviceName: 'A', party: 'Controls', description: 'x' })
+    recordDeviceBlockerSyncFailure(id, 'strike')
+    parkDeviceBlockerSync(id, 'parked')
+    expect(listDeviceBlockerSyncs()).toHaveLength(0)
+
+    unparkDeviceBlockerSync(id)
+    const row = listDeviceBlockerSyncs().find(r => r.id === id)!
+    expect(row.retryCount).toBe(0)
   })
 })
