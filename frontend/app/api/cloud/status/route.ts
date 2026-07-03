@@ -102,6 +102,8 @@ export async function GET(req: Request, res: Response) {
       connected = sseClient.isConnected
       if (!connected && sseClient.connectionState === 'reconnecting') {
         error = 'Reconnecting to cloud...'
+      } else if (!connected && sseClient.connectionState === 'auth-failed') {
+        error = 'Cloud AUTH FAILED — the API key was rejected. Check the API password / project assignment.'
       }
     } else if (config.remoteUrl) {
       try {

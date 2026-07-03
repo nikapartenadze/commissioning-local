@@ -11,7 +11,11 @@
 import { db } from '@/lib/db-sqlite'
 
 // SSE connection states
-export type SseConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
+// 'auth-failed' (F15, 2026-07-03 sync audit): the cloud rejected our API key
+// (HTTP 401/403). Previously indistinguishable from a transient outage, so a
+// bad key produced a silent infinite 5–60s reconnect loop while cloud→field
+// propagation was dead. Now surfaced distinctly and retried SLOWLY.
+export type SseConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'auth-failed'
 
 export interface CloudSseConfig {
   remoteUrl: string
@@ -207,6 +211,21 @@ export class CloudSseClient {
         signal: this.abortController.signal,
       })
 
+      if (response.status === 401 || response.status === 403) {
+        // Auth rejection is NOT a transient outage: hot-loop reconnecting
+        // masks the real problem (bad/expired API key or project mismatch)
+        // while cloud→field propagation silently stays dead. Surface a
+        // distinct state (red in the UI) and retry slowly — the key may be
+        // fixed in config, and updateConfig() reconnects immediately anyway.
+        console.error(
+          `[CloudSSE] AUTH FAILED (HTTP ${response.status}) — cloud rejected the API key for ` +
+          `subsystem ${subsystemId}. Check the API password / project assignment. Retrying in 5 min.`,
+        )
+        this.setConnectionState('auth-failed')
+        this.scheduleReconnect(5 * 60_000)
+        return
+      }
+
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
@@ -271,15 +290,20 @@ export class CloudSseClient {
     }
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(delayOverrideMs?: number): void {
     if (this._intentionalDisconnect) return
-    this.setConnectionState('reconnecting')
-    console.log(`[CloudSSE] Reconnecting in ${this.reconnectDelay / 1000}s...`)
+    // An auth failure keeps its distinct state (set by the caller); everything
+    // else shows the normal reconnecting state.
+    if (delayOverrideMs === undefined) this.setConnectionState('reconnecting')
+    const delay = delayOverrideMs ?? this.reconnectDelay
+    console.log(`[CloudSSE] Reconnecting in ${Math.round(delay / 1000)}s...`)
     this.reconnectTimer = setTimeout(() => {
       this.startStream()
-    }, this.reconnectDelay)
-    // Exponential backoff
-    this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, this.maxReconnectDelay)
+    }, delay)
+    // Exponential backoff (only advances the normal path)
+    if (delayOverrideMs === undefined) {
+      this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, this.maxReconnectDelay)
+    }
   }
 
   private handleEvent(event: any): void {

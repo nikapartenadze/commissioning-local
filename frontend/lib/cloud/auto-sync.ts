@@ -445,6 +445,13 @@ class AutoSyncService {
 
         const syncService = getCloudSyncService()
         const blockedIoIds = new Set<number>()
+        // F19 (2026-07-03 sync audit): tolerate a few isolated network-level
+        // failures before deferring the whole batch. A single blip used to
+        // abandon all remaining rows to the next 10s cycle, serializing the
+        // drain painfully on flaky links; a truly-down cloud still stops the
+        // batch after this many timeouts.
+        const NETWORK_FAILURE_BATCH_TOLERANCE = 3
+        let networkFailures = 0
 
         for (const pending of pendingSyncs) {
           if (blockedIoIds.has(pending.IoId)) {
@@ -502,8 +509,12 @@ class AutoSyncService {
             // way, and each attempt costs up to a 15 s timeout.
             pendingSyncRepository.recordTransientFailure(pending.id, r.reason ?? 'network failure')
             failedIoCount++
-            console.log(`[AutoSync] Network-level push failure (${r.reason ?? 'unknown'}) — deferring remaining ${pendingSyncs.length} queued row(s) to next cycle, no retry strikes burned`)
-            break
+            networkFailures++
+            if (networkFailures >= NETWORK_FAILURE_BATCH_TOLERANCE) {
+              console.log(`[AutoSync] ${networkFailures} network-level push failures (${r.reason ?? 'unknown'}) — deferring remaining queued row(s) to next cycle, no retry strikes burned`)
+              break
+            }
+            console.log(`[AutoSync] Network-level push failure ${networkFailures}/${NETWORK_FAILURE_BATCH_TOLERANCE} (${r.reason ?? 'unknown'}) — continuing batch, no retry strikes burned`)
           } else {
             blockedIoIds.add(pending.IoId)
             pendingSyncRepository.recordFailure(pending.id, r.reason ?? 'Background sync failed')

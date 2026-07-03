@@ -32,7 +32,11 @@ export async function GET(req: Request, res: Response) {
     const cloudMessage = sseClient?.isConnected
       ? `Connected to ${config.remoteUrl}`
       : config.remoteUrl
-        ? (sseClient?.connectionState === 'reconnecting' ? 'Reconnecting...' : 'Configured but not connected')
+        ? (sseClient?.connectionState === 'reconnecting'
+          ? 'Reconnecting...'
+          : sseClient?.connectionState === 'auth-failed'
+            ? 'AUTH FAILED — API key rejected by cloud'
+            : 'Configured but not connected')
         : 'Cloud not configured'
 
     let plcConnected = false

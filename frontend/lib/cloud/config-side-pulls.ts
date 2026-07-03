@@ -145,8 +145,11 @@ export async function runConfigSidePulls(
 
   // ── Safety zones / drives / outputs ───────────────────────────────────────
   // Regression guard: the pull used to DELETE these and never re-insert them.
+  // Creds go in the X-API-Key header like every other call (F18) — the old
+  // ?apiKey= query param leaked the key into proxy/access logs.
   try {
-    const res = await doFetch(`${base}/api/sync/safety?subsystemId=${subsystemId}&apiKey=${encodeURIComponent(apiPassword)}`, {
+    const res = await doFetch(`${base}/api/sync/safety?subsystemId=${subsystemId}`, {
+      headers,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     if (res.ok) {
