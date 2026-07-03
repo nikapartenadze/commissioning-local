@@ -85,6 +85,12 @@ try {
     // Carried on the sync queue so the cloud push lands it on Ios.trade, which
     // feeds the cloud punchlist's Discipline column. Additive, nullable.
     'ALTER TABLE PendingSyncs ADD COLUMN Trade TEXT',
+    // Punchlist resolver fields carried on the queue for the 'Punchlist
+    // Updated' metadata op (F4, 2026-07-03 sync audit): PunchlistStatus /
+    // ClarificationNote edits used to be LOCAL-ONLY (lost on laptop
+    // replacement). Additive, nullable; only that op reads them.
+    'ALTER TABLE PendingSyncs ADD COLUMN PunchlistStatus TEXT',
+    'ALTER TABLE PendingSyncs ADD COLUMN ClarificationNote TEXT',
     'ALTER TABLE Ios ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE TestHistories ADD COLUMN BlockerDescription TEXT',
     // Dead-letter flag: a pending row that the cloud permanently rejected, or
@@ -825,6 +831,8 @@ export interface PendingSync {
   BlockerResponsibleParty: string | null
   BlockerDescription: string | null
   Trade: string | null
+  PunchlistStatus: string | null
+  ClarificationNote: string | null
 }
 
 // ── Helper constants ─────────────────────────────────────────────

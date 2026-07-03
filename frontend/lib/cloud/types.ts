@@ -90,6 +90,13 @@ export interface IoUpdateDto {
    */
   hasDependencies?: boolean | null
   /**
+   * Punchlist resolver fields (F4): sent ONLY on the 'Punchlist Updated'
+   * metadata op so ordinary Pass/Fail pushes never clobber the cloud's
+   * resolver state. Explicit null = clear.
+   */
+  punchlistStatus?: string | null
+  clarificationNote?: string | null
+  /**
    * Operator force-overwrite (opt-in). When true the cloud applies this update
    * even if its version ran ahead of the tablet's base — local becomes
    * authority. Used to push a "stuck" result the operator has confirmed is

@@ -24,6 +24,16 @@ export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
     trade: pending.Trade ?? null,
     hasDependencies:
       pending.HasDependencies == null ? null : pending.HasDependencies === 1,
+    // Punchlist resolver fields ride ONLY the 'Punchlist Updated' metadata op
+    // (F4). Omitted (undefined → dropped by JSON) on every other op so an
+    // ordinary Pass/Fail push can never clobber cloud resolver state; the
+    // punchlist op itself sends explicit values incl. null-to-clear.
+    ...(pending.TestResult === 'Punchlist Updated'
+      ? {
+          punchlistStatus: pending.PunchlistStatus ?? null,
+          clarificationNote: pending.ClarificationNote ?? null,
+        }
+      : {}),
   }
 }
 
