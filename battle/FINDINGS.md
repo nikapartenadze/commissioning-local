@@ -644,3 +644,33 @@ superseded by the delta path (I11) for propagation and stays report-only.
 REMAINING before promoting I11/I12/I13 to GATE: one more clean `delta` run
 (skill rule #4 — green twice). This was the agreed single-soak checkpoint; the
 confirming run is a deliberate follow-up.
+
+## I18 — FV/L2 cell survival invariant (2026-07-04) — code done, REPORT-ONLY pending 2 greens
+
+**Why.** The MCM17 investigation showed FV (L2 cell) work had NO battle
+coverage: `FV_FRACTION` defaulted to 0 in every scenario (bots wrote zero FV
+cells), and the only FV invariant (I15) verifies cloud→field propagation, not
+survival of field-written work. FV loss — the exact reported field incident —
+would sail through every nightly green.
+
+**What.**
+- `ci/run_scenario.sh` — global `FV_FRACTION=${FV_FRACTION:-0.15}` so every
+  scenario now generates FV cell writes through `/api/l2/cell` → `L2PendingSyncs`.
+- `observer/probe.py` — `journaled_fv()` (action:'fv' status-200 lines, per-bot
+  append order, multi-writer cells excluded — the journaled_results() discipline)
+  + `check_i18_fv_survival()`: at quiesce, every single-writer FV cell's local
+  `L2CellValues.Value` must equal the last journaled value. Self-quiesces on
+  cloud-less runs (STOP-sentinel guard). Reports `soak_fv_writes`/`vacuous` so a
+  0-write run is visibly meaningless, plus active/parked L2 queue depth at end
+  for mismatch diagnosis. Runs AFTER the I14-17 block, so on mutate runs it
+  judges the post-pull-l2 state — a destructive pull wiping unpushed FV work
+  trips it (tool-side fixes shipped on `harden/fv-l2-durability-audit`:
+  scoped full-pull delegation, l2.cell recovery-journal, FV orphan reconciler).
+
+**Gate plan (skill rule #4).** REPORT-ONLY until two clean soaks show
+`pass:true` with `soak_fv_writes > 0`; then move `I18_fv_survival` out of
+REPORT_ONLY — it is the FV analogue of I4 and is intended to GATE. NOTE: the
+tool image must be rebuilt+pushed (`ci/build_and_push.sh`) before the soak or
+CI exercises stale binaries without the FV hardening.
+
+Syntax-checked (`py_compile`, `sh -n`). Not yet run on a soak.

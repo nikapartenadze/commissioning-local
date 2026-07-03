@@ -999,6 +999,70 @@ def _read_local_config() -> dict:
         return {}
 
 
+def journaled_fv() -> dict[tuple[int, int], str]:
+    """Latest accepted (status 200) FV/L2 cell value per (deviceId, columnId)
+    across all bot journals — the exact discipline of journaled_results():
+    append order within a bot's own journal is the true write order, and any
+    cell written by MORE than one bot is excluded (order-ambiguous last write).
+    Bots partition FV devices by device.id % BOTS, so multi-writer cells only
+    happen if that partition is broken — excluding them keeps I18 meaningful."""
+    per_bot: dict[tuple[int, int], dict[str, str]] = {}
+    for path in glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl")):
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("action") != "fv" or e.get("status") != 200:
+                    continue
+                dev, col = e.get("deviceId"), e.get("columnId")
+                if dev is None or col is None:
+                    continue
+                per_bot.setdefault((int(dev), int(col)), {})[str(e.get("bot", ""))] = e.get("value")
+    return {k: next(iter(slot.values())) for k, slot in per_bot.items() if len(slot) == 1}
+
+
+def check_i18_fv_survival() -> dict:
+    """I18 — FV (functional-validation / L2 cell) work is never silently lost:
+    every single-writer FV cell the crew journaled during the soak must hold the
+    journaled value in the tool's local L2CellValues at quiesce. This is the
+    MCM17 class end-to-end: a cell the tool ACCEPTED (HTTP 200) that later reads
+    back different/absent = a destructive pull clobbered unsynced work, a queue
+    row was lost, or the write path regressed. On mutate runs this judges the
+    post-pull-l2 state too (the I15 drives run first), so a wipe-on-pull of
+    unpushed work trips it. soak_fv_writes=0 => the scenario verified NOTHING
+    (set FV_FRACTION>0) — reported so a vacuous green is visible, never hidden."""
+    # Judge a QUIESCENT system (golden rule). I4 quiesces on cloud runs; on a
+    # cloud-less run nothing has yet, so drop the STOP sentinel ourselves.
+    if not os.path.exists(os.path.join(RUNS_DIR, RUN_ID, "STOP")):
+        quiesce_crew()
+    journaled = journaled_fv()
+    mismatches: list[dict] = []
+    for (dev, col), want in journaled.items():
+        rows = _local_query(
+            "SELECT Value FROM L2CellValues WHERE DeviceId=? AND ColumnId=?", (dev, col))
+        have = rows[0][0] if rows else None
+        if have != want:
+            mismatches.append({"deviceId": dev, "columnId": col, "journaled": want, "local": have})
+    # Queue state at quiesce — a parked row is unsynced work a destructive pull
+    # would wipe: essential diagnostic context for any mismatch.
+    try:
+        active = int(_local_query("SELECT COUNT(*) FROM L2PendingSyncs WHERE DeadLettered = 0")[0][0])
+        parked = int(_local_query("SELECT COUNT(*) FROM L2PendingSyncs WHERE DeadLettered = 1")[0][0])
+    except Exception:
+        active = parked = -1
+    return {
+        "pass": len(mismatches) == 0,
+        "soak_fv_writes": len(journaled),
+        "vacuous": len(journaled) == 0,
+        "mismatches": len(mismatches),
+        "mismatch_samples": mismatches[:10],
+        "l2_pending_active_at_end": active,
+        "l2_pending_parked_at_end": parked,
+    }
+
+
 def rss_slope_mb_per_h(samples: list[tuple[float, float, float]], skip_first_s: float) -> float | None:
     if not samples:
         return None
@@ -1333,6 +1397,11 @@ def main() -> None:
             invariants["I16_estop_def_propagation"] = check_i16_estop()
             invariants["I17_network_propagation"] = check_i17_network()
 
+    # I18 FV survival — journal-vs-local for L2 cells (the MCM17 class). Runs on
+    # every scenario (local compare, no cloud needed); after the I14-17 block so
+    # mutate runs judge the post-pull-l2 state. FV_FRACTION>0 makes it non-vacuous.
+    invariants["I18_fv_survival"] = check_i18_fv_survival()
+
     # I8 cloud live-channel (SSE) auth — only when a cloud is attached. Gates on
     # an HTTP 401/403 auth break (the 2026-06-16 MCM11 incident class), not on
     # transient docker-network reconnect noise.
@@ -1360,10 +1429,14 @@ def main() -> None:
     # proven green twice on a real soak before they gate (skill rule #4), and
     # some carry TODO-verify-on-soak unknowns (exact cloud columns, the SSE-echo
     # negative case for I15). Recorded in verdict.json, never affect the gate.
+    # I18 (FV survival) starts REPORT-ONLY per the same rule: promote to gating
+    # after two clean soaks with soak_fv_writes > 0 (a vacuous run counts for
+    # nothing). It is the FV analogue of I4 and is intended to GATE.
     REPORT_ONLY = {"I7_cloud_propagation", "I11_delta_propagation",
                    "I12_delete_propagation", "I13_cold_start_cursor",
                    "I14_vfd_addressed_propagation", "I15_l2_cell_propagation",
-                   "I16_estop_def_propagation", "I17_network_propagation"}
+                   "I16_estop_def_propagation", "I17_network_propagation",
+                   "I18_fv_survival"}
     gating = {k: v for k, v in invariants.items() if k not in REPORT_ONLY}
     verdict = {
         "run": RUN_ID,

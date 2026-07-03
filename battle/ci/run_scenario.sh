@@ -31,6 +31,10 @@ fi
 export RUN_ID="ci-${SCENARIO}-${CI_PIPELINE_ID:-local}"
 export SOAK_MINUTES="${SOAK_MINUTES:-360}"
 export BOTS="${BOTS:-6}"
+# FV/L2 cell writes ride alongside IO marks (bot.mjs FV_FRACTION). Without this
+# every scenario ran 0 FV writes and I18 (FV survival — the MCM17 class) was a
+# vacuous green. Modest default keeps IO the dominant load; override per run.
+export FV_FRACTION="${FV_FRACTION:-0.15}"
 export DOWNLOAD_STORM=""
 export CLOUD_FLAP=""
 DELAY_MS=""
