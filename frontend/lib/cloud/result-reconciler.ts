@@ -239,6 +239,157 @@ export async function reconcileOrphanedResults(subsystemId: number): Promise<Rec
   return { ok: true, subsystemId, enqueued: enqueues.length }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// L2/FV orphan reconciler (F9, 2026-07-03 sync audit).
+//
+// Same trap as IO results, FV flavor (the MCM17 class): an FV cell whose
+// L2PendingSyncs row was lost (legacy cap-drop, crash between write and
+// enqueue) is present locally, absent on cloud, invisible to the pending
+// count, and never re-pushed. Diff local mapped cells against the cloud L2
+// payload and re-enqueue what the cloud is missing. Unmapped cells (no
+// CloudId) can never sync and are NOT enqueued — they're journaled as
+// l2.push.drop at write time and surfaced by the FV pull guard instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface LocalL2CellRow {
+  deviceCloudId: number
+  columnCloudId: number
+  value: string
+  updatedBy: string | null
+}
+
+export interface CloudL2CellState {
+  deviceId: number | string
+  columnId: number | string
+  value?: string | null
+  version?: number | string
+}
+
+export interface L2ReconcileEnqueue {
+  cloudDeviceId: number
+  cloudColumnId: number
+  value: string
+  updatedBy: string | null
+  /** Base version = the cloud's CURRENT cell version (0 for a missing cell). */
+  version: number
+}
+
+/**
+ * Pure diff: local mapped, non-empty FV cells the cloud has no value for
+ * (cell missing or empty), excluding cells that already have a queue row.
+ * A *different* cloud value is never touched — normal last-write-wins.
+ */
+export function computeL2ReconcileEnqueues(
+  local: readonly LocalL2CellRow[],
+  cloudCells: readonly CloudL2CellState[],
+  existingQueuedKeys: ReadonlySet<string>,
+): L2ReconcileEnqueue[] {
+  const cloudByKey = new Map<string, CloudL2CellState>(
+    cloudCells.map((c) => [`${Number(c.deviceId)}-${Number(c.columnId)}`, c]),
+  )
+  const out: L2ReconcileEnqueue[] = []
+  for (const row of local) {
+    if (isEmpty(row.value)) continue
+    const key = `${row.deviceCloudId}-${row.columnCloudId}`
+    if (existingQueuedKeys.has(key)) continue
+    const cloud = cloudByKey.get(key)
+    if (cloud && !isEmpty(cloud.value as string | null)) continue
+    out.push({
+      cloudDeviceId: row.deviceCloudId,
+      cloudColumnId: row.columnCloudId,
+      value: row.value,
+      updatedBy: row.updatedBy,
+      version: Number(cloud?.version) || 0,
+    })
+  }
+  return out
+}
+
+export interface L2ReconcileResult {
+  ok: boolean
+  subsystemId: number
+  enqueued: number
+  error?: string
+}
+
+/**
+ * Reconcile one subsystem's orphaned FV cells into the L2 queue. Best-effort —
+ * a cloud failure leaves local untouched and returns ok:false.
+ */
+export async function reconcileOrphanedL2Cells(subsystemId: number): Promise<L2ReconcileResult> {
+  const cfg = await configService.getConfig()
+  const remoteUrl = (cfg.remoteUrl || EMBEDDED_REMOTE_URL).replace(/\/+$/, '')
+  const apiPassword = cfg.apiPassword || ''
+  if (!remoteUrl) return { ok: false, subsystemId, enqueued: 0, error: 'Cloud URL not configured' }
+  if (!apiPassword) return { ok: false, subsystemId, enqueued: 0, error: 'API key not configured' }
+
+  let res: globalThis.Response
+  try {
+    res = await fetch(`${remoteUrl}/api/sync/l2/${subsystemId}`, {
+      method: 'GET',
+      headers: { 'X-API-Key': apiPassword },
+      signal: AbortSignal.timeout(30_000),
+    })
+  } catch (err) {
+    return { ok: false, subsystemId, enqueued: 0, error: `Cloud unreachable: ${(err as Error).message}` }
+  }
+  if (!res.ok) return { ok: false, subsystemId, enqueued: 0, error: `Cloud returned ${res.status}` }
+
+  let cloudCells: CloudL2CellState[]
+  try {
+    const body = await res.json()
+    if (body?.success === false) return { ok: false, subsystemId, enqueued: 0, error: body.error || 'cloud success=false' }
+    cloudCells = (body.cellValues || []) as CloudL2CellState[]
+  } catch {
+    return { ok: false, subsystemId, enqueued: 0, error: 'Malformed cloud payload' }
+  }
+
+  const local = db.prepare(
+    `SELECT d.CloudId as deviceCloudId, c.CloudId as columnCloudId,
+            v.Value as value, v.UpdatedBy as updatedBy
+       FROM L2CellValues v
+       JOIN L2Devices d ON d.id = v.DeviceId
+       JOIN L2Columns c ON c.id = v.ColumnId
+      WHERE (d.SubsystemId = ? OR d.SubsystemId IS NULL)
+        AND d.CloudId IS NOT NULL AND c.CloudId IS NOT NULL
+        AND v.Value IS NOT NULL AND TRIM(v.Value) != ''`,
+  ).all(subsystemId) as LocalL2CellRow[]
+
+  const queued = db.prepare('SELECT CloudDeviceId, CloudColumnId FROM L2PendingSyncs')
+    .all() as Array<{ CloudDeviceId: number; CloudColumnId: number }>
+  const existing = new Set<string>(queued.map((r) => `${r.CloudDeviceId}-${r.CloudColumnId}`))
+
+  const enqueues = computeL2ReconcileEnqueues(local, cloudCells, existing)
+  if (enqueues.length === 0) return { ok: true, subsystemId, enqueued: 0 }
+
+  const ins = db.prepare(
+    `INSERT INTO L2PendingSyncs (CloudDeviceId, CloudColumnId, Value, UpdatedBy, Version, CreatedAt, RetryCount)
+     VALUES (?, ?, ?, ?, ?, ?, 0)`,
+  )
+  const now = new Date().toISOString()
+  const run = db.transaction((rows: L2ReconcileEnqueue[]) => {
+    for (const e of rows) ins.run(e.cloudDeviceId, e.cloudColumnId, e.value, e.updatedBy, e.version, now)
+  })
+  run(enqueues)
+
+  for (const e of enqueues) {
+    auditLog({
+      type: 'l2.reconcile.enqueue',
+      subsystemId,
+      version: e.version,
+      user: e.updatedBy,
+      reason: 'reconciler: orphaned FV cell not on cloud — re-enqueued for push',
+      detail: { cloudDeviceId: e.cloudDeviceId, cloudColumnId: e.cloudColumnId, value: e.value },
+    })
+  }
+
+  console.warn(
+    `[Reconciler] subsystem ${subsystemId}: re-enqueued ${enqueues.length} orphaned ` +
+    `FV cell(s) the cloud was missing (will push on the next cycle)`,
+  )
+  return { ok: true, subsystemId, enqueued: enqueues.length }
+}
+
 /**
  * Reconcile every subsystem this tool is responsible for: the configured MCM
  * list on a central server, or the single config.subsystemId on a tablet.
@@ -264,6 +415,13 @@ export async function reconcileConfiguredSubsystems(): Promise<ReconcileResult[]
   const results: ReconcileResult[] = []
   for (const sid of subsystemIds) {
     results.push(await reconcileOrphanedResults(sid))
+    // FV orphans (F9): best-effort, independent of the IO pass — an L2 fetch
+    // failure must not block IO reconciliation for the next subsystem.
+    try {
+      await reconcileOrphanedL2Cells(sid)
+    } catch (err) {
+      console.warn(`[Reconciler] L2 reconcile failed for subsystem ${sid}:`, err instanceof Error ? err.message : err)
+    }
   }
   return results
 }

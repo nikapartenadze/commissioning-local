@@ -86,3 +86,51 @@ describe('computeReconcileEnqueues', () => {
     expect(out[0].kind).toBe('result')
   })
 })
+
+// F9 (2026-07-03 sync audit): FV flavor of the orphan trap — the MCM17 class.
+import { computeL2ReconcileEnqueues, type LocalL2CellRow } from '@/lib/cloud/result-reconciler'
+
+const cell = (dev: number, col: number, value: string, updatedBy: string | null = 'kev'): LocalL2CellRow => ({
+  deviceCloudId: dev, columnCloudId: col, value, updatedBy,
+})
+const NOKEYS = new Set<string>()
+
+describe('computeL2ReconcileEnqueues (F9 — FV orphans)', () => {
+  it('re-enqueues a cell the cloud payload is missing entirely, with base version 0', () => {
+    const out = computeL2ReconcileEnqueues([cell(10, 20, 'Passed')], [], NOKEYS)
+    expect(out).toEqual([{ cloudDeviceId: 10, cloudColumnId: 20, value: 'Passed', updatedBy: 'kev', version: 0 }])
+  })
+
+  it('re-enqueues when the cloud cell exists but is EMPTY, using the cloud version as base', () => {
+    const out = computeL2ReconcileEnqueues(
+      [cell(10, 20, 'Passed')],
+      [{ deviceId: 10, columnId: 20, value: '', version: 4 }],
+      NOKEYS,
+    )
+    expect(out).toHaveLength(1)
+    expect(out[0].version).toBe(4)
+  })
+
+  it('does NOT touch a cell the cloud holds a DIFFERENT value for (last-write-wins)', () => {
+    const out = computeL2ReconcileEnqueues(
+      [cell(10, 20, 'Passed')],
+      [{ deviceId: 10, columnId: 20, value: 'Failed', version: 4 }],
+      NOKEYS,
+    )
+    expect(out).toHaveLength(0)
+  })
+
+  it('skips cells that already have a queue row (active or parked)', () => {
+    const out = computeL2ReconcileEnqueues([cell(10, 20, 'Passed')], [], new Set(['10-20']))
+    expect(out).toHaveLength(0)
+  })
+
+  it('skips empty local values and handles string cloud ids', () => {
+    expect(computeL2ReconcileEnqueues([cell(10, 20, '   ')], [], NOKEYS)).toHaveLength(0)
+    expect(computeL2ReconcileEnqueues(
+      [cell(10, 20, 'Passed')],
+      [{ deviceId: '10', columnId: '20', value: 'Passed', version: 1 }],
+      NOKEYS,
+    )).toHaveLength(0)
+  })
+})
