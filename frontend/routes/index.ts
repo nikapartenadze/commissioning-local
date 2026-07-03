@@ -51,6 +51,7 @@ import * as cloudPullNetwork from '@/app/api/cloud/pull-network/route'
 import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
 import * as cloudStuck from '@/app/api/cloud/stuck/route'
 import * as cloudPushForce from '@/app/api/cloud/push-force/route'
+import * as cloudUnpark from '@/app/api/cloud/unpark/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
 import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
 import * as cloudPullRoadmap from '@/app/api/cloud/pull-roadmap/route'
@@ -253,6 +254,7 @@ export function createApiRouter(): Router {
   router.post('/api/cloud/pull-estop', asyncHandler(cloudPullEstop.POST))
   router.get('/api/cloud/stuck', asyncHandler(cloudStuck.GET))
   router.post('/api/cloud/push-force', asyncHandler(cloudPushForce.POST))
+  router.post('/api/cloud/unpark', asyncHandler(cloudUnpark.POST))
   router.post('/api/cloud/pull-l2', asyncHandler(cloudPullL2.POST))
   router.post('/api/cloud/pull-mcm-diagram', asyncHandler(cloudPullMcmDiagram.POST))
   router.post('/api/cloud/pull-roadmap', asyncHandler(cloudPullRoadmap.POST))
