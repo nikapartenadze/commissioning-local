@@ -9,13 +9,41 @@
 
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
+import { computeAtRiskL2Cells, type LocalL2Cell } from '@/lib/cloud/pull-guard'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 export async function POST(req: Request, res: Response) {
   try {
     const { remoteUrl, apiPassword, subsystemId } = req.body || {}
+    const force = req.body?.force === true
 
     if (!remoteUrl || !subsystemId) {
       return res.status(400).json({ success: false, error: 'remoteUrl and subsystemId are required' })
+    }
+
+    // ── Pending-queue guard (F5, 2026-07-03 sync audit) ─────────────────
+    // The rewrite below DELETEs this subsystem's L2 devices + cells. An
+    // unsynced L2PendingSyncs row (active OR parked) is local FV truth that
+    // has not reached the cloud — wiping it here loses it. Mirrors the IO
+    // pull's pending-queue block; drain/resolve the queue first.
+    const l2QueueCounts = db.prepare(
+      `SELECT
+         SUM(CASE WHEN DeadLettered = 0 THEN 1 ELSE 0 END) as active,
+         SUM(CASE WHEN DeadLettered = 1 THEN 1 ELSE 0 END) as parked
+       FROM L2PendingSyncs
+       WHERE CloudDeviceId IN (SELECT CloudId FROM L2Devices WHERE SubsystemId = ? OR SubsystemId IS NULL)`,
+    ).get(Number(subsystemId)) as { active: number | null; parked: number | null }
+    const l2Active = l2QueueCounts.active ?? 0
+    const l2Parked = l2QueueCounts.parked ?? 0
+    if (l2Active + l2Parked > 0) {
+      const parts = [
+        l2Active > 0 ? `sync ${l2Active} pending FV cell change(s) first` : null,
+        l2Parked > 0 ? `resolve ${l2Parked} parked FV cell(s) the cloud rejected` : null,
+      ].filter(Boolean).join('; ')
+      return res.status(409).json({
+        success: false,
+        error: `FV pull blocked to protect unsynced local FV data: ${parts}.`,
+      })
     }
 
     const l2Url = `${remoteUrl}/api/sync/l2/${subsystemId}`
@@ -58,6 +86,50 @@ export async function POST(req: Request, res: Response) {
     if (!data.sheets || data.sheets.length === 0) {
       console.warn('[L2Pull] No sheets — no L2 template configured on cloud for this project')
       return res.json({ success: true, l2Pulled: 0, l2CellsPulled: 0, message: 'No FV template configured on cloud' })
+    }
+
+    // ── FV result-loss guard (F5) ────────────────────────────────────────
+    // Second line of defense that does not trust the queue (the MCM08/MCM17
+    // lesson): compare actual local cell values against the actual cloud
+    // payload and refuse when the wipe would destroy local FV work the cloud
+    // does not have (or holds an older value for). body.force overrides after
+    // explicit user confirmation.
+    const localCells = db.prepare(
+      `SELECT d.CloudId as deviceCloudId, c.CloudId as columnCloudId,
+              d.DeviceName as deviceName, c.Name as columnName,
+              v.Value as value, v.UpdatedAt as updatedAt
+       FROM L2CellValues v
+       JOIN L2Devices d ON d.id = v.DeviceId
+       JOIN L2Columns c ON c.id = v.ColumnId
+       WHERE (d.SubsystemId = ? OR d.SubsystemId IS NULL)
+         AND v.Value IS NOT NULL AND TRIM(v.Value) != ''`,
+    ).all(Number(subsystemId)) as LocalL2Cell[]
+    const queuedKeys = new Set(
+      (db.prepare('SELECT CloudDeviceId, CloudColumnId FROM L2PendingSyncs').all() as Array<{ CloudDeviceId: number; CloudColumnId: number }>)
+        .map(r => `${r.CloudDeviceId}-${r.CloudColumnId}`),
+    )
+    const atRiskCells = computeAtRiskL2Cells(localCells, data.cellValues || [], queuedKeys)
+    if (atRiskCells.length > 0 && !force) {
+      const byReason = { unmapped: 0, 'cloud-missing': 0, 'local-newer': 0 } as Record<string, number>
+      for (const c of atRiskCells) byReason[c.reason]++
+      console.warn(
+        `[L2Pull] REFUSED: pull would destroy ${atRiskCells.length} local FV cell(s) ` +
+        `(${byReason['cloud-missing']} cloud-missing, ${byReason['local-newer']} locally-newer, ${byReason.unmapped} unmapped). ` +
+        'Resend with force=true to override.',
+      )
+      return res.status(409).json({
+        success: false,
+        requiresForce: true,
+        wouldLoseCells: atRiskCells.length,
+        atRiskSample: atRiskCells.slice(0, 10),
+        error:
+          `FV pull refused: ${atRiskCells.length} local FV cell value(s) exist that the cloud does not have ` +
+          '(or holds older values for) — pulling now would destroy them. They are likely unsynced field work. ' +
+          'Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)',
+      })
+    }
+    if (atRiskCells.length > 0) {
+      console.warn(`[L2Pull] FORCE override: destroying ${atRiskCells.length} local FV cell(s) not on cloud (user confirmed)`)
     }
 
     // Pre-pull safety backup. FV/L2 cell values are real commissioning work and
@@ -152,6 +224,22 @@ export async function POST(req: Request, res: Response) {
     })()
 
     console.log(`[L2Pull] SUCCESS: ${result.sheetsCount} sheets, ${result.l2Pulled} devices, ${result.l2CellsPulled} cells`)
+
+    // Durable recovery-log trace of this DESTRUCTIVE FV rewrite (F5: pull-l2
+    // previously left NO recovery-log record — the MCM17 audit gap).
+    auditLog({
+      type: 'sync.pull',
+      subsystemId: Number(subsystemId),
+      detail: {
+        route: 'pull-l2',
+        destructive: true,
+        force,
+        sheetsCount: result.sheetsCount,
+        l2Pulled: result.l2Pulled,
+        l2CellsPulled: result.l2CellsPulled,
+        overrodeAtRiskCells: atRiskCells.length,
+      },
+    })
 
     // Sync VFD validation flags to PLC for pulled L2 data
     if (result.l2CellsPulled > 0) {

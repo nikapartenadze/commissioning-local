@@ -5,7 +5,7 @@ import { EMBEDDED_REMOTE_URL } from '@/lib/config/types';
 import { invalidateIoSubsystemCache, getMcmStatus } from '@/lib/mcm-registry';
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { createBackup } from '@/lib/db/backup';
-import { computeAtRiskResults, computeAtRiskComments } from '@/lib/cloud/pull-guard';
+import { computeAtRiskResults, computeAtRiskComments, computeDivergentUnqueuedResults } from '@/lib/cloud/pull-guard';
 import { auditLog } from '@/lib/logging/recovery-log';
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls';
 
@@ -15,13 +15,15 @@ import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls';
  * so this is idempotent and safe to call in both the full-pull and no-op paths.
  * Best-effort: an L2 failure must never fail (or throw out of) the IO pull.
  */
-async function pullL2SelfCall(subsystemId: number, remoteUrl: string, apiPassword: string): Promise<number> {
+async function pullL2SelfCall(subsystemId: number, remoteUrl: string, apiPassword: string, force = false): Promise<number> {
   try {
     const port = process.env.PORT || '3000';
     const l2Res = await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ remoteUrl, apiPassword, subsystemId }),
+      // Propagate force: an operator who explicitly confirmed the at-risk
+      // overwrite shouldn't have the L2 leg refused by its own FV guard.
+      body: JSON.stringify({ remoteUrl, apiPassword, subsystemId, force }),
       signal: AbortSignal.timeout(60_000),
     });
     const l2Data = await l2Res.json().catch(() => ({} as { l2Pulled?: number; devices?: number }));
@@ -245,42 +247,55 @@ export async function POST(req: Request, res: Response) {
     // actual cloud payload. Override requires an explicit body.force after
     // user confirmation in the UI.
     const localWithResults = db.prepare(
-      `SELECT id, Name, Result FROM Ios WHERE SubsystemId = ? AND Result IS NOT NULL AND Result != ''`,
-    ).all(subsystemId) as Array<{ id: number; Name: string; Result: string }>;
+      `SELECT id, Name, Result, Timestamp FROM Ios WHERE SubsystemId = ? AND Result IS NOT NULL AND Result != ''`,
+    ).all(subsystemId) as Array<{ id: number; Name: string; Result: string; Timestamp: string | null }>;
     const atRisk = computeAtRiskResults(localWithResults, cloudIos);
     const localWithComments = db.prepare(
       `SELECT id, Name, Comments FROM Ios WHERE SubsystemId = ? AND Comments IS NOT NULL AND TRIM(Comments) != ''`,
     ).all(subsystemId) as Array<{ id: number; Name: string; Comments: string }>;
     const atRiskComments = computeAtRiskComments(localWithComments, cloudIos);
+    // F2 (2026-07-03 audit): third check — a local result that DIFFERS from a
+    // stale cloud value with no queue row left (retry-cap-emptied queue) is
+    // also unsynced field work; only a provably-newer cloud value wins freely.
+    const queuedIoIds = new Set(
+      (db.prepare(
+        `SELECT ps.IoId FROM PendingSyncs ps JOIN Ios i ON i.id = ps.IoId WHERE i.SubsystemId = ?`,
+      ).all(subsystemId) as Array<{ IoId: number }>).map((r) => r.IoId),
+    );
+    const divergent = computeDivergentUnqueuedResults(localWithResults, cloudIos, queuedIoIds);
 
-    if ((atRisk.length > 0 || atRiskComments.length > 0) && !force) {
+    if ((atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0) && !force) {
       console.warn(
-        `[MCM ${subsystemIdStr} Pull] REFUSED: pull would erase ${atRisk.length} local result(s) ` +
-        `and ${atRiskComments.length} local comment(s) the cloud does not have ` +
-        `(e.g. ${atRisk.slice(0, 5).map((r) => `${r.name}=${r.result}`).join(', ')}). ` +
+        `[MCM ${subsystemIdStr} Pull] REFUSED: pull would erase ${atRisk.length} local result(s), ` +
+        `${atRiskComments.length} local comment(s) the cloud does not have, and overwrite ` +
+        `${divergent.length} newer local result(s) that differ from stale cloud values ` +
+        `(e.g. ${[...atRisk, ...divergent].slice(0, 5).map((r) => r.name).join(', ')}). ` +
         'Resend with force=true to override.',
       );
       const parts = [
-        atRisk.length > 0 ? `${atRisk.length} test result(s)` : null,
-        atRiskComments.length > 0 ? `${atRiskComments.length} comment(s)` : null,
-      ].filter(Boolean).join(' and ');
+        atRisk.length > 0 ? `${atRisk.length} test result(s) the cloud lacks` : null,
+        atRiskComments.length > 0 ? `${atRiskComments.length} comment(s) the cloud lacks` : null,
+        divergent.length > 0 ? `${divergent.length} newer local result(s) that differ from stale cloud values` : null,
+      ].filter(Boolean).join(', ');
       return res.status(409).json({
         success: false,
         requiresForce: true,
         wouldLoseResults: atRisk.length,
         wouldLoseComments: atRiskComments.length,
+        wouldOverwriteNewerLocal: divergent.length,
         atRiskSample: atRisk.slice(0, 10),
         atRiskCommentSample: atRiskComments.slice(0, 10),
+        divergentSample: divergent.slice(0, 10),
         error:
-          `Pull refused: ${parts} exist locally for MCM ${subsystemId} that the cloud does not have — ` +
+          `Pull refused: ${parts} exist locally for MCM ${subsystemId} — ` +
           'pulling now would erase them. They are likely unsynced field work. ' +
           'Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)',
       });
     }
-    if (atRisk.length > 0 || atRiskComments.length > 0) {
+    if (atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0) {
       console.warn(
         `[MCM ${subsystemIdStr} Pull] FORCE override: erasing ${atRisk.length} result(s) + ` +
-        `${atRiskComments.length} comment(s) not present on cloud (user confirmed)`,
+        `${atRiskComments.length} comment(s) + overwriting ${divergent.length} newer divergent result(s) (user confirmed)`,
       );
     }
 
@@ -293,7 +308,7 @@ export async function POST(req: Request, res: Response) {
     // ~15-min sweep was the source of the "backup every few minutes" churn.
     // Manual pulls — and any pull about to FORCE-overwrite at-risk data — always
     // back up.
-    const mustBackup = !isBackground || (force && (atRisk.length > 0 || atRiskComments.length > 0));
+    const mustBackup = !isBackground || (force && (atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0));
     if (mustBackup) {
       try {
         const backup = await createBackup(`pre-pull-mcm${subsystemId}`);
