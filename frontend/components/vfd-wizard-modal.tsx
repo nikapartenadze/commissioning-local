@@ -457,11 +457,23 @@ function Step1Content({ sts, loading, deviceName, subsystemId, plcConnected, she
         setSentOk(true)
         console.log(`[Step1] Valid_Map=1 sent successfully`)
 
-        // Write "Verify Identity" L2 cell with initials stamp — best-effort
+        // Write "Verify Identity" L2 cell with initials stamp. NOT fire-and-forget:
+        // Step 1 "done" is trusted from this L2 stamp on a CIP-saturated controller,
+        // so a silently-failed stamp makes the wizard re-ask Identity forever.
+        // Surface the failure like the Step 3 polarity pattern.
         const stamp = buildInitialsStamp(userName)
-        writeL2Cells(deviceName, sheetName, userName, [
+        const l2 = await writeL2Cells(deviceName, sheetName, userName, [
           { columnName: 'Verify Identity', value: stamp },
-        ]).catch(() => { /* best-effort */ })
+        ])
+        const failedCells = (l2?.written || []).filter((w: any) => !w.ok)
+        if (!l2?.success || failedCells.length > 0) {
+          const why = failedCells.map((w: any) => w.error).filter(Boolean).join('; ') || l2?.error || 'write failed'
+          console.warn('[Step1] Verify Identity L2 stamp FAILED:', why)
+          setLastError(
+            `Identity was confirmed on the PLC, but the "Verify Identity" record did NOT save (${why}). ` +
+            `The wizard may re-ask this step until it saves — pull the latest data and confirm again.`,
+          )
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -2107,7 +2119,15 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
 
       if (toWrite.length > 0) {
         console.log(`[VfdWizard] Auto-backfilling ${toWrite.length} L2 cell(s) for ${device.deviceName}: ${toWrite.map(c => c.columnName).join(', ')}`)
-        writeL2Cells(device.deviceName, sheetName, userName, toWrite).catch(() => {})
+        writeL2Cells(device.deviceName, sheetName, userName, toWrite).then(r => {
+          const failed = (r?.written || []).filter((w: any) => !w.ok)
+          if (!r?.success || failed.length > 0) {
+            // Loud, and re-arm so a later PLC-bit change in this mount retries —
+            // a swallowed backfill failure left the stamp missing with no trace.
+            console.warn(`[VfdWizard] Auto-backfill FAILED for ${device.deviceName}:`, r?.error || failed)
+            backfilledRef.current = false
+          }
+        })
       }
     })
   }, [sts.Valid_Map, sts.Valid_Direction, device.deviceName, sheetName, userName])
