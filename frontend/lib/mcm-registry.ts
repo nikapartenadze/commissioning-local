@@ -741,7 +741,10 @@ export async function readOutputBitBySubsystem(subsystemId: string, io: IoRef): 
 
 // ── Generic typed tag write/read by name (VFD commissioning, etc.) ────────────
 
-export type TagDataType = 'BOOL' | 'REAL' | 'INT';
+// DINT = true 32-bit integer (numeric int32), distinct from REAL's float32
+// bit-pattern. Speed setpoints (HMI.Speed_At_30rev) are DINT on the controller;
+// writing them as REAL overflowed to ~1.1e9. See PlcScalarType in plc-client.
+export type TagDataType = 'BOOL' | 'REAL' | 'INT' | 'DINT';
 export interface TypedTagWrite { name: string; value: number; dataType: TagDataType; }
 export interface TypedTagRead { name: string; dataType: TagDataType; }
 export interface TypedWriteResult { name: string; success: boolean; error?: string; }

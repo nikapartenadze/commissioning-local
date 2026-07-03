@@ -16,7 +16,7 @@ export async function POST(req: Request, res: Response) {
       deviceName?: string
       field?: string
       value?: number
-      dataType?: 'BOOL' | 'REAL' | 'INT'
+      dataType?: 'BOOL' | 'REAL' | 'INT' | 'DINT'
       subsystemId?: string | number
       // Optional override for tag path resolution. Default behavior (no
       // pathScope) preserves the existing CBT_<dev>.CTRL.CMD/STS routing used
@@ -34,7 +34,7 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'value (finite number) required' })
     }
 
-    if (dataType !== 'BOOL' && dataType !== 'REAL' && dataType !== 'INT') {
+    if (dataType !== 'BOOL' && dataType !== 'REAL' && dataType !== 'INT' && dataType !== 'DINT') {
       return res.status(400).json({ error: `Unsupported dataType: ${dataType}` })
     }
 
