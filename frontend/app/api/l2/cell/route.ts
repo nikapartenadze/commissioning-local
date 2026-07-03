@@ -2,9 +2,12 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 const stmts = {
   getCell: db.prepare('SELECT id, Value, Version FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?'),
+  getDeviceSubsystem: db.prepare('SELECT SubsystemId FROM L2Devices WHERE id = ?'),
+  getColumnExists: db.prepare('SELECT id FROM L2Columns WHERE id = ?'),
   updateCell: db.prepare(`UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = datetime('now'), Version = ? WHERE id = ?`),
   insertCell: db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, datetime('now'), ?)`),
   getDeviceCloudId: db.prepare('SELECT CloudId FROM L2Devices WHERE id = ?'),
@@ -37,6 +40,20 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'deviceId and columnId required' })
     }
 
+    // Existence guard (F4): reject an unknown device/column instead of inserting
+    // an orphan cell. This is the case where a queued outbox edit is replayed
+    // after a pull renumbered the local ids — the id no longer maps to a device.
+    // 404 lets the client's bounded replay eventually evict it rather than
+    // silently writing to a wrong/nonexistent cell.
+    const deviceRow = stmts.getDeviceSubsystem.get(deviceId) as { SubsystemId: number | null } | undefined
+    const columnRow = stmts.getColumnExists.get(columnId) as { id: number } | undefined
+    if (!deviceRow || !columnRow) {
+      return res.status(404).json({ success: false, error: 'L2 device/column not found (stale local id?) — cell not written' })
+    }
+    // Resolve the subsystem BEFORE the commit so the audit is accurate even if a
+    // concurrent pull races the write (F11).
+    const subsystemId = deviceRow.SubsystemId ?? null
+
     const result = db.transaction(() => {
       const existing = stmts.getCell.get(deviceId, columnId) as { id: number; Value: string | null; Version: number } | undefined
       let cellId: number, newVersion: number
@@ -65,6 +82,30 @@ export async function POST(req: Request, res: Response) {
 
       return { cellId, version: newVersion, completedChecks: completedCount?.cnt || 0, cloudDeviceId: device?.CloudId, cloudColumnId: column?.CloudId, pendingSyncId }
     })()
+
+    // Journal the FV write to the durable recovery log BEFORE anything can wipe
+    // it — this is the local audit trail that lets lost FV work be reconstructed
+    // (mirrors io.test for IO results). auditLog never throws.
+    auditLog({
+      type: 'l2.cell',
+      subsystemId,
+      user: updatedBy ?? null,
+      version: result.version,
+      detail: { deviceId, columnId, cloudDeviceId: result.cloudDeviceId ?? null, cloudColumnId: result.cloudColumnId ?? null, value: value ?? null },
+    })
+
+    // A cell with no cloud mapping is durable locally but can NEVER sync — record
+    // it as a drop so it is not a silent cloud-desync (the F4 gap).
+    if (!result.cloudDeviceId || !result.cloudColumnId) {
+      auditLog({
+        type: 'l2.push.drop',
+        subsystemId,
+        user: updatedBy ?? null,
+        version: result.version,
+        reason: 'unmapped: L2 device/column has no CloudId — cannot sync to cloud',
+        detail: { deviceId, columnId, value: value ?? null },
+      })
+    }
 
     if (result.cloudDeviceId && result.cloudColumnId) {
       const cloudDeviceId = result.cloudDeviceId

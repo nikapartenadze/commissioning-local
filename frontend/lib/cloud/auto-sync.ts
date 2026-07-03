@@ -603,13 +603,16 @@ class AutoSyncService {
         for (const p of l2ToDrop) {
           const l2Subsystem = this.l2SubsystemLabel(p.CloudDeviceId)
           auditLog({
-            type: 'sync.push.drop',
+            // PARKED (DeadLettered=1), not deleted — the row and its value survive
+            // and are surfaced for attention. Dedicated l2.* type so FV events are
+            // greppable in the recovery log (was piggybacked on sync.push.drop).
+            type: 'l2.push.park',
             // L2 tables carry no numeric SubsystemId — best-effort TEXT label
             // via L2Devices.Subsystem, or null when it can't be resolved.
             subsystemId: l2Subsystem,
             version: p.Version,
             user: p.UpdatedBy,
-            reason: `L2 retry-cap (${PENDING_RETRY_CAP} retries exceeded)`,
+            reason: `L2 retry-cap (${PENDING_RETRY_CAP} retries exceeded) — parked for attention`,
             detail: {
               kind: 'l2cell',
               pendingId: p.id,

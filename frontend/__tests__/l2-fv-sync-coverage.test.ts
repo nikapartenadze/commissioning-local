@@ -52,7 +52,7 @@ const L2_DDL = vi.hoisted(() => `
   );
   CREATE TABLE L2Devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    CloudId INTEGER, SheetId INTEGER NOT NULL, DeviceName TEXT NOT NULL,
+    CloudId INTEGER, SubsystemId INTEGER, SheetId INTEGER NOT NULL, DeviceName TEXT NOT NULL,
     Mcm TEXT, Subsystem TEXT, DisplayOrder INTEGER NOT NULL,
     CompletedChecks INTEGER DEFAULT 0, TotalChecks INTEGER DEFAULT 0
   );
@@ -98,6 +98,14 @@ vi.mock('@/lib/cloud/sync-queue', () => ({
 // The push dynamically imports the SSE client to track its own echo — stub it.
 vi.mock('@/lib/cloud/cloud-sse-client', () => ({
   getCloudSseClient: () => ({ trackPushedL2Id: vi.fn() }),
+}))
+
+// Capture recovery-audit events so we can assert the FV write/failure is journaled
+// (the durable "reconstruct the work" record). The real module writes JSONL to
+// disk and is covered by recovery-log.test.ts; here we only assert the route emits.
+const auditEvents: any[] = []
+vi.mock('@/lib/logging/recovery-log', () => ({
+  auditLog: vi.fn((e: any) => { auditEvents.push(e) }),
 }))
 
 import { db } from '@/lib/db-sqlite'
@@ -173,6 +181,7 @@ function applyCloudL2Cell(data: { cloudDeviceId: number; cloudColumnId: number; 
 beforeEach(() => {
   recreateSchema()
   pushFns.length = 0
+  auditEvents.length = 0
 })
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -187,6 +196,18 @@ describe('field→cloud: POST /api/l2/cell writes the cell + enqueues a versione
     const { req, res } = makeReqRes({ value: 'x' })
     await POST(req, res)
     expect(res.statusCode).toBe(400)
+    expect((db as any).prepare('SELECT COUNT(*) c FROM L2CellValues').get().c).toBe(0)
+  })
+
+  it('rejects a stale/unknown deviceId with 404 and writes NOTHING (no orphan cell)', async () => {
+    // A device id that does not exist locally — e.g. a queued edit replayed
+    // after a pull renumbered the local ids. Must NOT insert an orphan cell.
+    seedSkeleton({ cloudDeviceId: 900, cloudColumnId: 700 })
+    const goodCol = (db as any).prepare('SELECT id FROM L2Columns LIMIT 1').get().id
+    vi.stubGlobal('fetch', vi.fn())
+    const { req, res } = makeReqRes({ deviceId: 999999, columnId: goodCol, value: 'x', updatedBy: 't' })
+    await POST(req, res)
+    expect(res.statusCode).toBe(404)
     expect((db as any).prepare('SELECT COUNT(*) c FROM L2CellValues').get().c).toBe(0)
   })
 
@@ -282,6 +303,45 @@ describe('field→cloud: POST /api/l2/cell writes the cell + enqueues a versione
     expect(cell(deviceId, columnId)).toMatchObject({ Value: 'Reverse', Version: 2 })
     const pend = pendingFor(900, 700)
     expect(pend.map(p => p.Version)).toEqual([0, 1]) // bases: cloud-had-0, then cloud-had-1
+  })
+})
+
+// =====================================================================
+// AUDIT JOURNAL — every FV write and every un-syncable edit is recorded
+// so lost work can be reconstructed from logs/audit-*.jsonl (the "recover
+// data" guarantee). Mirrors io.test journaling for IO results.
+// =====================================================================
+describe('audit: POST /api/l2/cell journals the FV write and un-syncable edits', () => {
+  it('emits an l2.cell audit event with device/column/value/version/user on a successful save', async () => {
+    const { deviceId, columnId } = seedSkeleton({ cloudDeviceId: 900, cloudColumnId: 700 })
+    vi.stubGlobal('fetch', vi.fn())
+    const { req, res } = makeReqRes({ deviceId, columnId, value: 'Forward', updatedBy: 'tech@x' })
+    await POST(req, res)
+
+    const evt = auditEvents.find(e => e.type === 'l2.cell')
+    expect(evt).toBeTruthy()
+    expect(evt.user).toBe('tech@x')
+    expect(evt.version).toBe(1)
+    expect(evt.detail).toMatchObject({ deviceId, columnId, cloudDeviceId: 900, cloudColumnId: 700, value: 'Forward' })
+  })
+
+  it('emits an l2.push.drop (unmapped) audit event when the cell has no CloudId to sync', async () => {
+    // Device/column exist locally but carry NO CloudId — the cell is saved
+    // durably but can NEVER reach the cloud. That must not be silent.
+    const d = db as any
+    d.prepare('INSERT INTO L2Sheets (id, Name, DisplayOrder) VALUES (1, ?, 0)').run('APF')
+    const col = d.prepare('INSERT INTO L2Columns (SheetId, Name, ColumnType, DisplayOrder, IncludeInProgress) VALUES (1, ?, ?, 0, 1)').run('Direction', 'text')
+    const dev = d.prepare('INSERT INTO L2Devices (SheetId, DeviceName, DisplayOrder) VALUES (1, ?, 0)').run('LOCAL_ONLY')
+    const deviceId = Number(dev.lastInsertRowid), columnId = Number(col.lastInsertRowid)
+    vi.stubGlobal('fetch', vi.fn())
+    const { req, res } = makeReqRes({ deviceId, columnId, value: 'Reverse', updatedBy: 'tech@x' })
+    await POST(req, res)
+
+    expect(cell(deviceId, columnId)).toMatchObject({ Value: 'Reverse', Version: 1 }) // still durable locally
+    const drop = auditEvents.find(e => e.type === 'l2.push.drop')
+    expect(drop).toBeTruthy()
+    expect(drop.reason).toMatch(/unmapped|CloudId/i)
+    expect(drop.detail).toMatchObject({ deviceId, columnId })
   })
 })
 

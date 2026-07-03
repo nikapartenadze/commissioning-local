@@ -40,6 +40,13 @@ export type AuditEventType =
   | 'sync.push.park' // a pending push was PARKED (cloud-rejected/cap) — kept for attention, not lost
   | 'sync.push.force' // operator force-overwrite: local pushed to cloud past the version gate
   | 'sync.reconcile.enqueue' // an orphaned local result/comment (cloud-missing, no queue row) was re-enqueued
+  // L2 / Functional-Validation cell events. FV work used to leave NO durable
+  // local record (only success-only push COUNTS in the verbose app log), so a
+  // wiped/un-synced cell vanished without a trace. These mirror io.test/io.reset:
+  | 'l2.cell'        // an FV cell value was written locally (the durable record of the work)
+  | 'l2.push.drop'   // an FV cell can NEVER sync (device/column has no cloud mapping) — recovery-critical
+  | 'l2.push.park'   // an FV cell push hit the retry cap → PARKED (kept for attention, not deleted)
+  | 'l2.reconcile.enqueue' // an orphaned local FV cell (cloud-missing) was re-enqueued
   | 'sync.pull'
   | 'plc.connect'
   | 'plc.disconnect'
