@@ -15,6 +15,8 @@ import {
   type RoundTrip,
 } from '@/lib/guided/io-check-sequence'
 import { SKIP_REASONS, composeSkipReason, type SkipReason } from '@/lib/guided/task-pool/skip-reasons'
+import { saveL2Cell } from '@/lib/l2-outbox'
+import { authFetch } from '@/lib/api-config'
 import { TaskViewer } from './task-viewer'
 import './guided-tasks.css'
 
@@ -219,17 +221,23 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
             }),
           })
         } else if (step.l2ColumnId && step.l2DeviceId) {
-          // functional check cell
-          await fetch('/api/l2/cell', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+          // functional check cell — durable save (outbox + retry) so a guided
+          // verdict is never silently lost if the POST fails or the tablet is
+          // reloaded mid-step. Same path as the FV grid save.
+          const r = await saveL2Cell(
+            {
               deviceId: step.l2DeviceId,
               columnId: step.l2ColumnId,
               value: opts?.value ?? (result === 'Passed' ? 'Pass' : 'Fail'),
               updatedBy: user,
-            }),
-          })
+              ts: Date.now(),
+            },
+            {
+              storage: typeof window !== 'undefined' ? window.localStorage : ({ getItem: () => null, setItem: () => {} } as any),
+              fetchFn: (i, init) => authFetch(i, init) as any,
+            },
+          )
+          if (!r.ok) console.error('[Guided] FV cell save not confirmed — queued in outbox for retry:', r)
         } else if (step.ioId) {
           await fetch('/api/guided/test', {
             method: 'POST',

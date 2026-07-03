@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
 import { useSignalR, FVCellUpdate } from '@/lib/signalr-client'
 import { doesFVColumnCountForProgress, normalizeFVInputType } from '@/lib/fv-utils'
+import { saveL2Cell, replayL2Outbox, pendingCount, type OutboxDeps } from '@/lib/l2-outbox'
 
 interface FVSheet {
   id: number
@@ -153,6 +154,18 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   const [showGuide, setShowGuide] = useState(false)
   const [viewMode, setViewMode] = useState<'sheets' | 'overview'>(_saved.current.viewMode ?? 'sheets')
   const [cellValues, setCellValues] = useState<Map<string, { Value: string | null; Version: number }>>(new Map())
+  // Cells whose durable save has not yet been confirmed by the server. Shown as
+  // an "unsaved" indicator so a failed save is never invisible; cleared once the
+  // outbox confirms. Backed by the durable l2-outbox (survives reload).
+  const [unsavedCells, setUnsavedCells] = useState<Set<string>>(new Set())
+  // Durable-save deps, created ONCE (stable ref) so the mount-replay effect, the
+  // beforeunload guard, and handleCellChange all share the same instance and
+  // never close over a stale copy. Persists to localStorage, pushes via authFetch.
+  const l2SaveDepsRef = useRef<OutboxDeps>({
+    storage: typeof window !== 'undefined' ? window.localStorage : ({ getItem: () => null, setItem: () => {} } as any),
+    fetchFn: (input, init) => authFetch(input, init) as any,
+  })
+  const l2SaveDeps = l2SaveDepsRef.current
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_W)
   const [resizingSidebar, setResizingSidebar] = useState<{ startX: number; startW: number } | null>(null)
   const [isNarrow, setIsNarrow] = useState(false)
@@ -325,6 +338,29 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
 
   useEffect(() => { fetchData() }, [fetchData])
 
+  // Reload recovery: on mount, replay any FV edits that never confirmed (e.g. the
+  // tablet was reloaded / lost connectivity mid-save). Then refresh so the grid
+  // reflects the reconciled truth. Also warn before unload while edits are still
+  // unconfirmed so work isn't lost by navigating away.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await replayL2Outbox(l2SaveDeps)
+        if (!cancelled && res.replayed > 0) await fetchData()
+        if (!cancelled) {
+          const remaining = pendingCount(l2SaveDeps.storage)
+          if (remaining > 0) console.warn(`[FV] ${remaining} FV cell edit(s) still pending after replay`)
+        }
+      } catch { /* best-effort */ }
+    })()
+    const beforeUnload = (e: BeforeUnloadEvent) => {
+      if (pendingCount(l2SaveDeps.storage) > 0) { e.preventDefault(); e.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => { cancelled = true; window.removeEventListener('beforeunload', beforeUnload) }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // VFD mode: pull the cloud-authoritative ADDRESSED flag for this subsystem on
   // open (so a tech sees what a mechanic just marked), then load annotations.
   useEffect(() => {
@@ -399,16 +435,22 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       next.set(key, { Value: value, Version: (existing?.Version ?? 0) + 1 })
       return next
     })
-    try {
-      await authFetch('/api/l2/cell', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId, columnId, value, updatedBy: currentUser?.fullName || localStorage.getItem('tester-name') || 'unknown' }),
-      })
-    } catch (err) {
-      console.error('Failed to save functional validation cell value:', err)
+    // Optimistically mark unsaved until the durable save confirms.
+    setUnsavedCells(prev => new Set(prev).add(key))
+    const updatedBy = currentUser?.fullName || localStorage.getItem('tester-name') || 'unknown'
+    // saveL2Cell persists the edit to the durable outbox BEFORE the POST, checks
+    // res.ok, and retries transient failures. It NEVER silently drops the edit —
+    // a reload replays whatever the outbox still holds.
+    const result = await saveL2Cell({ deviceId, columnId, value, updatedBy, ts: Date.now() }, l2SaveDeps)
+    setUnsavedCells(prev => {
+      const next = new Set(prev)
+      if (result.ok) next.delete(key)
+      return next
+    })
+    if (!result.ok) {
+      console.error('[FV] Cell save not confirmed — kept in outbox for retry:', { deviceId, columnId, ...result })
     }
-  }, [])
+  }, [currentUser]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleExport = useCallback(async () => {
     if (!data || data.sheets.length === 0) return
@@ -855,6 +897,12 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
 
   return (
     <div ref={containerRef} className="flex flex-col h-full">
+      {unsavedCells.size > 0 && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 text-xs shrink-0 border-b border-amber-300 dark:border-amber-800">
+          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+          <span>{unsavedCells.size} cell{unsavedCells.size === 1 ? '' : 's'} not yet saved — retrying automatically. Don&apos;t close this tab until saved.</span>
+        </div>
+      )}
       {/* Header bar */}
       <div className="flex items-center gap-3 px-4 py-3 border-b shrink-0">
         <span className="text-sm font-medium text-muted-foreground whitespace-nowrap tabular-nums">
