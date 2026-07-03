@@ -5,10 +5,10 @@
  *   - one on server start (database-<ts>-startup.db)
  *   - one every BACKUP_INTERVAL_HOURS (default 6) while running (…-periodic.db)
  *
- * Retention: keep snapshots within BACKUP_RETENTION_DAYS (default 14), and ALWAYS
- * keep the newest MIN_KEEP regardless of age (so a long idle period never leaves
- * zero backups). These coarse snapshots back up the fine-grained recovery audit
- * log (lib/logging/recovery-log) for full data recovery.
+ * Retention: delegated to lib/db/backup.ts pruneBackups() — the single
+ * retention authority (BACKUP_RETENTION_KEEP count + BACKUP_RETENTION_MAX_BYTES
+ * size bounds, min-age guarded). These coarse snapshots back up the
+ * fine-grained recovery audit log (lib/logging/recovery-log) for full recovery.
  *
  * Safe to call from both dev and production servers. Never throws fatally.
  */
@@ -18,30 +18,20 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const { resolveDatabasePath, resolveBackupsDirPath } = require('./storage-paths');
 
-const RETENTION_DAYS = (() => {
-  const n = parseInt(process.env.BACKUP_RETENTION_DAYS || '', 10);
-  return Number.isFinite(n) && n > 0 ? n : 14;
-})();
-const MIN_KEEP = 3;
-
-function pruneBackups(backupDir) {
+// F14 (2026-07-03 sync audit): retention is owned by lib/db/backup.ts
+// pruneBackups() — the single authority (count + size + min-age policy).
+// The old day-based pruner here (BACKUP_RETENTION_DAYS, MIN_KEEP=3) ran
+// independently on the same directory and could delete recovery points the
+// count/size policy meant to keep. This is now a thin delegate. Lazy require:
+// dev (tsx) resolves ./db/backup.ts, prod resolves the tsc-compiled .js.
+function pruneBackups() {
   try {
-    const files = fs
-      .readdirSync(backupDir)
-      .filter((f) => f.startsWith('database-') && f.endsWith('.db'))
-      .map((f) => ({ f, m: fs.statSync(path.join(backupDir, f)).mtimeMs }))
-      .sort((a, b) => b.m - a.m); // newest first
-
-    const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    for (let i = MIN_KEEP; i < files.length; i++) {
-      if (files[i].m < cutoff) {
-        try {
-          fs.unlinkSync(path.join(backupDir, files[i].f));
-          console.log(`[Backup] Pruned old backup: ${files[i].f}`);
-        } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore */ }
+    const { pruneBackups: pruneUnified } = require('./db/backup');
+    const { deleted, kept } = pruneUnified();
+    if (deleted > 0) console.log(`[Backup] Pruned ${deleted} old backup(s), ${kept} kept`);
+  } catch (err) {
+    console.warn('[Backup] unified prune unavailable (non-fatal):', err && err.message);
+  }
 }
 
 function createBackup(label) {
@@ -67,7 +57,7 @@ function createBackup(label) {
         try { snapshotDb.close(); } catch { /* ignore */ }
         const sizeMB = (fs.statSync(backupPath).size / 1024 / 1024).toFixed(1);
         console.log(`[Backup] ${label} backup created: ${path.basename(backupPath)} (${sizeMB} MB)`);
-        pruneBackups(backupDir);
+        pruneBackups();
       })
       .catch((backupErr) => {
         try { snapshotDb.close(); } catch { /* ignore */ }
@@ -109,7 +99,7 @@ function startPeriodicBackups(intervalHours) {
   if (Number.isFinite(forcedHrs) && forcedHrs > 0) {
     periodicTimer = setInterval(() => createBackup('periodic'), forcedHrs * 60 * 60 * 1000);
     if (periodicTimer.unref) periodicTimer.unref();
-    console.log(`[Backup] Periodic backups every ${forcedHrs}h, retention ${RETENTION_DAYS} days (min ${MIN_KEEP} kept)`);
+    console.log(`[Backup] Periodic backups every ${forcedHrs}h (retention: unified count+size policy in lib/db/backup)`);
     return;
   }
 
@@ -121,7 +111,7 @@ function startPeriodicBackups(intervalHours) {
     if (periodicTimer.unref) periodicTimer.unref();
   }, firstDelay);
   if (overnightTimeout.unref) overnightTimeout.unref();
-  console.log(`[Backup] Overnight daily backup scheduled (~${Math.round(firstDelay / 3_600_000)}h from now, then every 24h), retention ${RETENTION_DAYS} days (min ${MIN_KEEP} kept)`);
+  console.log(`[Backup] Overnight daily backup scheduled (~${Math.round(firstDelay / 3_600_000)}h from now, then every 24h; retention: unified count+size policy in lib/db/backup)`);
 }
 
 module.exports = { createStartupBackup, createBackup, startPeriodicBackups, pruneBackups };
