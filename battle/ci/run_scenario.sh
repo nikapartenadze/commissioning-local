@@ -38,17 +38,13 @@ export FV_FRACTION="${FV_FRACTION:-0.15}"
 export DOWNLOAD_STORM=""
 export CLOUD_FLAP=""
 DELAY_MS=""
-# Per-feature bot write fractions (2026-07-06 coverage build-out). Default OFF so
-# existing scenarios are unchanged; scenarios that want full-feature coverage
-# (all, features, central) turn them on. Bots drive the REAL endpoints for
-# e-stop checks, guided task state, punchlist, dependencies, and VFD blockers,
-# so their offline queues + per-type survival gates (I22-I25) get exercised.
-export ESTOP_FRACTION="${ESTOP_FRACTION:-0}"
-export GUIDED_FRACTION="${GUIDED_FRACTION:-0}"
-export PUNCH_FRACTION="${PUNCH_FRACTION:-0}"
-export DEPS_FRACTION="${DEPS_FRACTION:-0}"
-export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0}"
-export VFDWIZARD_FRACTION="${VFDWIZARD_FRACTION:-0}"
+# Per-feature bot write fractions (2026-07-06 coverage build-out). Do NOT set a
+# default here: pre-setting them to "0" would make the per-scenario
+# `${X:-0.10}` defaults below a no-op (the var is already set, so `:-` never
+# fires) — the bug that made the first slowlink run fire 0 feature actions.
+# Scenarios that want feature coverage set them; every other path leaves them
+# unset and compose falls back to 0 (docker-compose `${X:-0}`). An explicit env
+# passed to this script still overrides, since the scenario cases use `${X:-…}`.
 
 # ── CDW5 19-MCM site setup, shared by central-cdw5 and central-cdw5-split ──
 # Generates the per-sim compose override (per-MCM TAGS_FILE; full service
