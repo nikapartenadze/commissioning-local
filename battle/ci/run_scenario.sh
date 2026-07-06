@@ -38,6 +38,16 @@ export FV_FRACTION="${FV_FRACTION:-0.15}"
 export DOWNLOAD_STORM=""
 export CLOUD_FLAP=""
 DELAY_MS=""
+# Per-feature bot write fractions (2026-07-06 coverage build-out). Default OFF so
+# existing scenarios are unchanged; scenarios that want full-feature coverage
+# (all, features, central) turn them on. Bots drive the REAL endpoints for
+# e-stop checks, guided task state, punchlist, dependencies, and VFD blockers,
+# so their offline queues + per-type survival gates (I22-I25) get exercised.
+export ESTOP_FRACTION="${ESTOP_FRACTION:-0}"
+export GUIDED_FRACTION="${GUIDED_FRACTION:-0}"
+export PUNCH_FRACTION="${PUNCH_FRACTION:-0}"
+export DEPS_FRACTION="${DEPS_FRACTION:-0}"
+export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0}"
 
 # ── CDW5 19-MCM site setup, shared by central-cdw5 and central-cdw5-split ──
 # Generates the per-sim compose override (per-MCM TAGS_FILE; full service
@@ -222,7 +232,33 @@ case "$SCENARIO" in
         # propagation verdicts trustworthy while ALL real chaos still runs. See
         # FINDINGS F2 + the mutate scenario.
         export HOT_FRACTION=0
+        # Full-feature coverage: bots also drive e-stop / guided / punchlist /
+        # dependencies / VFD-blocker writes so I22-I25 (per-type survival) and
+        # every offline queue are exercised under the harshest chaos, not just IO.
+        export ESTOP_FRACTION="${ESTOP_FRACTION:-0.08}"
+        export GUIDED_FRACTION="${GUIDED_FRACTION:-0.06}"
+        export PUNCH_FRACTION="${PUNCH_FRACTION:-0.05}"
+        export DEPS_FRACTION="${DEPS_FRACTION:-0.04}"
+        export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0.04}"
+        export FV_FRACTION="${FV_FRACTION:-0.15}"
         export THINK_MIN_MS=700; export THINK_MAX_MS=3000 ;;
+    features)                                         # ALL FEATURES, light chaos
+        # Every feature/page exercised (IO + FV + e-stop + guided + punchlist +
+        # dependencies + VFD blocker) under a light cloud flap, to prove the
+        # per-type survival gates (I22-I25) on a clean-ish run before the full
+        # `all` soak. Higher feature fractions than `all` so each gate is
+        # non-vacuous quickly.
+        export CLOUD_FLAP="4,15"; export FLAP_BUDGET=80
+        export COMPOSE_PROFILES=mutate; export MUTATE_PERIOD_SEC=300
+        export BOTS="${BOTS:-6}"
+        export HOT_FRACTION=0
+        export FV_FRACTION="${FV_FRACTION:-0.15}"
+        export ESTOP_FRACTION="${ESTOP_FRACTION:-0.12}"
+        export GUIDED_FRACTION="${GUIDED_FRACTION:-0.10}"
+        export PUNCH_FRACTION="${PUNCH_FRACTION:-0.08}"
+        export DEPS_FRACTION="${DEPS_FRACTION:-0.06}"
+        export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0.06}"
+        export THINK_MIN_MS=500; export THINK_MAX_MS=2500 ;;
     delta)                                            # cloud→field DELTA-SYNC (real hint→delta)
         # Drive cloud changes through the RECORDED admin API (dev-mode cloud +
         # DEV_BYPASS_AUTH) so recordChange + the subsystem_changed SSE hint fire

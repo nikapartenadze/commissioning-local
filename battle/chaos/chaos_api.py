@@ -77,6 +77,41 @@ def docker(method: str, path: str, body: dict | None = None) -> tuple[int, str]:
         conn.close()
 
 
+def docker_exec(container: str, cmd: list[str]) -> str:
+    """Run a command inside `container` via the Docker exec API and return its
+    stdout (best-effort; '' on any failure). Used by the resource sampler to
+    read the tool's live file-descriptor count from /proc — the direct
+    fingerprint of a leaked PLC tag handle / socket that would lag the app
+    after hours (the 'must restart every few hours' field class)."""
+    try:
+        st, body = docker(
+            "POST", f"/containers/{container}/exec",
+            {"AttachStdout": True, "AttachStderr": False, "Cmd": cmd},
+        )
+        if st >= 400:
+            return ""
+        exec_id = json.loads(body).get("Id")
+        if not exec_id:
+            return ""
+        # Start the exec (Detach=False) and read the multiplexed stream.
+        conn = UnixHTTPConnection(DOCKER_SOCK)
+        try:
+            payload = json.dumps({"Detach": False, "Tty": False}).encode()
+            conn.request("POST", f"/exec/{exec_id}/start",
+                         body=payload, headers={"Content-Type": "application/json"})
+            r = conn.getresponse()
+            raw = r.read()
+        finally:
+            conn.close()
+        # Docker multiplexes exec output with an 8-byte header per frame; strip
+        # any non-printable framing and keep the digits/text.
+        text = raw.decode(errors="replace")
+        return "".join(ch for ch in text if ch.isprintable() or ch in " \t\n")
+    except Exception as e:  # noqa: BLE001 — sampler must never crash chaos
+        print(f"chaos: docker_exec failed ({container}): {e}", flush=True)
+        return ""
+
+
 def journal(event: dict) -> None:
     event = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **event}
     with open(JOURNAL, "a") as f:
@@ -256,6 +291,37 @@ def power_storm(spec: str) -> None:
     print("chaos: power storm stopped (calm)", flush=True)
 
 
+def resource_sampler(period_s: int = 30) -> None:
+    """Periodically sample the tool's open file-descriptor count and RSS from
+    inside the tool container, journaling to /runs/<RUN_ID>/resource.jsonl. The
+    observer fits a slope over these: a steadily-climbing FD count is a leaked
+    PLC tag handle / socket that would eventually exhaust the process and force
+    the 'restart every few hours' the field hit. RSS here is a cross-check on the
+    tool's own [HEALTH] log line. Runs until CALM (soak end)."""
+    out = os.path.join(RUNS_DIR, RUN_ID, "resource.jsonl")
+    print(f"chaos: resource sampler armed — FD+RSS every {period_s}s from {TOOL}", flush=True)
+    while not CALM.is_set():
+        fd_out = docker_exec(TOOL, ["sh", "-c", "ls /proc/1/fd 2>/dev/null | wc -l"])
+        rss_out = docker_exec(TOOL, ["sh", "-c",
+                                     "awk '/VmRSS/{print $2}' /proc/1/status 2>/dev/null"])
+        fd = next((int(t) for t in fd_out.split() if t.isdigit()), None)
+        rss_kb = next((int(t) for t in rss_out.split() if t.isdigit()), None)
+        if fd is not None:
+            rec = {"ts": time.time(), "fd": fd,
+                   "rss_mb": round(rss_kb / 1024, 1) if rss_kb else None}
+            try:
+                with open(out, "a") as f:
+                    f.write(json.dumps(rec) + "\n")
+            except OSError:
+                pass
+        # sleep in short slices so CALM stops us promptly
+        for _ in range(period_s):
+            if CALM.is_set():
+                break
+            time.sleep(1)
+    print("chaos: resource sampler stopped (calm)", flush=True)
+
+
 if __name__ == "__main__":
     storm = os.environ.get("DOWNLOAD_STORM")
     if storm:
@@ -266,5 +332,12 @@ if __name__ == "__main__":
     power = os.environ.get("POWER_STORM")
     if power:
         threading.Thread(target=power_storm, args=(power,), daemon=True).start()
+    # Resource sampler always on (FD/RSS leak detection) unless explicitly off.
+    if os.environ.get("RESOURCE_SAMPLE", "1") != "0":
+        threading.Thread(
+            target=resource_sampler,
+            args=(int(os.environ.get("RESOURCE_SAMPLE_SEC", "30")),),
+            daemon=True,
+        ).start()
     print(f"chaos: listening :8666 (plc-sims={PLC_SIMS}, tool={TOOL}, cloud={CLOUD})", flush=True)
     ThreadingHTTPServer(("0.0.0.0", 8666), Handler).serve_forever()

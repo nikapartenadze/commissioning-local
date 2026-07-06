@@ -1063,6 +1063,154 @@ def check_i18_fv_survival() -> dict:
     }
 
 
+def _journal_latest(action: str, key_fields: tuple[str, ...], value_field: str) -> dict[tuple, object]:
+    """Latest accepted (status 200) `value_field` per composite key across all
+    bot journals for a given `action`, EXCLUDING any key written by more than one
+    bot (order-ambiguous). Same single-writer discipline as journaled_results():
+    append order within a bot's journal is true write order. Bots partition every
+    feature by a stable key, so multi-writer keys only appear if a partition
+    broke — excluding them keeps the survival gate meaningful."""
+    per_bot: dict[tuple, dict[str, object]] = {}
+    for path in glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl")):
+        for line in open(path, errors="replace"):
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("action") != action or e.get("status") != 200:
+                continue
+            if any(e.get(k) is None for k in key_fields):
+                continue
+            key = tuple(e.get(k) for k in key_fields)
+            per_bot.setdefault(key, {})[str(e.get("bot", ""))] = e.get(value_field)
+    return {k: next(iter(slot.values())) for k, slot in per_bot.items() if len(slot) == 1}
+
+
+def check_i22_estop_survival() -> dict:
+    """I22 (REPORT) — every e-stop EPC check the crew journaled (SAFETY data)
+    survives in the tool's local EStopEpcChecks at quiesce. The MCM17/MCM08
+    class applied to e-stop: a check the tool accepted (200) that later reads
+    back different/absent = a destructive pull clobbered it or the write path
+    regressed. Single-writer per checkTag (bots partition by hashStr(checkTag))."""
+    journaled = _journal_latest("estop", ("subsystemId", "zoneName", "checkTag"), "result")
+    mismatches: list[dict] = []
+    for (sid, zone, tag), want in journaled.items():
+        rows = _local_query(
+            "SELECT Result FROM EStopEpcChecks WHERE SubsystemId=? AND ZoneName=? AND CheckTag=? AND CheckType='preliminary'",
+            (sid, zone, tag))
+        have = rows[0][0] if rows else None
+        if have != want:
+            mismatches.append({"subsystem": sid, "zone": zone, "checkTag": tag, "journaled": want, "local": have})
+    try:
+        active = int(_local_query("SELECT COUNT(*) FROM EStopCheckPendingSyncs WHERE DeadLettered=0")[0][0])
+        parked = int(_local_query("SELECT COUNT(*) FROM EStopCheckPendingSyncs WHERE DeadLettered=1")[0][0])
+    except Exception:
+        active = parked = -1
+    return {"pass": len(mismatches) == 0, "soak_estop_checks": len(journaled),
+            "vacuous": len(journaled) == 0, "mismatches": len(mismatches),
+            "mismatch_samples": mismatches[:10],
+            "estop_pending_active": active, "estop_pending_parked": parked}
+
+
+def check_i23_guided_survival() -> dict:
+    """I23 (REPORT) — every guided task-state the crew journaled survives in the
+    tool's local GuidedTaskState. Synthetic per-bot task ids → single-writer."""
+    journaled = _journal_latest("guided", ("subsystemId", "taskId"), "statusVal")
+    mismatches: list[dict] = []
+    for (sid, task), want in journaled.items():
+        rows = _local_query(
+            "SELECT Status FROM GuidedTaskState WHERE SubsystemId=? AND TaskId=?", (sid, task))
+        have = rows[0][0] if rows else None
+        if have != want:
+            mismatches.append({"subsystem": sid, "taskId": task, "journaled": want, "local": have})
+    return {"pass": len(mismatches) == 0, "soak_guided_writes": len(journaled),
+            "vacuous": len(journaled) == 0, "mismatches": len(mismatches),
+            "mismatch_samples": mismatches[:10]}
+
+
+def check_i24_blocker_survival() -> dict:
+    """I24 (REPORT) — VFD device blockers the crew set are not silently lost.
+    The tool's contract is enqueue=success, drain best-effort with park-not-
+    delete (F7). So a journaled blocker is safe iff it either reached cloud
+    (drained out of the queue) or is still held locally (active or parked) — it
+    must never vanish without a park. We can't read cloud Devices here, so we
+    report: journaled vs (still-queued active/parked); a parked count is fine
+    (surfaced via /stuck), a journaled blocker that's neither drained-cleanly nor
+    queued would show as an unexplained gap in the tool's own drop log."""
+    journaled = _journal_latest("blocker", ("subsystemId", "deviceName"), "op")
+    try:
+        active = int(_local_query("SELECT COUNT(*) FROM DeviceBlockerPendingSyncs WHERE DeadLettered=0")[0][0])
+        parked = int(_local_query("SELECT COUNT(*) FROM DeviceBlockerPendingSyncs WHERE DeadLettered=1")[0][0])
+    except Exception:
+        active = parked = -1
+    return {"pass": True, "soak_blocker_writes": len(journaled),
+            "vacuous": len(journaled) == 0,
+            "blocker_pending_active": active, "blocker_pending_parked": parked,
+            "note": "report-only: blocker drain is best-effort; parked rows are surfaced via /stuck"}
+
+
+def _punch_expected_excluding_retested() -> dict[int, str]:
+    """Per single-writer IO, the last punchlist status the crew set — but ONLY
+    for IOs whose last punchlist-affecting action WAS the punch. A Pass/Fail/
+    Cleared re-test after a punch legitimately clears PunchlistStatus (the F4
+    resolver-supersede rule, applied locally via the cloud echo), so those IOs
+    are order-ambiguous / cloud-echo-dependent and are EXCLUDED — same principle
+    as I4 excluding multi-writer rows. Only pure punchlist IOs (punch with no
+    later result mark) must survive verbatim."""
+    # per io: ordered (punch|mark) events from the single owning bot's journal
+    events: dict[int, list[tuple[str, object]]] = {}
+    writers: dict[int, set] = {}
+    for path in glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl")):
+        for line in open(path, errors="replace"):
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("status") != 200:
+                continue
+            act, iid = e.get("action"), e.get("ioId")
+            if iid is None or act not in ("punch", "mark"):
+                continue
+            events.setdefault(iid, []).append((act, e.get("punchlistStatus")))
+            writers.setdefault(iid, set()).add(str(e.get("bot", "")))
+    out: dict[int, str] = {}
+    for iid, evs in events.items():
+        if len(writers[iid]) > 1:
+            continue  # multi-writer → ambiguous
+        last_act, last_val = evs[-1]
+        if last_act == "punch" and last_val is not None:
+            out[iid] = last_val  # last action was the punch → must survive
+        # last action was a mark → punchlist correctly cleared → not checkable
+    return out
+
+
+def check_i25_punchlist_survival() -> dict:
+    """I25 (REPORT) — punchlist status (F4 — now synced) and the Dependencies
+    flag survive in the tool's local Ios at quiesce. io.id-partitioned →
+    single-writer. Covers both the 'punch' and 'deps' journal actions. Punchlist
+    excludes IOs re-tested after the punch (that clears the status by design)."""
+    punch = _punch_expected_excluding_retested()
+    deps = _journal_latest("deps", ("ioId",), "hasDependencies")
+    mism_p: list[dict] = []
+    for iid, want in punch.items():
+        rows = _local_query("SELECT PunchlistStatus FROM Ios WHERE id=?", (iid,))
+        have = rows[0][0] if rows else None
+        if have != want:
+            mism_p.append({"io": iid, "journaled": want, "local": have})
+    mism_d: list[dict] = []
+    for (iid,), want in deps.items():
+        rows = _local_query("SELECT HasDependencies FROM Ios WHERE id=?", (iid,))
+        have = rows[0][0] if rows else None
+        # journal stores bool; local stores 0/1
+        if have is None or bool(have) != bool(want):
+            mism_d.append({"io": iid, "journaled": want, "local": have})
+    return {"pass": len(mism_p) == 0 and len(mism_d) == 0,
+            "soak_punchlist_writes": len(punch), "soak_deps_writes": len(deps),
+            "vacuous": len(punch) == 0 and len(deps) == 0,
+            "punchlist_mismatches": len(mism_p), "deps_mismatches": len(mism_d),
+            "punchlist_mismatch_samples": mism_p[:8], "deps_mismatch_samples": mism_d[:8]}
+
+
 def rss_slope_mb_per_h(samples: list[tuple[float, float, float]], skip_first_s: float) -> float | None:
     if not samples:
         return None
@@ -1262,6 +1410,143 @@ def check_mcm_isolation() -> dict:
     }
 
 
+def _resource_samples() -> list[dict]:
+    """FD/RSS samples the chaos resource_sampler journaled (resource.jsonl)."""
+    out: list[dict] = []
+    p = os.path.join(RUNS_DIR, RUN_ID, "resource.jsonl")
+    if not os.path.exists(p):
+        return out
+    for line in open(p, errors="replace"):
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+def _slope_per_h(pairs: list[tuple[float, float]]) -> float | None:
+    """Least-squares slope (units/hour) over (epoch_seconds, value) points."""
+    if len(pairs) < 10:
+        return None
+    xs = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    mx, my = statistics.fmean(xs), statistics.fmean(ys)
+    denom = sum((x - mx) ** 2 for x in xs)
+    if denom == 0:
+        return None
+    return (sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom) * 3600.0
+
+
+def check_fd_leak() -> dict:
+    """I20 (REPORT) — the tool's open file-descriptor count must not climb
+    without bound. A steadily-rising FD/handle count over hours is a leaked PLC
+    tag handle or socket — the direct cause of the historical 'app lags / must
+    restart every few hours' reports. Sampled by chaos from /proc/1/fd. Gated
+    like I2: only trustworthy over a long, settled window, so it reports a slope
+    but is REPORT-ONLY until proven on the overnight soak."""
+    samples = _resource_samples()
+    fds = [(s["ts"], float(s["fd"])) for s in samples if s.get("fd") is not None]
+    if len(fds) < 10:
+        return {"pass": True, "status": "inconclusive: too few FD samples",
+                "fd_samples": len(fds)}
+    t0 = fds[0][0]
+    warm = [(t, v) for (t, v) in fds if t - t0 >= WARMUP_MINUTES * 60.0]
+    window_min = (warm[-1][0] - warm[0][0]) / 60.0 if len(warm) >= 2 else 0.0
+    slope = _slope_per_h(warm)
+    reliable = window_min >= LEAK_MIN_WINDOW_MIN and slope is not None
+    fd_vals = [v for _, v in fds]
+    # A real leak climbs monotonically; allow generous slack for transient
+    # sockets during flaps. Gate (once promoted) only on a reliable window.
+    FD_SLOPE_LIMIT_PER_H = 20.0
+    leaking = reliable and slope is not None and slope > FD_SLOPE_LIMIT_PER_H
+    return {
+        "pass": not leaking,
+        "fd_slope_per_h": round(slope, 2) if slope is not None else None,
+        "fd_min": int(min(fd_vals)), "fd_max": int(max(fd_vals)),
+        "fd_last": int(fd_vals[-1]),
+        "window_min": round(window_min, 1),
+        "reliable": reliable,
+        "fd_samples": len(fds),
+        "status": ("LEAK" if leaking else "ok" if reliable
+                   else f"inconclusive: {window_min:.0f}min window < {LEAK_MIN_WINDOW_MIN:.0f}min"),
+    }
+
+
+def check_log_growth() -> dict:
+    """I19 (REPORT) — the tool's on-disk log directory must stay bounded. A log
+    that grows without a size cap fills the tablet's disk over a long deployment
+    (the 'do logs clog up' question). We measure current total bytes of
+    /data/logs and the per-file growth; the tool ships a size-capped rotation, so
+    a runaway here means the cap regressed. Gates (once promoted) on an absolute
+    cap only — growth during a soak is expected, unbounded growth is the bug."""
+    logs_dir = os.path.join(DATA_DIR, "logs")
+    total = 0
+    per_file: dict[str, int] = {}
+    try:
+        for name in os.listdir(logs_dir):
+            fp = os.path.join(logs_dir, name)
+            try:
+                sz = os.path.getsize(fp)
+            except OSError:
+                continue
+            total += sz
+            per_file[name] = sz
+    except OSError:
+        return {"pass": True, "status": "no logs dir", "total_mb": 0}
+    total_mb = round(total / (1024 * 1024), 1)
+    cap_mb = float(os.environ.get("LOG_DIR_MAX_MB", "1024"))
+    biggest = max(per_file.items(), key=lambda kv: kv[1], default=("", 0))
+    return {
+        "pass": total_mb <= cap_mb,
+        "total_mb": total_mb,
+        "cap_mb": cap_mb,
+        "file_count": len(per_file),
+        "largest_file": biggest[0],
+        "largest_file_mb": round(biggest[1] / (1024 * 1024), 1),
+        "status": (f"log dir {total_mb}MB > {cap_mb}MB cap" if total_mb > cap_mb else "bounded"),
+    }
+
+
+def check_sync_latency() -> dict:
+    """I21 (REPORT) — how fast field writes are acknowledged, from the bot
+    journals' per-write latencyMs (write → HTTP 200 from the tool). This is the
+    local persist+enqueue latency the operator feels. The write→cloud arrival
+    latency is covered by I4/I7 convergence; here we summarize the acknowledged-
+    write distribution so a regression (event-loop stalls under load inflating
+    p95/p99) is visible. REPORT-ONLY: a metric, not a pass/fail bar yet."""
+    lats: list[float] = []
+    by_action: dict[str, list[float]] = {}
+    for path in glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl")):
+        for line in open(path, errors="replace"):
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            lm = e.get("latencyMs")
+            act = e.get("action")
+            if isinstance(lm, (int, float)) and e.get("status") == 200:
+                lats.append(float(lm))
+                by_action.setdefault(act, []).append(float(lm))
+    if not lats:
+        return {"pass": True, "status": "no timed writes", "writes": 0}
+    s = sorted(lats)
+    pct = lambda p: s[min(len(s) - 1, int(len(s) * p))]
+    per_action = {
+        a: {"n": len(v), "p50": round(sorted(v)[len(v) // 2], 1),
+            "p95": round(sorted(v)[min(len(v) - 1, int(len(v) * 0.95))], 1)}
+        for a, v in by_action.items()
+    }
+    return {
+        "pass": True,  # report-only metric
+        "writes": len(lats),
+        "ack_p50_ms": round(pct(0.50), 1),
+        "ack_p95_ms": round(pct(0.95), 1),
+        "ack_p99_ms": round(pct(0.99), 1),
+        "ack_max_ms": round(s[-1], 1),
+        "per_action": per_action,
+    }
+
+
 def main() -> None:
     print(f"observer: run={RUN_ID} target={TOOL_URL} soak={SOAK_MINUTES}min")
     deadline = time.monotonic() + SOAK_MINUTES * 60.0
@@ -1417,6 +1702,24 @@ def main() -> None:
     # (2026-06-18 "FV shows one MCM" class). N/A → pass on single-MCM runs.
     invariants["I10_mcm_isolation"] = check_mcm_isolation()
 
+    # I19 log-growth / I20 FD-handle-leak / I21 sync-latency — the "does it
+    # survive hours on site" trio (2026-07-06 build-out). I19: logs don't fill
+    # the disk. I20: no leaked PLC tag handle / socket (the 'restart every few
+    # hours' class) — sampled from /proc by chaos. I21: acknowledged-write
+    # latency distribution. All REPORT-ONLY until proven twice on a long soak.
+    invariants["I19_log_growth"] = check_log_growth()
+    invariants["I20_fd_leak"] = check_fd_leak()
+    invariants["I21_sync_latency"] = check_sync_latency()
+
+    # I22-I25 per-data-type survival (2026-07-06) — the "never lose data on ANY
+    # feature" guarantee extended past IO (I4) + FV (I18) to e-stop checks
+    # (SAFETY), guided task state, device blockers, and punchlist/dependencies.
+    # Journal→local, same discipline as I18. REPORT-ONLY until proven twice.
+    invariants["I22_estop_survival"] = check_i22_estop_survival()
+    invariants["I23_guided_survival"] = check_i23_guided_survival()
+    invariants["I24_blocker_survival"] = check_i24_blocker_survival()
+    invariants["I25_punchlist_survival"] = check_i25_punchlist_survival()
+
     # REPORT-ONLY invariants do NOT gate the build. I7 (cloud→field propagation)
     # depends on the SSE-reconnect-pull firing cleanly, which the docker-network
     # flap does not reliably deliver (reconnect "fetch failed" loops) — so a I7
@@ -1436,7 +1739,11 @@ def main() -> None:
                    "I12_delete_propagation", "I13_cold_start_cursor",
                    "I14_vfd_addressed_propagation", "I15_l2_cell_propagation",
                    "I16_estop_def_propagation", "I17_network_propagation",
-                   "I18_fv_survival"}
+                   "I18_fv_survival",
+                   # New (2026-07-06) — prove green ×2 on a long soak before gating.
+                   "I19_log_growth", "I20_fd_leak", "I21_sync_latency",
+                   "I22_estop_survival", "I23_guided_survival",
+                   "I24_blocker_survival", "I25_punchlist_survival"}
     gating = {k: v for k, v in invariants.items() if k not in REPORT_ONLY}
     verdict = {
         "run": RUN_ID,

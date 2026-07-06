@@ -31,6 +31,22 @@ const HOT_FRACTION = parseFloat(process.env.HOT_FRACTION ?? '0.35');
 // must hold them and drain on reconnect (the "internet gone for days then back"
 // case). 0 disables (single-MCM IO-only runs).
 const FV_FRACTION = parseFloat(process.env.FV_FRACTION ?? '0');
+// Per-FEATURE write fractions (2026-07-06 coverage build-out). Each iteration
+// rolls these in order; the first hit runs that feature action (partitioned +
+// journaled), else it falls through to the FV/IO path. IO stays dominant. All
+// drive the REAL production endpoints → their durable offline queues, so a
+// cloud outage must hold every feature's work and drain it on reconnect, and
+// the observer's per-type survival gates (I22-I25) judge each one.
+//   estop  → EStopCheckPendingSyncs   (SAFETY data)
+//   guided → GuidedTaskStatePendingSyncs
+//   punch  → PendingSyncs (Punchlist Updated op)
+//   deps   → PendingSyncs (Dependencies Updated op)
+//   blocker→ DeviceBlockerPendingSyncs (VFD bump-test blocker)
+const ESTOP_FRACTION = parseFloat(process.env.ESTOP_FRACTION ?? '0');
+const GUIDED_FRACTION = parseFloat(process.env.GUIDED_FRACTION ?? '0');
+const PUNCH_FRACTION = parseFloat(process.env.PUNCH_FRACTION ?? '0');
+const DEPS_FRACTION = parseFloat(process.env.DEPS_FRACTION ?? '0');
+const BLOCKER_FRACTION = parseFloat(process.env.BLOCKER_FRACTION ?? '0');
 
 const OUT = join(RUNS_DIR, RUN_ID);
 mkdirSync(OUT, { recursive: true });
@@ -46,6 +62,13 @@ const STOP_FILE = join(OUT, 'STOP');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+// Stable non-negative hash of a string → used to partition e-stop checks (keyed
+// by checkTag, not a numeric id) so each check is single-writer across bots.
+const hashStr = (s) => {
+  let h = 0;
+  for (let i = 0; i < String(s).length; i++) h = (h * 31 + String(s).charCodeAt(i)) | 0;
+  return Math.abs(h);
+};
 
 async function api(path, opts = {}, timeoutMs = 30_000) {
   const ctl = new AbortController();
@@ -133,11 +156,131 @@ async function bot(n) {
         // no owned FV work for this MCM → fall through to the IO path
       }
 
+      // ── E-STOP CHECK (safety data) — discover real zones/EPCs for this MCM,
+      // partition by checkTag so each check is single-writer, POST a pass/fail
+      // through the real /api/estop/check → EStopCheckPendingSyncs queue. ──
+      if (scoped && ESTOP_FRACTION > 0 && Math.random() < ESTOP_FRACTION) {
+        const { body: eb } = await api(`/api/estop/status?subsystemId=${scoped}`);
+        const checks = [];
+        for (const z of (eb?.zones ?? [])) {
+          for (const epc of (z.epcs ?? [])) {
+            if (epc.checkTag) checks.push({ zoneName: z.name, checkTag: epc.checkTag });
+          }
+        }
+        const mine = checks.filter((c) => (hashStr(c.checkTag) % BOTS) === (n - 1));
+        if (mine.length > 0) {
+          const c = pick(mine);
+          const result = Math.random() < 0.85 ? 'pass' : 'fail';
+          const t0 = Date.now();
+          const r = await api('/api/estop/check', {
+            method: 'POST',
+            body: JSON.stringify({
+              subsystemId: Number(scoped), zoneName: c.zoneName, checkTag: c.checkTag,
+              result, checkType: 'preliminary', testedBy: name,
+              comments: result === 'fail' ? `battle-bot${n}: EPC fail ${Date.now()}` : undefined,
+            }),
+          });
+          log({ action: 'estop', subsystemId: Number(scoped), zoneName: c.zoneName,
+                checkTag: c.checkTag, result, status: r.status, latencyMs: Date.now() - t0 });
+          if (r.status !== 200) console.log(`[crew] ${name}: POST /api/estop/check -> ${r.status}`);
+          await sleep(rand(THINK_MIN, THINK_MAX));
+          continue;
+        }
+      }
+
+      // ── GUIDED TASK STATE — synthetic per-bot task ids (the endpoint keys by
+      // (subsystem, taskId) with no pool FK, so partitioned synthetic ids
+      // exercise the real GuidedTaskStatePendingSyncs queue + sync path). ──
+      if (scoped && GUIDED_FRACTION > 0 && Math.random() < GUIDED_FRACTION) {
+        const taskId = `battle-guided-${scoped}-bot${n}-${Math.floor(Math.random() * 8)}`;
+        const complete = Math.random() < 0.7;
+        const t0 = Date.now();
+        const r = complete
+          ? await api('/api/guided/tasks/complete', {
+              method: 'POST',
+              body: JSON.stringify({ subsystemId: Number(scoped), taskId, currentUser: name }),
+            })
+          : await api('/api/guided/tasks/skip', {
+              method: 'POST',
+              body: JSON.stringify({ subsystemId: Number(scoped), taskId, reason: `battle skip ${Date.now()}`, currentUser: name }),
+            });
+        log({ action: 'guided', subsystemId: Number(scoped), taskId,
+              statusVal: complete ? 'completed' : 'skipped', status: r.status, latencyMs: Date.now() - t0 });
+        if (r.status !== 200) console.log(`[crew] ${name}: guided task -> ${r.status}`);
+        await sleep(rand(THINK_MIN, THINK_MAX));
+        continue;
+      }
+
+      // ── VFD DEVICE BLOCKER — set on a partitioned VFD device (cloud resolves
+      // deviceName→Devices, returns ok even if unknown, so this is safe). ──
+      if (scoped && BLOCKER_FRACTION > 0 && Math.random() < BLOCKER_FRACTION) {
+        const { body: lb } = await api(`/api/l2?subsystemId=${scoped}`);
+        const owned = (lb?.devices ?? []).filter((d) => (d.id % BOTS) === (n - 1) && d.deviceName);
+        // Prefer VFD-named devices (the semantic case), but fall back to any
+        // owned device — the cloud resolves deviceName→Devices and returns ok
+        // even when unresolved, so any name exercises the blocker queue+sync.
+        const vfds = owned.filter((d) => /vfd/i.test(`${d.deviceName}`));
+        const cands = vfds.length > 0 ? vfds : owned;
+        if (cands.length > 0) {
+          const dev = pick(cands);
+          const party = pick(['Controls', 'Electrical', 'Mechanical']);
+          const description = `battle-bot${n}: bump blocker ${Date.now()}`;
+          const t0 = Date.now();
+          const r = await api('/api/vfd-commissioning/bump-blocker', {
+            method: 'POST',
+            body: JSON.stringify({
+              subsystemId: Number(scoped), deviceName: dev.deviceName, op: 'set',
+              blockerResponsibleParty: party, blockerDescription: description, updatedBy: name,
+            }),
+          });
+          log({ action: 'blocker', subsystemId: Number(scoped), deviceName: dev.deviceName,
+                op: 'set', party, description, status: r.status, latencyMs: Date.now() - t0 });
+          if (r.status !== 200) console.log(`[crew] ${name}: bump-blocker -> ${r.status}`);
+          await sleep(rand(THINK_MIN, THINK_MAX));
+          continue;
+        }
+      }
+
       const { status, body } = await api(scoped ? `/api/ios?subsystemId=${scoped}` : '/api/ios');
       const ios = Array.isArray(body) ? body : (body?.ios ?? []);
       if (status !== 200 || ios.length === 0) {
         log({ action: 'list', status, count: ios.length ?? 0, error: status !== 200 });
         await sleep(5000);
+        continue;
+      }
+
+      // ── PUNCHLIST / DEPENDENCIES — metadata edits on an OWNED IO (reuse the
+      // list fetch above). Both ride PendingSyncs as their own ops (F4 punchlist
+      // + Dependencies Updated); the observer's I25 verifies they survive. ──
+      const ownedIos = ios.filter((x) => (x.id % BOTS) === (n - 1));
+      if (ownedIos.length > 0 && PUNCH_FRACTION > 0 && Math.random() < PUNCH_FRACTION) {
+        const io2 = pick(ownedIos);
+        const punchlistStatus = Math.random() < 0.6 ? 'ADDRESSED' : 'CLARIFICATION';
+        const trade = pick(['electrical', 'controls', 'mechanical']);
+        const clarificationNote = `battle-bot${n}: ${punchlistStatus} ${Date.now()}`;
+        const t0 = Date.now();
+        const r = await api(`/api/ios/${io2.id}/punchlist`, {
+          method: 'PATCH',
+          body: JSON.stringify({ punchlistStatus, trade, clarificationNote, updatedBy: name }),
+        });
+        log({ action: 'punch', ioId: io2.id, punchlistStatus, trade,
+              status: r.status, latencyMs: Date.now() - t0 });
+        if (r.status !== 200) console.log(`[crew] ${name}: punchlist -> ${r.status}`);
+        await sleep(rand(THINK_MIN, THINK_MAX));
+        continue;
+      }
+      if (ownedIos.length > 0 && DEPS_FRACTION > 0 && Math.random() < DEPS_FRACTION) {
+        const io2 = pick(ownedIos);
+        const hasDependencies = Math.random() < 0.5;
+        const t0 = Date.now();
+        const r = await api(`/api/ios/${io2.id}/dependencies`, {
+          method: 'PATCH',
+          body: JSON.stringify({ hasDependencies, currentUser: name }),
+        });
+        log({ action: 'deps', ioId: io2.id, hasDependencies,
+              status: r.status, latencyMs: Date.now() - t0 });
+        if (r.status !== 200) console.log(`[crew] ${name}: dependencies -> ${r.status}`);
+        await sleep(rand(THINK_MIN, THINK_MAX));
         continue;
       }
 

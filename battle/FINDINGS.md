@@ -4,6 +4,55 @@ Living log of what the battle environment has found. The environment's job is
 to **reproduce, in an automated soak, the bug classes that have hit the field**
 — and then catch their regressions forever.
 
+## Coverage build-out + v2.42.11 baseline (2026-07-06)
+
+**Context.** The nightlies (#1180/1182/1184) had been PULLING an 8-day-stale
+`tool` image and a 4-day-stale `cloud` image — they never tested the v2.42.11
+sync-hardening fixes. #1182 failed **I5 stability** (cloud-connection-error flap
+storm; the cloud tipped over with a Prisma /api/health error under sustained
+chaos; 11,451 parked L2 rows). Rebuilt both images from current `main`
+(a4f7002 / v2.42.11) locally and re-ran.
+
+**Coverage added (this build-out):**
+- **Feature bots** (`crew/bot.mjs`): beyond IO + FV, bots now drive e-stop EPC
+  checks, guided task complete/skip, punchlist, dependencies, and VFD bump
+  blockers — each partitioned single-writer + journaled per type. New env
+  fractions `ESTOP/GUIDED/PUNCH/DEPS/BLOCKER_FRACTION`; new `features` scenario.
+- **Per-type survival gates** (`observer/probe.py`): I22 e-stop, I23 guided,
+  I24 blocker, I25 punchlist/deps — journal→local, mirroring I18. REPORT-ONLY.
+- **Resource/log invariants:** I19 log-growth, I20 FD/handle-leak (chaos samples
+  `/proc/1/fd` via a docker-exec `resource_sampler`), I21 sync-latency. REPORT-ONLY.
+
+**v2.42.11 baseline verdict (`all`, 45 min, single-MCM, dev laptop):**
+PASS on every data/stability invariant; FAIL only on **I1 responsiveness**.
+- I4 no-data-loss ✅ (489 writes, 0 wipes, 0 silent drops), I18 FV ✅ (1029
+  writes, 0 mismatches), I5 stability ✅ (1 flap — vs #1182's storm), I2/I20 no
+  leak (FD 31→150→31), I19 logs 3.8 MB bounded, I8/I9/I10 ✅.
+- **I1 FAIL:** p50 3.8 ms but p95 690 ms, p99 4.6 s, max 9 s, 2 gaps >10 s.
+  Root cause in tool logs: `SLOW PUT /api/ios/... → 200 (5–8 s)`. The single Node
+  event loop + **synchronous better-sqlite3 writes + on-request sync-push** stall
+  multi-second under heavy concurrent load (6 aggressive bots + FV + hot + all
+  chaos). NOT data loss (writes still land). Correlates with I21 tail (p99 5.3 s).
+- Throughput: 243 IO pending + **1,692 L2 cells parked** (retry-cap) at soak end
+  under sustained cloud flap — safe + surfaced (I18 green), not synced until
+  reconnect/unpark. The cloud-capacity / backpressure signal.
+
+**Architectural implications (for the deployment decision):**
+1. Move the immediate cloud-push + heavy SQLite work OFF the request path
+   (fire-and-forget enqueue / batched writes / worker) — the deferred
+   "async-write" tech-debt item; the soak now proves it bites under load.
+2. Sync throughput under degraded links + the retry-cap-on-conflict parking
+   behavior; and the cloud single-container capacity (dedicated throughput
+   scenario pending) — informs the multi-container question.
+
+**Caveat:** dev-laptop Docker + 6 bots is far more concurrent than real field
+use; absolute latencies inflated, the relative event-loop finding is real.
+
+**HARNESS LESSON:** never edit `ci/run_scenario.sh` while a soak is running it —
+a live `sh` re-reads the file and shifted bytes corrupt it (broke the baseline's
+artifact export; verdict recovered from the `battle_runs` volume). Edit the
+driver only between runs.
+
 ## crud-propagation scenario + I14-I17 authored (2026-06-27) — REPORT-ONLY, PENDING first soak
 
 Closes the live cloud→field propagation gap for the four data types the field

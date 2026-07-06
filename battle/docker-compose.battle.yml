@@ -396,6 +396,14 @@ services:
       # Fraction of crew actions that are functional-validation (L2 cell) writes
       # instead of IO results — simulates electricians doing FV checks per MCM.
       FV_FRACTION: ${FV_FRACTION:-0}
+      # Per-feature write fractions (2026-07-06). MUST be declared here or compose
+      # won't forward them to the container even when run_scenario.sh exports them
+      # (the bug that made the first `features` soak fire 0 feature actions).
+      ESTOP_FRACTION: ${ESTOP_FRACTION:-0}
+      GUIDED_FRACTION: ${GUIDED_FRACTION:-0}
+      PUNCH_FRACTION: ${PUNCH_FRACTION:-0}
+      DEPS_FRACTION: ${DEPS_FRACTION:-0}
+      BLOCKER_FRACTION: ${BLOCKER_FRACTION:-0}
     volumes:
       - runs:/runs
     networks: [battle]
