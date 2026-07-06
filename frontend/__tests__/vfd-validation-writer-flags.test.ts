@@ -31,6 +31,7 @@ function row(over: Partial<ValidationRow>): ValidationRow {
     hasMotorHp: 0,
     hasVfdHp: 0,
     hasDirection: 0,
+    hasBeltTracked: 0,
     polarityRaw: null,
     ...over,
   }
@@ -103,5 +104,58 @@ describe('flagsForDevice', () => {
     // Crucially: never a single 0-valued write anywhere.
     const all = flagsForDevice(row({ hasIdentity: 1, hasMotorHp: 1, hasVfdHp: 1, hasDirection: 1, polarityRaw: 'x · Normal' }))
     expect(all.filter((w) => w.field.startsWith('Valid_')).every((w) => w.value === 1)).toBe(true)
+  })
+})
+
+// ── Tracking-in-the-middle (AOI rev 3.0, 2026-07-06) ─────────────────────────
+// The AOI now gates Valid_Direction on Tracking_Finished; the writer bridges the
+// mech's cloud 'Belt Tracked'='Yes' L2 cell to CMD.Tracking_Finished.
+describe('flagsForDevice — Tracking_Finished bridge + Valid_Direction gate', () => {
+  it('belt tracked → Tracking_Finished asserted', () => {
+    const writes = flagsForDevice(row({ hasIdentity: 1, hasBeltTracked: 1 }), true)
+    expect(writes).toContainEqual({ field: 'Valid_Map', value: 1 })
+    expect(writes).toContainEqual({ field: 'Tracking_Finished', value: 1 })
+  })
+
+  it('NEW template (has Belt Tracked column) + direction stamped but NOT tracked → NO Valid_Direction', () => {
+    const writes = flagsForDevice(
+      row({ hasIdentity: 1, hasMotorHp: 1, hasVfdHp: 1, hasDirection: 1, polarityRaw: 'x · Normal', hasBeltTracked: 0 }),
+      /* hasBeltTrackedColumn */ true,
+    )
+    expect(writes.some((w) => w.field === 'Valid_Direction')).toBe(false)
+    expect(writes.some((w) => w.field === 'Normal_Polarity')).toBe(false)
+    expect(writes.some((w) => w.field === 'Tracking_Finished')).toBe(false)
+    // identity/HP still asserted independently
+    expect(writes).toContainEqual({ field: 'Valid_Map', value: 1 })
+    expect(writes).toContainEqual({ field: 'Valid_HP', value: 1 })
+  })
+
+  it('NEW template + tracked + direction → Tracking_Finished AND Valid_Direction (+polarity)', () => {
+    const writes = flagsForDevice(
+      row({ hasIdentity: 1, hasMotorHp: 1, hasVfdHp: 1, hasDirection: 1, hasBeltTracked: 1, polarityRaw: 'x · Inverter' }),
+      true,
+    )
+    expect(writes).toContainEqual({ field: 'Tracking_Finished', value: 1 })
+    expect(writes).toContainEqual({ field: 'Valid_Direction', value: 1 })
+    expect(writes).toContainEqual({ field: 'Reverse_Polarity', value: 1 })
+  })
+
+  it('LEGACY template (no Belt Tracked column) + direction → Valid_Direction on direction alone (backward compat)', () => {
+    const writes = flagsForDevice(
+      row({ hasIdentity: 1, hasDirection: 1, polarityRaw: 'x · Normal', hasBeltTracked: 0 }),
+      /* hasBeltTrackedColumn */ false,
+    )
+    expect(writes).toContainEqual({ field: 'Valid_Direction', value: 1 })
+    // no tracking bit on a legacy sheet
+    expect(writes.some((w) => w.field === 'Tracking_Finished')).toBe(false)
+  })
+
+  it('assert-only preserved: every emitted flag under full new-flow progress is a 1', () => {
+    const writes = flagsForDevice(
+      row({ hasIdentity: 1, hasMotorHp: 1, hasVfdHp: 1, hasDirection: 1, hasBeltTracked: 1, polarityRaw: 'x · Normal' }),
+      true,
+    )
+    expect(writes.filter((w) => w.field.startsWith('Valid_') || w.field === 'Tracking_Finished')
+      .every((w) => w.value === 1)).toBe(true)
   })
 })
