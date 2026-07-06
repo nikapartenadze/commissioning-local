@@ -13,7 +13,20 @@ function createDb(): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = ON')
-  db.pragma('synchronous = FULL')      // Prefer durability over write throughput for commissioning data
+  // synchronous = NORMAL (2026-07-06 responsiveness hardening). Was FULL, which
+  // fsync()s the WAL on EVERY commit. better-sqlite3 is synchronous, so under
+  // concurrent writers those per-commit fsyncs (and the busy_timeout lock waits
+  // they cause) block the single Node event loop for seconds — the multi-second
+  // `SLOW PUT /api/ios` stalls the 2026-07-06 battle soak surfaced (I1).
+  // NORMAL is the standard, recommended pairing for WAL: still fully durable
+  // across an APP crash (only an OS/power loss in the window before the next
+  // checkpoint can roll back the last commit) — and even that is backstopped
+  // here by the durable recovery-log JSONL (auditLog) + the cloud push, which
+  // both capture every result independently. Net: the event loop stops
+  // fsync-stalling, data safety is preserved. Override to FULL via
+  // SQLITE_SYNCHRONOUS=FULL if a deployment ever wants the stricter mode.
+  db.pragma(`synchronous = ${process.env.SQLITE_SYNCHRONOUS || 'NORMAL'}`)
+  db.pragma('wal_autocheckpoint = 1000') // bounded WAL; checkpoints stay small
   db.pragma('cache_size = -8000')      // 8MB page cache (default was 2MB)
   db.pragma('temp_store = MEMORY')     // Temp tables in RAM, not disk
   db.pragma('mmap_size = 30000000')    // 30MB memory-mapped I/O for faster reads
