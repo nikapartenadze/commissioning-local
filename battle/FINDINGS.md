@@ -48,6 +48,25 @@ PASS on every data/stability invariant; FAIL only on **I1 responsiveness**.
 **Caveat:** dev-laptop Docker + 6 bots is far more concurrent than real field
 use; absolute latencies inflated, the relative event-loop finding is real.
 
+**210-min CERTIFICATION soak (`all` + full features, v2.42.11) — the long-window verdict:**
+PASS on everything except a single I1 stall. The leak/growth gates are now
+CONCLUSIVE (148-min window, not inconclusive):
+- I2 memory PASS — RSS slope **4.1 MB/h** (< 5 bar), gated. No leak.
+- I20 FD PASS — fd 31→514→**32**, slope **1.7/h**, reliable. No handle/tag leak
+  (returns to baseline — the "lag after hours" fear disproven).
+- I19 logs PASS — 17.4 MB / 3.5 h, bounded.
+- Data safety ALL green: I4 (416, 0 wipes/drops), I18 FV (4179, 0), I22 e-stop
+  (32, 0), I23 guided (48, 0), **I25 punchlist/deps (485+743, 0** — the false-
+  positive fix works). I24 blocker still vacuous (bot action not firing —
+  remaining coverage nit).
+- I1 FAIL: p95 54 ms / p99 627 ms (both fine) but **1 gap >10 s** (one ~9 s stall
+  in 3.5 h) trips the zero-gap rule — the rare event-loop stall, same class.
+- Throughput: ended 1128 IO + **5460 FV cells parked** under 3.5 h sustained
+  flap — safe/surfaced (I18 green), drains on reconnect. Cloud-capacity signal.
+Verdict archived: `battle/cert-210min-verdict.json`. Full write-up +
+architecture recommendation: `docs/superpowers/plans/2026-07-06-field-tool-
+hardening-verdict.md`.
+
 **HARNESS LESSON:** never edit `ci/run_scenario.sh` while a soak is running it —
 a live `sh` re-reads the file and shifted bytes corrupt it (broke the baseline's
 artifact export; verdict recovered from the `battle_runs` volume). Edit the
