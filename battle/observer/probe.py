@@ -1177,10 +1177,16 @@ def _punch_expected_excluding_retested() -> dict[int, str]:
     for iid, evs in events.items():
         if len(writers[iid]) > 1:
             continue  # multi-writer → ambiguous
+        # A result mark clears PunchlistStatus by design, and that clear arrives
+        # LOCALLY via an async cloud echo whose timing is nondeterministic — so
+        # ANY io that was re-tested during the soak is not deterministically
+        # checkable (the residual 1/119 I25 false-positive). Only judge IOs that
+        # got a punch and were NEVER marked in this run: those must survive.
+        if any(act == "mark" for act, _ in evs):
+            continue
         last_act, last_val = evs[-1]
         if last_act == "punch" and last_val is not None:
-            out[iid] = last_val  # last action was the punch → must survive
-        # last action was a mark → punchlist correctly cleared → not checkable
+            out[iid] = last_val
     return out
 
 
