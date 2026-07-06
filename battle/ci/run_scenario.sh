@@ -48,6 +48,7 @@ export GUIDED_FRACTION="${GUIDED_FRACTION:-0}"
 export PUNCH_FRACTION="${PUNCH_FRACTION:-0}"
 export DEPS_FRACTION="${DEPS_FRACTION:-0}"
 export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0}"
+export VFDWIZARD_FRACTION="${VFDWIZARD_FRACTION:-0}"
 
 # ── CDW5 19-MCM site setup, shared by central-cdw5 and central-cdw5-split ──
 # Generates the per-sim compose override (per-MCM TAGS_FILE; full service
@@ -240,6 +241,7 @@ case "$SCENARIO" in
         export PUNCH_FRACTION="${PUNCH_FRACTION:-0.05}"
         export DEPS_FRACTION="${DEPS_FRACTION:-0.04}"
         export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0.04}"
+        export VFDWIZARD_FRACTION="${VFDWIZARD_FRACTION:-0.05}"
         export FV_FRACTION="${FV_FRACTION:-0.15}"
         export THINK_MIN_MS=700; export THINK_MAX_MS=3000 ;;
     features)                                         # ALL FEATURES, light chaos
@@ -258,7 +260,33 @@ case "$SCENARIO" in
         export PUNCH_FRACTION="${PUNCH_FRACTION:-0.08}"
         export DEPS_FRACTION="${DEPS_FRACTION:-0.06}"
         export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0.06}"
+        export VFDWIZARD_FRACTION="${VFDWIZARD_FRACTION:-0.10}"
         export THINK_MIN_MS=500; export THINK_MAX_MS=2500 ;;
+    slowlink)                                         # DEGRADED WAN/VPN — "terrible internet"
+        # The tool talks to the cloud THROUGH the link-shaper proxy: added
+        # latency + bandwidth cap + connection loss on JUST the tool↔cloud link
+        # (PLC untouched; the observer reads the cloud direct, bypassing the
+        # shaper). Every data type is exercised. Verdict: nothing lost under a
+        # slow link (I4/I18/I22-I26), the queue holds + eventually drains, sync
+        # latency reflects the impairment (I21), and the operator UI stays
+        # responsive (I1 — probed on the tool directly, not through the shaper).
+        export COMPOSE_PROFILES=slowlink
+        export CLOUD_URL_OVERRIDE=http://linkshaper:3000
+        export REMOTE_URL=http://linkshaper:3000
+        export SHAPE_DELAY_MS="${SHAPE_DELAY_MS:-350}"     # ~700 ms RTT
+        export SHAPE_JITTER_MS="${SHAPE_JITTER_MS:-200}"
+        export SHAPE_RATE_KBPS="${SHAPE_RATE_KBPS:-512}"   # slow DSL / weak 3G
+        export SHAPE_LOSS_PCT="${SHAPE_LOSS_PCT:-3}"       # flaky link
+        export BOTS="${BOTS:-5}"
+        export HOT_FRACTION=0
+        export FV_FRACTION="${FV_FRACTION:-0.15}"
+        export ESTOP_FRACTION="${ESTOP_FRACTION:-0.10}"
+        export GUIDED_FRACTION="${GUIDED_FRACTION:-0.08}"
+        export PUNCH_FRACTION="${PUNCH_FRACTION:-0.06}"
+        export DEPS_FRACTION="${DEPS_FRACTION:-0.05}"
+        export BLOCKER_FRACTION="${BLOCKER_FRACTION:-0.05}"
+        export VFDWIZARD_FRACTION="${VFDWIZARD_FRACTION:-0.08}"
+        export THINK_MIN_MS=700; export THINK_MAX_MS=3000 ;;
     delta)                                            # cloud→field DELTA-SYNC (real hint→delta)
         # Drive cloud changes through the RECORDED admin API (dev-mode cloud +
         # DEV_BYPASS_AUTH) so recordChange + the subsystem_changed SSE hint fire

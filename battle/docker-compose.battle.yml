@@ -68,7 +68,9 @@ services:
       API_PASSWORD: ${CLOUD_API_KEY:-***REMOVED***}
       # Tool talks to cloud-stage, never prod (also enforced by CLOUD_URL_OVERRIDE
       # + the prod-domain blackhole on the tool service).
-      REMOTE_URL: http://cloud:3000
+      # Overridable so the `slowlink` scenario routes the tool through the
+      # link-shaper (http://linkshaper:3000). Observer still reads cloud direct.
+      REMOTE_URL: ${REMOTE_URL:-http://cloud:3000}
     volumes:
       - tool-data:/data
       - gen:/gen
@@ -354,8 +356,9 @@ services:
       # embedded DSN; observer judges stability from logs/audit instead)
       SENTRY_DISABLED: "true"
       # Point sync at cloud-stage. Without this the tool would target the
-      # hardcoded production URL — see EMBEDDED_REMOTE_URL.
-      CLOUD_URL_OVERRIDE: http://cloud:3000
+      # hardcoded production URL — see EMBEDDED_REMOTE_URL. Overridable so the
+      # `slowlink` scenario points the tool at the link-shaper proxy.
+      CLOUD_URL_OVERRIDE: ${CLOUD_URL_OVERRIDE:-http://cloud:3000}
       # Backup retention — keep it low in battle so a soak with cloud edits
       # actually EXERCISES pruning (I9). Defaults in prod are far higher (300).
       BACKUP_RETENTION_KEEP: ${BACKUP_RETENTION_KEEP:-20}
@@ -382,6 +385,34 @@ services:
     mem_limit: ${TOOL_MEM:-1500m}
     cpus: ${TOOL_CPUS:-2}
 
+  # ── link-shaper: degraded WAN/VPN between tool and cloud (slowlink scenario) ──
+  # Only started under the `slowlink` profile. The tool is pointed here
+  # (CLOUD_URL_OVERRIDE=http://linkshaper:3000) and it forwards to cloud:3000
+  # with injected latency/bandwidth/loss. The observer still reads cloud direct.
+  linkshaper:
+    build: ./linkshaper
+    profiles: [slowlink]
+    environment:
+      LISTEN_PORT: "3000"
+      UPSTREAM: cloud:3000
+      SHAPE_DELAY_MS: ${SHAPE_DELAY_MS:-0}
+      SHAPE_JITTER_MS: ${SHAPE_JITTER_MS:-0}
+      SHAPE_RATE_KBPS: ${SHAPE_RATE_KBPS:-0}
+      SHAPE_LOSS_PCT: ${SHAPE_LOSS_PCT:-0}
+      SHAPE_CONN_DELAY_MS: ${SHAPE_CONN_DELAY_MS:-0}
+      SHAPE_CTRL_FILE: /gen/shape.json
+    volumes:
+      - gen:/gen:ro
+    networks:
+      battle:
+        aliases: [linkshaper]
+    depends_on:
+      cloud:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+
   crew:
     build: ./crew
     environment:
@@ -404,6 +435,7 @@ services:
       PUNCH_FRACTION: ${PUNCH_FRACTION:-0}
       DEPS_FRACTION: ${DEPS_FRACTION:-0}
       BLOCKER_FRACTION: ${BLOCKER_FRACTION:-0}
+      VFDWIZARD_FRACTION: ${VFDWIZARD_FRACTION:-0}
     volumes:
       - runs:/runs
     networks: [battle]

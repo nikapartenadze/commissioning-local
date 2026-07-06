@@ -1211,6 +1211,33 @@ def check_i25_punchlist_survival() -> dict:
             "punchlist_mismatch_samples": mism_p[:8], "deps_mismatch_samples": mism_d[:8]}
 
 
+def check_i26_vfd_wizard_survival() -> dict:
+    """I26 (REPORT) — VFD wizard cell writes (the real write-l2-cells path:
+    identity/direction/polarity, with PLC flag writeback) survive in the tool's
+    local L2CellValues at quiesce. Journaled by (subsystemId, deviceName,
+    columnName); resolved to the local cell via L2Devices.DeviceName +
+    L2Columns.Name. Single-writer per device (bots partition VFD devices by
+    id % BOTS). This is the VFD-wizard analogue of I18."""
+    journaled = _journal_latest(
+        "vfdwizard", ("subsystemId", "deviceName", "columnName"), "value")
+    mismatches: list[dict] = []
+    for (sid, dev, colname), want in journaled.items():
+        rows = _local_query(
+            """SELECT v.Value FROM L2CellValues v
+                 JOIN L2Devices d ON d.id = v.DeviceId
+                 JOIN L2Columns c ON c.id = v.ColumnId
+                WHERE LOWER(d.DeviceName) = LOWER(?) AND LOWER(TRIM(c.Name)) = LOWER(TRIM(?))
+                  AND (d.SubsystemId = ? OR d.SubsystemId IS NULL)""",
+            (dev, colname, sid))
+        have = rows[0][0] if rows else None
+        if have != want:
+            mismatches.append({"subsystem": sid, "device": dev, "column": colname,
+                               "journaled": want, "local": have})
+    return {"pass": len(mismatches) == 0, "soak_vfd_wizard_writes": len(journaled),
+            "vacuous": len(journaled) == 0, "mismatches": len(mismatches),
+            "mismatch_samples": mismatches[:10]}
+
+
 def rss_slope_mb_per_h(samples: list[tuple[float, float, float]], skip_first_s: float) -> float | None:
     if not samples:
         return None
@@ -1719,6 +1746,7 @@ def main() -> None:
     invariants["I23_guided_survival"] = check_i23_guided_survival()
     invariants["I24_blocker_survival"] = check_i24_blocker_survival()
     invariants["I25_punchlist_survival"] = check_i25_punchlist_survival()
+    invariants["I26_vfd_wizard_survival"] = check_i26_vfd_wizard_survival()
 
     # REPORT-ONLY invariants do NOT gate the build. I7 (cloud→field propagation)
     # depends on the SSE-reconnect-pull firing cleanly, which the docker-network
@@ -1743,7 +1771,8 @@ def main() -> None:
                    # New (2026-07-06) — prove green ×2 on a long soak before gating.
                    "I19_log_growth", "I20_fd_leak", "I21_sync_latency",
                    "I22_estop_survival", "I23_guided_survival",
-                   "I24_blocker_survival", "I25_punchlist_survival"}
+                   "I24_blocker_survival", "I25_punchlist_survival",
+                   "I26_vfd_wizard_survival"}
     gating = {k: v for k, v in invariants.items() if k not in REPORT_ONLY}
     verdict = {
         "run": RUN_ID,

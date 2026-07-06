@@ -47,6 +47,11 @@ const GUIDED_FRACTION = parseFloat(process.env.GUIDED_FRACTION ?? '0');
 const PUNCH_FRACTION = parseFloat(process.env.PUNCH_FRACTION ?? '0');
 const DEPS_FRACTION = parseFloat(process.env.DEPS_FRACTION ?? '0');
 const BLOCKER_FRACTION = parseFloat(process.env.BLOCKER_FRACTION ?? '0');
+// VFD wizard cell writes via the REAL wizard endpoint (write-l2-cells), which
+// resolves columnName→columnId, writes L2CellValues, AND triggers the PLC
+// validation-flag writeback — the identity/direction/polarity path a tech runs
+// in the VFD wizard. Distinct from the generic FV single-cell edit.
+const VFDWIZARD_FRACTION = parseFloat(process.env.VFDWIZARD_FRACTION ?? '0');
 
 const OUT = join(RUNS_DIR, RUN_ID);
 mkdirSync(OUT, { recursive: true });
@@ -211,15 +216,43 @@ async function bot(n) {
         continue;
       }
 
+      // ── VFD WIZARD — drive the REAL wizard write path (write-l2-cells) on a
+      // partitioned VFD device: resolve columnName→columnId, write L2CellValues,
+      // trigger PLC flag writeback. This is the identity/direction/polarity flow
+      // a tech runs in the wizard (distinct from the generic FV single-cell). ──
+      if (scoped && VFDWIZARD_FRACTION > 0 && Math.random() < VFDWIZARD_FRACTION) {
+        const { body: lb } = await api(`/api/l2?subsystemId=${scoped}&vfd=1`);
+        const vfds = (lb?.devices ?? []).filter((d) => (d.id % BOTS) === (n - 1) && d.DeviceName);
+        const cols = (lb?.columns ?? []).filter((c) => c.IsEditable !== 0 && c.IsSystem !== 1 && c.Name);
+        if (vfds.length > 0 && cols.length > 0) {
+          const dev = pick(vfds);
+          const col = pick(cols);
+          const value = `bot${n} ${Date.now() % 100000}`;
+          const t0 = Date.now();
+          const r = await api('/api/vfd-commissioning/write-l2-cells', {
+            method: 'POST',
+            body: JSON.stringify({
+              deviceName: dev.DeviceName, subsystemId: Number(scoped), updatedBy: name,
+              cells: [{ columnName: col.Name, value }],
+            }),
+          });
+          log({ action: 'vfdwizard', subsystemId: Number(scoped), deviceName: dev.DeviceName,
+                columnName: col.Name, value, status: r.status, latencyMs: Date.now() - t0 });
+          if (r.status !== 200) console.log(`[crew] ${name}: write-l2-cells -> ${r.status}`);
+          await sleep(rand(THINK_MIN, THINK_MAX));
+          continue;
+        }
+      }
+
       // ── VFD DEVICE BLOCKER — set on a partitioned VFD device (cloud resolves
       // deviceName→Devices, returns ok even if unknown, so this is safe). ──
       if (scoped && BLOCKER_FRACTION > 0 && Math.random() < BLOCKER_FRACTION) {
         const { body: lb } = await api(`/api/l2?subsystemId=${scoped}`);
-        const owned = (lb?.devices ?? []).filter((d) => (d.id % BOTS) === (n - 1) && d.deviceName);
+        const owned = (lb?.devices ?? []).filter((d) => (d.id % BOTS) === (n - 1) && d.DeviceName);
         // Prefer VFD-named devices (the semantic case), but fall back to any
         // owned device — the cloud resolves deviceName→Devices and returns ok
         // even when unresolved, so any name exercises the blocker queue+sync.
-        const vfds = owned.filter((d) => /vfd/i.test(`${d.deviceName}`));
+        const vfds = owned.filter((d) => /vfd/i.test(`${d.DeviceName}`));
         const cands = vfds.length > 0 ? vfds : owned;
         if (cands.length > 0) {
           const dev = pick(cands);
@@ -229,11 +262,11 @@ async function bot(n) {
           const r = await api('/api/vfd-commissioning/bump-blocker', {
             method: 'POST',
             body: JSON.stringify({
-              subsystemId: Number(scoped), deviceName: dev.deviceName, op: 'set',
+              subsystemId: Number(scoped), deviceName: dev.DeviceName, op: 'set',
               blockerResponsibleParty: party, blockerDescription: description, updatedBy: name,
             }),
           });
-          log({ action: 'blocker', subsystemId: Number(scoped), deviceName: dev.deviceName,
+          log({ action: 'blocker', subsystemId: Number(scoped), deviceName: dev.DeviceName,
                 op: 'set', party, description, status: r.status, latencyMs: Date.now() - t0 });
           if (r.status !== 200) console.log(`[crew] ${name}: bump-blocker -> ${r.status}`);
           await sleep(rand(THINK_MIN, THINK_MAX));
