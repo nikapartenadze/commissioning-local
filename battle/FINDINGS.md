@@ -742,3 +742,14 @@ tool image must be rebuilt+pushed (`ci/build_and_push.sh`) before the soak or
 CI exercises stale binaries without the FV hardening.
 
 Syntax-checked (`py_compile`, `sh -n`). Not yet run on a soak.
+
+**Gate-correctness validation (2026-07-06, features 20min):** after the disjoint
+fv/vfd-wizard-device + sheet-scoped-column fix, **I18 FV 0 mismatches (492) and
+I26 VFD-wizard 0 mismatches (230)** — both non-vacuous and trustworthy. I22/I23
+0, I24 non-vacuous (63), I4 0 wipes/0 drops. Residual: I25 punchlist 1/119
+(rare re-test-clears-punchlist edge, report-only, not loss). Only GATING failure
+across all soaks is I1 responsiveness (the async-write architectural item —
+docs/superpowers/plans/2026-07-06-field-tool-hardening-verdict.md). Four harness
+bugs caught+fixed before any release decision: blocker deviceName casing,
+feature-fraction default shadowing, I25 re-test false-positive, I18/I26
+cross-action contention + invalid-column.
