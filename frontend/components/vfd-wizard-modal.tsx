@@ -875,9 +875,15 @@ function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, she
         throw new Error(polJson?.error || `polarity write HTTP ${polRes.status}`)
       }
 
-      // Now confirm direction. The PLC's Valid_Direction is gated on Valid_HP,
-      // not on polarity — but we write polarity first so the latched routing
-      // matches the operator's choice before the cascade locks Valid_Direction.
+      // Now confirm direction. On AOI rev 3.0 the PLC gates Valid_Direction on
+      // Tracking_Finished (rung 6) — set by the validation writer when the mech's
+      // "Belt Tracked"='Yes' cell syncs here (this step is UI-gated on that same
+      // cell, so tracking is already done). We write polarity first so the
+      // latched routing matches the operator's choice before Valid_Direction
+      // latches. If the writer hasn't asserted Tracking_Finished yet (rare race
+      // right after the tracked cell arrives), this write no-ops at the AOI and
+      // STS.Valid_Direction stays false — the step is re-clickable and self-heals
+      // on the next click once Tracking_Finished is latched.
       const dirRes = await writeTag(subsystemId, deviceName, 'Valid_Direction', 1, 'BOOL')
       if (dirRes?.success === false) {
         throw new Error(`Valid_Direction: ${dirRes?.error || 'write failed'}`)

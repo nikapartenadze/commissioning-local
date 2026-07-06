@@ -103,9 +103,17 @@ export interface ValidationRow {
   hasVfdHp: number
   /** "Check Direction" stamped (Step 3). */
   hasDirection: number
+  /** "Belt Tracked" cell == 'Yes' — mech marked it tracked on the cloud
+   * belt-tracking page, pulled here via the L2 delta (2026-07-06). */
+  hasBeltTracked: number
   /** Raw "Polarity" L2 cell ("… · Normal|Inverter"), or null when unrecorded. */
   polarityRaw: string | null
 }
+
+// Mirror the cloud contract (commissioning-cloud/lib/belt-tracking/types.ts):
+// mech marks tracked by writing this L2 cell = 'Yes'.
+export const BELT_TRACKED_COLUMN_NAME = 'Belt Tracked'
+export const BELT_TRACKED_VALUE = 'Yes'
 
 export interface ValidatedDevice {
   deviceName: string
@@ -123,21 +131,38 @@ export interface ValidatedDevice {
  *
  *   - Valid_Map        when hasIdentity
  *   - Valid_HP         when hasMotorHp AND hasVfdHp
- *   - Valid_Direction  when hasDirection
- *   - polarity pair    when hasDirection AND a polarity is recorded
+ *   - Tracking_Finished when hasBeltTracked  (mech tracked it on the web app)
+ *   - Valid_Direction  when hasDirection AND tracking is done*
+ *   - polarity pair    when Valid_Direction is emitted AND a polarity is recorded
+ *
+ * TRACKING-IN-THE-MIDDLE (AOI rev 3.0, 2026-07-06): the AOI now gates
+ * Valid_Direction on Tracking_Finished (rung 6). Mech marks the belt tracked on
+ * the cloud belt-tracking page → the 'Belt Tracked'='Yes' L2 cell syncs here →
+ * this writer bridges it to CMD.Tracking_Finished, which unlocks Valid_Direction
+ * so the commissioner can finish the wizard (bump/polarity/speed).
+ *
+ * *Backward compat: the tracking gate applies ONLY when the device's sheet
+ * actually defines a 'Belt Tracked' column (`hasBeltTrackedColumn`). On older
+ * templates without it, Valid_Direction is emitted on hasDirection alone, so an
+ * already-commissioned legacy drive is never stranded (its flags keep getting
+ * re-asserted after a program download).
  *
  * The polarity bits are taken verbatim from polarityFlagWrites() so they can
- * never drift from the polarity helper's definition. (vfd-polarity's
- * deviceFlagWrites() emits the same Valid_Map/Valid_HP/Valid_Direction + polarity
- * set all-or-nothing; here each flag is instead earned independently per step.)
+ * never drift from the polarity helper's definition.
  */
-export function flagsForDevice(row: ValidationRow): FlagWrite[] {
+export function flagsForDevice(row: ValidationRow, hasBeltTrackedColumn = false): FlagWrite[] {
   const writes: FlagWrite[] = []
   if (row.hasIdentity) writes.push({ field: 'Valid_Map', value: 1 })
   if (row.hasMotorHp && row.hasVfdHp) writes.push({ field: 'Valid_HP', value: 1 })
-  if (row.hasDirection) {
+  // Bridge the mech's cloud "tracked" action to the PLC. Assert-only.
+  if (row.hasBeltTracked) writes.push({ field: 'Tracking_Finished', value: 1 })
+  // Direction validates only once tracking is done — mirror the AOI gate. On a
+  // legacy sheet with no Belt Tracked column, keep the old behavior so already-
+  // validated drives aren't regressed.
+  const trackingSatisfied = row.hasBeltTracked === 1 || !hasBeltTrackedColumn
+  if (row.hasDirection && trackingSatisfied) {
     writes.push({ field: 'Valid_Direction', value: 1 })
-    // Polarity bits only ride along with a stamped direction check.
+    // Polarity bits only ride along with a stamped, validatable direction check.
     writes.push(...polarityFlagWrites(row.polarityRaw))
   }
   return writes
@@ -292,6 +317,26 @@ function buildFaultedDeviceSet(
  *
  * The polarity cell is folded in via a conditional MAX(... ) aggregate.
  */
+/**
+ * The set of VFD/APF sheet NAMES whose template defines a 'Belt Tracked'
+ * column. Used to apply the tracking gate on Valid_Direction only to
+ * new-flow templates; sheets without the column keep the legacy behavior.
+ */
+function getSheetsWithBeltTrackedColumn(): Set<string> {
+  try {
+    const rows = db.prepare(`
+      SELECT DISTINCT s.Name AS sheetName
+      FROM L2Sheets s
+      JOIN L2Columns c ON c.SheetId = s.id
+      WHERE c.Name = '${BELT_TRACKED_COLUMN_NAME}'
+    `).all() as Array<{ sheetName: string }>
+    return new Set(rows.map(r => r.sheetName))
+  } catch (err) {
+    console.error('[VfdValidationWriter] Belt-tracked-column query failed:', err)
+    return new Set()
+  }
+}
+
 function getValidatedDevices(): ValidatedDevice[] {
   try {
     const rows = db.prepare(`
@@ -300,6 +345,7 @@ function getValidatedDevices(): ValidatedDevice[] {
              MAX(CASE WHEN c.Name = 'Motor HP (Field)' AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasMotorHp,
              MAX(CASE WHEN c.Name = 'VFD HP (Field)'   AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasVfdHp,
              MAX(CASE WHEN c.Name = 'Check Direction'  AND TRIM(cv.Value) <> '' AND LOWER(TRIM(cv.Value)) <> 'fail' THEN 1 ELSE 0 END) AS hasDirection,
+             MAX(CASE WHEN c.Name = '${BELT_TRACKED_COLUMN_NAME}' AND LOWER(TRIM(cv.Value)) = '${BELT_TRACKED_VALUE.toLowerCase()}' THEN 1 ELSE 0 END) AS hasBeltTracked,
              MAX(CASE WHEN c.Name = 'Polarity' THEN cv.Value END) AS polarityRaw
       FROM L2Devices d
       JOIN L2Sheets s   ON s.id = d.SheetId
@@ -308,12 +354,16 @@ function getValidatedDevices(): ValidatedDevice[] {
       WHERE cv.Value IS NOT NULL AND cv.Value <> ''
         AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
       GROUP BY d.DeviceName, s.Name
-      HAVING hasIdentity = 1 OR (hasMotorHp = 1 AND hasVfdHp = 1) OR hasDirection = 1
+      HAVING hasIdentity = 1 OR (hasMotorHp = 1 AND hasVfdHp = 1) OR hasDirection = 1 OR hasBeltTracked = 1
     `).all() as ValidationRow[]
+
+    // Which sheets actually DEFINE a Belt Tracked column — the tracking gate on
+    // Valid_Direction applies only to these (legacy sheets keep old behavior).
+    const beltTrackedSheets = getSheetsWithBeltTrackedColumn()
 
     return rows.map(row => ({
       deviceName: row.deviceName,
-      writes: flagsForDevice(row),
+      writes: flagsForDevice(row, beltTrackedSheets.has(row.sheetName)),
       polarityRaw: row.polarityRaw,
       hasDirection: row.hasDirection === 1,
     }))
