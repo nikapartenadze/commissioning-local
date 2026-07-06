@@ -139,10 +139,18 @@ async function bot(n) {
       // it must drain when the cloud returns.
       if (scoped && FV_FRACTION > 0 && Math.random() < FV_FRACTION) {
         const { body: lb } = await api(`/api/l2?subsystemId=${scoped}`);
-        const devices = (lb?.devices ?? []).filter((d) => (d.id % BOTS) === (n - 1));
-        const columns = (lb?.columns ?? []).filter((c) => c.IsEditable !== 0 && c.IsSystem !== 1);
-        if (devices.length > 0 && columns.length > 0) {
+        // Exclude VFD-named devices: those belong to the VFD-wizard action, so
+        // fv and vfdwizard write DISJOINT cells and never race the same L2 cell
+        // (the cross-action contention that false-tripped I18/I26 on the first
+        // slowlink run — local kept the last write, no data was lost).
+        const devices = (lb?.devices ?? []).filter(
+          (d) => (d.id % BOTS) === (n - 1) && !/vfd/i.test(`${d.DeviceName ?? ''}`));
+        if (devices.length > 0) {
           const dev = pick(devices);
+          // Only columns on THIS device's sheet are valid cells to write.
+          const columns = (lb?.columns ?? []).filter(
+            (c) => c.SheetId === dev.SheetId && c.IsEditable !== 0 && c.IsSystem !== 1);
+          if (columns.length === 0) { await sleep(rand(THINK_MIN, THINK_MAX)); continue; }
           const col = pick(columns);
           const value = Math.random() < 0.85 ? 'Pass' : 'Fail';
           const t0 = Date.now();
@@ -223,9 +231,14 @@ async function bot(n) {
       if (scoped && VFDWIZARD_FRACTION > 0 && Math.random() < VFDWIZARD_FRACTION) {
         const { body: lb } = await api(`/api/l2?subsystemId=${scoped}&vfd=1`);
         const vfds = (lb?.devices ?? []).filter((d) => (d.id % BOTS) === (n - 1) && d.DeviceName);
-        const cols = (lb?.columns ?? []).filter((c) => c.IsEditable !== 0 && c.IsSystem !== 1 && c.Name);
-        if (vfds.length > 0 && cols.length > 0) {
+        if (vfds.length > 0) {
           const dev = pick(vfds);
+          // Only columns on THIS device's sheet resolve in write-l2-cells; a
+          // column from another sheet is silently skipped (200 + ok:false),
+          // which would false-trip I26. Scope to the device's sheet.
+          const cols = (lb?.columns ?? []).filter(
+            (c) => c.SheetId === dev.SheetId && c.IsEditable !== 0 && c.IsSystem !== 1 && c.Name);
+          if (cols.length === 0) { await sleep(rand(THINK_MIN, THINK_MAX)); continue; }
           const col = pick(cols);
           const value = `bot${n} ${Date.now() % 100000}`;
           const t0 = Date.now();
