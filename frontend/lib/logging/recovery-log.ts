@@ -92,27 +92,47 @@ function pruneOldFiles(logDir: string, today: Date): void {
   } catch { /* ignore */ }
 }
 
-/**
- * Append one recovery event. Never throws.
- */
+// Hot-path caches (2026-07-06 responsiveness hardening). auditLog runs on EVERY
+// write (IO test, FV cell, e-stop check, sync drop/park…); it used to
+// fs.existsSync() the log dir on every call — a stat syscall per event that,
+// under a burst of concurrent writes, adds up on the single event loop. Cache
+// the dir-ensured flag + the resolved daily file path so the hot path is a
+// single appendFileSync. The append stays SYNCHRONOUS on purpose: the recovery
+// log is the durable data-loss forensic trail, so a buffered/async write that
+// could drop its tail on a hard crash is the wrong trade here — the win is
+// removing the redundant per-call syscalls, not the durable write itself.
+let _cachedDir = '';
+let _cachedDay = '';
+let _cachedPath = '';
+
 export function auditLog(event: AuditEvent): void {
   try {
     const now = new Date();
     const day = dayStamp(now);
     const logDir = resolveLogsDirPath();
 
-    if (!fs.existsSync(logDir)) {
-      try { fs.mkdirSync(logDir, { recursive: true }); } catch { /* ignore */ }
-    }
-
-    // Prune at most once per day (cheap guard).
-    if (lastPrunedDay !== day) {
-      lastPrunedDay = day;
-      pruneOldFiles(logDir, now);
+    // Recompute the daily file path only on a day rollover or dir change — not
+    // the fs.existsSync() stat that used to run on every event (the hot-path win).
+    if (day !== _cachedDay || logDir !== _cachedDir) {
+      _cachedDay = day;
+      _cachedDir = logDir;
+      _cachedPath = currentFile(logDir, day);
+      if (lastPrunedDay !== day) {
+        lastPrunedDay = day;
+        pruneOldFiles(logDir, now);
+      }
     }
 
     const line = JSON.stringify({ ts: now.toISOString(), ...event }) + '\n';
-    fs.appendFileSync(currentFile(logDir, day), line);
+    try {
+      fs.appendFileSync(_cachedPath, line);
+    } catch {
+      // The log dir may not exist yet (first write / it was removed). Create it
+      // and retry ONCE — this self-heal replaces the per-call existsSync while
+      // still guaranteeing the durable append lands.
+      try { fs.mkdirSync(logDir, { recursive: true }); } catch { /* ignore */ }
+      fs.appendFileSync(_cachedPath, line);
+    }
   } catch {
     // Swallow — never let audit logging break the caller.
   }
