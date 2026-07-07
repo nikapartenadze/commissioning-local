@@ -15,13 +15,24 @@ import {
   type RoundTrip,
 } from '@/lib/guided/io-check-sequence'
 import { SKIP_REASONS, composeSkipReason, type SkipReason } from '@/lib/guided/task-pool/skip-reasons'
+import {
+  createSwapWatch,
+  spareHitComment,
+  swapComment,
+  type SwapCandidateIo,
+  type SwapSuspicion,
+  type SwapWatch,
+} from '@/lib/guided/swap-watch'
 import { saveL2Cell } from '@/lib/l2-outbox'
 import { authFetch } from '@/lib/api-config'
 import { TaskViewer } from './task-viewer'
 import './guided-tasks.css'
 
-/** Only the network-loop task has no data backing → completes via manual flag. */
-const MANUAL_COMPLETE_TYPES = new Set<Task['type']>(['network_loop'])
+/** Tasks with no data backing → complete via the manual GuidedTaskState flag.
+ *  firmware_check belongs here too: recording its verdict writes nothing (the
+ *  scan result lives on the firmware page), so without the flag the pool
+ *  re-served the firmware task forever after the operator recorded it. */
+const MANUAL_COMPLETE_TYPES = new Set<Task['type']>(['network_loop', 'firmware_check'])
 
 type Popup = { kind: 'pass' | 'fail'; message: string } | null
 
@@ -57,6 +68,16 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const ws = usePlcWebSocket()
   const { pool, isLoading, error, refresh } = useTaskPool(subsystemId)
 
+  // usePlcWebSocket does NOT auto-connect — the caller owns the connect()
+  // (same contract as the main commissioning page). Without this the runner
+  // only ever got a socket when a visibilitychange fired (tab switch), so
+  // live auto-pass/swap detection worked "sometimes" in the field and never
+  // in a fresh kiosk tab.
+  useEffect(() => {
+    ws.connect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [steps, setSteps] = useState<Step[]>([])
   const [stepIndex, setStepIndex] = useState(0)
@@ -70,6 +91,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const [inputValue, setInputValue] = useState('')
   const [estopVerdict, setEstopVerdict] = useState<EstopVerdict>(null)
   const [firmwareVerdict, setFirmwareVerdict] = useState<FirmwareVerdict>(null)
+  // Live swap suspicion for the current io_check step (wrong-wiring banner).
+  const [swap, setSwap] = useState<(SwapSuspicion & { comment: string }) | null>(null)
+  const swapCandidatesRef = useRef<SwapCandidateIo[]>([])
+  const swapWatchRef = useRef<SwapWatch | null>(null)
   // Readiness banner: warnings can be dismissed; hard blockers always show.
   const [readinessDismissed, setReadinessDismissed] = useState(false)
   // D4/D5 live gates — polled every 5 s while the runner is open.
@@ -142,6 +167,39 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 
   const ringDegraded = sysStatus.ring?.state === 'degraded'
 
+  // Swap-detection candidates: every still-untested IO of the subsystem.
+  // Fetched once per io_check task (results recorded during the task only
+  // shrink the honest set; a stale candidate at worst re-reports and the
+  // operator dismisses). Non-io_check tasks never watch for swaps.
+  useEffect(() => {
+    swapCandidatesRef.current = []
+    swapWatchRef.current = null
+    if (!effectiveTask?.type.startsWith('io_check')) return
+    let cancelled = false
+    fetch(`/api/ios?subsystemId=${subsystemId}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        if (cancelled) return
+        swapCandidatesRef.current = (d.ios ?? [])
+          // Untested INPUTS only: outputs are logic-driven, so an output
+          // changing during a check is not a tester-actuation signature.
+          .filter(
+            (io: { result?: string | null; isOutput?: boolean }) =>
+              (io.result == null || io.result === 'Not Tested') && !io.isOutput,
+          )
+          .map((io: { id: number; name: string; description?: string | null }) => ({
+            id: io.id,
+            name: io.name,
+            description: io.description,
+          }))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveTask?.id, subsystemId])
+
   // Steps are built server-side (full data per task type) → fetch on task change.
   useEffect(() => {
     if (!effectiveTask) {
@@ -199,7 +257,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 
   /** Record a pass/fail for the CURRENT step, routing to the right endpoint. */
   const persistResult = useCallback(
-    async (result: 'Passed' | 'Failed', opts?: { failureMode?: string; value?: string; popupOnly?: boolean }) => {
+    async (result: 'Passed' | 'Failed', opts?: { failureMode?: string; value?: string; popupOnly?: boolean; comments?: string }) => {
       const step = currentStep
       if (!step) return
       const user = currentUser?.fullName
@@ -247,6 +305,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               result,
               currentUser: user,
               failureMode: result === 'Failed' ? opts?.failureMode ?? 'No Response' : undefined,
+              comments: opts?.comments,
             }),
           })
         }
@@ -259,10 +318,11 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 
   /** io_check / estop / functional pass-fail → show acknowledgment popup. */
   const recordWithPopup = useCallback(
-    async (result: 'Passed' | 'Failed', failureMode?: string) => {
+    async (result: 'Passed' | 'Failed', failureMode?: string, comments?: string) => {
       if (resolvedRef.current) return
       resolvedRef.current = true
-      await persistResult(result, { failureMode })
+      setSwap(null) // a recorded verdict supersedes any open swap suspicion
+      await persistResult(result, { failureMode, comments })
       setPopup({
         kind: result === 'Passed' ? 'pass' : 'fail',
         message: result === 'Passed' ? 'Device successfully checked' : 'Device failed, added to punchlist',
@@ -270,6 +330,35 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     },
     [persistResult],
   )
+
+  /** Operator accepts the swap banner: the EXPECTED point fails with the
+   *  wrong-wiring auto-comment (spec: auto-comment, user accepts the fail).
+   *  If the triggered point is a SPARE, it is failed too — an unexpected live
+   *  state on a SPARE is itself wrong wiring (spare semantics). The triggered
+   *  point is otherwise left untested: its own check must still prove it. */
+  const acceptSwap = useCallback(async () => {
+    const s = swap
+    if (!s || resolvedRef.current) return
+    if (s.spare) {
+      void fetch('/api/guided/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ioId: s.ioId,
+          result: 'Failed',
+          currentUser: currentUser?.fullName,
+          failureMode: 'Wrong wiring',
+          comments: spareHitComment(currentStep?.ioName ?? 'expected IO'),
+        }),
+      }).catch(() => {})
+    }
+    await recordWithPopup('Failed', 'Wrong wiring', s.comment)
+  }, [swap, recordWithPopup, currentUser, currentStep?.ioName])
+
+  const dismissSwap = useCallback(() => {
+    if (swap) swapWatchRef.current?.rearm(swap.ioId)
+    setSwap(null)
+  }, [swap])
 
   /** VFD column (write-l2-cells by name) → advance, no popup. */
   const recordVfdColumn = useCallback(
@@ -349,6 +438,8 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     roundTripRef.current = startRoundTrip(currentStep?.circuit ?? null)
     setSeqPhase(roundTripRef.current.phase)
     setLiveState(null)
+    setSwap(null)
+    swapWatchRef.current = null
     setInputValue(currentStep?.currentValue ?? '')
     const name = currentStep?.deviceName ?? effectiveTask?.deviceName
     if (name) {
@@ -364,9 +455,34 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     const ids = currentStep?.watchIoIds
     if (!ids || ids.length === 0 || currentStep?.kind !== 'io_check') return
     const watch = new Set(ids)
+    const expectedLabel = currentStep?.ioName ?? 'the expected IO'
+    const deviceName = currentStep?.deviceName ?? effectiveTask?.deviceName
     const cb = (u: IOUpdate) => {
-      if (!watch.has(u.Id)) return
       if (u.State !== 'TRUE' && u.State !== 'FALSE') return
+      if (!watch.has(u.Id)) {
+        // Unexpected point moved while we wait on the expected one — feed the
+        // swap watcher. A candidate reports only on a FULL round-trip, so
+        // background flaps and static reads never fire the banner.
+        if (resolvedRef.current) return
+        if (!swapWatchRef.current) {
+          if (swapCandidatesRef.current.length === 0) return
+          swapWatchRef.current = createSwapWatch(
+            swapCandidatesRef.current.filter((c) => !watch.has(c.id)),
+            deviceName,
+          )
+        }
+        const hit = swapWatchRef.current.feed(u.Id, u.State)
+        if (hit) {
+          const cand = swapCandidatesRef.current.find((c) => c.id === hit.ioId)
+          setSwap((prev) =>
+            prev ?? {
+              ...hit,
+              comment: swapComment(expectedLabel, cand ?? { id: hit.ioId, name: hit.ioName }),
+            },
+          )
+        }
+        return
+      }
       setLiveState(u.State)
       const next = advanceRoundTrip(roundTripRef.current, u.State)
       if (next !== roundTripRef.current) {
@@ -500,6 +616,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     [focusName, devices],
   )
   const lockedDevices = useMemo(() => (focusName ? new Set<string>([focusName]) : null), [focusName])
+  /* Deviceless tasks (firmware check, network loop) cover the whole MCM — there
+     is no device to glow/zoom to. Dim the SCADA canvas and badge the HUD so the
+     inert map reads as "subsystem-wide pre-flight", not broken highlighting. */
+  const isSubsystemScope = !!effectiveTask && !focusName
 
   // ── render ───────────────────────────────────────────────────────────────
   if (isLoading) return <div className="gt-root gt-center">Loading guided tasks…</div>
@@ -613,7 +733,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         )}
 
       <div className="gt-body">
-        <div className="gt-map-layer">
+        <div className={isSubsystemScope ? 'gt-map-layer gt-map-layer--dimmed' : 'gt-map-layer'}>
           {svgMarkup ? (
             <GuidedTestingMap
               ref={mapRef}
@@ -644,8 +764,31 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           )}
         </div>
 
+        {swap && currentStep?.kind === 'io_check' && !popup && (
+          <div className="gt-swap-banner" role="alert">
+            <div className="gt-swap-title">
+              ⚠ {swap.confidence === 'high' ? 'SWAP DETECTED' : 'POSSIBLE WRONG WIRING'}
+            </div>
+            <div className="gt-swap-detail">
+              Expected <strong>{currentStep?.ioName}</strong> but <strong>{swap.ioName}</strong>{' '}
+              triggered instead{swap.spare ? ' — a SPARE point' : ''}.
+            </div>
+            <div className="gt-swap-actions">
+              <button className="gt-btn gt-btn-ghost" disabled={busy} onClick={dismissSwap}>
+                DISMISS
+              </button>
+              <button className="gt-btn gt-btn-warn" disabled={busy} onClick={() => void acceptSwap()}>
+                ACCEPT — FAIL WITH COMMENT
+              </button>
+            </div>
+          </div>
+        )}
+
         {effectiveTask && currentStep && (
           <div className={`gt-hud gt-hud-${currentStep.kind}`}>
+            {isSubsystemScope && (
+              <div className="gt-hud-scope">Subsystem-wide task — no single map location</div>
+            )}
             {steps.length > 0 && (
               <div className="gt-hud-stepcount">
                 Step {stepIndex + 1} of {steps.length}
@@ -990,6 +1133,19 @@ function renderStepBody(p: BodyProps) {
           <button className="gt-btn gt-btn-warn gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Failed', 'Firmware non-compliant')}>
             RECORD FAIL
           </button>
+        </div>
+        <div className="gt-actions-center">
+          <button
+            className="gt-btn gt-btn-ghost gt-chip"
+            disabled={p.busy}
+            onClick={() => void fetch('/api/firmware/scan', { method: 'POST' }).catch(() => {})}
+            title="Kick a fresh scan; the verdict above refreshes automatically"
+          >
+            RE-SCAN
+          </button>
+          <Link className="gt-link" to="/firmware">
+            Per-device detail ↗
+          </Link>
         </div>
       </>
     )

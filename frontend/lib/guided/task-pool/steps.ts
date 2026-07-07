@@ -144,23 +144,17 @@ export function buildSteps(task: Task, ios: StepIo[] = [], ctx: BuildStepsContex
     }
 
     case 'firmware_check': {
-      // Hardware firmware gate. Pure prompt/confirm so it rides the existing
-      // runner paths (no new auto_detect verdict source needed): scan on the
-      // Firmware Compliance page, then confirm pass/fail. A live auto_detect
-      // verdict (poll /api/firmware) is a documented follow-on.
-      steps.push({
-        id: `${task.id}:scan`,
-        kind: 'info',
-        title: 'STEP 1: SCAN FIRMWARE',
-        instruction:
-          'Open Firmware Compliance and run a scan. The tool reads the controller and every networked device and checks each against the cloud-approved minimum version. Tap Continue once the scan has run.',
-      })
+      // Hardware firmware gate — a single self-scanning step. Arriving on it
+      // kicks POST /api/firmware/scan and polls the live verdict inline (the
+      // runner's auto_detect firmware branch), so the operator never has to
+      // leave guided mode. The Firmware page stays linked for per-device
+      // detail on a Fail.
       steps.push({
         id: `${task.id}:confirm`,
         kind: 'auto_detect',
-        title: 'STEP 2: CONFIRM COMPLIANCE',
+        title: 'STEP 1: FIRMWARE COMPLIANCE',
         instruction:
-          'The tool scans and shows a live verdict: every device must meet its approved minimum firmware (none flagged "Below minimum"). Confirm to record Pass, or Fail if any device is non-compliant.',
+          'The tool is scanning the controller and every networked device against the cloud-approved minimum versions — no action needed. Record Pass when all devices read compliant, or Fail if any device is below minimum.',
         verdictSource: '/api/firmware',
       })
       break

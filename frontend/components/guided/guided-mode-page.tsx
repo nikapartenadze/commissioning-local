@@ -29,6 +29,13 @@ export function GuidedModePage() {
    * so both surfaces — the SVG grey-out and the panel's Pass/Fail gate —
    * see the same truth. */
   const ws = usePlcWebSocket()
+  // usePlcWebSocket does NOT auto-connect (caller-owned contract) — without
+  // this the fault overlay only received events after a tab switch fired the
+  // visibilitychange reconnect.
+  useEffect(() => {
+    ws.connect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [faultedDevices, setFaultedDevices] = useState<Set<string>>(new Set())
   useEffect(() => {
     const handler = (tagName: string, faulted: boolean) => {
@@ -283,15 +290,20 @@ export function GuidedModePage() {
             isPulling={isPulling}
           />
           <ThemeToggleChip />
-          <button
-            type="button"
-            className="gm-icon-btn"
-            onClick={resetSubsystem}
-            title="Reset all test results for this subsystem (demo only)"
-            aria-label="Reset subsystem test results"
-          >
-            <RotateCcw size={14} />
-          </button>
+          {/* Demo-only: wipes every result for the subsystem. The API route is
+              already 403 in production; hide the button too so field testers
+              never see a control that clears their work. */}
+          {import.meta.env.DEV && (
+            <button
+              type="button"
+              className="gm-icon-btn"
+              onClick={resetSubsystem}
+              title="Reset all test results for this subsystem (demo only)"
+              aria-label="Reset subsystem test results"
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
           <button
             type="button"
             className="gm-icon-btn"

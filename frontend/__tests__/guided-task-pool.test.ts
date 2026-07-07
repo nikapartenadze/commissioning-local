@@ -100,12 +100,12 @@ describe('firmware_check task', () => {
     expect(byId(pool.tasks, id)?.state).toBe('completed')
   })
 
-  it('builds an info scan step then an auto_detect verdict confirm step', () => {
+  it('builds a single self-scanning auto_detect verdict step (scan runs inline)', () => {
     const pool = buildTaskPool(emptySnapshot({ firmware: fw }))
     const task = byId(pool.tasks, taskId('firmware_check', '1'))!
     const steps = buildSteps(task)
-    expect(steps.map((s) => s.kind)).toEqual(['info', 'auto_detect'])
-    expect(steps[1].verdictSource).toBe('/api/firmware')
+    expect(steps.map((s) => s.kind)).toEqual(['auto_detect'])
+    expect(steps[0].verdictSource).toBe('/api/firmware')
   })
 })
 
