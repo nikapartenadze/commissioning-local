@@ -8,15 +8,22 @@ import {
   type TagDataType,
 } from '@/lib/mcm-registry'
 
+// Field names track the rev-3.0 AOI_IOCT_BELT_TRACKING UDTs (verified against
+// the L5X): HP is a single Valid_HP (the old Valid_MTR_HP / Valid_APF_HP split
+// was removed), and belt tracking is Tracking_Finished (CMD) + Belt_Tracking_ON
+// (STS) — the old CMD/STS Track_Belt member no longer exists. The validation
+// writer already uses these names; this reader must match or it reads null on a
+// rev-3.0 controller. (RPM / Speed_FPM / Sync_Speed live in a separate speed
+// AOI not covered by the belt-tracking L5X — left as-is.)
 const CMD_BOOL_FIELDS = [
-  'Valid_Map', 'Invalidate_Map', 'Valid_MTR_HP', 'Valid_APF_HP',
-  'Invalidate_HP', 'Valid_Direction', 'Bump', 'Invalidate_Direction',
-  'Track_Belt', 'Stop_Belt_Tracking', 'Sync_Speed',
+  'Valid_Map', 'Invalidate_Map', 'Valid_HP', 'Invalidate_HP',
+  'Valid_Direction', 'Bump', 'Invalidate_Direction',
+  'Tracking_Finished', 'Invalidate_Tracking_Finished', 'Stop_Belt_Tracking', 'Sync_Speed',
 ]
 const CMD_REAL_FIELDS = ['RPM']
 const CMD_INT_FIELDS = ['Speed_FPM']
 const STS_INT_FIELDS = ['Speed_FPM']
-const STS_BOOL_FIELDS = ['Check_Allowed', 'Valid_Map', 'Valid_HP', 'Valid_Direction', 'Jogging', 'Track_Belt']
+const STS_BOOL_FIELDS = ['Check_Allowed', 'Valid_Map', 'Valid_HP', 'Valid_Direction', 'Jogging', 'Belt_Tracking_ON']
 
 interface ReadSpec {
   device: string

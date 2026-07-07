@@ -84,10 +84,10 @@ export async function POST(req: Request, res: Response) {
     L(`Reading full STS snapshot...`)
     const stsValidHP = await readOneBit(gateway, path, timeout, `CBT_${deviceName}.CTRL.STS.Valid_HP`)
     const stsValidDir = await readOneBit(gateway, path, timeout, `CBT_${deviceName}.CTRL.STS.Valid_Direction`)
-    const stsTrackBelt = await readOneBit(gateway, path, timeout, `CBT_${deviceName}.CTRL.STS.Track_Belt`)
+    const stsTrackBelt = await readOneBit(gateway, path, timeout, `CBT_${deviceName}.CTRL.STS.Belt_Tracking_ON`)
     const stsJogging = await readOneBit(gateway, path, timeout, `CBT_${deviceName}.CTRL.STS.Jogging`)
     const stsRVS = await readOneReal(gateway, path, timeout, `CBT_${deviceName}.CTRL.STS.RVS`)
-    L(`  Valid_HP=${stsValidHP.value} Valid_Direction=${stsValidDir.value} Track_Belt=${stsTrackBelt.value} Jogging=${stsJogging.value} RVS=${stsRVS.value}`)
+    L(`  Valid_HP=${stsValidHP.value} Valid_Direction=${stsValidDir.value} Belt_Tracking_ON=${stsTrackBelt.value} Jogging=${stsJogging.value} RVS=${stsRVS.value}`)
 
     const summary = {
       deviceName,
@@ -99,7 +99,7 @@ export async function POST(req: Request, res: Response) {
       stsSnapshot: {
         Valid_HP: stsValidHP.value,
         Valid_Direction: stsValidDir.value,
-        Track_Belt: stsTrackBelt.value,
+        Belt_Tracking_ON: stsTrackBelt.value,
         Jogging: stsJogging.value,
         RVS: stsRVS.value,
       },
