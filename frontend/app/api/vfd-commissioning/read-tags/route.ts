@@ -8,22 +8,25 @@ import {
   type TagDataType,
 } from '@/lib/mcm-registry'
 
-// Field names track the rev-3.0 AOI_IOCT_BELT_TRACKING UDTs (verified against
-// the L5X): HP is a single Valid_HP (the old Valid_MTR_HP / Valid_APF_HP split
-// was removed), and belt tracking is Tracking_Finished (CMD) + Belt_Tracking_ON
-// (STS) — the old CMD/STS Track_Belt member no longer exists. The validation
-// writer already uses these names; this reader must match or it reads null on a
-// rev-3.0 controller. (RPM / Speed_FPM / Sync_Speed live in a separate speed
-// AOI not covered by the belt-tracking L5X — left as-is.)
+// Field names are the EXACT members of the rev-3.0 AOI_IOCT_BELT_TRACKING UDTs
+// (UDT_CTRL_IOCT_BELT_TRACKING_CMD / _STS, verified against the DataType L5X
+// exports). The whole CTRL.CMD/STS structure has NO RPM, NO Speed_FPM and NO
+// Sync_Speed — the single speed member is `RVS` (a REAL) in both CMD and STS.
+// The old Valid_MTR_HP/Valid_APF_HP split and CMD/STS Track_Belt were removed
+// (→ Valid_HP, Tracking_Finished, Belt_Tracking_ON). The validation writer and
+// the live vfd-wizard-reader already use these names; this reader must match or
+// it reads null on a rev-3.0 controller.
 const CMD_BOOL_FIELDS = [
   'Valid_Map', 'Invalidate_Map', 'Valid_HP', 'Invalidate_HP',
   'Valid_Direction', 'Bump', 'Invalidate_Direction',
-  'Tracking_Finished', 'Invalidate_Tracking_Finished', 'Stop_Belt_Tracking', 'Sync_Speed',
+  'Tracking_Finished', 'Invalidate_Tracking_Finished', 'Stop_Belt_Tracking',
+  'Override_RVS', 'Run_At_30_RVS', 'Reverse_Polarity', 'Normal_Polarity',
 ]
-const CMD_REAL_FIELDS = ['RPM']
-const CMD_INT_FIELDS = ['Speed_FPM']
-const STS_INT_FIELDS = ['Speed_FPM']
-const STS_BOOL_FIELDS = ['Check_Allowed', 'Valid_Map', 'Valid_HP', 'Valid_Direction', 'Jogging', 'Belt_Tracking_ON']
+const CMD_REAL_FIELDS = ['RVS']
+const CMD_INT_FIELDS: string[] = []
+const STS_REAL_FIELDS = ['RVS']
+const STS_INT_FIELDS: string[] = []
+const STS_BOOL_FIELDS = ['Check_Allowed', 'Valid_Map', 'Valid_HP', 'Valid_Direction', 'Jogging', 'Belt_Tracking_ON', 'Starting']
 
 interface ReadSpec {
   device: string
@@ -56,6 +59,7 @@ export async function POST(req: Request, res: Response) {
       for (const f of CMD_REAL_FIELDS) specs.push({ device: deviceName, group: 'cmd', field: f, name: `${base}.CTRL.CMD.${f}`, dataType: 'REAL' })
       for (const f of CMD_INT_FIELDS) specs.push({ device: deviceName, group: 'cmd', field: f, name: `${base}.CTRL.CMD.${f}`, dataType: 'INT' })
       for (const f of STS_BOOL_FIELDS) specs.push({ device: deviceName, group: 'sts', field: f, name: `${base}.CTRL.STS.${f}`, dataType: 'BOOL' })
+      for (const f of STS_REAL_FIELDS) specs.push({ device: deviceName, group: 'sts', field: f, name: `${base}.CTRL.STS.${f}`, dataType: 'REAL' })
       for (const f of STS_INT_FIELDS) specs.push({ device: deviceName, group: 'sts', field: f, name: `${base}.CTRL.STS.${f}`, dataType: 'INT' })
     }
     const reads: TypedTagRead[] = specs.map((s) => ({ name: s.name, dataType: s.dataType }))
