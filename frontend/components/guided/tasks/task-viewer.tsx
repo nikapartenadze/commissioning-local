@@ -8,6 +8,7 @@ import type { Segment, Task, TaskPool, TaskState } from '@/lib/guided/task-pool/
  */
 
 const SEGMENT_ORDER: Segment[] = [
+  'Firmware Compliance',
   'Network Verification',
   'VFD Commissioning',
   'Safety Device I/O Check',
@@ -67,7 +68,11 @@ export function TaskViewer({
         </div>
 
         <div className="gt-viewer-body">
-          {SEGMENT_ORDER.filter((seg) => (grouped.get(seg)?.length ?? 0) > 0).map((seg) => {
+          {/* Known segments in flow order, then any segment the engine emitted
+              that this list doesn't know yet — never silently hide tasks. */}
+          {[...SEGMENT_ORDER, ...[...grouped.keys()].filter((s) => !SEGMENT_ORDER.includes(s))]
+            .filter((seg) => (grouped.get(seg)?.length ?? 0) > 0)
+            .map((seg) => {
             const tasks = grouped.get(seg)!
             return (
               <section key={seg} className="gt-viewer-segment">
@@ -79,6 +84,11 @@ export function TaskViewer({
                       <span className="gt-viewer-title">{t.title}</span>
                       {t.progress > 0 && t.state !== 'completed' && (
                         <span className="gt-viewer-progress">{Math.round(t.progress * 100)}%</span>
+                      )}
+                      {t.claimedBy && (
+                        <span className="gt-viewer-reason" title={`Currently being tested by ${t.claimedBy}`}>
+                          👤 {t.claimedBy}
+                        </span>
                       )}
                       {t.state === 'skipped' && t.skipReason && (
                         <span className="gt-viewer-reason" title={t.skipReason}>
@@ -92,7 +102,7 @@ export function TaskViewer({
                         </span>
                       )}
                       <span className="gt-viewer-actions">
-                        {(t.state === 'available' || t.state === 'in_progress') && (
+                        {(t.state === 'available' || t.state === 'in_progress') && !t.claimedBy && (
                           <button className="gt-btn gt-btn-sm" onClick={() => onPick(t)}>
                             Go
                           </button>

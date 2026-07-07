@@ -184,6 +184,13 @@ export interface Task {
   skipReason?: string
   /** Progress within the task, 0..1 (sub-results recorded / total). */
   progress: number
+  /**
+   * Display name of ANOTHER tester currently working this task (live claim).
+   * Absent/null for unclaimed tasks and for the caller's own claim. The pool's
+   * nextTaskId already skips other-claimed tasks so two testers on the same
+   * MCM are never handed the same device.
+   */
+  claimedBy?: string | null
 }
 
 export interface TaskPoolSummary {
@@ -230,4 +237,20 @@ export interface TaskPool {
   summary: TaskPoolSummary
   /** Up-front diagnostics on whether guided mode is set up + ready to run. */
   readiness: TaskPoolReadiness
+  /**
+   * Other testers' live claims on this MCM (never includes the caller's own).
+   * The runner excludes these devices/IOs from swap detection so a colleague
+   * actuating THEIR device doesn't fire a false wrong-wiring banner here.
+   */
+  claims?: ActiveClaimInfo[]
+}
+
+/** Public shape of another tester's live claim, embedded in the pool. */
+export interface ActiveClaimInfo {
+  taskId: string
+  /** Display name when known, else a stable anonymous label. */
+  user: string
+  deviceName?: string | null
+  /** IO ids the claimed task watches/tests — excluded from swap candidates. */
+  watchIoIds?: number[]
 }

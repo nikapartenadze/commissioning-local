@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 import { loadSnapshot } from '@/lib/guided/task-pool/snapshot'
 import { buildTaskPool } from '@/lib/guided/task-pool/task-builder'
+import { applyClaims, getActiveClaims } from '@/lib/guided/task-pool/claims'
 
 /**
  * GET /api/guided/tasks?subsystemId=...
@@ -20,5 +21,9 @@ export async function GET(req: Request, res: Response) {
   }
   const snapshot = await loadSnapshot(subsystemId)
   const pool = buildTaskPool(snapshot)
-  return res.json(pool)
+  // Multi-user: overlay other testers' live claims (claimedBy labels + a
+  // nextTaskId that skips their tasks). clientId identifies the caller so
+  // their OWN claim stays invisible to them.
+  const clientId = typeof req.query.clientId === 'string' ? req.query.clientId : null
+  return res.json(applyClaims(pool, getActiveClaims(subsystemId), clientId))
 }

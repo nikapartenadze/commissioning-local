@@ -132,6 +132,7 @@ import * as guidedTasks from '@/app/api/guided/tasks/route'
 import * as guidedTasksSteps from '@/app/api/guided/tasks/steps/route'
 import * as guidedTasksSkip from '@/app/api/guided/tasks/skip/route'
 import * as guidedTasksComplete from '@/app/api/guided/tasks/complete/route'
+import * as guidedTasksClaim from '@/app/api/guided/tasks/claim/route'
 import * as guidedSystemStatus from '@/app/api/guided/system-status/route'
 import * as roadmap from '@/app/api/roadmap/route'
 import * as subsystemsList from '@/app/api/subsystems/list/route'
@@ -384,6 +385,8 @@ export function createApiRouter(): Router {
   router.get('/api/guided/tasks/steps', asyncHandler(guidedTasksSteps.GET))
   router.post('/api/guided/tasks/skip', asyncHandler(guidedTasksSkip.POST))
   router.post('/api/guided/tasks/complete', asyncHandler(guidedTasksComplete.POST))
+  // Ephemeral multi-user task claims (same-MCM coordination, TTL'd in-memory)
+  router.post('/api/guided/tasks/claim', asyncHandler(guidedTasksClaim.POST))
   // Live ring-health + system-running poll (committee D4/D5 gates)
   router.get('/api/guided/system-status', asyncHandler(guidedSystemStatus.GET))
   router.get('/api/roadmap', asyncHandler(roadmap.GET))

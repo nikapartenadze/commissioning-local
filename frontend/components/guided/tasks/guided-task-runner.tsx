@@ -51,6 +51,22 @@ interface SystemStatus {
   systemRunning: boolean | null
 }
 
+/** Stable per-browser id for multi-user task claims (shared across tabs —
+ *  the same operator in two tabs is one "client", which is what we want). */
+function getGuidedClientId(): string {
+  try {
+    const KEY = 'guided-client-id'
+    let v = localStorage.getItem(KEY)
+    if (!v) {
+      v = `${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`
+      localStorage.setItem(KEY, v)
+    }
+    return v
+  } catch {
+    return 'anon'
+  }
+}
+
 function initialsOf(name?: string | null): string {
   if (!name) return ''
   const parts = name.trim().split(/\s+/)
@@ -66,7 +82,8 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const navigate = useNavigate()
   const { currentUser } = useUser()
   const ws = usePlcWebSocket()
-  const { pool, isLoading, error, refresh } = useTaskPool(subsystemId)
+  const clientIdRef = useRef(getGuidedClientId())
+  const { pool, isLoading, error, refresh } = useTaskPool(subsystemId, clientIdRef.current)
 
   // usePlcWebSocket does NOT auto-connect — the caller owns the connect()
   // (same contract as the main commissioning page). Without this the runner
@@ -77,6 +94,17 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     ws.connect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /** Release this client's live task claim (fire-and-forget). */
+  const releaseClaim = useCallback(() => {
+    void fetch('/api/guided/tasks/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subsystemId, clientId: clientIdRef.current, release: true }),
+      keepalive: true,
+    }).catch(() => {})
+  }, [subsystemId])
+  useEffect(() => releaseClaim, [releaseClaim])
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [steps, setSteps] = useState<Step[]>([])
@@ -95,6 +123,20 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const [swap, setSwap] = useState<(SwapSuspicion & { comment: string }) | null>(null)
   const swapCandidatesRef = useRef<SwapCandidateIo[]>([])
   const swapWatchRef = useRef<SwapWatch | null>(null)
+  // IOs/devices claimed by OTHER testers on this MCM — excluded from swap
+  // candidates so a colleague actuating THEIR device never fires a false
+  // wrong-wiring banner here. Kept in a ref so the WS callback reads the
+  // latest claims without re-subscribing.
+  const claimedExclusionsRef = useRef<{ ids: Set<number>; devices: string[] }>({ ids: new Set(), devices: [] })
+  useEffect(() => {
+    const ids = new Set<number>()
+    const devices: string[] = []
+    for (const c of pool?.claims ?? []) {
+      c.watchIoIds?.forEach((i) => ids.add(i))
+      if (c.deviceName) devices.push(c.deviceName.toUpperCase())
+    }
+    claimedExclusionsRef.current = { ids, devices }
+  }, [pool])
   // Readiness banner: warnings can be dismissed; hard blockers always show.
   const [readinessDismissed, setReadinessDismissed] = useState(false)
   // D4/D5 live gates — polled every 5 s while the runner is open.
@@ -229,6 +271,43 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveTask?.id, subsystemId])
+
+  // Multi-user claim: announce "this client is working task T" and heartbeat
+  // it (server TTL 45 s) so other testers' pools skip T and their swap
+  // detectors ignore T's device/IOs. Claiming a new task implicitly releases
+  // the previous one. 409 = a colleague beat us to it — drop the selection
+  // and re-fetch; the refreshed pool routes us to the next unclaimed task.
+  useEffect(() => {
+    const t = effectiveTask
+    if (!t || steps.length === 0) return
+    const watchIoIds = steps.flatMap((s) => s.watchIoIds ?? (s.ioId ? [s.ioId] : []))
+    const claim = async () => {
+      try {
+        const r = await fetch('/api/guided/tasks/claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subsystemId,
+            clientId: clientIdRef.current,
+            taskId: t.id,
+            user: currentUser?.fullName,
+            deviceName: t.deviceName,
+            watchIoIds,
+          }),
+        })
+        if (r.status === 409) {
+          setSelectedTaskId(null)
+          await refresh()
+        }
+      } catch {
+        /* best-effort coordination — TTL covers dead clients */
+      }
+    }
+    void claim()
+    const id = setInterval(claim, 15_000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveTask?.id, steps, subsystemId])
 
   // ── advance / complete ───────────────────────────────────────────────
   const completeAndNext = useCallback(async () => {
@@ -469,8 +548,14 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         if (resolvedRef.current) return
         if (!swapWatchRef.current) {
           if (swapCandidatesRef.current.length === 0) return
+          const excl = claimedExclusionsRef.current
           swapWatchRef.current = createSwapWatch(
-            swapCandidatesRef.current.filter((c) => !watch.has(c.id)),
+            swapCandidatesRef.current.filter(
+              (c) =>
+                !watch.has(c.id) &&
+                !excl.ids.has(c.id) &&
+                !excl.devices.some((d) => `${c.name} ${c.description ?? ''}`.toUpperCase().includes(d)),
+            ),
             deviceName,
           )
         }
@@ -751,6 +836,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
                 const t = pool?.tasks.find(
                   (x) => x.deviceName === name && (x.state === 'available' || x.state === 'in_progress'),
                 )
+                if (t?.claimedBy) {
+                  showToast(`Being tested by ${t.claimedBy} — pick another device.`)
+                  return
+                }
                 if (t) {
                   setSelectedTaskId(t.id)
                   setStepIndex(0)
