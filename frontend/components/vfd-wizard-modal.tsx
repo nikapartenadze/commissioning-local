@@ -2307,7 +2307,33 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                 })
                 .catch(err => console.error('[VFD Controls] POST error:', err))
             }} isComplete={check4Complete} />}
-            {activeStep === 4 && <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} initialBumpBlocker={bumpBlocker} onBumpBlockerChange={setBumpBlocker} />}
+            {activeStep === 4 && (beltTrackedDone ? (
+              <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} initialBumpBlocker={bumpBlocker} onBumpBlockerChange={setBumpBlocker} />
+            ) : (
+              // Tracking-in-the-middle GATE: Bump / polarity must not open until the
+              // mechanical team has marked "Belt Tracked" (which the field syncs and
+              // the writer bridges to CMD.Tracking_Finished). The AOI already gates
+              // Valid_Direction on Tracking_Finished, so bumping early can never
+              // latch direction — this just stops the operator seeing the bump
+              // controls before the belt is actually tracked.
+              <div className="space-y-4">
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm font-semibold">
+                    <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                    Waiting for the mechanical team to track this belt
+                  </div>
+                  <p className="text-xs text-amber-800/90 dark:text-amber-300/90 leading-relaxed">
+                    Bump Test / polarity and speed calibration stay locked until the
+                    mechanical team marks <strong>Belt Tracked</strong> on the cloud
+                    belt-tracking page. The moment they do, it syncs back to this tool
+                    automatically (or pull the latest L2 data) and this step unlocks.
+                    The drive&apos;s AOI also gates <code className="font-mono">Valid_Direction</code> on{' '}
+                    <code className="font-mono">Tracking_Finished</code>, so direction cannot be
+                    validated before the belt is tracked.
+                  </p>
+                </div>
+              </div>
+            ))}
             {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
           </div>
 
