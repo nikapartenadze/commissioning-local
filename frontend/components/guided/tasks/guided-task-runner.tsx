@@ -149,7 +149,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     let active = true
     const poll = async () => {
       try {
-        const r = await fetch('/api/guided/system-status')
+        // Scoped to THIS MCM — without the param a central/multi-MCM server
+        // answers with the singleton ring (null) and the fleet-union D4, so
+        // another MCM's running conveyors would unlock functional steps here.
+        const r = await fetch(`/api/guided/system-status?subsystemId=${subsystemId}`)
         if (!r.ok || !active) return
         const data = (await r.json()) as SystemStatus
         if (active) setSysStatus(data)
@@ -163,7 +166,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       active = false
       clearInterval(id)
     }
-  }, [])
+  }, [subsystemId])
 
   const ringDegraded = sysStatus.ring?.state === 'degraded'
 
@@ -505,7 +508,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     const tag = currentStep.estopCheckTag
     const poll = async () => {
       try {
-        const res = await fetch('/api/estop/status')
+        // Scoped: identical PLC programs mean checkTag NAMES collide across
+        // MCMs — the unscoped (all-zones) response could match another MCM's
+        // EPC row and report ITS verdict here.
+        const res = await fetch(`/api/estop/status?subsystemId=${subsystemId}`)
         if (!res.ok || !active) return
         const data = await res.json()
         // Dual-safety: show the verdict matching THIS step's check type. The
@@ -535,7 +541,8 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       active = false
       clearInterval(id)
     }
-  }, [currentStep?.id])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStep?.id, subsystemId])
 
   // poll the firmware-compliance verdict for the firmware-check auto_detect step.
   // NEEDS LIVE VERIFICATION (battle sim / real MCM) before release — the polling,

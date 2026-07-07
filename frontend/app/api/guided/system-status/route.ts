@@ -53,10 +53,18 @@ export async function GET(req: Request, res: Response) {
     /* legacy singleton stack unavailable — ring stays null */
   }
   try {
-    // Mode-aware union (Phase 1.1): registry MCMs (embedded or gateway cache
-    // in PLC_MODE=remote), singleton fallback on tablets.
-    const { getLiveTagsUnion } = require('@/lib/plc-live-tags') as typeof import('@/lib/plc-live-tags')
-    systemRunning = deriveSystemRunning(getLiveTagsUnion())
+    // D4 must be judged against THIS MCM's tags on a central/multi-MCM
+    // server — the fleet union would report "running" because a DIFFERENT
+    // MCM's conveyors are running and unlock functional steps on a stopped
+    // one. Registry MCM → that MCM's tags (mode-aware: embedded or gateway
+    // cache); otherwise the union (single-MCM tablet == singleton anyway).
+    const registry = require('@/lib/mcm-registry') as typeof import('@/lib/mcm-registry')
+    if (sid && registry.hasMcm(sid)) {
+      systemRunning = deriveSystemRunning(registry.getMcmTags(sid).tags)
+    } else {
+      const { getLiveTagsUnion } = require('@/lib/plc-live-tags') as typeof import('@/lib/plc-live-tags')
+      systemRunning = deriveSystemRunning(getLiveTagsUnion())
+    }
   } catch {
     /* no PLC stack available — stays unknown */
   }
