@@ -17,8 +17,7 @@
     "test:plc:dlr": "tsx test-dlr-read.ts",
     "seed:diagnostics": "tsx prisma/seed-diagnostics.ts",
     "seed:network": "tsx prisma/seed-network.ts",
-    "seed:estop": "tsx prisma/seed-estop.ts",
-    "postinstall": "prisma generate"
+    "seed:estop": "tsx prisma/seed-estop.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.19.0",
