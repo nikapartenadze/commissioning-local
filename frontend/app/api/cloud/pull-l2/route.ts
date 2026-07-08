@@ -9,7 +9,7 @@
 
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-import { computeAtRiskL2Cells, type LocalL2Cell } from '@/lib/cloud/pull-guard'
+import { computeAtRiskL2Cells, parseDbTimestamp, type LocalL2Cell } from '@/lib/cloud/pull-guard'
 import { auditLog } from '@/lib/logging/recovery-log'
 
 export async function POST(req: Request, res: Response) {
@@ -158,8 +158,9 @@ export async function POST(req: Request, res: Response) {
       const findDev = db.prepare('SELECT id FROM L2Devices WHERE CloudId = ?')
       const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SubsystemId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       const updateDev = db.prepare('UPDATE L2Devices SET SubsystemId=?, SheetId=?, DeviceName=?, Mcm=?, Subsystem=?, DisplayOrder=?, CompletedChecks=?, TotalChecks=? WHERE id=?')
-      const getCell = db.prepare('SELECT id FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
+      const getCell = db.prepare('SELECT id, Value, UpdatedAt FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
       const insertCell = db.prepare('INSERT INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      const fillCell = db.prepare('UPDATE L2CellValues SET CloudCellId=?, Value=?, UpdatedBy=?, UpdatedAt=?, Version=? WHERE id=?')
 
       const sheetIdMap = new Map<number, number>()
       const columnIdMap = new Map<number, number>()
@@ -195,16 +196,16 @@ export async function POST(req: Request, res: Response) {
 
       // ── NON-DESTRUCTIVE merge (2026-07-08 FV-loss fix) ───────────────────
       // TWO-LAYER model: the cloud owns STRUCTURE (sheets/columns/devices — add/
-      // rename/move/delete), the FIELD owns VALUES (the filled cells = test data).
+      // rename/move/delete), the FIELD owns VALUES (operator-entered test data).
       // So a pull applies structure via upsert (devices matched by CloudId, updated
-      // in place; guarded prune below) and, for VALUES, ONLY inserts cells the local
-      // tool is MISSING (first-load / restore of a wiped tool). It NEVER overwrites
-      // or deletes an existing local cell — FV test data is authored on the field
-      // and flows UP only; nobody edits it on the cloud. (Cloud-authored workflow
-      // state — VFD-commissioning "Addressed", IO punchlist/clarification — syncs
-      // DOWN via its own dedicated channels, not by clobbering cell values here.)
-      // This replaced the OLD delete-all+reinsert that wiped 116 real cells on
-      // MCM02/14/18 (all safe on cloud). See FV-IO-Sync-Architecture report.
+      // in place; guarded prune below). For VALUES it: (a) INSERTS a cell the local
+      // tool is MISSING (first-load / restore of a wiped tool; also how a cloud-
+      // authored value first lands), (b) may FILL a local cell that EXISTS but is
+      // EMPTY — this is the belt-tracking handoff, where the mechanical fills the
+      // "Belt Tracked" L2 cell on the cloud page and the field wizard waits for it —
+      // and (c) NEVER overwrites or blanks a FILLED local cell (operator test data
+      // flows UP only). This replaced the OLD delete-all+reinsert that wiped 116
+      // real cells on MCM02/14/18 (all safe on cloud). See FV-IO-Sync-Architecture.
       let cellsInserted = 0, keptLocalExisting = 0
       for (const dev of (data.devices || [])) {
         const localSheetId = sheetIdMap.get(dev.sheetId)
@@ -221,22 +222,45 @@ export async function POST(req: Request, res: Response) {
         l2Pulled++
       }
 
+      let cellsFilled = 0
       for (const cell of (data.cellValues || [])) {
         const ld = deviceIdMap.get(cell.deviceId)
         const lc = columnIdMap.get(cell.columnId)
         if (!ld || !lc) continue
-        const ex = getCell.get(ld, lc) as { id: number } | undefined
+        const cloudFilled = cell.value != null && String(cell.value).trim() !== ''
+        const ver = Number(cell.version) || 0
+        const ex = getCell.get(ld, lc) as { id: number; Value: string | null; UpdatedAt: string | null } | undefined
         if (!ex) {
-          // Local is MISSING this cell → INSERT it. This is the ONLY way a pull
-          // writes a value, and it is exactly first-load / restore of a wiped tool.
-          insertCell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
+          // Local is MISSING this cell → INSERT it (first-load / restore of a
+          // wiped tool; also how a cloud-authored value first lands).
+          insertCell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, ver)
           cellsInserted++; l2CellsPulled++
-        } else {
-          // Cell already exists locally → KEEP LOCAL, always. FV test data is
-          // field-authored and flows UP only; an automatic pull never overwrites
-          // an existing cell (filled OR deliberately cleared).
-          keptLocalExisting++
+          continue
         }
+        const localFilled = ex.Value != null && String(ex.Value).trim() !== ''
+        if (localFilled) {
+          // FILLED local cell → KEEP LOCAL, always. Operator test data is
+          // field-authored and flows UP only; a pull never overwrites it.
+          keptLocalExisting++
+          continue
+        }
+        // Local cell EXISTS but is EMPTY. A cloud-authored value must be able to
+        // FILL it — this is the belt-tracking handoff: the mechanical fills the
+        // "Belt Tracked" L2 cell on the cloud page and the field wizard waits for
+        // it to arrive here. Filling a blank never destroys operator work. Guard
+        // the rare "operator just cleared this cell" case: only accept the cloud
+        // value if the local blank is NOT strictly newer than the cloud value.
+        if (cloudFilled) {
+          const localTs = parseDbTimestamp(ex.UpdatedAt)
+          const cloudTs = parseDbTimestamp(cell.updatedAt)
+          const localBlankIsNewer = Number.isFinite(localTs) && Number.isFinite(cloudTs) && localTs > cloudTs
+          if (!localBlankIsNewer) {
+            fillCell.run(cell.id, cell.value, cell.updatedBy, cell.updatedAt, ver, ex.id)
+            cellsFilled++; l2CellsPulled++
+            continue
+          }
+        }
+        keptLocalExisting++
       }
 
       // ── Guarded structural reconciliation (device moves / deletes) ───────
@@ -272,13 +296,14 @@ export async function POST(req: Request, res: Response) {
         }
       }
 
-      return { sheetsCount: data.sheets.length, l2Pulled, l2CellsPulled, cellsInserted, keptLocalExisting, devicesPruned }
+      return { sheetsCount: data.sheets.length, l2Pulled, l2CellsPulled, cellsInserted, cellsFilled, keptLocalExisting, devicesPruned }
     })()
 
     console.log(
-      `[L2Pull] SUCCESS (structure + insert-missing values, never overwrite): ${result.sheetsCount} sheets, ` +
+      `[L2Pull] SUCCESS (structure + values-down-into-empty-only): ${result.sheetsCount} sheets, ` +
       `${result.l2Pulled} devices, ${result.cellsInserted} missing cell(s) inserted, ` +
-      `${result.keptLocalExisting} existing local cell(s) kept (field owns values), ` +
+      `${result.cellsFilled} empty local cell(s) filled from cloud (e.g. belt-tracked), ` +
+      `${result.keptLocalExisting} filled local cell(s) kept (field owns values), ` +
       `${result.devicesPruned} empty orphan device(s) pruned`,
     )
 
@@ -298,6 +323,7 @@ export async function POST(req: Request, res: Response) {
         l2Pulled: result.l2Pulled,
         l2CellsPulled: result.l2CellsPulled,
         cellsInserted: result.cellsInserted,
+        cellsFilled: result.cellsFilled,
         keptLocalExisting: result.keptLocalExisting,
         devicesPruned: result.devicesPruned,
         authoritativeComplete: data.authoritativeComplete === true,

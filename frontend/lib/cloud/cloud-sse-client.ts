@@ -450,17 +450,25 @@ export class CloudSseClient {
       if (!localDev || !localCol) return // Cell not in local DB (different subsystem)
 
       // Find existing cell value
-      const existing = db.prepare('SELECT id FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?').get(localDev.id, localCol.id) as { id: number } | undefined
+      const existing = db.prepare('SELECT id, Value FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?').get(localDev.id, localCol.id) as { id: number; Value: string | null } | undefined
 
-      // FV values are FIELD-authored and flow UP only — same rule as the pull
-      // (2026-07-08). A cloud-originated live cell event must NEVER overwrite an
-      // existing local cell (filled OR deliberately cleared); nobody edits FV test
-      // data on the cloud. Cloud-authored workflow state (VFD "Addressed", IO
-      // punchlist/clarification) syncs via its OWN dedicated channels, not here.
-      // We only INSERT a cell the local tool is missing (first-load / peer bootstrap).
-      if (existing) return
-      db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(localDev.id, localCol.id, data.value, data.updatedBy, data.updatedAt, data.version)
+      // Same rule as the pull (2026-07-08): a FILLED local cell is field-authored
+      // test data and is NEVER overwritten by a cloud event. But a cloud-authored
+      // value must still land in a MISSING or EMPTY local cell — this is the belt-
+      // tracking handoff (the mechanical fills "Belt Tracked" on the cloud page and
+      // the field wizard waits for it). So: insert if missing; fill if empty; keep
+      // if filled.
+      const incomingFilled = data.value != null && String(data.value).trim() !== ''
+      if (!existing) {
+        db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(localDev.id, localCol.id, data.value, data.updatedBy, data.updatedAt, data.version)
+      } else {
+        const localFilled = existing.Value != null && String(existing.Value).trim() !== ''
+        if (localFilled) return // never overwrite operator-entered test data
+        if (!incomingFilled) return // empty→empty is a no-op
+        db.prepare(`UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = ?, Version = ? WHERE id = ?`)
+          .run(data.value, data.updatedBy, data.updatedAt, data.version, existing.id)
+      }
 
       // Recount completed checks for the device
       const completedCount = db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.IncludeInProgress = 1 AND cv.Value IS NOT NULL AND cv.Value != ''`).get(localDev.id) as { cnt: number } | undefined

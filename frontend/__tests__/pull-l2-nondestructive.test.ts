@@ -220,6 +220,40 @@ describe('pull-l2 non-destructive merge', () => {
     expect(getCell(cellB).Value).toBe('LOCAL-NEW') // existing local kept
   })
 
+  it('3b. FILLS an EMPTY local cell from cloud — the belt-tracking handoff', async () => {
+    // The mechanical marks "Belt Tracked" on the cloud page; the field wizard
+    // waits for that value to arrive. The local cell exists but is EMPTY, so the
+    // cloud value must land (filling a blank never loses field work).
+    const sh = seedSheet(100)
+    const col = seedColumn(200, sh)
+    const dev = seedDevice(300, sh)
+    const emptyCell = seedCell(dev, col, '', '2026-07-08T09:00:00.000Z') // blank, awaiting tracking
+    const res = await runPull({
+      success: true,
+      sheets: [sheetPayload(100, [colPayload(200)])],
+      devices: [devPayload(300, 100)],
+      cellValues: [cellPayload(1, 300, 200, 'ASH 9/5', '2026-07-08T10:00:00.000Z')], // mechanic filled it
+    })
+    expect(res.statusCode).toBe(200)
+    expect(getCell(emptyCell).Value).toBe('ASH 9/5') // belt-tracked value delivered
+  })
+
+  it('3c. does NOT resurrect a value into a cell the operator cleared MORE recently than cloud', async () => {
+    const sh = seedSheet(100)
+    const col = seedColumn(200, sh)
+    const dev = seedDevice(300, sh)
+    // Local blank is NEWER than the cloud value → operator just cleared it; keep blank.
+    const clearedCell = seedCell(dev, col, '', '2026-07-08T12:00:00.000Z')
+    const res = await runPull({
+      success: true,
+      sheets: [sheetPayload(100, [colPayload(200)])],
+      devices: [devPayload(300, 100)],
+      cellValues: [cellPayload(1, 300, 200, 'STALE', '2026-07-08T10:00:00.000Z')],
+    })
+    expect(res.statusCode).toBe(200)
+    expect((getCell(clearedCell).Value ?? '')).toBe('') // stale cloud value not resurrected
+  })
+
   it('4. inserts a brand-new cloud cell', async () => {
     const sh = seedSheet(100)
     const col = seedColumn(200, sh)
