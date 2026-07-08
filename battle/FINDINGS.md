@@ -794,3 +794,17 @@ docs/superpowers/plans/2026-07-06-field-tool-hardening-verdict.md). Four harness
 bugs caught+fixed before any release decision: blocker deviceName casing,
 feature-fraction default shadowing, I25 re-test false-positive, I18/I26
 cross-action contention + invalid-column.
+
+## 2026-07-08 — I8_FV first live run (smoke ci-all-1233): GREEN, plumbing proven
+15-min `all` smoke on sha e939ca2 (crew/observer rebuilt; tool image = registry latest).
+Verdict pass=true. I8_FV: fv_writes=416, judged=343 (single-writer), missing_local=0,
+divergent=0; cloud leg correctly INCONCLUSIVE — L2 queue not drained at soak end
+(active=185, parked=963) → "pushes pending, not loss". Precondition-awareness worked on
+run #1; no false fail. Counts as clean run 1 of 2 toward flipping I8_FV to GATE.
+Follow-ups:
+1. IMAGE FRESHNESS: the tool image in the registry predates the v2.43.0 non-destructive
+   FV pull — rebuild+push (ci/build_and_push.sh from a disk-rich box) so the nightly
+   exercises the NEW pull path; until then I8_FV local leg is testing the old binary.
+2. 963 PARKED L2 rows in 15min is high — likely seed/cloud-stage version mismatch making
+   cloud reject bot pushes (parked ≠ lost, and the invariant classified it safely), but
+   check the park reasons on the next nightly before flipping to GATE.
