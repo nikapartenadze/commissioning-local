@@ -361,24 +361,27 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     return () => { cancelled = true; window.removeEventListener('beforeunload', beforeUnload) }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // VFD mode: pull the cloud-authoritative ADDRESSED flag for this subsystem on
-  // open (so a tech sees what a mechanic just marked), then load annotations.
+  // VFD mode: show the LOCALLY-known blocked/addressed badges immediately, and
+  // in parallel pull the cloud-authoritative ADDRESSED flag (so a tech sees what
+  // a mechanic just marked), re-loading the badges when it lands. Previously the
+  // badges waited on the cloud refresh (15s server timeout) — offline, the tab
+  // sat badge-less for the full stall (2026-07-08 offline audit).
   useEffect(() => {
     if (!vfdMode) return
     let cancelled = false
-    const run = async () => {
-      if (subsystemId && subsystemId > 0) {
+    void loadVfdAnnotations() // instant, local-only
+    if (subsystemId && subsystemId > 0) {
+      ;(async () => {
         try {
           await authFetch('/api/vfd-commissioning/refresh-addressed', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ subsystemId }),
           })
-        } catch { /* best-effort */ }
-      }
-      if (!cancelled) await loadVfdAnnotations()
+          if (!cancelled) await loadVfdAnnotations() // pick up fresh cloud marks
+        } catch { /* best-effort — local badges already shown */ }
+      })()
     }
-    run()
     return () => { cancelled = true }
   }, [vfdMode, subsystemId, loadVfdAnnotations])
 

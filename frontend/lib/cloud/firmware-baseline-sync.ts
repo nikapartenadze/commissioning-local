@@ -81,6 +81,11 @@ export async function syncFirmwareBaseline(): Promise<BaselineSyncResult> {
     res = await fetch(`${remoteUrl}/api/firmware/approved`, {
       method: 'GET',
       headers: { 'X-API-Key': apiPassword },
+      // Offline hardening (2026-07-08 audit): this fetch is awaited by
+      // /api/firmware/scan (and the guided firmware step). Without a timeout a
+      // blackholed cloud URL stalls the scan for the OS socket timeout —
+      // minutes. 10s keeps the scan snappy offline; the stale cache still serves.
+      signal: AbortSignal.timeout(10_000),
     })
   } catch (err) {
     return { ok: false, error: `Cloud unreachable: ${(err as Error).message}` }

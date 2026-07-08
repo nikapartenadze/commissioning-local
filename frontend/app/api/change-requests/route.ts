@@ -45,16 +45,21 @@ export async function POST(req: Request, res: Response) {
 
     const changeRequest = { id: result.lastInsertRowid as number, ioId: ioId ? parseInt(String(ioId), 10) : null, requestType, currentValue: currentValue || null, requestedValue: requestedValue || null, structuredChanges: structuredChanges ? JSON.stringify(structuredChanges) : null, reason, requestedBy, status: 'pending', createdAt: now }
 
-    const config = await configService.getConfig()
-    if (config.remoteUrl && config.apiPassword) {
+    // Fire-and-forget cloud push (2026-07-08 offline audit): the row is already
+    // durable locally with CloudId NULL, and AutoSync's background drain pushes
+    // every pending CloudId-NULL request — so awaiting this fetch only made the
+    // submit button hang up to 10s when offline. Respond immediately instead.
+    void (async () => {
+      const config = await configService.getConfig()
+      if (!config.remoteUrl || !config.apiPassword) return
       try {
         await fetch(`${config.remoteUrl}/api/sync/change-requests`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.apiPassword },
           body: JSON.stringify({ requests: [{ ioId: changeRequest.ioId, subsystemId: config.subsystemId ? parseInt(String(config.subsystemId), 10) : null, requestType, currentValue: changeRequest.currentValue, requestedValue: changeRequest.requestedValue, structuredChanges: changeRequest.structuredChanges, reason, requestedBy, createdAt: now }] }),
           signal: AbortSignal.timeout(10000),
         })
-      } catch (err) { console.warn('[ChangeRequest] Cloud sync failed:', err instanceof Error ? err.message : err) }
-    }
+      } catch (err) { console.warn('[ChangeRequest] Instant cloud sync failed (background drain will retry):', err instanceof Error ? err.message : err) }
+    })()
 
     return res.json({ success: true, changeRequest })
   } catch (error) {

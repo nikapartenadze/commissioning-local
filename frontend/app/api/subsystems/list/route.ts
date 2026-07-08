@@ -51,7 +51,11 @@ export async function GET(req: Request, res: Response) {
   if (apiPassword) {
     try {
       const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 10_000)
+      // 3s (was 10s — 2026-07-08 offline audit): the picker blocked the setup
+      // page for the full timeout when the cloud URL was blackholed. A live
+      // cloud answers this list in well under 3s; offline falls back to local
+      // plcProfiles 7s sooner.
+      const timeout = setTimeout(() => controller.abort(), 3_000)
       const cloudRes = await fetch(`${remoteUrl}/api/sync/subsystems`, {
         method: 'GET',
         headers: { 'X-API-Key': apiPassword },
