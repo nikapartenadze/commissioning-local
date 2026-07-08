@@ -102,7 +102,6 @@ import * as safetyStatus from '@/app/api/safety/status/route'
 import * as safetyFire from '@/app/api/safety/fire/route'
 import * as safetyOutputs from '@/app/api/safety/outputs/route'
 import * as syncHealth from '@/app/api/sync/health/route'
-import * as syncUpdate from '@/app/api/sync/update/route'
 import * as syncSubsystem from '@/app/api/sync/subsystem/[subsystemId]/route'
 import * as l2 from '@/app/api/l2/route'
 import * as l2Cell from '@/app/api/l2/cell/route'
@@ -339,7 +338,9 @@ export function createApiRouter(): Router {
 
   // ── Sync (cloud-facing endpoints) ─────────────────────────────
   router.get('/api/sync/health', asyncHandler(syncHealth.GET))
-  router.post('/api/sync/update', asyncHandler(syncUpdate.POST))
+  // /api/sync/update REMOVED (2026-07-08 forensics audit): dead legacy route —
+  // nothing called it, and it let anyone on the LAN rewrite Ios.Result with no
+  // version bump, no TestHistories row, and no recovery-journal entry.
   router.get('/api/sync/subsystem/:subsystemId', asyncHandler(syncSubsystem.GET))
 
   // ── L2 Functional Validation ───────────────────────────────────

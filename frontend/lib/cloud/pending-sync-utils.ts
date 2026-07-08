@@ -38,8 +38,12 @@ export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
 }
 
 export function getOldestPendingSyncForIo(ioId: number): PendingSync | null {
+  // ACTIVE rows only: parked (DeadLettered=1) rows are the attention surface,
+  // not work to drain — and since the permanent-reject branch below now PARKS
+  // instead of deleting, including them here would spin the drain loop forever
+  // on the same parked row.
   return (
-    db.prepare('SELECT * FROM PendingSyncs WHERE IoId = ? ORDER BY id ASC LIMIT 1').get(ioId) as
+    db.prepare('SELECT * FROM PendingSyncs WHERE IoId = ? AND DeadLettered = 0 ORDER BY id ASC LIMIT 1').get(ioId) as
       | PendingSync
       | undefined
   ) ?? null
@@ -70,26 +74,28 @@ export async function drainPendingSyncsForIo(
     }
 
     if (result.permanent) {
-      // Permanent rejection — same payload will fail forever. Drop the row
-      // now so the queue doesn't carry zombie work; the loud log was already
-      // emitted inside tryRealtimeSync.
-      // Recovery-critical: record the full discarded payload so the result can
-      // be reconstructed/re-pushed by hand if the rejection was wrong.
-      // Best-effort SubsystemId so this dropped result can be attributed to its
+      // Permanent rejection — same payload will fail forever. PARK the row
+      // (DeadLettered=1) instead of deleting it (2026-07-08 sync-contract audit
+      // P1: this instant path was the ONE place in the IO pipeline that still
+      // hard-deleted on permanent reject while the background path parks —
+      // park-not-delete everywhere, so a wrong rejection is recoverable from
+      // the queue itself, not only from this journal line).
+      // Best-effort SubsystemId so this parked result can be attributed to its
       // MCM on a central server (parity with the auto-sync drop/park audits).
       let subsystemId: number | null = null
       try {
         const ioRow = db.prepare('SELECT SubsystemId FROM Ios WHERE id = ?').get(ioId) as { SubsystemId: number | null } | undefined
         subsystemId = ioRow?.SubsystemId ?? null
       } catch { /* best-effort — record null */ }
+      const reasonStr = typeof result.reason === 'string' ? result.reason : JSON.stringify(result.reason ?? 'permanent')
       auditLog({
-        type: 'sync.push.drop',
+        type: 'sync.push.park',
         ioId,
         subsystemId,
         version: pending.Version,
         result: pending.TestResult,
         user: pending.InspectorName,
-        reason: typeof result.reason === 'string' ? result.reason : JSON.stringify(result.reason ?? 'permanent'),
+        reason: reasonStr,
         detail: {
           pendingId: pending.id,
           comments: pending.Comments,
@@ -98,9 +104,9 @@ export async function drainPendingSyncsForIo(
           timestamp: pending.Timestamp,
         },
       })
-      pendingSyncRepository.delete(pending.id)
+      pendingSyncRepository.deadLetter(pending.id, `permanent reject (instant path): ${reasonStr}`)
       console.warn(
-        `[${logPrefix}] DROPPED-PERMANENT pendingId=${pending.id} ioId=${ioId} ` +
+        `[${logPrefix}] PARKED-PERMANENT pendingId=${pending.id} ioId=${ioId} ` +
         `reason=${JSON.stringify(result.reason ?? 'unknown')} ` +
         `result=${JSON.stringify(pending.TestResult)} version=${pending.Version}`,
       )

@@ -210,11 +210,27 @@ try {
     // F2 coalesce: keep only the LATEST active pending row per IO so rapid
     // repeated edits don't pile up thousands of version-conflicting rows.
     // Parked (DeadLettered=1) rows are left alone (the attention surface).
-    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_pendingsyncs_coalesce
+    //
+    // CLASS-AWARE (2026-07-08 sync-contract audit P0): the old trigger deleted
+    // older rows regardless of op type, so a queued METADATA-ONLY op
+    // ('Punchlist Updated' / 'Dependencies Updated') was silently destroyed by
+    // a later Pass/Fail on the same IO — and vice-versa. Result/comment ops
+    // have the orphan-reconciler as a net; punchlist/dependencies have NONE, so
+    // that loss was permanent and unaudited. Now: metadata ops coalesce only
+    // with the SAME op; result/comment ops coalesce among themselves (original
+    // behavior). DROP+CREATE so existing field DBs replace the blind trigger.
+    db.exec('DROP TRIGGER IF EXISTS trg_pendingsyncs_coalesce')
+    db.exec(`CREATE TRIGGER trg_pendingsyncs_coalesce
       AFTER INSERT ON PendingSyncs
       WHEN NEW.DeadLettered = 0
       BEGIN
-        DELETE FROM PendingSyncs WHERE IoId = NEW.IoId AND DeadLettered = 0 AND id < NEW.id;
+        DELETE FROM PendingSyncs
+        WHERE IoId = NEW.IoId AND DeadLettered = 0 AND id < NEW.id
+          AND CASE
+                WHEN NEW.TestResult IN ('Punchlist Updated','Dependencies Updated')
+                  THEN TestResult = NEW.TestResult
+                ELSE TestResult NOT IN ('Punchlist Updated','Dependencies Updated')
+              END;
       END`)
   } catch (e) { console.warn('[DB] coalesce trigger/index setup failed:', e) }
   try {
