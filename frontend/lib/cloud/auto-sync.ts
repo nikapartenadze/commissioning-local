@@ -1822,6 +1822,11 @@ class AutoSyncService {
               tags = this.readNetworkTags(sidNum, conn.client)
             }
           }
+          // Disconnected-clobber guard (2026-07-08 audit — parity with estop):
+          // never push a disconnected/empty status — it would overwrite live
+          // data from another tool that IS connected to this MCM. The cloud
+          // greys NET by staleness on its own.
+          if (!connected) continue
           await this.postNetworkStatus(remoteUrl, apiPassword, sidNum, connected, tags)
         }
         return
@@ -1840,8 +1845,14 @@ class AutoSyncService {
           tags = this.readNetworkTags(parseInt(String(subsystemId), 10), getPlcClient())
         }
       } catch {
-        // PLC not available — send disconnected status
+        // PLC not available — skip push (see guard below)
       }
+
+      // Disconnected-clobber guard (2026-07-08 audit — parity with estop):
+      // pushing connected=false would overwrite live data from another tool
+      // instance that IS connected to the same subsystem. Skip; the cloud
+      // greys NET by staleness on its own.
+      if (!connected) return
 
       await this.postNetworkStatus(
         remoteUrl,

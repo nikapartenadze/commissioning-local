@@ -116,6 +116,9 @@ export async function runConfigSidePulls(
       const data = (await res.json()) as {
         success?: boolean
         zones?: Array<{ name: string; epcs?: Array<{ name: string; checkTag: string; ioPoints?: Array<{ tag: string }>; vfds?: Array<{ tag: string; stoTag: string; mustStop?: boolean }> }> }>
+        // Check RESULTS (2026-07-08 e-stop down-flow): additive field served by
+        // newer clouds; absent on older clouds and safely ignored below.
+        checks?: Array<{ zoneName: string; checkTag: string; checkType?: string; result?: string | null; comments?: string | null; failureMode?: string | null; testedBy?: string | null; testedAt?: string | null; version?: number }>
       }
       if (data.success && data.zones && data.zones.length > 0) {
         db.prepare(`DELETE FROM EStopIoPoints WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?))`).run(subsystemId)
@@ -137,6 +140,36 @@ export async function runConfigSidePulls(
           }
         }
         result.estopPulled = data.zones.length
+      }
+
+      // ── E-stop check RESULTS apply (2026-07-08 down-flow) ───────────────
+      // Version-gated, never-clobber merge of peer/cloud results into the local
+      // ledger — this is what lets a REPLACED tablet recover safety-check
+      // results, and peers converge. Rules: INSERT when local has no row;
+      // UPDATE only when cloud.version is strictly newer; SKIP any check with
+      // an un-pushed local edit (EStopCheckPendingSyncs row = local truth).
+      if (data.success && Array.isArray(data.checks) && data.checks.length > 0) {
+        const getLocal = db.prepare('SELECT id, Version FROM EStopEpcChecks WHERE SubsystemId=? AND ZoneName=? AND CheckTag=? AND CheckType=?')
+        const hasPending = db.prepare('SELECT COUNT(*) c FROM EStopCheckPendingSyncs WHERE SubsystemId=? AND ZoneName=? AND CheckTag=? AND CheckType=?')
+        const ins = db.prepare(`INSERT INTO EStopEpcChecks (SubsystemId, ZoneName, CheckTag, CheckType, Result, Comments, FailureMode, TestedBy, TestedAt, Version, UpdatedAt)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`)
+        const upd = db.prepare(`UPDATE EStopEpcChecks SET Result=?, Comments=?, FailureMode=?, TestedBy=?, TestedAt=?, Version=?, UpdatedAt=datetime('now') WHERE id=?`)
+        let applied = 0
+        for (const c of data.checks) {
+          if (!c?.zoneName || !c?.checkTag) continue
+          const checkType = c.checkType || 'preliminary'
+          const ver = Number(c.version) || 1
+          if ((hasPending.get(subsystemId, c.zoneName, c.checkTag, checkType) as { c: number }).c > 0) continue
+          const local = getLocal.get(subsystemId, c.zoneName, c.checkTag, checkType) as { id: number; Version: number } | undefined
+          if (!local) {
+            ins.run(subsystemId, c.zoneName, c.checkTag, checkType, c.result ?? null, c.comments ?? null, c.failureMode ?? null, c.testedBy ?? null, c.testedAt ?? null, ver)
+            applied++
+          } else if (ver > (local.Version ?? 0)) {
+            upd.run(c.result ?? null, c.comments ?? null, c.failureMode ?? null, c.testedBy ?? null, c.testedAt ?? null, ver, local.id)
+            applied++
+          }
+        }
+        if (applied > 0) console.log(`[SidePull ${subsystemId}] estop check results applied from cloud: ${applied}`)
       }
     }
   } catch (e) {
