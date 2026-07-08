@@ -14,7 +14,7 @@ const { memDb } = vi.hoisted(() => {
       Version INTEGER DEFAULT 0, Trade TEXT, ClarificationNote TEXT, NetworkDeviceName TEXT,
       PunchlistStatus TEXT, CloudSyncedAt TEXT, "Order" INTEGER
     );
-    CREATE TABLE IF NOT EXISTS PendingSyncs ( id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER );
+    CREATE TABLE IF NOT EXISTS PendingSyncs ( id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, TestResult TEXT );
     CREATE TABLE IF NOT EXISTS SyncCursors ( SubsystemId INTEGER PRIMARY KEY, LastSeq INTEGER NOT NULL DEFAULT 0, UpdatedAt TEXT );
     CREATE TABLE IF NOT EXISTS TestHistories ( id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, Result TEXT, Timestamp TEXT );
   `)
@@ -54,6 +54,28 @@ describe('applyDelta', () => {
     memDb.prepare('INSERT INTO TestHistories (IoId, Result, Timestamp) VALUES (?, ?, ?)').run(200, 'Cleared', '2026-07-04T10:00:00.000Z')
     applyDelta(40, { toSeq: 21, ios: { upserts: [{ id: 200, name: 'IO-Z', result: 'Passed', timestamp: '2026-07-07T10:00:00.000Z' }] } })
     expect(getIo(200).Result).toBe('Passed') // real later cloud edit wins
+  })
+
+  // ── Resolver-field (punchlist) propagation ─────────────────────────────────
+  it('applies a cloud punchlist SET (ADDRESSED) on pull', () => {
+    memDb.prepare("INSERT INTO Ios (id, Name, SubsystemId, Result) VALUES (?, ?, ?, 'Failed')").run(302, 'IO-R', 40)
+    applyDelta(40, { toSeq: 32, ios: { upserts: [{ id: 302, name: 'IO-R', result: 'Failed', punchlistStatus: 'ADDRESSED' }] } })
+    expect(getIo(302).PunchlistStatus).toBe('ADDRESSED')
+  })
+
+  it('applies a cloud punchlist CLEAR (null) when no local punchlist edit is pending', () => {
+    // Regression: a cloud un-address used to never reach the tablet on pull —
+    // the merge coalesced null→keep-local. Now it clears (no pending guard hit).
+    memDb.prepare("INSERT INTO Ios (id, Name, SubsystemId, Result, PunchlistStatus) VALUES (?, ?, ?, 'Failed', 'ADDRESSED')").run(300, 'IO-P', 40)
+    applyDelta(40, { toSeq: 30, ios: { upserts: [{ id: 300, name: 'IO-P', result: 'Failed', punchlistStatus: null }] } })
+    expect(getIo(300).PunchlistStatus).toBeNull()
+  })
+
+  it('keeps a pending local punchlist edit against a cloud clear until it syncs', () => {
+    memDb.prepare("INSERT INTO Ios (id, Name, SubsystemId, Result, PunchlistStatus) VALUES (?, ?, ?, 'Failed', 'ADDRESSED')").run(301, 'IO-Q', 40)
+    memDb.prepare("INSERT INTO PendingSyncs (IoId, TestResult) VALUES (?, 'Punchlist Updated')").run(301)
+    applyDelta(40, { toSeq: 31, ios: { upserts: [{ id: 301, name: 'IO-Q', result: 'Failed', punchlistStatus: null }] } })
+    expect(getIo(301).PunchlistStatus).toBe('ADDRESSED') // un-pushed local edit protected
   })
 
   it('restores a cloud result over a never-tested (non-deliberate) null IO', () => {

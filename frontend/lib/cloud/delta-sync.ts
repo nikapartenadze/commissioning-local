@@ -97,9 +97,19 @@ function upsertStmt() {
         IoNumber = @IoNumber, InstallationStatus = @InstallationStatus,
         InstallationPercent = @InstallationPercent, PoweredUp = @PoweredUp,
         TagType = CASE WHEN @TagType IS NOT NULL THEN @TagType ELSE Ios.TagType END,
-        Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
+        Version = @Version,
         NetworkDeviceName = @NetworkDeviceName,
-        PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END,
+        -- Resolver fields are CLOUD-owned. Apply the cloud value INCLUDING null
+        -- (a genuine un-address / clear), UNLESS this tablet has an un-pushed
+        -- local punchlist edit queued — then keep local so the pull can't
+        -- clobber it before it syncs up. Mirrors the delete / protected-clear
+        -- pending guards. (Before: PunchlistStatus coalesced null→keep-local
+        -- unconditionally, so a cloud clear NEVER propagated on pull; Trade and
+        -- ClarificationNote took the cloud value blindly, wiping a pending local
+        -- edit. Both are now unified under the same pending guard.)
+        Trade = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.Trade ELSE @Trade END,
+        ClarificationNote = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.ClarificationNote ELSE @ClarificationNote END,
+        PunchlistStatus = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.PunchlistStatus ELSE @PunchlistStatus END,
         CloudSyncedAt = @CloudSyncedAt,
         "Order" = @Order
     `)
@@ -125,9 +135,19 @@ function upsertKeepClearStmt() {
         IoNumber = @IoNumber, InstallationStatus = @InstallationStatus,
         InstallationPercent = @InstallationPercent, PoweredUp = @PoweredUp,
         TagType = CASE WHEN @TagType IS NOT NULL THEN @TagType ELSE Ios.TagType END,
-        Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
+        Version = @Version,
         NetworkDeviceName = @NetworkDeviceName,
-        PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END,
+        -- Resolver fields are CLOUD-owned. Apply the cloud value INCLUDING null
+        -- (a genuine un-address / clear), UNLESS this tablet has an un-pushed
+        -- local punchlist edit queued — then keep local so the pull can't
+        -- clobber it before it syncs up. Mirrors the delete / protected-clear
+        -- pending guards. (Before: PunchlistStatus coalesced null→keep-local
+        -- unconditionally, so a cloud clear NEVER propagated on pull; Trade and
+        -- ClarificationNote took the cloud value blindly, wiping a pending local
+        -- edit. Both are now unified under the same pending guard.)
+        Trade = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.Trade ELSE @Trade END,
+        ClarificationNote = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.ClarificationNote ELSE @ClarificationNote END,
+        PunchlistStatus = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.PunchlistStatus ELSE @PunchlistStatus END,
         CloudSyncedAt = @CloudSyncedAt,
         "Order" = @Order
     `)
