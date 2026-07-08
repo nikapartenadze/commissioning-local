@@ -464,6 +464,21 @@ export function initializeSchema() {
     CREATE INDEX IF NOT EXISTS idx_networkports_nodeid ON NetworkPorts(NodeId);
     CREATE INDEX IF NOT EXISTS idx_networkports_parentportid ON NetworkPorts(ParentPortId);
 
+    -- Ring Commissioning: one operator-approved golden baseline per ring.
+    -- Additive + optional; the ring-commissioning feature is on-demand and
+    -- self-disables when SNMP is not configured, so this table can stay empty.
+    CREATE TABLE IF NOT EXISTS RingBaselines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      SubsystemId INTEGER NOT NULL,
+      RingName TEXT NOT NULL,
+      CapturedAt TEXT NOT NULL,
+      ApprovedBy TEXT,
+      ApprovedAt TEXT,
+      TopologyJson TEXT NOT NULL,
+      CreatedAt TEXT DEFAULT (datetime('now')),
+      UNIQUE(SubsystemId, RingName)
+    );
+
     CREATE TABLE IF NOT EXISTS EStopZones (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       SubsystemId INTEGER,
