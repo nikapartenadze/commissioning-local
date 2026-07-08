@@ -137,7 +137,7 @@ frontend/
 - Cloud sync is attempted immediately after a result/comment/reset change.
 - Background sync retries keep pending work moving when connectivity returns.
 
-See `../SYNC-ARCHITECTURE.md` for the full cross-system behavior.
+See `../SYNC-HARDENING-PLAN.md` for the full cross-system behavior.
 
 ### PLC Lifecycle
 
@@ -194,7 +194,7 @@ Override with `CONFIG_PATH` env var if needed.
 - **Data authority:** local SQLite is the sole authority for test results; cloud is a read-only receiver
 - **Database backup:** automatic before any manual "Pull IOs" operation
 
-See `../SYNC-ARCHITECTURE.md` for the full contract.
+See `../docs/SYNC-CONTRACT.md` for the full contract.
 
 ## Testing Notes
 

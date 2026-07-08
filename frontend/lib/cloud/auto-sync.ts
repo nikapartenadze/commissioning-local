@@ -26,6 +26,7 @@ import { auditLog } from '@/lib/logging/recovery-log'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 import { getMcmStatus, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
+import { runJournalUpload } from '@/lib/cloud/journal-uploader'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -56,6 +57,7 @@ class AutoSyncService {
   private networkStatusTimer: NodeJS.Timeout | null = null
   private estopStatusTimer: NodeJS.Timeout | null = null
   private networkDiagnosticsTimer: NodeJS.Timeout | null = null
+  private journalUploadTimer: NodeJS.Timeout | null = null
   private sseUnsubscribe: (() => void) | null = null
   private sseSubsystemChangedUnsub: (() => void) | null = null
   private config: AutoSyncConfig
@@ -121,6 +123,13 @@ class AutoSyncService {
     // First push 15 s after startup so the cloud has data soon after a tool
     // launch, rather than waiting a full minute.
     setTimeout(() => this.pushNetworkDiagnostics(), 15_000)
+
+    // Ship recovery-journal (audit-*.jsonl) lines to the cloud so forensics
+    // survive tablet loss. Slow cadence — the journal is low-frequency and the
+    // uploader is chunked/resumable. First run ~2 min after start (let config
+    // + network settle), then every 6 hours. Best-effort: never throws.
+    this.journalUploadTimer = setInterval(() => { void runJournalUpload() }, 6 * 60 * 60_000)
+    setTimeout(() => { void runJournalUpload() }, 2 * 60_000)
 
     // Periodic safety-net catch-up pull for ALL configured MCMs. The SSE stream
     // delivers cloud changes in real time, but if events are missed during a
@@ -212,11 +221,13 @@ class AutoSyncService {
     if (this.networkStatusTimer) clearInterval(this.networkStatusTimer)
     if (this.estopStatusTimer) clearInterval(this.estopStatusTimer)
     if (this.networkDiagnosticsTimer) clearInterval(this.networkDiagnosticsTimer)
+    if (this.journalUploadTimer) clearInterval(this.journalUploadTimer)
     if (this.mcmSafetyTimer) clearInterval(this.mcmSafetyTimer)
     this.pushTimer = null
     this.networkStatusTimer = null
     this.estopStatusTimer = null
     this.networkDiagnosticsTimer = null
+    this.journalUploadTimer = null
     this.mcmSafetyTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')

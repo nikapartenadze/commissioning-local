@@ -81,14 +81,15 @@ The field tool ships as either a portable ZIP (~48MB) or a Windows NSIS installe
 - Portable ZIP: `deploy/BUILD-PORTABLE.bat` — bundles Node.js 20, compiled server, Vite client, and `plctag.dll`
 - NSIS Installer: `deploy/BUILD-INSTALLER.bat` — installs to `C:\Program Files\CommissioningTool\`, data in `C:\ProgramData\CommissioningTool\`, auto-start Windows Service via NSSM
 
-See `DEPLOYMENT-STRATEGY.md` for trade-offs and roadmap.
+Build scripts live in `deploy/`; see `CENTRAL-SERVER-DEPLOYMENT.md` for central-server deployment notes.
 
 ## Useful Root Docs
 
 - `README.md` — workspace map
-- `SYNC-ARCHITECTURE.md` — local/cloud sync behavior and data safety
-- `DEPLOYMENT-STRATEGY.md` — deployment options and packaging notes
-- `TEST-PLAN.md` — field validation checklist (setup, single-user, multi-user, VPN, resilience)
+- `SYNC-HARDENING-PLAN.md` — local/cloud sync behavior, data safety, and hardening plan
+- `CENTRAL-SERVER-DEPLOYMENT.md` — central-server deployment and packaging notes
+- `CI-CD-AND-TEST-STRATEGY.md` — CI/CD and test strategy across the apps
+- `TEST-INVENTORY-REPORT.md` — inventory of existing test coverage
 - `docs/` — planning and migration notes
 - `docs/SYNC-CONTRACT.md` — formal sync contract between local and cloud
-- `docs/MEMORY-OPTIMIZATION-PLAN.md` — heap and memory profiling notes
+- `docs/BATTLE-TEST-PLAN.md` — battle/soak test plan for the field tool

@@ -215,7 +215,8 @@ export const API_ENDPOINTS = {
   // Backups
   backups: '/api/backups',
   backupByFilename: (filename: string) => `/api/backups/${encodeURIComponent(filename)}`,
-  backupSync: (filename: string) => `/api/backups/${encodeURIComponent(filename)}/sync`,
+  // backupSync REMOVED (2026-07-08): the /api/backups/:filename/sync route was
+  // dead code (queried nonexistent table names) and has been deleted.
 
   // Change Requests
   changeRequests: '/api/change-requests',

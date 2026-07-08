@@ -23,13 +23,20 @@ const { memDb } = vi.hoisted(() => {
 
 vi.mock('@/lib/db-sqlite', () => ({ db: memDb, extractDeviceName: () => null }))
 
+// Keep the mass-delete circuit breaker's audit trail out of the real logs dir.
+const auditLogSpy = vi.hoisted(() => vi.fn())
+vi.mock('@/lib/logging/recovery-log', () => ({ auditLog: auditLogSpy }))
+
 import { applyDelta } from '@/lib/cloud/delta-sync'
 import { getSyncCursor } from '@/lib/cloud/sync-cursor'
 
 const getIo = (id: number) => memDb.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as any
 
 describe('applyDelta', () => {
-  beforeEach(() => memDb.exec('DELETE FROM Ios; DELETE FROM PendingSyncs; DELETE FROM SyncCursors; DELETE FROM TestHistories;'))
+  beforeEach(() => {
+    memDb.exec('DELETE FROM Ios; DELETE FROM PendingSyncs; DELETE FROM SyncCursors; DELETE FROM TestHistories;')
+    auditLogSpy.mockClear()
+  })
 
   it('does NOT revert a deliberate recent clear with a stale cloud result (MCM04 reset loop)', () => {
     // Operator cleared it locally (Result NULL) with a 'Cleared' history at 07-07.
@@ -105,6 +112,43 @@ describe('applyDelta', () => {
     memDb.prepare('UPDATE Ios SET Result = ? WHERE id = ?').run('Failed', 1)
     applyDelta(7, payload)
     expect(getIo(1).Result).toBe('Failed') // re-apply doesn't clobber local
+  })
+
+  it('BLOCKS a mass delete (>50) but still applies upserts and advances the cursor', () => {
+    const insert = memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId) VALUES (?, ?, ?)')
+    const ids: number[] = []
+    for (let i = 1; i <= 51; i++) { insert.run(i, `IO-${i}`, 7); ids.push(i) }
+    const r = applyDelta(7, {
+      toSeq: 50,
+      ios: { upserts: [{ id: 500, name: 'IO-NEW', result: 'Passed' }], deletes: ids },
+    })
+    // No deletes applied — all 51 rows survive.
+    expect(r.deleted).toBe(0)
+    expect(r.massDeleteBlocked).toBe(51)
+    expect((memDb.prepare('SELECT COUNT(*) AS c FROM Ios WHERE id <= 51').get() as any).c).toBe(51)
+    // Upsert still landed and the cursor still advanced (breaker must not wedge sync).
+    expect(r.applied).toBe(1)
+    expect(getIo(500).Name).toBe('IO-NEW')
+    expect(getSyncCursor(7)).toBe(50)
+    // Durable audit trail of the blocked bulk delete.
+    expect(auditLogSpy).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'sync.pull',
+      detail: expect.objectContaining({ route: 'delta', massDeleteBlocked: 51, subsystemId: 7 }),
+    }))
+  })
+
+  it('applies deletes normally at exactly the 50-row limit (per-row guards intact)', () => {
+    const insert = memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId) VALUES (?, ?, ?)')
+    const ids: number[] = []
+    for (let i = 1; i <= 50; i++) { insert.run(i, `IO-${i}`, 7); ids.push(i) }
+    // One of them still holds un-pushed local work — the per-row guard keeps it.
+    memDb.prepare('INSERT INTO PendingSyncs (IoId) VALUES (?)').run(50)
+    const r = applyDelta(7, { toSeq: 51, ios: { deletes: ids } })
+    expect(r.massDeleteBlocked).toBeUndefined()
+    expect(r.deleted).toBe(49)
+    expect(r.skippedDeletes).toEqual([50])
+    expect(getIo(50)).toBeDefined()
+    expect(auditLogSpy).not.toHaveBeenCalled()
   })
 
   it('passes through changed section flags', () => {

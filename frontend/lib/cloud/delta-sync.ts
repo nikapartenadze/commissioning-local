@@ -19,6 +19,15 @@
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getSyncCursor, setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
+import { auditLog } from '@/lib/logging/recovery-log'
+
+// Mass-delete circuit breaker (2026-07-08 durability audit): a delta payload
+// carrying more than this many IO deletes is treated as a cloud-side anomaly
+// (bad import / wrong-project wipe / API bug), not routine CRUD. ALL deletes in
+// the payload are skipped — upserts still apply and the cursor still advances
+// so the queue can't wedge; the rows simply stay until an operator runs an
+// explicit full pull.
+const MASS_DELETE_LIMIT = 50
 
 const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
 
@@ -61,6 +70,8 @@ export interface ApplyDeltaResult {
   applied: number
   deleted: number
   skippedDeletes: number[]
+  /** Set when the mass-delete circuit breaker fired: number of deletes blocked. */
+  massDeleteBlocked?: number
   sections: {
     network: boolean; estop: boolean; safety: boolean; l2: boolean
     punchlist?: boolean; vfdBlocker?: boolean; changeRequest?: boolean
@@ -200,7 +211,22 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
     }
   }
 
-  const deletes = payload.ios?.deletes ?? []
+  let deletes = payload.ios?.deletes ?? []
+
+  // Circuit breaker: refuse to apply a suspiciously-large bulk delete. Per-row
+  // guarded deletes below stay as-is for payloads at or under the limit.
+  let massDeleteBlocked = 0
+  if (deletes.length > MASS_DELETE_LIMIT) {
+    massDeleteBlocked = deletes.length
+    console.warn(
+      `[Delta] Subsystem ${subsystemId}: MASS-DELETE BLOCKED — payload asked to delete ` +
+      `${massDeleteBlocked} IOs (> ${MASS_DELETE_LIMIT}). Skipping ALL deletes; upserts still ` +
+      `apply and the cursor advances. Rows stay local until an operator runs an explicit full pull.`
+    )
+    auditLog({ type: 'sync.pull', detail: { route: 'delta', massDeleteBlocked, subsystemId } })
+    deletes = []
+  }
+
   const skippedDeletes: number[] = []
   let applied = 0
   let deleted = 0
@@ -253,7 +279,15 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
     console.warn(`[Delta] Subsystem ${subsystemId}: preserved ${protectedClears} deliberate local clear(s) the cloud would have reverted (stale higher-versioned result held back).`)
   }
 
-  return { resync: false, applied, deleted, skippedDeletes, sections, toSeq: payload.toSeq ?? getSyncCursor(subsystemId) }
+  return {
+    resync: false,
+    applied,
+    deleted,
+    skippedDeletes,
+    ...(massDeleteBlocked > 0 ? { massDeleteBlocked } : {}),
+    sections,
+    toSeq: payload.toSeq ?? getSyncCursor(subsystemId),
+  }
 }
 
 /**

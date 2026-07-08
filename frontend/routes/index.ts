@@ -79,7 +79,6 @@ import * as historyByIo from '@/app/api/history/[ioId]/route'
 import * as historyExport from '@/app/api/history/export/route'
 import * as backups from '@/app/api/backups/route'
 import * as backupFile from '@/app/api/backups/[filename]/route'
-import * as backupSync from '@/app/api/backups/[filename]/sync/route'
 import * as diagnosticsFailureModes from '@/app/api/diagnostics/failure-modes/route'
 import * as diagnosticsSteps from '@/app/api/diagnostics/steps/route'
 import * as networkTopology from '@/app/api/network/topology/route'
@@ -298,7 +297,10 @@ export function createApiRouter(): Router {
   router.post('/api/backups', asyncHandler(backups.POST))
   router.get('/api/backups/:filename', asyncHandler(backupFile.GET))
   router.delete('/api/backups/:filename', asyncHandler(backupFile.DELETE))
-  router.post('/api/backups/:filename/sync', asyncHandler(backupSync.POST))
+  // /api/backups/:filename/sync REMOVED (2026-07-08 forensics audit): dead code —
+  // it queried table names that don't exist in the runtime schema (PendingSync /
+  // TestHistory / Io instead of PendingSyncs / TestHistories / Ios), so it could
+  // never have worked; nothing in the UI called it.
 
   // ── Diagnostics ────────────────────────────────────────────────
   router.get('/api/diagnostics/failure-modes', asyncHandler(diagnosticsFailureModes.GET))

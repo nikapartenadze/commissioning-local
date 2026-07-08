@@ -28,9 +28,24 @@ export async function createBackup(reason: string): Promise<{ filename: string; 
   const filename = `database-${timestamp}-${safeReason}.db`
   const backupPath = path.join(backupsDir, filename)
 
+  // Snapshot method (2026-07-08 durability audit): prefer `VACUUM INTO` — it
+  // produces a transactionally-consistent, compacted single-file snapshot even
+  // with WAL mode active (no torn copies, no separate -wal/-shm to worry
+  // about). Fall back to the previous online-backup method if VACUUM INTO
+  // throws (older SQLite build / disk edge case) so a backup is ALWAYS taken.
   const snapshotDb = new Database(dbPath, { readonly: true })
   try {
-    await snapshotDb.backup(backupPath)
+    try {
+      snapshotDb.prepare('VACUUM INTO ?').run(backupPath)
+    } catch (vacuumErr) {
+      console.warn('[backup] VACUUM INTO failed — falling back to online backup API:', vacuumErr)
+      // VACUUM INTO refuses to overwrite and may leave a partial file behind
+      // on failure — remove it so the fallback writes a clean file.
+      try {
+        if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath)
+      } catch { /* best-effort */ }
+      await snapshotDb.backup(backupPath)
+    }
   } finally {
     snapshotDb.close()
   }
