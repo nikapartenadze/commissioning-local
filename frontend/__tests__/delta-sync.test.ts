@@ -16,6 +16,7 @@ const { memDb } = vi.hoisted(() => {
     );
     CREATE TABLE IF NOT EXISTS PendingSyncs ( id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER );
     CREATE TABLE IF NOT EXISTS SyncCursors ( SubsystemId INTEGER PRIMARY KEY, LastSeq INTEGER NOT NULL DEFAULT 0, UpdatedAt TEXT );
+    CREATE TABLE IF NOT EXISTS TestHistories ( id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, Result TEXT, Timestamp TEXT );
   `)
   return { memDb: d }
 })
@@ -28,7 +29,32 @@ import { getSyncCursor } from '@/lib/cloud/sync-cursor'
 const getIo = (id: number) => memDb.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as any
 
 describe('applyDelta', () => {
-  beforeEach(() => memDb.exec('DELETE FROM Ios; DELETE FROM PendingSyncs; DELETE FROM SyncCursors;'))
+  beforeEach(() => memDb.exec('DELETE FROM Ios; DELETE FROM PendingSyncs; DELETE FROM SyncCursors; DELETE FROM TestHistories;'))
+
+  it('does NOT revert a deliberate recent clear with a stale cloud result (MCM04 reset loop)', () => {
+    // Operator cleared it locally (Result NULL) with a 'Cleared' history at 07-07.
+    memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId, Result, Timestamp) VALUES (?, ?, ?, NULL, NULL)').run(64108, 'PS6_15_VFD:O.IO_0', 40)
+    memDb.prepare('INSERT INTO TestHistories (IoId, Result, Timestamp) VALUES (?, ?, ?)').run(64108, 'Cleared', '2026-07-07 18:27:00')
+    // Cloud still holds the stale higher-versioned Passed from 07-04.
+    applyDelta(40, { toSeq: 20, ios: { upserts: [{ id: 64108, name: 'PS6_15_VFD:O.IO_0', result: 'Passed', timestamp: '2026-07-04T20:45:00.000Z', version: 19 }] } })
+    const io = getIo(64108)
+    expect(io.Result).toBeNull() // clear preserved — NOT reverted to Passed
+    expect(io.Version).toBe(19) // definition/version still refreshed
+  })
+
+  it('DOES apply a cloud result that is provably newer than the clear', () => {
+    memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId, Result) VALUES (?, ?, ?, NULL)').run(200, 'IO-Z', 40)
+    memDb.prepare('INSERT INTO TestHistories (IoId, Result, Timestamp) VALUES (?, ?, ?)').run(200, 'Cleared', '2026-07-04T10:00:00.000Z')
+    applyDelta(40, { toSeq: 21, ios: { upserts: [{ id: 200, name: 'IO-Z', result: 'Passed', timestamp: '2026-07-07T10:00:00.000Z' }] } })
+    expect(getIo(200).Result).toBe('Passed') // real later cloud edit wins
+  })
+
+  it('restores a cloud result over a never-tested (non-deliberate) null IO', () => {
+    // No 'Cleared' history → this null is "never tested", not a deliberate clear.
+    memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId, Result) VALUES (?, ?, ?, NULL)').run(201, 'IO-Y', 40)
+    applyDelta(40, { toSeq: 22, ios: { upserts: [{ id: 201, name: 'IO-Y', result: 'Passed', timestamp: '2026-07-04T10:00:00.000Z' }] } })
+    expect(getIo(201).Result).toBe('Passed')
+  })
 
   it('inserts a new IO from an upsert', () => {
     const r = applyDelta(7, { toSeq: 10, ios: { upserts: [{ id: 100, name: 'IO-A', result: 'Passed' }] } })

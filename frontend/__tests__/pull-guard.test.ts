@@ -12,6 +12,7 @@ import {
   computeAtRiskResults,
   computeAtRiskComments,
   computeDivergentUnqueuedResults,
+  computeAtRiskClears,
   computeAtRiskL2Cells,
   parseDbTimestamp,
 } from '@/lib/cloud/pull-guard'
@@ -59,6 +60,60 @@ describe('computeAtRiskResults', () => {
   it('empty local DB (fresh tablet setup) → nothing at risk', () => {
     const atRisk = computeAtRiskResults([], [{ id: 1, result: null }])
     expect(atRisk).toHaveLength(0)
+  })
+})
+
+describe('computeAtRiskClears (F-reset — MCM04 "keeps getting reset")', () => {
+  const cleared = (id: number, name: string, clearedAt: string | null) => ({ id, Name: name, clearedAt })
+
+  it('flags a deliberate clear the cloud would revert with a stale result', () => {
+    // Operator cleared at 07-07; cloud still holds Passed from 07-04.
+    const atRisk = computeAtRiskClears(
+      [cleared(64108, 'PS6_15_VFD:O.IO_0', '2026-07-07 18:27:00')],
+      [{ id: 64108, result: 'Passed', timestamp: '2026-07-04T20:45:00.000Z' }],
+    )
+    expect(atRisk).toEqual([{ id: 64108, name: 'PS6_15_VFD:O.IO_0', cloudResult: 'Passed' }])
+  })
+
+  it('does NOT flag when the cloud value is provably newer than the clear', () => {
+    const atRisk = computeAtRiskClears(
+      [cleared(1, 'IO_A', '2026-07-04T10:00:00.000Z')],
+      [{ id: 1, result: 'Passed', timestamp: '2026-07-07T10:00:00.000Z' }],
+    )
+    expect(atRisk).toHaveLength(0)
+  })
+
+  it('does NOT flag when the cloud has no result (pull restores nothing)', () => {
+    const atRisk = computeAtRiskClears(
+      [cleared(1, 'IO_A', '2026-07-07T10:00:00.000Z')],
+      [{ id: 1, result: null, timestamp: '2026-07-07T09:00:00.000Z' }],
+    )
+    expect(atRisk).toHaveLength(0)
+  })
+
+  it('flags when cloud carries no timestamp (no evidence it is newer)', () => {
+    const atRisk = computeAtRiskClears(
+      [cleared(1, 'IO_A', '2026-07-07 10:00:00')],
+      [{ id: 1, result: 'Failed', timestamp: null }],
+    )
+    expect(atRisk).toHaveLength(1)
+  })
+
+  it('does NOT flag a clear with no timestamp (cannot prove it is the newer intent)', () => {
+    const atRisk = computeAtRiskClears(
+      [cleared(1, 'IO_A', null)],
+      [{ id: 1, result: 'Passed', timestamp: '2026-07-07T10:00:00.000Z' }],
+    )
+    expect(atRisk).toHaveLength(0)
+  })
+
+  it('handles SQLite datetime shape (UTC, no zone) vs cloud ISO', () => {
+    // clear 1s AFTER the cloud value → must be protected.
+    const atRisk = computeAtRiskClears(
+      [cleared(1, 'IO_A', '2026-07-07 10:00:01')],
+      [{ id: 1, result: 'Passed', timestamp: '2026-07-07T10:00:00.000Z' }],
+    )
+    expect(atRisk).toHaveLength(1)
   })
 })
 

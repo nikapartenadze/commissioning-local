@@ -77,6 +77,64 @@ export function computeAtRiskComments(
     .map(row => ({ id: row.id, name: row.Name }))
 }
 
+export interface LocalClearedRow {
+  id: number
+  Name: string
+  /** When the operator cleared it (latest 'Cleared' TestHistories.Timestamp). */
+  clearedAt: string | null
+}
+
+export interface AtRiskClear {
+  id: number
+  name: string
+  cloudResult: string
+}
+
+/**
+ * F-reset (2026-07-08 "checks keep getting reset" incident, MCM04): the
+ * destructive pull (DELETE FROM Ios + reinsert cloud state) also silently
+ * REVERTS a deliberate operator CLEAR. A cleared IO has Result=NULL, so it is
+ * invisible to computeAtRiskResults / computeDivergentUnqueuedResults (both
+ * require a non-null local Result). When the cloud still holds the old
+ * Passed/Failed at an inflated version (the local clear lost the version race
+ * and never propagated), every pull reinserts that stale value — the operator
+ * clears it, the pull brings it back, ad infinitum.
+ *
+ * This flags IOs the operator recently and deliberately cleared (latest
+ * TestHistories row is 'Cleared') where the cloud payload still carries a
+ * non-null result that is NOT provably newer than the clear. A cloud value that
+ * is provably newer than the clear (real later edit) is NOT flagged — normal
+ * last-write-wins still applies. Rows with a pending/queued clear are handled by
+ * the pending-queue guard and pass through here harmlessly (still flagged, which
+ * only makes the pull refuse — never destructive).
+ */
+export function computeAtRiskClears(
+  localClearedRows: LocalClearedRow[],
+  cloudIos: Array<{ id: number | string; result?: string | null; timestamp?: string | null }>,
+): AtRiskClear[] {
+  const cloudById = new Map<number, { result: string | null; timestamp: string | null }>(
+    cloudIos.map(io => [
+      Number(io.id),
+      { result: (io.result ?? null) as string | null, timestamp: (io.timestamp ?? null) as string | null },
+    ])
+  )
+  const out: AtRiskClear[] = []
+  for (const row of localClearedRows) {
+    const cloud = cloudById.get(row.id)
+    // Cloud has no result → the pull wouldn't restore anything; nothing at risk.
+    if (!cloud || cloud.result == null || cloud.result === '') continue
+    const clearedAt = parseDbTimestamp(row.clearedAt)
+    // No clear timestamp → cannot prove the clear is the newer intent; leave it
+    // to the other guards (don't over-block).
+    if (!Number.isFinite(clearedAt)) continue
+    const cloudTs = Date.parse(cloud.timestamp ?? '')
+    // Cloud is provably newer than the clear → a real later edit wins; not at risk.
+    if (Number.isFinite(cloudTs) && cloudTs > clearedAt) continue
+    out.push({ id: row.id, name: row.Name, cloudResult: cloud.result })
+  }
+  return out
+}
+
 export interface LocalResultRowWithTs {
   id: number
   Name: string

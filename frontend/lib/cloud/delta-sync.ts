@@ -18,6 +18,7 @@
 
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getSyncCursor, setSyncCursor } from '@/lib/cloud/sync-cursor'
+import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
 
 const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
 
@@ -95,6 +96,60 @@ function upsertStmt() {
   return _upsertStmt
 }
 
+// Variant used only when the local row is a DELIBERATE, recent operator CLEAR
+// that the incoming cloud value would silently revert (2026-07-08 MCM04 "keeps
+// getting reset"). Keeps the local Result/Comments/Timestamp/TestedBy exactly as
+// they are (i.e. cleared) while still applying the cloud DEFINITION fields, so
+// the clear is honored but metadata/config stays fresh. See applyDelta's loop.
+let _upsertKeepClearStmt: ReturnType<typeof db.prepare> | null = null
+function upsertKeepClearStmt() {
+  if (!_upsertKeepClearStmt) {
+    _upsertKeepClearStmt = db.prepare(`
+      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, CloudSyncedAt, "Order")
+      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @CloudSyncedAt, @Order)
+      ON CONFLICT(id) DO UPDATE SET
+        Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
+        Result = Ios.Result, Comments = Ios.Comments,
+        Timestamp = Ios.Timestamp, TestedBy = Ios.TestedBy,
+        IoNumber = @IoNumber, InstallationStatus = @InstallationStatus,
+        InstallationPercent = @InstallationPercent, PoweredUp = @PoweredUp,
+        TagType = CASE WHEN @TagType IS NOT NULL THEN @TagType ELSE Ios.TagType END,
+        Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
+        NetworkDeviceName = @NetworkDeviceName,
+        PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END,
+        CloudSyncedAt = @CloudSyncedAt,
+        "Order" = @Order
+    `)
+  }
+  return _upsertKeepClearStmt
+}
+
+// A local row is a "protected clear" when it has NO result now but its latest
+// TestHistories entry is an operator 'Cleared' that the cloud value has NOT
+// provably superseded (cloud carries no newer timestamp). Restoring the cloud
+// result over such a clear is the reset loop; this returns true to keep it.
+let _clearGuardStmt: ReturnType<typeof db.prepare> | null = null
+function isProtectedClear(io: DeltaIo): boolean {
+  const cloudHasResult = io.result != null && String(io.result).trim() !== ''
+  if (!cloudHasResult) return false // pull wouldn't restore anything
+  const local = db.prepare('SELECT Result FROM Ios WHERE id = ?').get(io.id) as { Result: string | null } | undefined
+  if (!local) return false // brand-new IO — nothing local to protect
+  if (local.Result != null && String(local.Result).trim() !== '') return false // has a result → other guards own it
+  if (!_clearGuardStmt) {
+    _clearGuardStmt = db.prepare(
+      'SELECT Result AS r, Timestamp AS ts FROM TestHistories WHERE IoId = ? ORDER BY id DESC LIMIT 1'
+    )
+  }
+  const last = _clearGuardStmt.get(io.id) as { r: string | null; ts: string | null } | undefined
+  if (!last || last.r !== 'Cleared') return false // not a deliberate clear (never tested / stale-null)
+  const clearedAt = parseDbTimestamp(last.ts)
+  if (!Number.isFinite(clearedAt)) return true // deliberate clear, no ts to compare → protect (safe default)
+  const cloudTs = Date.parse(io.timestamp ?? '')
+  // Cloud provably newer than the clear → a real later edit wins; don't protect.
+  if (Number.isFinite(cloudTs) && cloudTs > clearedAt) return false
+  return true
+}
+
 function ioToParams(io: DeltaIo, subsystemId: number) {
   return {
     id: io.id,
@@ -153,13 +208,23 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   const pendingStmt = db.prepare('SELECT COUNT(*) as c FROM PendingSyncs WHERE IoId = ?')
   const deleteStmt = db.prepare('DELETE FROM Ios WHERE id = ?')
   const upsert = upsertStmt()
+  const upsertKeepClear = upsertKeepClearStmt()
+  let protectedClears = 0
 
   // One transaction: either the whole delta lands or none of it (so the cursor,
   // advanced only after, can't skip a partially-applied window).
   db.transaction(() => {
     for (const io of upserts) {
       if (!io || !io.name || io.id <= 0) continue
-      upsert.run(ioToParams(io, subsystemId))
+      // A deliberate, recent operator clear must not be silently reverted by the
+      // cloud's stale higher-versioned result (the MCM04 reset loop). Keep the
+      // clear; still apply the cloud definition fields.
+      if (isProtectedClear(io)) {
+        upsertKeepClear.run(ioToParams(io, subsystemId))
+        protectedClears++
+      } else {
+        upsert.run(ioToParams(io, subsystemId))
+      }
       applied++
     }
     for (const id of deletes) {
@@ -183,6 +248,9 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
 
   if (skippedDeletes.length > 0) {
     console.warn(`[Delta] Subsystem ${subsystemId}: kept ${skippedDeletes.length} cloud-deleted IO(s) with un-pushed local results: ${skippedDeletes.join(', ')}`)
+  }
+  if (protectedClears > 0) {
+    console.warn(`[Delta] Subsystem ${subsystemId}: preserved ${protectedClears} deliberate local clear(s) the cloud would have reverted (stale higher-versioned result held back).`)
   }
 
   return { resync: false, applied, deleted, skippedDeletes, sections, toSeq: payload.toSeq ?? getSyncCursor(subsystemId) }
