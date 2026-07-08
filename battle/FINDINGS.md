@@ -808,3 +808,24 @@ Follow-ups:
 2. 963 PARKED L2 rows in 15min is high — likely seed/cloud-stage version mismatch making
    cloud reject bot pushes (parked ≠ lost, and the invariant classified it safely), but
    check the park reasons on the next nightly before flipping to GATE.
+
+## 2026-07-08 — plc-sim serves CIP Identity; guided firmware step LIVE-VERIFIED
+The sim now answers Get_Attributes_All on the Identity Object (Class 0x01,
+Instance 1) — canned 1756-L85E BATTLE-SIM/B, vendor 1, productCode 168,
+rev 33.11 (patch 3 in `plc-sim/patch_ab_server.py`, both connected and
+unconnected dispatchers). Before this, the field tool's firmware scan read the
+controller as `unreachable` and the whole firmware-compliance feature was
+untestable on the rig. Verdicts are now drivable purely from data: edit
+`approved_firmware` in cloud-stage (min 32.0 → compliant; 34.1 → non_compliant;
+no row → no_baseline) — no rebuilds.
+
+Used it to close the spec's required live check of the guided `firmware_check`
+auto_detect step (bot-free stack + Playwright on :13000, subsystem 38): scan
+kicks on step entry, GET /api/firmware polls at 2.5s, banner fail/pass/RE-SCAN
+all correct, RECORD PASS completes via GuidedTaskState and the task is not
+re-served. Found+fixed live: zero non-compliant devices rendered "ALL N
+COMPLIANT" even when every device was no_baseline/unreachable — a false pass;
+runner now reports "N OF M UNVERIFIED — NO BASELINE / UNREACHABLE" (gray).
+Gotcha reminder: `up` re-runs the seeder (KEEP_DATA=0) which re-seeds the tool
+DB — guided/firmware state does NOT survive a stack recreate; that's the
+harness, not a persistence bug (verified: the GuidedTaskState write persists).
