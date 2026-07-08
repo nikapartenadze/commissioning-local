@@ -34,6 +34,7 @@ export type AuditEventType =
   | 'io.reset'
   | 'io.addressed'
   | 'estop.check' // an e-stop EPC pass/fail/reset was recorded (safety-critical)
+  | 'vfd.blocker' // a VFD commissioning blocker set/clear op was recorded (queue row is deleted after push — this is the durable record)
   | 'sync.push.ok'
   | 'sync.push.defer'
   | 'sync.push.drop' // a pending push was discarded — the recovery-critical case

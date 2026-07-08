@@ -10,7 +10,8 @@ import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { getPlcTags } from '../plc-client-manager'
 import { checkInstallGate } from './install-gate'
-import { getTagForIo, hasAnyMcm } from '../mcm-registry'
+import { getTagForIo, hasAnyMcm, getMcmIdForIo } from '../mcm-registry'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 // Test result constants (matching C# TestConstants)
 export const TEST_CONSTANTS = {
@@ -188,6 +189,18 @@ export async function clearTestResultAsync(
     })
 
     clearTransaction()
+
+    // Durable recovery trail — parity with app/api/ios/:id/reset. Without this
+    // a clear via this service (PLC toolbar path) left no journal entry.
+    auditLog({
+      type: 'io.reset',
+      subsystemId: getMcmIdForIo(ioId) ?? String(io.SubsystemId),
+      ioId,
+      user: currentUser,
+      result: TEST_CONSTANTS.RESULT_CLEARED,
+      version: (io.Version ?? 0) + 1,
+      detail: { hadResult, hadComments, source: 'io-test-service' },
+    })
 
     return { success: true }
   } catch (error) {
@@ -377,6 +390,24 @@ function updateTestResult(
     })
 
     testTransaction()
+
+    // Durable recovery trail — parity with app/api/ios/:id/test. This service
+    // backs the PLC-driven mark routes (/api/plc/mark-passed, /api/plc/mark-failed),
+    // which previously auto-marked results with NO recovery-journal entry.
+    auditLog({
+      type: 'io.test',
+      subsystemId: getMcmIdForIo(ioId) ?? String(io.SubsystemId),
+      ioId,
+      user: options.currentUser ?? null,
+      result,
+      version: (io.Version ?? 0) + 1,
+      reason: (result === TEST_CONSTANTS.RESULT_FAILED ? options.failureMode : undefined) || undefined,
+      detail: {
+        comments: sanitizedComments || undefined,
+        state: plcState ?? undefined,
+        source: 'plc-mark',
+      },
+    })
 
     return { success: true }
   } catch (error) {

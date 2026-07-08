@@ -5,6 +5,8 @@ import { getWsBroadcastUrl } from '@/lib/plc-client-manager'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import { createTimestamp, TEST_CONSTANTS } from '@/lib/services/io-test-service'
+import { getMcmIdForIo } from '@/lib/mcm-registry'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * POST /api/guided/clear
@@ -62,6 +64,18 @@ export async function POST(req: Request, res: Response) {
       testHistoryId = histResult.lastInsertRowid
     })
     txn()
+
+    // Durable recovery trail — parity with app/api/ios/:id/reset (which
+    // journals io.reset); guided clears previously left no journal entry.
+    auditLog({
+      type: 'io.reset',
+      subsystemId: getMcmIdForIo(ioId) ?? String(io.SubsystemId),
+      ioId,
+      user: currentUser,
+      result: TEST_CONSTANTS.RESULT_CLEARED,
+      version: newVersion,
+      detail: { hadResult, hadComments, source: 'guided' },
+    })
 
     try {
       const info = db.prepare(

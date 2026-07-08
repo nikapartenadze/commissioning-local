@@ -3,6 +3,7 @@ import { db } from '@/lib/db-sqlite'
 import type { Io } from '@/lib/db-sqlite'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 const VALID_STATUS = [null, 'ADDRESSED', 'CLARIFICATION']
 const VALID_TRADE = [null, 'electrical', 'controls', 'mechanical']
@@ -53,6 +54,26 @@ export async function PATCH(req: Request, res: Response) {
     values.push(newVersion)
     values.push(ioId)
     db.prepare(`UPDATE Ios SET ${setClauses.join(', ')} WHERE id = ?`).run(...values)
+
+    // Durable recovery trail (2026-07-08 forensics audit): punchlist triage
+    // previously wrote NO journal entry, so "who addressed what when" could
+    // not be reconstructed. Old → new triple, kept small. auditLog never throws.
+    auditLog({
+      type: 'io.addressed',
+      subsystemId: io.SubsystemId,
+      ioId,
+      user: updatedBy,
+      version: newVersion,
+      detail: {
+        via: 'punchlist',
+        before: { punchlistStatus: io.PunchlistStatus ?? null, trade: io.Trade ?? null, clarificationNote: io.ClarificationNote ?? null },
+        after: {
+          punchlistStatus: punchlistStatus !== undefined ? punchlistStatus : (io.PunchlistStatus ?? null),
+          trade: trade !== undefined ? trade : (io.Trade ?? null),
+          clarificationNote: clarificationNote !== undefined ? clarificationNote : (io.ClarificationNote ?? null),
+        },
+      },
+    })
 
     // F4 (2026-07-03 sync audit): punchlist fields used to be LOCAL-ONLY —
     // lost on laptop replacement. They now ride the durable PendingSyncs

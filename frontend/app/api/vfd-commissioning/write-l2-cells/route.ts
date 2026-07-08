@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * POST /api/vfd-commissioning/write-l2-cells
@@ -28,7 +29,7 @@ import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 
 const stmts = {
   findDevice: db.prepare(`
-    SELECT d.id as deviceId, d.SheetId, s.Name as sheetName, s.DisplayName as sheetDisplayName
+    SELECT d.id as deviceId, d.SheetId, d.SubsystemId as subsystemId, s.Name as sheetName, s.DisplayName as sheetDisplayName
     FROM L2Devices d
     JOIN L2Sheets s ON d.SheetId = s.id
     WHERE LOWER(d.DeviceName) = LOWER(?)
@@ -73,7 +74,7 @@ export async function POST(req: Request, res: Response) {
     // the one matching sheetName if provided, otherwise take the first APF sheet,
     // otherwise the first match.
     const allMatches = stmts.findDevice.all(deviceName) as Array<{
-      deviceId: number; SheetId: number; sheetName: string; sheetDisplayName: string
+      deviceId: number; SheetId: number; subsystemId: number | null; sheetName: string; sheetDisplayName: string
     }>
 
     if (allMatches.length === 0) {
@@ -101,6 +102,16 @@ export async function POST(req: Request, res: Response) {
       cloudDeviceId: number | null; cloudColumnId: number | null
       localDeviceId: number; localColumnId: number
       value: string | null; version: number
+    }> = []
+    // Per-cell recovery-journal entries, collected inside the transaction and
+    // emitted only after a successful commit (auditLog never throws). This is
+    // the CDW5-polarity incident class: wizard L2 writes previously left NO
+    // durable local record. Shape mirrors app/api/l2/cell/route.ts ('l2.cell')
+    // so forensics tooling can parse both paths.
+    const auditEntries: Array<{
+      columnId: number; column: string; oldValue: string | null
+      value: string | null; version: number
+      cloudDeviceId: number | null; cloudColumnId: number | null
     }> = []
 
     db.transaction(() => {
@@ -159,9 +170,52 @@ export async function POST(req: Request, res: Response) {
         const completedCount = stmts.countCompleted.get(target.deviceId) as { cnt: number }
         stmts.updateDeviceChecks.run(completedCount?.cnt || 0, target.deviceId)
 
+        auditEntries.push({
+          columnId: col.id,
+          column: col.Name,
+          oldValue: existing?.Value ?? null,
+          value: cell.value ?? null,
+          version: newVersion,
+          cloudDeviceId: device?.CloudId ?? null,
+          cloudColumnId: column?.CloudId ?? null,
+        })
+
         written.push({ columnName: cell.columnName, ok: true })
       }
     })()
+
+    // Durable recovery trail for every committed wizard cell write — parity
+    // with app/api/l2/cell/route.ts. An unmapped cell can NEVER sync, so it is
+    // additionally recorded as an l2.push.drop (the F4 gap).
+    for (const entry of auditEntries) {
+      auditLog({
+        type: 'l2.cell',
+        subsystemId: target.subsystemId ?? null,
+        user: updatedBy ?? null,
+        version: entry.version,
+        detail: {
+          deviceId: target.deviceId,
+          columnId: entry.columnId,
+          cloudDeviceId: entry.cloudDeviceId,
+          cloudColumnId: entry.cloudColumnId,
+          deviceName,
+          column: entry.column,
+          oldValue: entry.oldValue,
+          value: entry.value,
+          via: 'vfd-wizard',
+        },
+      })
+      if (!entry.cloudDeviceId || !entry.cloudColumnId) {
+        auditLog({
+          type: 'l2.push.drop',
+          subsystemId: target.subsystemId ?? null,
+          user: updatedBy ?? null,
+          version: entry.version,
+          reason: 'unmapped: L2 device/column has no CloudId — cannot sync to cloud',
+          detail: { deviceId: target.deviceId, columnId: entry.columnId, deviceName, column: entry.column, value: entry.value, via: 'vfd-wizard' },
+        })
+      }
+    }
 
     // Broadcast each successfully-written cell to the local WS so the open
     // L2/FV grid refreshes in real time. Same envelope shape the cloud SSE

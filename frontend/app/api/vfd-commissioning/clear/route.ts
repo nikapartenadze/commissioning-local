@@ -3,6 +3,7 @@ import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { getPlcClient, getPlcStatus } from '@/lib/plc-client-manager'
+import { auditLog } from '@/lib/logging/recovery-log'
 import { hasMcm } from '@/lib/mcm-registry'
 import {
   createTag,
@@ -44,7 +45,7 @@ const COMMISSIONING_COLUMNS = [
 
 const stmts = {
   findDevice: db.prepare(`
-    SELECT d.id as deviceId, d.SheetId, d.CloudId as deviceCloudId,
+    SELECT d.id as deviceId, d.SheetId, d.CloudId as deviceCloudId, d.SubsystemId as subsystemId,
            s.Name as sheetName, s.DisplayName as sheetDisplayName
     FROM L2Devices d
     JOIN L2Sheets s ON d.SheetId = s.id
@@ -148,7 +149,7 @@ export async function POST(req: Request, res: Response) {
 
     // 1. Resolve target device + sheet
     const allMatches = stmts.findDevice.all(deviceName) as Array<{
-      deviceId: number; SheetId: number; deviceCloudId: number | null
+      deviceId: number; SheetId: number; deviceCloudId: number | null; subsystemId: number | null
       sheetName: string; sheetDisplayName: string | null
     }>
     if (allMatches.length === 0) {
@@ -168,6 +169,13 @@ export async function POST(req: Request, res: Response) {
     //    bumping Version so the cloud sees a fresh write to apply.
     const cloudPushQueue: Array<{ deviceId: number; columnId: number; cloudDeviceId: number; cloudColumnId: number }> = []
     let cellsCleared = 0
+    // Journal entries collected in-transaction, emitted after commit — a clear
+    // NULLs the durable operator stamps (CDW5-polarity incident class), so the
+    // old value is recorded before it vanishes. auditLog never throws.
+    const auditEntries: Array<{
+      columnId: number; column: string; oldValue: string | null; version: number
+      cloudColumnId: number | null
+    }> = []
 
     db.transaction(() => {
       for (const colName of COMMISSIONING_COLUMNS) {
@@ -180,6 +188,13 @@ export async function POST(req: Request, res: Response) {
         const newVersion = existing.Version + 1
         stmts.clearCell.run(updatedBy ?? null, newVersion, existing.id)
         cellsCleared++
+        auditEntries.push({
+          columnId: col.id,
+          column: col.Name,
+          oldValue: existing.Value,
+          version: newVersion,
+          cloudColumnId: col.columnCloudId,
+        })
 
         if (target.deviceCloudId && col.columnCloudId) {
           stmts.insertPendingSync.run(target.deviceCloudId, col.columnCloudId, null, updatedBy ?? null, newVersion - 1)
@@ -199,6 +214,28 @@ export async function POST(req: Request, res: Response) {
       // Also clear the local-only "Controls Verified" state
       stmts.clearControlsVerified.run(deviceName)
     })()
+
+    // Durable recovery trail for each NULLed cell — same 'l2.cell' shape as
+    // app/api/l2/cell/route.ts and write-l2-cells so tooling parses all three.
+    for (const entry of auditEntries) {
+      auditLog({
+        type: 'l2.cell',
+        subsystemId: target.subsystemId ?? null,
+        user: updatedBy ?? null,
+        version: entry.version,
+        detail: {
+          deviceId: target.deviceId,
+          columnId: entry.columnId,
+          cloudDeviceId: target.deviceCloudId,
+          cloudColumnId: entry.cloudColumnId,
+          deviceName,
+          column: entry.column,
+          oldValue: entry.oldValue,
+          value: null,
+          via: 'vfd-clear',
+        },
+      })
+    }
 
     // 3. Best-effort cloud push for each cleared cell
     for (const push of cloudPushQueue) {

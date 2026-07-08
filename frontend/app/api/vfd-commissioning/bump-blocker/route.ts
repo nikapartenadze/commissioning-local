@@ -4,6 +4,7 @@ import {
   enqueueDeviceBlockerClear,
 } from '@/lib/db/repositories/device-blocker-sync-repository'
 import { triggerDeviceBlockerPush } from '@/lib/cloud/cloud-sync-service'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * POST /api/vfd-commissioning/bump-blocker
@@ -73,6 +74,15 @@ export async function POST(req: Request, res: Response) {
       }
 
       enqueueDeviceBlockerSet({ subsystemId, deviceName, party, description, updatedBy })
+
+      // Durable recovery trail — the queue row is DELETED after a successful
+      // cloud push, so without this the set op's existence vanishes.
+      auditLog({
+        type: 'vfd.blocker',
+        subsystemId,
+        user: updatedBy ?? null,
+        detail: { op: 'set', deviceName, party, description },
+      })
     } else {
       const expectedParty = typeof body.expectedParty === 'string' ? body.expectedParty.trim() : ''
       const expectedDescription = typeof body.expectedDescription === 'string' ? body.expectedDescription.trim() : ''
@@ -87,6 +97,15 @@ export async function POST(req: Request, res: Response) {
       }
 
       enqueueDeviceBlockerClear({ subsystemId, deviceName, expectedParty, expectedDescription, updatedBy })
+
+      // Journal the FULL expected pair being cleared — after the conditional
+      // clear lands on cloud there is otherwise no record the blocker existed.
+      auditLog({
+        type: 'vfd.blocker',
+        subsystemId,
+        user: updatedBy ?? null,
+        detail: { op: 'clear', deviceName, expectedParty, expectedDescription },
+      })
     }
 
     // Fire an instant (debounced) push; the background loop retries the rest.

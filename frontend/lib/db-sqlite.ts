@@ -199,6 +199,48 @@ try {
     console.warn('[DB] EStopEpcChecks CheckType migration failed:', (e as Error).message)
   }
 
+  // TestHistories FK-cascade rebuild (2026-07-08 forensics audit) — one-time,
+  // existing DBs only. The legacy table carried REFERENCES Ios(id) ON DELETE
+  // CASCADE, and with foreign_keys=ON the scoped pull's DELETE-and-reinsert of
+  // a subsystem's IOs cascade-erased that subsystem's entire local test
+  // history. History is the audit ledger; it must outlive the row. Rebuild the
+  // table without the FK (12-step SQLite alter), preserving ids and data.
+  // Runs AFTER migrate() so Source/BlockerDescription exist on old DBs.
+  try {
+    const ddl = (db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='TestHistories'"
+    ).get() as { sql: string } | undefined)?.sql || ''
+    if (/ON DELETE CASCADE/i.test(ddl)) {
+      db.pragma('foreign_keys = OFF') // no-op inside a txn — set before BEGIN
+      const rebuild = db.transaction(() => {
+        db.exec(`CREATE TABLE TestHistories_nofk (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          IoId INTEGER NOT NULL,
+          Result TEXT,
+          Timestamp TEXT NOT NULL,
+          Comments TEXT,
+          TestedBy TEXT,
+          State TEXT,
+          FailureMode TEXT,
+          Source TEXT,
+          BlockerDescription TEXT
+        )`)
+        db.exec(`INSERT INTO TestHistories_nofk (id, IoId, Result, Timestamp, Comments, TestedBy, State, FailureMode, Source, BlockerDescription)
+                 SELECT id, IoId, Result, Timestamp, Comments, TestedBy, State, FailureMode, Source, BlockerDescription FROM TestHistories`)
+        db.exec('DROP TABLE TestHistories')
+        db.exec('ALTER TABLE TestHistories_nofk RENAME TO TestHistories')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_testhistories_ioid ON TestHistories(IoId)')
+        db.exec('CREATE INDEX IF NOT EXISTS idx_testhistories_timestamp ON TestHistories(Timestamp)')
+      })
+      rebuild()
+      db.pragma('foreign_keys = ON')
+      console.log('[DB] TestHistories rebuilt without FK cascade (audit ledger now survives IO rewrites)')
+    }
+  } catch (e) {
+    try { db.pragma('foreign_keys = ON') } catch { /* restore best-effort */ }
+    console.warn('[DB] TestHistories FK-cascade rebuild failed (table left as-is):', (e as Error).message)
+  }
+
   // PendingSyncs coalesce trigger + active-queue index — created AFTER the
   // migrations so the DeadLettered column is guaranteed to exist (added above
   // on a pre-existing DB, or present in CREATE TABLE on a fresh one). It must
@@ -304,7 +346,13 @@ export function initializeSchema() {
 
     CREATE TABLE IF NOT EXISTS TestHistories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      IoId INTEGER NOT NULL REFERENCES Ios(id) ON DELETE CASCADE,
+      -- NO foreign key on purpose (2026-07-08 forensics audit): TestHistories is
+      -- the append-only audit LEDGER and must outlive the Ios row. The old
+      -- REFERENCES Ios(id) ON DELETE CASCADE meant the scoped pull's
+      -- DELETE-and-reinsert of a subsystem's IOs erased that subsystem's entire
+      -- local test history (foreign_keys pragma is ON) whenever the IO set
+      -- changed. Orphaned rows are intended: history survives the row.
+      IoId INTEGER NOT NULL,
       Result TEXT,
       Timestamp TEXT NOT NULL,
       Comments TEXT,

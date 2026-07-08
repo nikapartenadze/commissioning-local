@@ -6,6 +6,8 @@ import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { drainPendingSyncsForIo } from '@/lib/cloud/pending-sync-utils'
 import { sanitizeComment, createTimestamp } from '@/lib/services/io-test-service'
 import { isOutputIo } from '@/lib/io-classification'
+import { getMcmIdForIo } from '@/lib/mcm-registry'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * GET /api/ios/:id
@@ -137,6 +139,26 @@ export async function PUT(req: Request, res: Response) {
     // sync correctly.
     const commentsChanged = (sanitizedComments ?? '') !== (io.Comments ?? '')
     const resultChanged = result !== undefined && result !== io.Result
+
+    // Durable recovery trail — a PUT that changes Result is a result write
+    // that bypasses the journaled /api/ios/:id/test route; record it so the
+    // change is reconstructable (old → new). auditLog never throws.
+    if (resultChanged) {
+      auditLog({
+        type: result === 'Cleared' ? 'io.reset' : 'io.test',
+        subsystemId: getMcmIdForIo(ioId) ?? String(io.SubsystemId),
+        ioId,
+        user: currentUser ?? null,
+        result,
+        version: newVersion,
+        detail: {
+          oldResult: io.Result ?? undefined,
+          comments: updatedComments || undefined,
+          state: plcState ?? undefined,
+          source: 'io-put',
+        },
+      })
+    }
 
     let syncIntent: string | null = null
     if (resultChanged) {
