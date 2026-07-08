@@ -53,7 +53,7 @@ export function assembleTopology(i: CaptureInputs): RingTopology {
 
 export async function captureRing(
   switches: SwitchTarget[], creds: SnmpCreds, deps: CaptureDeps,
-): Promise<{ ok: true; topology: RingTopology } | { ok: false; reason: string }> {
+): Promise<{ ok: boolean; topology?: RingTopology; reason?: string }> {
   const walk = deps.walk ?? snmpWalk
   const links: SwitchLink[] = []
   const leaves: LeafPlacement[] = []

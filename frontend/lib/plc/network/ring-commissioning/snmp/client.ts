@@ -18,8 +18,10 @@ export interface SnmpCreds {
 }
 export type SnmpReadResult = { available: true; rows: SnmpRow[] } | { available: false; reason: string }
 
-/** Lazy, guarded load of the optional net-snmp dependency. */
-export function loadNetSnmp(): { ok: true; mod: any } | { ok: false; reason: string } {
+/** Lazy, guarded load of the optional net-snmp dependency. Flat shape (not a
+ *  discriminated union) so it narrows cleanly under the server tsconfig's
+ *  non-strict mode. */
+export function loadNetSnmp(): { ok: boolean; mod?: any; reason?: string } {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod = require('net-snmp')
