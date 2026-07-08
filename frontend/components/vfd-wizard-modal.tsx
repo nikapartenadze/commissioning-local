@@ -68,6 +68,34 @@ async function writeTag(
 }
 
 /**
+ * Re-assert earned upstream validation latches, in chain order, before pulsing
+ * a downstream command. AOI rev 3.0 gates each latch on the previous one
+ * (Valid_Map → Valid_HP → Tracking_Finished → Valid_Direction, rungs 1/3/6)
+ * and a program download wipes ALL of them. A downstream pulse sent while an
+ * upstream latch is cold is silently swallowed: the CIP write reports success,
+ * rung 8's FLL zeroes CMD on the next scan, and the STS bit never latches
+ * (MCM14, 2026-07-08). The wizard trusts durable L2 stamps for upstream steps,
+ * so nothing else re-pulses them in-session — this does.
+ *
+ * Sequential + awaited on purpose: each latch is an OTL (durable once set), so
+ * scan straddling between writes is harmless as long as order is preserved.
+ * Callers must pass ONLY earned flags — the cascade guarantees every step
+ * before the active one was completed by a human (live bit or L2 stamp).
+ */
+async function pulseValidationChain(
+  subsystemId: number,
+  deviceName: string,
+  fields: string[],
+) {
+  for (const field of fields) {
+    const r = await writeTag(subsystemId, deviceName, field, 1, 'BOOL')
+    if (r?.success === false || r?.error) {
+      throw new Error(`${field}: ${r?.error || 'PLC write reported failure'}`)
+    }
+  }
+}
+
+/**
  * Write one or more L2 spreadsheet cells for the active VFD device.
  * Used by wizard steps to fill in Verify Identity, Motor HP, VFD HP, "Check Direction", etc.
  */
@@ -643,11 +671,12 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
       }
       setL2Status('Saved to spreadsheet')
 
-      // 2. Send Valid_HP pulse to PLC — trips STS.Valid_HP so the user can advance.
-      const plcResult = await writeTag(subsystemId, deviceName, 'Valid_HP', 1, 'BOOL')
-      if (plcResult?.success === false || plcResult?.error) {
-        throw new Error(plcResult?.error || 'PLC write reported failure')
-      }
+      // 2. Pulse Valid_Map THEN Valid_HP. The AOI latches Valid_HP only while
+      //    its local Valid_Map latch is set (rev 3.0 rung 1) — and being on
+      //    this step at all means identity was earned (live bit or L2 stamp),
+      //    while the latch itself may be cold after a program download. A bare
+      //    Valid_HP pulse in that state is silently swallowed (MCM14 2026-07-08).
+      await pulseValidationChain(subsystemId, deviceName, ['Valid_Map', 'Valid_HP'])
 
       setSent(true)
       onHpFilled?.(motorHp, driveHp)
@@ -736,6 +765,21 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
         <div className="flex items-start gap-2 text-amber-700 dark:text-amber-400 text-xs rounded-lg border border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20 p-3">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
           <span>PLC confirms HP but the spreadsheet is empty. Enter the HP values and click <strong>Confirm HP</strong> to save them.</span>
+        </div>
+      )}
+
+      {/* Both pulses were sent but the PLC refused to latch even Valid_Map —
+          the AOI only blocks that when Check_Allowed is false (drive faulted /
+          not communicating). Without this hint the operator sees a successful
+          Confirm and a pill stuck on "Not yet" with nothing to act on. */}
+      {sent && sts.Valid_HP === false && sts.Valid_Map === false && (
+        <div className="flex items-start gap-2 text-amber-700 dark:text-amber-400 text-xs rounded-lg border border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20 p-3">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>
+            The PLC did not accept the validation — its identity latch is not set.
+            The drive may be faulted or not communicating. Check the drive, then click{' '}
+            <strong>Confirm HP</strong> again.
+          </span>
         </div>
       )}
     </div>
@@ -876,18 +920,17 @@ function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, she
       }
 
       // Now confirm direction. On AOI rev 3.0 the PLC gates Valid_Direction on
-      // Tracking_Finished (rung 6) — set by the validation writer when the mech's
-      // "Belt Tracked"='Yes' cell syncs here (this step is UI-gated on that same
-      // cell, so tracking is already done). We write polarity first so the
-      // latched routing matches the operator's choice before Valid_Direction
-      // latches. If the writer hasn't asserted Tracking_Finished yet (rare race
-      // right after the tracked cell arrives), this write no-ops at the AOI and
-      // STS.Valid_Direction stays false — the step is re-clickable and self-heals
-      // on the next click once Tracking_Finished is latched.
-      const dirRes = await writeTag(subsystemId, deviceName, 'Valid_Direction', 1, 'BOOL')
-      if (dirRes?.success === false) {
-        throw new Error(`Valid_Direction: ${dirRes?.error || 'write failed'}`)
-      }
+      // Tracking_Finished (rung 6), which itself sits behind Valid_HP → Valid_Map
+      // (rungs 3/1) — and a program download wipes every one of those latches.
+      // Being on this step means the whole upstream chain is earned (this step is
+      // UI-gated on the Belt Tracked cell; identity/HP are stamped or the cascade
+      // wouldn't have let the operator here), so re-assert it in chain order
+      // instead of trusting the background writer to have converged. We write
+      // polarity first so the latched routing matches the operator's choice
+      // before Valid_Direction latches.
+      await pulseValidationChain(subsystemId, deviceName, [
+        'Valid_Map', 'Valid_HP', 'Tracking_Finished', 'Valid_Direction',
+      ])
 
       // Stamp both L2 cells. The Polarity stamp is NOT optional bookkeeping:
       // it is the ONLY durable record of the operator's choice. The PLC bits
