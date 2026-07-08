@@ -230,21 +230,29 @@ export function PlcToolbar({
                   <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">No Inst.</span>
                 </button>
               )}
-              {addressedIos > 0 && (
-                <button
-                  onClick={() => onFilterChange?.(activeFilter === 'addressed' ? null : 'addressed')}
-                  title="Addressed — fixed, ready to re-check"
-                  className={cn(
-                    "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
-                    activeFilter === 'addressed'
-                      ? "bg-amber-500 text-white"
-                      : "bg-amber-400/15 hover:bg-amber-400/25 text-amber-600 dark:text-amber-400"
-                  )}
-                >
-                  <span className="text-lg sm:text-2xl font-bold leading-none">{addressedIos}</span>
-                  <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Addr.</span>
-                </button>
-              )}
+              {/* ALWAYS shown (even at 0) so field users never have to guess
+                  whether any IOs have been marked Addressed in the cloud —
+                  clicking it and seeing an empty list confirms "none". At 0 it
+                  wears a neutral/muted look so it doesn't read as an amber
+                  "action needed" signal; it turns amber once there ARE addressed
+                  items, and solid amber when the filter is active. */}
+              <button
+                onClick={() => onFilterChange?.(activeFilter === 'addressed' ? null : 'addressed')}
+                title={addressedIos > 0
+                  ? "Addressed — fixed, ready to re-check"
+                  : "Addressed — none yet (click to confirm)"}
+                className={cn(
+                  "h-11 sm:h-14 px-2 sm:px-4 flex flex-col items-center justify-center rounded-md transition-all font-mono",
+                  activeFilter === 'addressed'
+                    ? "bg-amber-500 text-white"
+                    : addressedIos > 0
+                      ? "bg-amber-400/15 hover:bg-amber-400/25 text-amber-600 dark:text-amber-400"
+                      : "bg-muted/50 hover:bg-muted text-muted-foreground border border-border"
+                )}
+              >
+                <span className="text-lg sm:text-2xl font-bold leading-none">{addressedIos}</span>
+                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-sans opacity-80">Addr.</span>
+              </button>
               {clarificationIos > 0 && (
                 <button
                   onClick={() => onFilterChange?.(activeFilter === 'clarification' ? null : 'clarification')}
