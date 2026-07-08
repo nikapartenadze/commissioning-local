@@ -52,7 +52,8 @@ export type AuditEventType =
   | 'plc.connect'
   | 'plc.disconnect'
   | 'mcm.import'
-  | 'server.start';
+  | 'server.start'
+  | 'db.sanity'; // runtime schema-sanity sweep found drift (missing table/column, forbidden DDL, quick_check failure)
 
 export interface AuditEvent {
   type: AuditEventType;

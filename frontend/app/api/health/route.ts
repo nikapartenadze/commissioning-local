@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
+import { getLastSanity } from '@/lib/db/schema-sanity'
 
 const SERVER_START_TIME = Date.now()
 
@@ -10,10 +11,16 @@ export async function GET(req: Request, res: Response) {
     // Check database connectivity
     db.prepare('SELECT 1').get()
 
+    // Runtime schema sanity (2026-07-08): last sweep result — null until the
+    // first post-boot run; ok:false = schema drift/corruption detected,
+    // surfaced here so the fleet UI and the battle observer see it.
+    const sanity = getLastSanity()
+
     return res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
       database: 'connected',
+      schemaSanity: sanity ? { ok: sanity.ok, checkedAt: sanity.checkedAt, problems: sanity.problems } : null,
       uptime: Math.floor(process.uptime()),
       serverStartTime: new Date(SERVER_START_TIME).toISOString(),
       memory: {

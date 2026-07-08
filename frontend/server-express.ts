@@ -566,6 +566,13 @@ httpServer.listen(PORT, HOSTNAME, () => {
   // came up (see lib/logging/recovery-log).
   auditLog({ type: 'server.start', detail: { version: SERVER_VERSION, plcMode: PLC_REMOTE ? 'remote' : 'embedded', pid: process.pid } });
 
+  // Runtime schema sanity (2026-07-08): "are the tables I expect still there?"
+  // First sweep 15s after boot, then every 6h. Drift is journaled (db.sanity)
+  // and surfaced on /api/health.schemaSanity for the fleet + battle observer.
+  import('@/lib/db/schema-sanity')
+    .then((m) => m.startSchemaSanity())
+    .catch((e) => console.warn('[SchemaSanity] failed to start:', e));
+
   // Heal a poisoned update-status.json left behind by an interrupted update.
   // A successful self-update restarts us into the new build with a non-terminal
   // status still on disk; reconciliation stamps it success (running ≥ target)
