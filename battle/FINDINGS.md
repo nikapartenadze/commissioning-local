@@ -743,6 +743,47 @@ CI exercises stale binaries without the FV hardening.
 
 Syntax-checked (`py_compile`, `sh -n`). Not yet run on a soak.
 
+## I8_FV — typed-FV data-loss, journal→local→CLOUD (2026-07-08) — REPORT-ONLY, pending 2 greens
+
+**What it stresses.** The FULL FV loss surface, end-to-end: crew bots type
+unique traceable values (`BOT<n>-<counter>`) into owned L2 cells via the real
+`POST /api/l2/cell` (→ `L2PendingSyncs` → cloud `/api/sync/l2/update`), journal
+each accepted write as a distinct `kind:'l2'` record (append order — never
+ts-sorted), and at quiesce the observer's `check_fv_data_loss()` verifies every
+single-writer cell's last journaled value against BOTH stores:
+- **local** `L2CellValues` → `fv_missing_local` (absent/blank — the MCM17
+  destructive-pull wipe class) / `fv_divergent` (different value);
+- **cloud-stage** via the real field pull source `GET /api/sync/l2/<sid>`
+  (local→cloud ids via `L2Devices.CloudId`/`L2Columns.CloudId`) →
+  `fv_missing_cloud`, judged ONLY once the L2 queue drained; queue-not-drained /
+  cloud-unreachable ⇒ cloud check `inconclusive`, never a fail (I7 discipline);
+  parked-row cells are skipped-as-safe; unmapped (no CloudId) cells reported
+  separately (the tool audit-logs those as `l2.push.drop`).
+
+Relationship to **I18**: I18 stays as-is (journal→local only). I8_FV adds the
+cloud leg — the FV analogue of I4's full reconciliation. Both read the same
+journal lines (the fv writes now carry both `action:'fv'` and `kind:'l2'`).
+
+**Ownership/exclusion.** Unchanged single-writer discipline: bots own FV
+devices by `device.id % BOTS` (non-VFD only — the fv/vfdwizard disjointness
+fix), columns scoped to the device's sheet + editable/non-system; the observer
+still excludes any cell touched by >1 bot. Bots log LOUDLY at startup how many
+FV cells they own (`FV writable cells owned at startup = N`); a seed with no
+writable L2 cells ⇒ `fv_writes=0` ⇒ `inconclusive:true`, never a vacuous verdict.
+
+**Knobs.** `FV_WRITE_CHANCE` (default 0.2) exported globally by
+`ci/run_scenario.sh` + forwarded by compose; an explicit `FV_FRACTION>0`
+(scenario tuning, e.g. all/features/slowlink at 0.15) still wins;
+`FV_WRITE_CHANCE=0` is the off-switch.
+
+**Gate plan (skill rule #4).** `I8_FV` is REPORT-ONLY — in `REPORT_ONLY`, does
+NOT affect `verdict.pass`. **Flip to GATE after two consecutive clean nightly
+runs with `fv_writes > 0` and a conclusive cloud check.** Authored on a no-
+Docker box: syntax-checked only (`node --check`, `py_compile`), NOT yet run on
+a soak. Note: ENGINEERING-REPORT.html does not exist in `battle/`; the
+invariants table in the historical `REPORT.html` (stakeholder snapshot,
+I1–I7 era) was deliberately left untouched.
+
 **Gate-correctness validation (2026-07-06, features 20min):** after the disjoint
 fv/vfd-wizard-device + sheet-scoped-column fix, **I18 FV 0 mismatches (492) and
 I26 VFD-wizard 0 mismatches (230)** — both non-vacuous and trustworthy. I22/I23

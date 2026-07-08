@@ -427,6 +427,10 @@ services:
       # Fraction of crew actions that are functional-validation (L2 cell) writes
       # instead of IO results — simulates electricians doing FV checks per MCM.
       FV_FRACTION: ${FV_FRACTION:-0}
+      # I8_FV fallback FV chance when FV_FRACTION isn't tuned by the scenario
+      # (bot default 0.2 when both are unset). MUST be declared here or compose
+      # won't forward it to the container — same gotcha as the fractions above.
+      FV_WRITE_CHANCE: ${FV_WRITE_CHANCE:-}
       # Per-feature write fractions (2026-07-06). MUST be declared here or compose
       # won't forward them to the container even when run_scenario.sh exports them
       # (the bug that made the first `features` soak fire 0 feature actions).

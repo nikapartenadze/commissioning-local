@@ -29,8 +29,15 @@ const HOT_FRACTION = parseFloat(process.env.HOT_FRACTION ?? '0.35');
 // instead of an IO result — simulates electricians filling FV checks per MCM.
 // These flow through the same offline queue (L2PendingSyncs) so a cloud outage
 // must hold them and drain on reconnect (the "internet gone for days then back"
-// case). 0 disables (single-MCM IO-only runs).
-const FV_FRACTION = parseFloat(process.env.FV_FRACTION ?? '0');
+// case).
+// FV_WRITE_CHANCE (2026-07-08, I8_FV build-out): the scenario-independent knob
+// run_scenario.sh exports for EVERY scenario (default 0.2) so no soak is blind
+// to the FV wipe class. Precedence: an explicit FV_FRACTION > 0 (scenario
+// tuning) wins; else FV_WRITE_CHANCE (0 is a valid off-switch); neither → 0.2.
+const _fvFraction = parseFloat(process.env.FV_FRACTION ?? '');
+const _fvChance = parseFloat(process.env.FV_WRITE_CHANCE ?? '');
+const FV_FRACTION = _fvFraction > 0 ? _fvFraction
+  : (Number.isFinite(_fvChance) ? _fvChance : 0.2);
 // Per-FEATURE write fractions (2026-07-06 coverage build-out). Each iteration
 // rolls these in order; the first hit runs that feature action (partitioned +
 // journaled), else it falls through to the FV/IO path. IO stays dominant. All
@@ -123,6 +130,33 @@ async function bot(n) {
     if (subsystems.length === 0) await sleep(3000);
   }
 
+  // I8_FV precondition visibility (rig rule 5): count LOUDLY how many FV cells
+  // this bot OWNS and can write at startup. A seed without L2 devices/columns
+  // → 0 → the bot writes no FV and the observer reports I8_FV inconclusive
+  // (never a vacuous pass/fail). One-time scoped fetches only.
+  try {
+    let fvOwned = 0, fvDevs = 0;
+    for (const s of (subsystems.length > 0 ? subsystems : [null])) {
+      const { body: lb } = await api(s ? `/api/l2?subsystemId=${s}` : '/api/l2');
+      const devs = (lb?.devices ?? []).filter(
+        (d) => (d.id % BOTS) === (n - 1) && !/vfd/i.test(`${d.DeviceName ?? ''}`));
+      fvDevs += devs.length;
+      for (const d of devs) {
+        fvOwned += (lb?.columns ?? []).filter(
+          (c) => c.SheetId === d.SheetId && c.IsEditable !== 0 && c.IsSystem !== 1).length;
+      }
+    }
+    console.log(`[crew] ${name}: FV writable cells owned at startup = ${fvOwned} `
+      + `(${fvDevs} owned non-VFD devices, fvChance=${FV_FRACTION})`);
+  } catch (e) {
+    console.log(`[crew] ${name}: FV startup probe failed (${e?.message ?? e}) — FV path re-discovers per tick`);
+  }
+
+  // Monotonic per-bot counter → every FV write carries a unique, traceable
+  // value (BOT<n>-<counter>): a lost/clobbered cell is unambiguous in the
+  // I8_FV/I18 verdicts (no accidental value collision between writes).
+  let fvCounter = 0;
+
   for (;;) {
     if (existsSync(STOP_FILE)) {
       console.log(`[crew] ${name} stopping (soak ended)`);
@@ -152,14 +186,18 @@ async function bot(n) {
             (c) => c.SheetId === dev.SheetId && c.IsEditable !== 0 && c.IsSystem !== 1);
           if (columns.length === 0) { await sleep(rand(THINK_MIN, THINK_MAX)); continue; }
           const col = pick(columns);
-          const value = Math.random() < 0.85 ? 'Pass' : 'Fail';
+          // Unique traceable value (I8_FV): BOT<n>-<counter>, never reused.
+          const value = `BOT${n}-${++fvCounter}`;
           const t0 = Date.now();
           const r = await api('/api/l2/cell', {
             method: 'POST',
             body: JSON.stringify({ deviceId: dev.id, columnId: col.id, value, updatedBy: name }),
           });
+          // kind:'l2' is the distinct record type the observer's I8_FV check
+          // keys on (IO logic untouched); action:'fv' kept for I18. Journal in
+          // APPEND order — the observer never ts-sorts (same-ms ties mis-order).
           log({
-            action: 'fv', subsystemId: scoped, deviceId: dev.id, columnId: col.id,
+            action: 'fv', kind: 'l2', subsystemId: scoped, deviceId: dev.id, columnId: col.id,
             value, status: r.status, latencyMs: Date.now() - t0,
           });
           if (r.status !== 200) console.log(`[crew] ${name}: POST /api/l2/cell -> ${r.status}`);

@@ -1014,7 +1014,9 @@ def journaled_fv() -> dict[tuple[int, int], str]:
                     e = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if e.get("action") != "fv" or e.get("status") != 200:
+                # 'fv' action lines double as kind:'l2' records (2026-07-08,
+                # I8_FV) — accept either marker so old/new journals both judge.
+                if (e.get("action") != "fv" and e.get("kind") != "l2") or e.get("status") != 200:
                     continue
                 dev, col = e.get("deviceId"), e.get("columnId")
                 if dev is None or col is None:
@@ -1060,6 +1062,173 @@ def check_i18_fv_survival() -> dict:
         "mismatch_samples": mismatches[:10],
         "l2_pending_active_at_end": active,
         "l2_pending_parked_at_end": parked,
+    }
+
+
+def _cloud_l2_values() -> dict[tuple[int, int], str | None] | None:
+    """(cloudDeviceId, cloudColumnId) -> Value from cloud-stage via the REAL
+    endpoint the field pulls FV from: GET /api/sync/l2/<sid> with X-API-Key
+    (same auth/read path as cloud_results() uses for IOs). Merges across all
+    SUBSYSTEM_IDs. None => cloud unreachable (a partial map would make every
+    missing cell look lost — mirror cloud_results()' all-or-nothing rule).
+    A 404 for one subsystem (no L2 template on cloud) is EMPTY, not unreachable."""
+    out: dict[tuple[int, int], str | None] = {}
+    for sid in [s.strip() for s in SUBSYSTEM_ID.split(",") if s.strip()]:
+        req = urllib.request.Request(
+            f"{CLOUD_URL}/api/sync/l2/{sid}", headers={"X-API-Key": CLOUD_API_KEY})
+        data = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    data = json.loads(r.read())
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    data = {"cellValues": []}  # no FV template cloud-side
+                    break
+                print(f"observer: cloud L2 read HTTP {e.code} (subsystem {sid}, attempt {attempt + 1}/3)")
+                time.sleep(5)
+            except Exception as e:
+                print(f"observer: cloud L2 read failed (subsystem {sid}, attempt {attempt + 1}/3): {e}")
+                time.sleep(5)
+        if data is None:
+            print(f"observer: cloud L2 read GAVE UP for subsystem {sid}")
+            return None
+        for c in data.get("cellValues") or []:
+            try:
+                out[(int(c["deviceId"]), int(c["columnId"]))] = c.get("value")
+            except (KeyError, TypeError, ValueError):
+                continue
+    return out
+
+
+def check_fv_data_loss() -> dict:
+    """I8_FV (REPORT-ONLY, 2026-07-08) — typed FV (L2 cell) work is never lost,
+    judged against BOTH stores — the FV analogue of I4's full journal→local→
+    cloud reconciliation (I18 covers local only).
+
+    The crew types unique traceable values (BOT<n>-<counter>) into OWNED cells
+    via POST /api/l2/cell and journals each accepted write (kind:'l2'). Here,
+    per single-writer (deviceId, columnId) cell — any cell touched by >1 bot is
+    order-ambiguous and EXCLUDED (journaled_fv discipline; last write taken in
+    per-bot APPEND order, never ts-sorted) — the last journaled value must be:
+      * present + equal in local L2CellValues: absent/blank => fv_missing_local
+        (the MCM17 destructive-pull wipe class); different => fv_divergent;
+      * present on cloud-stage (GET /api/sync/l2/<sid>, the real field pull
+        source) once the L2 offline queue drained: absent/different =>
+        fv_missing_cloud. Queue not drained / cloud unreachable => the CLOUD
+        check is INCONCLUSIVE, never a fail (I7's precondition-awareness);
+        cells with a still-queued/parked L2PendingSyncs row are safe-not-lost
+        and skipped; unmapped cells (no CloudId — can never sync, the tool
+        audit-logs l2.push.drop) are reported separately, not counted as loss.
+
+    PRECONDITION-AWARE: a seed with no writable L2 cells => fv_writes=0 =>
+    inconclusive:true — never a vacuous pass/fail. Runs AFTER the same quiesce
+    as I4/I18 (belt-and-braces self-quiesce if no STOP sentinel yet).
+    Flip to GATE only after two clean nightly runs (skill rule #4)."""
+    if not os.path.exists(os.path.join(RUNS_DIR, RUN_ID, "STOP")):
+        quiesce_crew()
+
+    # Total accepted FV writes (incl. multi-writer ones excluded from judging).
+    fv_writes = 0
+    for path in glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl")):
+        for line in open(path, errors="replace"):
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (e.get("kind") == "l2" or e.get("action") == "fv") and e.get("status") == 200:
+                fv_writes += 1
+
+    judged = journaled_fv()  # single-writer last value per (deviceId, columnId)
+    if fv_writes == 0 or not judged:
+        return {
+            "pass": True, "inconclusive": True,
+            "fv_writes": fv_writes, "fv_cells_judged": 0,
+            "fv_missing_local": 0, "fv_divergent": 0, "fv_missing_cloud": None,
+            "note": "no single-writer FV writes this soak (seed without writable "
+                    "L2 cells, or FV chance 0) — nothing judged, NOT a pass",
+        }
+
+    # ── local: every judged cell must still hold the journaled value ──────
+    missing_local: list[dict] = []
+    divergent: list[dict] = []
+    for (dev, col), want in judged.items():
+        rows = _local_query(
+            "SELECT Value FROM L2CellValues WHERE DeviceId=? AND ColumnId=?", (dev, col))
+        have = rows[0][0] if rows else None
+        if have is None or str(have).strip() == "":
+            missing_local.append({"deviceId": dev, "columnId": col, "journaled": want, "local": have})
+        elif str(have) != str(want):
+            divergent.append({"deviceId": dev, "columnId": col, "journaled": want, "local": have})
+
+    # ── cloud: only judged once the L2 queue drained (else pushes are still
+    # legitimately pending — safe, not loss) ───────────────────────────────
+    try:
+        q_active = int(_local_query(
+            "SELECT COUNT(*) FROM L2PendingSyncs WHERE DeadLettered = 0")[0][0])
+        q_parked = int(_local_query(
+            "SELECT COUNT(*) FROM L2PendingSyncs WHERE DeadLettered = 1")[0][0])
+    except Exception:
+        q_active = q_parked = -1
+
+    cloud_status = "checked"
+    missing_cloud: list[dict] = []
+    unmapped = 0
+    skipped_queued = 0
+    if not CLOUD_URL:
+        cloud_status = "inconclusive: no cloud attached to this run"
+    elif q_active != 0:
+        cloud_status = (f"inconclusive: L2 queue not drained (active={q_active}, "
+                        f"parked={q_parked}) — pushes pending, not loss")
+    else:
+        cloud_vals = _cloud_l2_values()
+        if cloud_vals is None:
+            cloud_status = "inconclusive: cloud unreachable"
+        else:
+            # Cells with ANY remaining queue row (parked) are held locally +
+            # surfaced by the tool — safe, skip their cloud comparison.
+            queued_pairs = {
+                (int(a), int(b)) for (a, b) in _local_query(
+                    "SELECT CloudDeviceId, CloudColumnId FROM L2PendingSyncs")
+                if a is not None and b is not None}
+            for (dev, col), want in judged.items():
+                m = _local_query(
+                    "SELECT d.CloudId, c.CloudId FROM L2Devices d, L2Columns c "
+                    "WHERE d.id=? AND c.id=?", (dev, col))
+                cdev = m[0][0] if m else None
+                ccol = m[0][1] if m else None
+                if not cdev or not ccol:
+                    unmapped += 1
+                    continue
+                if (int(cdev), int(ccol)) in queued_pairs:
+                    skipped_queued += 1
+                    continue
+                have = cloud_vals.get((int(cdev), int(ccol)))
+                if have is None or str(have).strip() == "" or str(have) != str(want):
+                    missing_cloud.append({
+                        "deviceId": dev, "columnId": col,
+                        "cloudDeviceId": cdev, "cloudColumnId": ccol,
+                        "journaled": want, "cloud": have})
+
+    cloud_conclusive = cloud_status == "checked"
+    return {
+        "pass": (not missing_local and not divergent
+                 and (not cloud_conclusive or not missing_cloud)),
+        "inconclusive": False,
+        "fv_writes": fv_writes,
+        "fv_cells_judged": len(judged),
+        "fv_missing_local": len(missing_local),
+        "fv_divergent": len(divergent),
+        "fv_missing_cloud": len(missing_cloud) if cloud_conclusive else None,
+        "cloud_check": cloud_status,
+        "fv_unmapped_no_cloud_ids": unmapped,
+        "fv_cloud_skipped_still_queued": skipped_queued,
+        "l2_queue_active_at_end": q_active,
+        "l2_queue_parked_at_end": q_parked,
+        "missing_local_samples": missing_local[:10],
+        "divergent_samples": divergent[:10],
+        "missing_cloud_samples": missing_cloud[:10],
     }
 
 
@@ -1720,6 +1889,13 @@ def main() -> None:
     # mutate runs judge the post-pull-l2 state. FV_FRACTION>0 makes it non-vacuous.
     invariants["I18_fv_survival"] = check_i18_fv_survival()
 
+    # I8_FV typed-FV data-loss (2026-07-08) — the FV analogue of I4's FULL
+    # journal→local→cloud reconciliation (I18 is local-only). Judges the same
+    # quiescent system (I4/I18 already dropped the STOP sentinel by here; the
+    # check self-quiesces belt-and-braces). REPORT-ONLY per skill rule #4:
+    # flip to GATE after two clean nightly runs with fv_writes > 0.
+    invariants["I8_FV"] = check_fv_data_loss()
+
     # I8 cloud live-channel (SSE) auth — only when a cloud is attached. Gates on
     # an HTTP 401/403 auth break (the 2026-06-16 MCM11 incident class), not on
     # transient docker-network reconnect noise.
@@ -1774,6 +1950,10 @@ def main() -> None:
                    "I14_vfd_addressed_propagation", "I15_l2_cell_propagation",
                    "I16_estop_def_propagation", "I17_network_propagation",
                    "I18_fv_survival",
+                   # I8_FV (2026-07-08) — typed-FV journal→local+cloud loss check.
+                   # REPORT-ONLY: does NOT affect `pass` until two clean nightly
+                   # runs with fv_writes > 0, then promote to GATE (rule #4).
+                   "I8_FV",
                    # New (2026-07-06) — prove green ×2 on a long soak before gating.
                    "I19_log_growth", "I20_fd_leak", "I21_sync_latency",
                    "I22_estop_survival", "I23_guided_survival",

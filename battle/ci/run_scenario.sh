@@ -35,6 +35,11 @@ export BOTS="${BOTS:-6}"
 # every scenario ran 0 FV writes and I18 (FV survival — the MCM17 class) was a
 # vacuous green. Modest default keeps IO the dominant load; override per run.
 export FV_FRACTION="${FV_FRACTION:-0.15}"
+# I8_FV (2026-07-08): scenario-independent FV write chance. bot.mjs falls back
+# to it whenever FV_FRACTION isn't tuned >0, so EVERY scenario types FV cells
+# and the observer's I8_FV typed-FV data-loss check is never vacuous.
+# FV_WRITE_CHANCE=0 is the explicit off-switch.
+export FV_WRITE_CHANCE="${FV_WRITE_CHANCE:-0.2}"
 export DOWNLOAD_STORM=""
 export CLOUD_FLAP=""
 DELAY_MS=""
