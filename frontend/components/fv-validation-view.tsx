@@ -608,9 +608,18 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       sheetName: sheetNameById.get(d.SheetId) || '',
     }))
 
-  // VFD mode locks the view to the first VFD/APF sheet regardless of the
+  // VFD mode locks the view to a single VFD/APF sheet regardless of the
   // persisted activeSheet (there are no sheet tabs to switch in this mode).
-  const vfdSheetIndex = vfdMode ? data.sheets.findIndex(s => vfdSheetIds.has(s.id)) : -1
+  // Prefer one that actually has local device rows: a project can define BOTH
+  // a 'VFD' and an 'APF' sheet with all belts on one of them (CDW5 keeps 222
+  // devices on APF while the VFD sheet pulled zero rows) — locking to the
+  // first empty sheet rendered a permanently blank grid with no way out.
+  const vfdSheetIndex = vfdMode
+    ? (() => {
+        const withDevices = data.sheets.findIndex(s => vfdSheetIds.has(s.id) && data.devices.some(d => d.SheetId === s.id))
+        return withDevices >= 0 ? withDevices : data.sheets.findIndex(s => vfdSheetIds.has(s.id))
+      })()
+    : -1
 
   // Clamp at render time. The persisted `activeSheet` index can outlive its
   // data — e.g. switching subsystems shrinks `data.sheets` and the useEffect
@@ -1058,6 +1067,31 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       <div className="flex-1 min-h-0 flex relative">
         {/* Grid */}
         <div className="flex-1 min-w-0 min-h-0">
+          {/* Filters hiding EVERY row renders a blank grid with no hint — the
+              toolbar's 11px "Clear filters" link is far too subtle when the
+              whole table is empty (filters persist in localStorage, so this
+              state survives reloads and reads as "no data"). Make it loud. */}
+          {filteredDevices.length === 0 && activeDevices.length > 0 ? (
+            <div className="flex flex-col items-center justify-center h-full min-h-48 gap-3 border border-dashed border-amber-400 dark:border-amber-600 rounded-lg m-2 bg-amber-50/60 dark:bg-amber-950/20">
+              <Filter className="h-8 w-8 text-amber-600 dark:text-amber-400" />
+              <div className="text-center space-y-1">
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                  All {activeDevices.length} devices are hidden by active filters
+                </p>
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  A search, quick filter or column filter (saved from a previous visit) is excluding every row.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => { setQuickFilter("all"); setColumnFilters({}); setFixedFilters({ device: null, mcm: null, subsystem: null }); setSearchQuery("") }}
+                className="gap-2 bg-amber-600 hover:bg-amber-700 text-white border-0"
+              >
+                <X className="h-4 w-4" />
+                Clear all filters
+              </Button>
+            </div>
+          ) : (
           <FVSheetGrid
             sheet={activeSheetData}
             columns={activeColumns}
@@ -1082,6 +1116,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
             rowTone={rowTone}
             emptyMessage={activeDevices.length === 0 ? "No devices in this sheet" : "No devices match the current filters"}
           />
+          )}
         </div>
 
         {/* Guide — Desktop: resizable right sidebar */}
