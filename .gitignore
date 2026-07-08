@@ -118,3 +118,15 @@ CENTRAL-SERVER-SPLIT-REPORT.*
 /_*_work/
 /logs.zip
 /_mcm02_cells_BACKUP.txt
+
+# Session junk / local investigation artifacts (2026-07-08 FV incident)
+check-folder/
+/battle-artifacts/
+battle/baseline-artifacts/
+battle/baseline-verdict.json
+battle/features-verdict.json
+delta-harness/.run/
+frontend/_churn.js
+frontend/.claude/
+frontend/logs/
+check this file.txt
