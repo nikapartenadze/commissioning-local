@@ -109,27 +109,19 @@ export async function POST(req: Request, res: Response) {
         .map(r => `${r.CloudDeviceId}-${r.CloudColumnId}`),
     )
     const atRiskCells = computeAtRiskL2Cells(localCells, data.cellValues || [], queuedKeys)
-    if (atRiskCells.length > 0 && !force) {
+    if (atRiskCells.length > 0) {
+      // With the NON-DESTRUCTIVE merge below these cells are NOT destroyed — the
+      // merge keeps every local-filled / local-newer cell and only adds or
+      // refreshes from cloud. We no longer REFUSE the pull for them: the old
+      // 409-refuse existed because the pull used to DELETE+reinsert, and it also
+      // blocked safe pulls (leaving tablets stale). Logged for visibility only.
       const byReason = { unmapped: 0, 'cloud-missing': 0, 'local-newer': 0 } as Record<string, number>
       for (const c of atRiskCells) byReason[c.reason]++
       console.warn(
-        `[L2Pull] REFUSED: pull would destroy ${atRiskCells.length} local FV cell(s) ` +
-        `(${byReason['cloud-missing']} cloud-missing, ${byReason['local-newer']} locally-newer, ${byReason.unmapped} unmapped). ` +
-        'Resend with force=true to override.',
+        `[L2Pull] ${atRiskCells.length} local FV cell(s) absent from / older-than the cloud payload ` +
+        `(${byReason['cloud-missing']} cloud-missing, ${byReason['local-newer']} locally-newer, ${byReason.unmapped} unmapped) — ` +
+        'preserved by the non-destructive merge (never deleted).',
       )
-      return res.status(409).json({
-        success: false,
-        requiresForce: true,
-        wouldLoseCells: atRiskCells.length,
-        atRiskSample: atRiskCells.slice(0, 10),
-        error:
-          `FV pull refused: ${atRiskCells.length} local FV cell value(s) exist that the cloud does not have ` +
-          '(or holds older values for) — pulling now would destroy them. They are likely unsynced field work. ' +
-          'Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)',
-      })
-    }
-    if (atRiskCells.length > 0) {
-      console.warn(`[L2Pull] FORCE override: destroying ${atRiskCells.length} local FV cell(s) not on cloud (user confirmed)`)
     }
 
     // Pre-pull safety backup. FV/L2 cell values are real commissioning work and
@@ -160,8 +152,14 @@ export async function POST(req: Request, res: Response) {
       const findCol = db.prepare('SELECT id FROM L2Columns WHERE CloudId = ?')
       const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, InputType, DisplayOrder, IsSystem, IsEditable, IncludeInProgress, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       const updateCol = db.prepare('UPDATE L2Columns SET SheetId=?, Name=?, ColumnType=?, InputType=?, DisplayOrder=?, IsSystem=?, IsEditable=?, IncludeInProgress=?, IsRequired=?, Description=? WHERE id=?')
+      // NON-DESTRUCTIVE upsert stmts (2026-07-08 FV-loss fix): devices matched
+      // by CloudId and UPDATED in place (no delete); cells merged last-write-wins
+      // by (DeviceId, ColumnId) — never deleted, never blanked.
+      const findDev = db.prepare('SELECT id FROM L2Devices WHERE CloudId = ?')
       const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SubsystemId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      const insertCell = db.prepare('INSERT OR REPLACE INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      const updateDev = db.prepare('UPDATE L2Devices SET SubsystemId=?, SheetId=?, DeviceName=?, Mcm=?, Subsystem=?, DisplayOrder=?, CompletedChecks=?, TotalChecks=? WHERE id=?')
+      const getCell = db.prepare('SELECT id FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
+      const insertCell = db.prepare('INSERT INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
 
       const sheetIdMap = new Map<number, number>()
       const columnIdMap = new Map<number, number>()
@@ -195,48 +193,114 @@ export async function POST(req: Request, res: Response) {
         }
       }
 
-      // Scope: replace ONLY this subsystem's devices/cells (plus any legacy
-      // unscoped rows from before SubsystemId existed). Every OTHER MCM's L2
-      // data is preserved — this is what lets the central server hold all MCMs.
-      // FK cascade isn't guaranteed (foreign_keys pragma may be off), so delete
-      // the dependent cells explicitly first.
-      db.prepare('DELETE FROM L2CellValues WHERE DeviceId IN (SELECT id FROM L2Devices WHERE SubsystemId = ? OR SubsystemId IS NULL)').run(sid)
-      db.prepare('DELETE FROM L2Devices WHERE SubsystemId = ? OR SubsystemId IS NULL').run(sid)
-
+      // ── NON-DESTRUCTIVE merge (2026-07-08 FV-loss fix) ───────────────────
+      // TWO-LAYER model: the cloud owns STRUCTURE (sheets/columns/devices — add/
+      // rename/move/delete), the FIELD owns VALUES (the filled cells = test data).
+      // So a pull applies structure via upsert (devices matched by CloudId, updated
+      // in place; guarded prune below) and, for VALUES, ONLY inserts cells the local
+      // tool is MISSING (first-load / restore of a wiped tool). It NEVER overwrites
+      // or deletes an existing local cell — FV test data is authored on the field
+      // and flows UP only; nobody edits it on the cloud. (Cloud-authored workflow
+      // state — VFD-commissioning "Addressed", IO punchlist/clarification — syncs
+      // DOWN via its own dedicated channels, not by clobbering cell values here.)
+      // This replaced the OLD delete-all+reinsert that wiped 116 real cells on
+      // MCM02/14/18 (all safe on cloud). See FV-IO-Sync-Architecture report.
+      let cellsInserted = 0, keptLocalExisting = 0
       for (const dev of (data.devices || [])) {
         const localSheetId = sheetIdMap.get(dev.sheetId)
         if (!localSheetId) continue
-        const dr = insertDev.run(dev.id, sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0)
-        deviceIdMap.set(dev.id, dr.lastInsertRowid as number)
+        const ex = findDev.get(dev.id) as { id: number } | undefined
+        let localDevId: number
+        if (ex) {
+          localDevId = ex.id
+          updateDev.run(sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0, localDevId)
+        } else {
+          localDevId = insertDev.run(dev.id, sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0).lastInsertRowid as number
+        }
+        deviceIdMap.set(dev.id, localDevId)
         l2Pulled++
       }
 
       for (const cell of (data.cellValues || [])) {
         const ld = deviceIdMap.get(cell.deviceId)
         const lc = columnIdMap.get(cell.columnId)
-        if (ld && lc) {
+        if (!ld || !lc) continue
+        const ex = getCell.get(ld, lc) as { id: number } | undefined
+        if (!ex) {
+          // Local is MISSING this cell → INSERT it. This is the ONLY way a pull
+          // writes a value, and it is exactly first-load / restore of a wiped tool.
           insertCell.run(cell.id, ld, lc, cell.value, cell.updatedBy, cell.updatedAt, Number(cell.version) || 0)
-          l2CellsPulled++
+          cellsInserted++; l2CellsPulled++
+        } else {
+          // Cell already exists locally → KEEP LOCAL, always. FV test data is
+          // field-authored and flows UP only; an automatic pull never overwrites
+          // an existing cell (filled OR deliberately cleared).
+          keptLocalExisting++
         }
       }
 
-      return { sheetsCount: data.sheets.length, l2Pulled, l2CellsPulled }
+      // ── Guarded structural reconciliation (device moves / deletes) ───────
+      // Proper structure sync: a device genuinely deleted (or moved out) on
+      // cloud should disappear locally too. But we ONLY prune EMPTY orphans and
+      // ONLY when the cloud has declared this payload the COMPLETE authoritative
+      // device set for the subsystem (data.authoritativeComplete). A device that
+      // holds ANY filled cell — or has unsynced pending work — is NEVER pruned,
+      // so a partial/mismatched payload can never delete real FV work. This is
+      // the structural half of the two-layer model (cloud owns structure, field
+      // owns values); without the completeness flag we skip pruning entirely.
+      let devicesPruned = 0
+      if (data.authoritativeComplete === true) {
+        const servedCloudIds = new Set<number>((data.devices || []).map((d: { id: number }) => Number(d.id)))
+        const localDevs = db.prepare('SELECT id, CloudId FROM L2Devices WHERE SubsystemId = ?').all(sid) as Array<{ id: number; CloudId: number | null }>
+        const filledCountStmt = db.prepare("SELECT COUNT(*) c FROM L2CellValues WHERE DeviceId = ? AND Value IS NOT NULL AND TRIM(Value) <> ''")
+        const pendingForDevStmt = db.prepare('SELECT COUNT(*) c FROM L2PendingSyncs WHERE CloudDeviceId = ?')
+        const deleteCellsStmt = db.prepare('DELETE FROM L2CellValues WHERE DeviceId = ?')
+        const deleteDevStmt = db.prepare('DELETE FROM L2Devices WHERE id = ?')
+        for (const ld of localDevs) {
+          if (ld.CloudId != null && servedCloudIds.has(ld.CloudId)) continue // still present on cloud
+          const filled = (filledCountStmt.get(ld.id) as { c: number }).c
+          if (filled > 0) continue // has real work — NEVER delete
+          // Defensive depth: the top-of-handler pending-queue guard already 409s
+          // the whole pull when this subsystem has ANY L2PendingSyncs, so this
+          // inner check is redundant today — kept so the prune stays safe even if
+          // that upstream guard is ever relaxed.
+          const pend = ld.CloudId != null ? (pendingForDevStmt.get(ld.CloudId) as { c: number }).c : 0
+          if (pend > 0) continue // unsynced work — keep
+          deleteCellsStmt.run(ld.id) // drop any empty cell rows first (no filled ones exist)
+          deleteDevStmt.run(ld.id)
+          devicesPruned++
+        }
+      }
+
+      return { sheetsCount: data.sheets.length, l2Pulled, l2CellsPulled, cellsInserted, keptLocalExisting, devicesPruned }
     })()
 
-    console.log(`[L2Pull] SUCCESS: ${result.sheetsCount} sheets, ${result.l2Pulled} devices, ${result.l2CellsPulled} cells`)
+    console.log(
+      `[L2Pull] SUCCESS (structure + insert-missing values, never overwrite): ${result.sheetsCount} sheets, ` +
+      `${result.l2Pulled} devices, ${result.cellsInserted} missing cell(s) inserted, ` +
+      `${result.keptLocalExisting} existing local cell(s) kept (field owns values), ` +
+      `${result.devicesPruned} empty orphan device(s) pruned`,
+    )
 
-    // Durable recovery-log trace of this DESTRUCTIVE FV rewrite (F5: pull-l2
-    // previously left NO recovery-log record — the MCM17 audit gap).
+    // Durable recovery-log trace of every FV merge. The pull is now
+    // non-destructive (upsert, no delete), and we record exactly what changed —
+    // inserted/updated/kept — so any future FV movement is always traceable
+    // (closes the MCM17 audit gap AND the "what did the pull clear?" gap: the
+    // answer is now "nothing — it never deletes").
     auditLog({
       type: 'sync.pull',
       subsystemId: Number(subsystemId),
       detail: {
         route: 'pull-l2',
-        destructive: true,
+        destructive: false,
         force,
         sheetsCount: result.sheetsCount,
         l2Pulled: result.l2Pulled,
         l2CellsPulled: result.l2CellsPulled,
+        cellsInserted: result.cellsInserted,
+        keptLocalExisting: result.keptLocalExisting,
+        devicesPruned: result.devicesPruned,
+        authoritativeComplete: data.authoritativeComplete === true,
         overrodeAtRiskCells: atRiskCells.length,
       },
     })

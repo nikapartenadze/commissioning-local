@@ -450,18 +450,17 @@ export class CloudSseClient {
       if (!localDev || !localCol) return // Cell not in local DB (different subsystem)
 
       // Find existing cell value
-      const existing = db.prepare('SELECT id, Version FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?').get(localDev.id, localCol.id) as { id: number; Version: number } | undefined
+      const existing = db.prepare('SELECT id FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?').get(localDev.id, localCol.id) as { id: number } | undefined
 
-      // Apply only if cloud version is newer (or local doesn't have it)
-      if (existing && existing.Version >= data.version) return // Local is newer or equal — skip
-
-      if (existing) {
-        db.prepare(`UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = ?, Version = ? WHERE id = ?`)
-          .run(data.value, data.updatedBy, data.updatedAt, data.version, existing.id)
-      } else {
-        db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?)`)
-          .run(localDev.id, localCol.id, data.value, data.updatedBy, data.updatedAt, data.version)
-      }
+      // FV values are FIELD-authored and flow UP only — same rule as the pull
+      // (2026-07-08). A cloud-originated live cell event must NEVER overwrite an
+      // existing local cell (filled OR deliberately cleared); nobody edits FV test
+      // data on the cloud. Cloud-authored workflow state (VFD "Addressed", IO
+      // punchlist/clarification) syncs via its OWN dedicated channels, not here.
+      // We only INSERT a cell the local tool is missing (first-load / peer bootstrap).
+      if (existing) return
+      db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(localDev.id, localCol.id, data.value, data.updatedBy, data.updatedAt, data.version)
 
       // Recount completed checks for the device
       const completedCount = db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.IncludeInProgress = 1 AND cv.Value IS NOT NULL AND cv.Value != ''`).get(localDev.id) as { cnt: number } | undefined
