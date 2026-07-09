@@ -17,14 +17,10 @@ import {
   IoUpdateDto,
   IoSyncBatchDto,
   SyncResponseDto,
-  TestHistoryDto,
-  TestHistorySyncBatchDto,
-  PendingSync,
   PendingSyncCreateInput,
   ConnectionState,
   CloudConnectionStatus,
   SyncResult,
-  BatchSyncResult,
 } from './types'
 import { configService } from '@/lib/config'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
@@ -88,8 +84,6 @@ export class CloudSyncService {
   private connectionStatus: CloudConnectionStatus = {
     state: 'disconnected',
   }
-  private offlineQueue: Map<number, PendingSync> = new Map()
-  private readonly MAX_OFFLINE_QUEUE = 5000
   private connectionStateListeners: Set<(status: CloudConnectionStatus) => void> = new Set()
 
   constructor(config: Partial<CloudSyncConfig> = {}) {
@@ -392,120 +386,22 @@ export class CloudSyncService {
   // ===========================================================================
 
   async syncIoUpdate(update: IoUpdateDto): Promise<SyncIoResult> {
-    // If we know we're offline, queue immediately
+    // If we know we're offline, short-circuit as a network-level failure so the
+    // caller burns no retry-cap strike. Durability is owned by the SQLite
+    // PendingSyncs queue + AutoSync drain — this service no longer keeps its own
+    // in-memory offline queue (the C#-port artifact was dead; nothing drained it).
     if (
       this.connectionStatus.state !== 'connected' &&
       this.connectionStatus.lastConnectionAttempt &&
       Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
     ) {
-      await this.addToOfflineQueue(update)
-      log.debug(`Queued IO ${update.id} for offline sync (connection unavailable)`)
+      log.debug(`Skipping sync for IO ${update.id} — offline (durability via SQLite PendingSyncs)`)
       return { ok: false, network: true, reason: 'offline' }
     }
 
-    // Try real-time sync
-    const result = await this.tryRealtimeSync(update)
-
-    if (!result.ok && !result.permanent) {
-      await this.addToOfflineQueue(update)
-      log.info(`Added IO ${update.id} to offline queue for later sync`)
-    }
-
-    return result
-  }
-
-  // ===========================================================================
-  // Sync Multiple IO Updates
-  // ===========================================================================
-
-  async syncIoUpdates(updates: IoUpdateDto[]): Promise<boolean> {
-    if (updates.length === 0) return true
-
-    // For small batches, try batch sync first
-    if (updates.length > 1 && updates.length <= this.localConfig.batchSize) {
-      if (await this.tryRealtimeBatchSync(updates)) {
-        log.info(`Successfully batch synced ${updates.length} updates`)
-        return true
-      }
-      log.warn('Batch sync failed, falling back to individual processing')
-    }
-
-    // Fall back to individual processing
-    let successCount = 0
-    const failedUpdates: IoUpdateDto[] = []
-
-    for (const update of updates) {
-      const r = await this.tryRealtimeSync(update)
-      if (r.ok) {
-        successCount++
-      } else if (!r.permanent) {
-        // Only requeue transient failures. Permanent rejections (e.g. null
-        // result, validation error) would re-fail forever and burn the retry
-        // cap; the caller already saw the warn log inside tryRealtimeSync.
-        failedUpdates.push(update)
-      }
-    }
-
-    // Add failed updates to offline queue
-    if (failedUpdates.length > 0) {
-      for (const update of failedUpdates) {
-        await this.addToOfflineQueue(update)
-      }
-      log.info(`Added ${failedUpdates.length} failed updates to offline queue`)
-    }
-
-    return successCount === updates.length
-  }
-
-  // ===========================================================================
-  // Sync Test Histories
-  // ===========================================================================
-
-  async syncTestHistories(subsystemId: number, histories: TestHistoryDto[]): Promise<boolean> {
-    if (histories.length === 0) return true
-
-    const cloudConfig = await this.getCloudConfig()
-    if (!cloudConfig.remoteUrl) {
-      log.warn('Cloud URL not configured - cannot sync TestHistories')
-      return false
-    }
-
-    try {
-      const headers = new Headers({ 'Content-Type': 'application/json' })
-      await this.addApiKeyHeader(headers)
-
-      const batch: TestHistorySyncBatchDto = {
-        subsystemId,
-        histories,
-      }
-
-      const response = await this.fetchWithTimeout(
-        `${cloudConfig.remoteUrl}/api/sync/test-histories`,
-        {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(batch),
-        },
-        30000
-      )
-
-      if (response.ok) {
-        log.info(`Successfully synced ${histories.length} TestHistory records to cloud`)
-        return true
-      }
-
-      if (response.status === 404) {
-        log.debug('Cloud server does not support TestHistory sync endpoint yet (404)')
-        return false
-      }
-
-      log.warn(`Failed to sync TestHistories to cloud: ${response.status}`)
-      return false
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      log.debug(`TestHistory sync failed: ${errorMessage}`)
-      return false
-    }
+    // Try real-time sync and report the outcome; the SQLite PendingSyncs row
+    // (owned by AutoSync) is the durable retry queue.
+    return this.tryRealtimeSync(update)
   }
 
   // ===========================================================================
@@ -624,305 +520,6 @@ export class CloudSyncService {
       // reached the cloud app, so this must not count toward the retry cap.
       return { ok: false, network: true, reason: errorMessage }
     }
-  }
-
-  private async tryRealtimeBatchSync(updates: IoUpdateDto[]): Promise<boolean> {
-    log.info(`Attempting batch sync for ${updates.length} updates`)
-
-    // Quick check if we're offline
-    if (
-      this.connectionStatus.state !== 'connected' &&
-      this.connectionStatus.lastConnectionAttempt &&
-      Date.now() - this.connectionStatus.lastConnectionAttempt.getTime() < this.localConfig.retryDelayMs
-    ) {
-      log.debug('Skipping batch sync - offline')
-      return false
-    }
-
-    try {
-      const { remoteUrl } = await this.getCloudConfig()
-      if (!remoteUrl) {
-        log.warn('Cloud URL not configured for HTTP batch fallback')
-        return false
-      }
-
-      const headers = new Headers({ 'Content-Type': 'application/json' })
-      await this.addApiKeyHeader(headers)
-
-      const batch: IoSyncBatchDto = { updates }
-
-      const response = await this.fetchWithTimeout(
-        `${remoteUrl}/api/sync/update`,
-        {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(batch),
-        },
-        20000 // Longer timeout for batch
-      )
-
-      if (response.status === 401) {
-        log.error('Authentication failed for batch sync')
-        return false
-      }
-
-      if (response.ok) {
-        let responseData: { updatedCount?: number } | null = null
-        try {
-          responseData = await response.json()
-        } catch {
-          responseData = null
-        }
-
-        if (
-          responseData?.updatedCount !== undefined &&
-          responseData.updatedCount < updates.length
-        ) {
-          log.warn(`Cloud accepted batch HTTP request but only updated ${responseData.updatedCount}/${updates.length} IOs`)
-          return false
-        }
-
-        log.info(`Successfully batch synced ${updates.length} IOs via HTTP`)
-        this.setConnectionState('connected')
-        return true
-      }
-
-      log.error(`HTTP batch sync failed: ${response.status}`)
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      log.error(`HTTP batch sync failed: ${errorMessage}`)
-    }
-
-    this.setConnectionState('error', 'Batch sync failed')
-    return false
-  }
-
-  // ===========================================================================
-  // Offline Queue Management
-  // ===========================================================================
-
-  private async addToOfflineQueue(update: IoUpdateDto): Promise<void> {
-    const pendingSync: PendingSync = {
-      id: Date.now(), // Temporary ID for in-memory queue
-      ioId: update.id,
-      inspectorName: update.testedBy,
-      testResult: update.result,
-      comments: update.comments,
-      state: update.state,
-      version: update.version,
-      timestamp: update.timestamp ? new Date(update.timestamp) : undefined,
-      createdAt: new Date(),
-      retryCount: 0,
-    }
-
-    // Evict oldest if queue is full (items are also persisted in SQLite PendingSyncs)
-    if (this.offlineQueue.size >= this.MAX_OFFLINE_QUEUE) {
-      const oldest = this.offlineQueue.keys().next().value
-      if (oldest !== undefined) this.offlineQueue.delete(oldest)
-    }
-    this.offlineQueue.set(update.id, pendingSync)
-    log.info(`Added IO ${update.id} to offline queue with version ${update.version}`)
-  }
-
-  /**
-   * Get all pending syncs from the offline queue
-   */
-  getPendingSyncs(): PendingSync[] {
-    return Array.from(this.offlineQueue.values()).sort(
-      (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
-    )
-  }
-
-  /**
-   * Get the count of pending syncs
-   */
-  getPendingSyncCount(): number {
-    return this.offlineQueue.size
-  }
-
-  /**
-   * Clear a specific pending sync by ID
-   */
-  removePendingSync(id: number): void {
-    this.offlineQueue.delete(id)
-  }
-
-  /**
-   * Clear multiple pending syncs by ID
-   */
-  removePendingSyncs(ids: number[]): void {
-    for (const id of ids) {
-      this.offlineQueue.delete(id)
-    }
-  }
-
-  /**
-   * Clear all pending syncs
-   */
-  clearPendingSyncs(): void {
-    this.offlineQueue.clear()
-  }
-
-  // ===========================================================================
-  // Process Pending Syncs
-  // ===========================================================================
-
-  /**
-   * Sync pending updates from the offline queue
-   */
-  async syncPendingUpdates(): Promise<number> {
-    const pendingSyncs = this.getPendingSyncs()
-
-    if (pendingSyncs.length === 0) {
-      return 0
-    }
-
-    log.info(`Found ${pendingSyncs.length} pending syncs in offline queue`)
-
-    let totalSynced = 0
-    const successfulIds: number[] = []
-
-    // Process in batches
-    for (let i = 0; i < pendingSyncs.length; i += this.localConfig.batchSize) {
-      const batch = pendingSyncs.slice(i, i + this.localConfig.batchSize)
-      log.info(
-        `Processing batch of ${batch.length} pending syncs (batch ${Math.floor(i / this.localConfig.batchSize) + 1}/${Math.ceil(pendingSyncs.length / this.localConfig.batchSize)})`
-      )
-
-      const batchSuccessIds = await this.tryBatchSyncPending(batch)
-
-      if (batchSuccessIds.length > 0) {
-        successfulIds.push(...batchSuccessIds)
-        totalSynced += batchSuccessIds.length
-        log.info(`Successfully synced ${batchSuccessIds.length} items in batch`)
-      }
-
-      // Small delay between batches
-      if (i + this.localConfig.batchSize < pendingSyncs.length) {
-        await this.delay(this.localConfig.batchDelayMs)
-      }
-    }
-
-    // Remove successfully synced items from queue
-    if (successfulIds.length > 0) {
-      this.removePendingSyncs(successfulIds)
-      log.info(`Removed ${successfulIds.length} successfully synced items from queue`)
-    }
-
-    return totalSynced
-  }
-
-  private async tryBatchSyncPending(batch: PendingSync[]): Promise<number[]> {
-    // Convert batch to DTOs. failureMode / hasDependencies live only on the
-    // SQLite PendingSyncs row, not on this in-memory mirror; drainPendingSyncsForIo
-    // is the authoritative drain path and it includes them via
-    // mapPendingSyncToIoUpdate. This in-memory queue is only used as a
-    // best-effort fallback when the DB-backed queue isn't available.
-    const updates: IoUpdateDto[] = batch.map(pending => ({
-      id: pending.ioId,
-      testedBy: pending.inspectorName,
-      result: pending.testResult,
-      comments: pending.comments,
-      state: pending.state,
-      version: pending.version,
-      timestamp: pending.timestamp?.toISOString(),
-    }))
-
-    // Try batch sync
-    if (await this.tryRealtimeBatchSync(updates)) {
-      return batch.map(p => p.ioId)
-    }
-
-    // Batch sync failed, fall back to individual sync
-    log.warn(`Batch sync failed, falling back to individual sync for ${batch.length} items`)
-
-    const successfulIds: number[] = []
-
-    for (const pending of batch) {
-      const update = updates.find(u => u.id === pending.ioId)
-      if (!update) continue
-
-      try {
-        const r = await this.tryRealtimeSync(update)
-        if (r.ok) {
-          successfulIds.push(pending.ioId)
-          log.debug(`Successfully synced pending IO ${pending.ioId} individually`)
-        } else {
-          pending.retryCount++
-          pending.lastError = r.reason ?? 'Individual sync failed after batch failure'
-          log.warn(`Failed to sync pending IO ${pending.ioId} individually (${r.reason ?? 'unknown'})`)
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        log.error(`Exception syncing pending IO ${pending.ioId}: ${errorMessage}`)
-        pending.retryCount++
-        pending.lastError = errorMessage
-      }
-
-      // Small delay between individual syncs
-      await this.delay(100)
-    }
-
-    return successfulIds
-  }
-
-  /**
-   * Sync pending updates — cloud always accepts (local tool is the authority).
-   * No version conflict rejection: every pending sync is pushed unconditionally.
-   */
-  async syncPendingUpdatesWithVersionControl(
-    getLocalIo: (ioId: number) => Promise<Io | null>
-  ): Promise<BatchSyncResult> {
-    const pendingSyncs = this.getPendingSyncs()
-    const result: BatchSyncResult = {
-      totalProcessed: pendingSyncs.length,
-      successfulIds: [],
-      failedIds: [],
-      rejectedIds: [],
-      errors: new Map(),
-    }
-
-    if (pendingSyncs.length === 0) {
-      return result
-    }
-
-    log.info(`Syncing ${pendingSyncs.length} pending updates (local-tool-is-leader, no version gating)`)
-
-    for (const pending of pendingSyncs) {
-      try {
-        const update: IoUpdateDto = {
-          id: pending.ioId,
-          testedBy: pending.inspectorName,
-          result: pending.testResult,
-          comments: pending.comments,
-          state: pending.state,
-          version: pending.version,
-          timestamp: pending.timestamp?.toISOString(),
-        }
-
-        const r = await this.tryRealtimeSync(update)
-        if (r.ok) {
-          result.successfulIds.push(pending.ioId)
-          log.debug(`Successfully synced pending IO ${pending.ioId}`)
-        } else {
-          result.failedIds.push(pending.ioId)
-          result.errors.set(pending.ioId, r.reason ?? 'Sync failed - will retry later')
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        log.error(`Exception processing pending sync for IO ${pending.ioId}: ${errorMessage}`)
-        result.failedIds.push(pending.ioId)
-        result.errors.set(pending.ioId, errorMessage)
-      }
-    }
-
-    // Remove successfully synced items
-    if (result.successfulIds.length > 0) {
-      this.removePendingSyncs(result.successfulIds)
-      log.info(`Successfully synced and removed ${result.successfulIds.length} changes from queue`)
-    }
-
-    return result
   }
 
   // ===========================================================================

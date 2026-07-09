@@ -53,3 +53,30 @@ describe('isNetworkLevelFailure (does NOT burn the retry cap)', () => {
     expect(isNetworkLevelFailure({ httpStatus: 429 })).toBe(true)
   })
 })
+
+describe('e-stop / guided-task-state drain strike policy', () => {
+  // Models the exact branch the auto-sync e-stop (pushEstopCheckSyncs) and
+  // guided-task-state (pushGuidedTaskStateSyncs) drains now take on a non-OK
+  // HTTP response: a network-level status DEFERS the row (no strike, batch
+  // stops); anything else is a genuine cloud verdict and burns a strike.
+  //
+  // Before this fix both drains did `resp.ok ? delete : bumpRetry` — a 429 /
+  // ≥500 / 401 HTTP RESPONSE (the catch only covered a THROWN fetch) burned a
+  // strike toward the park cap, the premature-park data-loss class that landed
+  // on SAFETY (e-stop) data.
+  const wouldBurnStrike = (httpStatus: number): boolean =>
+    !isNetworkLevelFailure({ httpStatus })
+
+  it('429 / 5xx / 401 responses defer without a strike', () => {
+    expect(wouldBurnStrike(429)).toBe(false)
+    expect(wouldBurnStrike(500)).toBe(false)
+    expect(wouldBurnStrike(503)).toBe(false)
+    expect(wouldBurnStrike(401)).toBe(false)
+  })
+
+  it('genuine 4xx cloud verdicts (400 / 404 / 409) burn a strike toward the cap', () => {
+    expect(wouldBurnStrike(400)).toBe(true)
+    expect(wouldBurnStrike(404)).toBe(true)
+    expect(wouldBurnStrike(409)).toBe(true)
+  })
+})

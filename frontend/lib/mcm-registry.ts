@@ -41,6 +41,7 @@ import {
   getCachedNetworkSnapshots,
   getCachedNetworkForMcm,
   getCachedState,
+  isCacheFresh,
 } from './plc/remote-cache';
 
 /** True when PLC connections live in a separate plc-gateway process. */
@@ -53,7 +54,13 @@ async function broadcast(message: object): Promise<void> {
   try {
     await fetch(WS_BROADCAST_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // In the split deployment this poster runs in the plc-gateway process
+        // and reaches the app's broadcast receiver across the container network
+        // (non-loopback), so it must carry the shared secret when one is set.
+        ...(process.env.BROADCAST_SECRET ? { 'X-Broadcast-Key': process.env.BROADCAST_SECRET } : {}),
+      },
       body: JSON.stringify(message),
     });
   } catch {
@@ -285,7 +292,16 @@ export async function disconnectMcm(subsystemId: string): Promise<{ success: boo
  * Snapshot of one MCM's current state. Returns null when the id is unknown.
  */
 export function getMcmStatus(subsystemId: string): McmDescriptor | null {
-  if (REMOTE) return getCachedMcm(subsystemId);
+  if (REMOTE) {
+    const mcm = getCachedMcm(subsystemId);
+    if (!mcm) return null;
+    // STALE gateway link: never report the frozen `connected: true`. Force
+    // disconnected so callers (test gating, status endpoints) don't act on a
+    // dead reading. The distinct "gateway link stale" signal is surfaced by the
+    // heartbeat (see lib/heartbeat/system-info.ts) via getGatewayLinkState().
+    if (!isCacheFresh()) return { ...mcm, connected: false, status: 'disconnected' };
+    return mcm;
+  }
 
   const entry = reg().mcms.get(subsystemId);
   if (!entry) return null;
@@ -298,6 +314,9 @@ export function getMcmStatus(subsystemId: string): McmDescriptor | null {
  */
 export function getMcmTags(subsystemId: string): { tags: IoTag[]; count: number } {
   if (REMOTE) {
+    // Stale gateway link → the cached tag values are frozen, not live. Return
+    // empty rather than serve stale bits as current (R1).
+    if (!isCacheFresh()) return { tags: [], count: 0 };
     const tags = getCachedTagsForMcm(subsystemId);
     return { tags, count: tags.length };
   }
@@ -327,7 +346,9 @@ export function hasMcm(subsystemId: string): boolean {
  * if they should route through the registry vs the old singleton.
  */
 export function hasAnyConnectedMcm(): boolean {
-  if (REMOTE) return getCachedState().aggregate.anyConnected;
+  // Stale gateway link → we don't actually know anything is connected; the
+  // aggregate is frozen. Report false rather than a stale true (R1).
+  if (REMOTE) return isCacheFresh() && getCachedState().aggregate.anyConnected;
   for (const entry of reg().mcms.values()) {
     if (entry.client.isConnected) return true;
   }
@@ -582,7 +603,14 @@ export function getAggregateStatus(): {
   totalTagCount: number;
   mcms: McmDescriptor[];
 } {
-  const mcms = listMcms();
+  const rawMcms = listMcms();
+  // Stale gateway link (REMOTE) → the polled snapshot is frozen. Present every
+  // MCM as disconnected so the rollup can't report a stale "connected" count.
+  // totalCount is preserved (we still know how many MCMs exist). (R1)
+  const stale = REMOTE && !isCacheFresh();
+  const mcms = stale
+    ? rawMcms.map((m) => ({ ...m, connected: false, status: 'disconnected' as ConnectionStatus }))
+    : rawMcms;
   const connectedCount = mcms.filter((m) => m.connected).length;
   const totalTagCount = mcms.reduce((sum, m) => sum + m.tagCount, 0);
   return {

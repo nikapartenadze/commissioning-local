@@ -266,12 +266,6 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     setL2PullError(null)
     setL2PullResult(null)
     try {
-      // Get current config (remoteUrl, apiPassword, subsystemId)
-      const configRes = await authFetch('/api/configuration')
-      if (!configRes.ok) throw new Error('Could not load config — set cloud URL and API password first')
-      const config = await configRes.json()
-      const remoteUrl = config.remoteUrl || config.cloudUrl
-      const apiPassword = config.apiPassword
       // Scope the manual L2 pull to THIS view's route subsystem only. Never
       // fall back to the singleton config.subsystemId: on a central server that
       // is the last-connected MCM, and /api/cloud/pull-l2 does a scoped
@@ -279,16 +273,17 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       // v2.42.1 per-MCM wiring bug class). If the prop is absent the guard
       // below errors cleanly instead of pulling the wrong subsystem.
       const subId = subsystemId
-
-      if (!remoteUrl) throw new Error('No cloud URL configured — go to Settings and set Remote URL')
       if (!subId) throw new Error('No subsystem ID configured for this view')
 
-      console.log(`[FV Pull] Pulling L2 from ${remoteUrl}/api/sync/l2/${subId}`)
+      // The cloud URL + API key are resolved SERVER-side by /api/cloud/pull-l2
+      // (H1): the browser no longer receives the API key, so we no longer fetch
+      // /api/configuration to shuttle it back.
+      console.log(`[FV Pull] Pulling L2 for subsystem ${subId}`)
 
       const res = await authFetch('/api/cloud/pull-l2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId: subId }),
+        body: JSON.stringify({ subsystemId: subId }),
       })
       const result = await res.json()
 

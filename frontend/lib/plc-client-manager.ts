@@ -35,7 +35,13 @@ async function broadcastToWebSocket(message: object): Promise<void> {
   try {
     const response = await fetch(WS_BROADCAST_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // Carry the broadcast shared secret when configured (opt-in). Harmless
+        // on the loopback embedded path; required if this poster ever reaches a
+        // non-loopback receiver (WS_BROADCAST_URL pointed at another host).
+        ...(process.env.BROADCAST_SECRET ? { 'X-Broadcast-Key': process.env.BROADCAST_SECRET } : {}),
+      },
       body: JSON.stringify(message),
     });
     if (!response.ok) {

@@ -917,6 +917,9 @@ class AutoSyncService {
     const bumpRetry = db.prepare(
       'UPDATE EStopCheckPendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
     )
+    const noteError = db.prepare(
+      'UPDATE EStopCheckPendingSyncs SET LastError = ? WHERE id = ?'
+    )
 
     for (const p of Array.from(byCheck.values())) {
       if (p.RetryCount >= PENDING_RETRY_CAP) {
@@ -972,7 +975,16 @@ class AutoSyncService {
       }
       if (resp.ok) {
         try { deleteAllForCheck.run(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) } catch { /* best-effort */ }
+      } else if (isNetworkLevelFailure({ httpStatus: resp.status })) {
+        // 429 / ≥500 / 401 — the cloud never ruled on this SAFETY row. Do NOT
+        // burn a retry-cap strike (the TPA8/MCM08 premature-park class that let
+        // the pull wipe results): just record the reason and stop the batch —
+        // every later row would fail the same way and each costs up to a 15 s
+        // timeout. Mirrors the IO / L2 / device-blocker drains.
+        try { noteError.run(`HTTP ${resp.status} (network-level, no strike)`, p.id) } catch { /* best-effort */ }
+        break
       } else {
+        // Genuine cloud verdict (permanent 4xx) — burn a strike toward the cap.
         try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
       }
     }
@@ -1014,6 +1026,9 @@ class AutoSyncService {
     )
     const bumpRetry = db.prepare(
       'UPDATE GuidedTaskStatePendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
+    )
+    const noteError = db.prepare(
+      'UPDATE GuidedTaskStatePendingSyncs SET LastError = ? WHERE id = ?'
     )
 
     for (const p of Array.from(byTask.values())) {
@@ -1057,7 +1072,16 @@ class AutoSyncService {
       }
       if (resp.ok) {
         try { deleteAllForTask.run(p.SubsystemId, p.TaskId) } catch { /* best-effort */ }
+      } else if (isNetworkLevelFailure({ httpStatus: resp.status })) {
+        // 429 / ≥500 / 401 — the cloud never ruled on this row. Do NOT burn a
+        // retry-cap strike (the TPA8/MCM08 premature-park class): record the
+        // reason and stop the batch — every later row would fail the same way
+        // and each costs up to a 15 s timeout. Mirrors the IO / L2 /
+        // device-blocker drains.
+        try { noteError.run(`HTTP ${resp.status} (network-level, no strike)`, p.id) } catch { /* best-effort */ }
+        break
       } else {
+        // Genuine cloud verdict (permanent 4xx) — burn a strike toward the cap.
         try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
       }
     }

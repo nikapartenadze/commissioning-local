@@ -53,6 +53,16 @@ const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 // split deployment it must be reachable so the plc-gateway can POST events.
 const BROADCAST_HOST = process.env.BROADCAST_HOST || (PLC_REMOTE ? '0.0.0.0' : '127.0.0.1');
 
+// Shared secret protecting the internal broadcast receiver. Opt-in: when unset
+// nothing changes (default deployments keep working). When the receiver is
+// exposed (PLC_MODE=remote binds it on 0.0.0.0 so the plc-gateway container can
+// reach it), set BROADCAST_SECRET on BOTH the app and the gateway to require an
+// X-Broadcast-Key header on non-loopback POSTs. Loopback callers (the app's own
+// cloud-sse / pull / delta posters on 127.0.0.1) are always trusted — the host
+// is already inside the trust boundary — so they need no header.
+const BROADCAST_SECRET = process.env.BROADCAST_SECRET || '';
+let warnedNoBroadcastSecret = false;
+
 // ============================================================================
 // Production Logging — clean console + detailed file logs
 // ============================================================================
@@ -266,10 +276,12 @@ function shouldDeliver(message: any, ws: AliveWebSocket): boolean {
 
 const HTTP_PORT = WS_PORT + 100;
 const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // No CORS: this is an INTERNAL, server-to-server API (PLC/sync posters →
+  // WS fan-out). It is never called cross-origin from a browser, so the old
+  // `Access-Control-Allow-Origin: *` only served to invite abuse. Dropping it
+  // means a browser page on another origin can no longer read our responses.
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Broadcast-Key');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -278,6 +290,27 @@ const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerRespo
   }
 
   if (req.method === 'POST' && req.url === '/broadcast') {
+    // Shared-secret gate (opt-in). Loopback posters are trusted implicitly; a
+    // remote poster (the plc-gateway in split mode) must present the matching
+    // X-Broadcast-Key. Unset ⇒ allow, but warn once when the receiver is
+    // actually exposed so an operator running split-mode knows it's open.
+    if (BROADCAST_SECRET) {
+      const remote = req.socket.remoteAddress || '';
+      const isLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      const key = req.headers['x-broadcast-key'];
+      if (!isLoopback && key !== BROADCAST_SECRET) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+    } else if (!warnedNoBroadcastSecret && PLC_REMOTE) {
+      warnedNoBroadcastSecret = true;
+      console.warn(
+        '[WS] SECURITY: BROADCAST_SECRET is not set while PLC_MODE=remote — the broadcast ' +
+        'receiver on 0.0.0.0 accepts events from anyone on the network. Set BROADCAST_SECRET ' +
+        'on both the app and the plc-gateway to require an X-Broadcast-Key header.',
+      );
+    }
     let body = '';
     req.on('data', (chunk: Buffer) => {
       body += chunk;
@@ -462,10 +495,10 @@ setInterval(() => {
 
 const app = express();
 
-// Trust X-Forwarded-For from loopback proxies only. Lets noTestingOnServerLaptop
-// see the real client IP when the request arrives through Vite dev proxy or a
-// future local reverse proxy (IIS, etc). Direct LAN connections to :3000 are
-// unaffected — Express still uses the socket remote address there.
+// Trust X-Forwarded-For from loopback proxies only, so req.ip reflects the real
+// client IP when a request arrives through the Vite dev proxy or a local reverse
+// proxy (IIS, etc). Direct LAN connections to :3000 are unaffected — Express
+// still uses the socket remote address there.
 app.set('trust proxy', 'loopback');
 
 // JSON body parsing with 10mb limit
@@ -811,12 +844,20 @@ process.on('unhandledRejection', (reason: unknown) => {
   const errMsg = reason instanceof Error
     ? `${reason.message}\n${reason.stack || '(no stack)'}`
     : String(reason);
-  const msg = `[FATAL] Unhandled promise rejection: ${errMsg}`;
+  // Do NOT exit on an unhandled rejection. In this server a single stray
+  // rejection (e.g. a best-effort broadcast/sync fetch that lost a race) is
+  // almost never a genuinely unrecoverable state — exiting drops EVERY live PLC
+  // connection and every WS client for the whole fleet. Log LOUDLY and report,
+  // but keep serving. Real route errors are still caught by asyncHandler →
+  // the Express error handler; only truly-uncaught synchronous exceptions
+  // (uncaughtException, below) still exit. (uncaughtException unchanged.)
+  const msg = `[ERROR] Unhandled promise rejection (server continuing): ${errMsg}`;
   appendLog(ERROR_FILE, `${ts} ${msg}`);
   appendLog(LOG_FILE, `${ts} ${msg}`);
   process.stderr.write(`\n${ts} ${msg}\n`);
-  // Best-effort crash report (≤1.5s), then exit — unhandled rejections are crashes since Node 15+
-  reportFatal(reason, { source: 'unhandledRejection' }).finally(() => process.exit(1));
+  console.error('[Server] Unhandled promise rejection — logged and reported, NOT exiting:', reason);
+  // Fire-and-forget crash report (reportError never throws / never blocks).
+  reportError(reason, { source: 'unhandledRejection' });
 });
 
 // Log memory usage periodically to detect leaks leading to crashes

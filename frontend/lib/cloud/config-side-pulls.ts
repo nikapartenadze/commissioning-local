@@ -115,7 +115,7 @@ export async function runConfigSidePulls(
     if (res.ok) {
       const data = (await res.json()) as {
         success?: boolean
-        zones?: Array<{ name: string; epcs?: Array<{ name: string; checkTag: string; ioPoints?: Array<{ tag: string }>; vfds?: Array<{ tag: string; stoTag: string; mustStop?: boolean }> }> }>
+        zones?: Array<{ name: string; epcs?: Array<{ name: string; checkTag: string; ioPoints?: Array<{ tag: string }>; vfds?: Array<{ tag: string; stoTag: string; mustStop?: boolean }>; relatedEpcs?: Array<{ tag: string; mustDrop?: boolean }> }> }>
         // Check RESULTS (2026-07-08 e-stop down-flow): additive field served by
         // newer clouds; absent on older clouds and safely ignored below.
         checks?: Array<{ zoneName: string; checkTag: string; checkType?: string; result?: string | null; comments?: string | null; failureMode?: string | null; testedBy?: string | null; testedAt?: string | null; version?: number }>
@@ -123,12 +123,18 @@ export async function runConfigSidePulls(
       if (data.success && data.zones && data.zones.length > 0) {
         db.prepare(`DELETE FROM EStopIoPoints WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?))`).run(subsystemId)
         db.prepare(`DELETE FROM EStopVfds WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?))`).run(subsystemId)
+        // EStopRelatedEpcs (the must-drop / must-stay-OK companion e-stops)
+        // cascade-delete with EStopEpcs (FK ON DELETE CASCADE, foreign_keys=ON),
+        // so they MUST be re-inserted below or the primary pull path silently
+        // loses them (the manual pull-estop route already handles them).
+        db.prepare(`DELETE FROM EStopRelatedEpcs WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?))`).run(subsystemId)
         db.prepare(`DELETE FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId = ?)`).run(subsystemId)
         db.prepare('DELETE FROM EStopZones WHERE SubsystemId = ?').run(subsystemId)
         const insertZone = db.prepare('INSERT INTO EStopZones (SubsystemId, Name) VALUES (?, ?)')
         const insertEpc = db.prepare('INSERT INTO EStopEpcs (ZoneId, Name, CheckTag) VALUES (?, ?, ?)')
         const insertIoPoint = db.prepare('INSERT INTO EStopIoPoints (EpcId, Tag) VALUES (?, ?)')
         const insertVfd = db.prepare('INSERT INTO EStopVfds (EpcId, Tag, StoTag, MustStop) VALUES (?, ?, ?, ?)')
+        const insertRelatedEpc = db.prepare('INSERT INTO EStopRelatedEpcs (EpcId, Tag, MustDrop) VALUES (?, ?, ?)')
         for (const zone of data.zones) {
           const zr = insertZone.run(subsystemId, zone.name)
           const zoneId = zr.lastInsertRowid
@@ -137,6 +143,7 @@ export async function runConfigSidePulls(
             const epcId = er.lastInsertRowid
             for (const io of epc.ioPoints || []) insertIoPoint.run(epcId, io.tag)
             for (const vfd of epc.vfds || []) insertVfd.run(epcId, vfd.tag, vfd.stoTag, vfd.mustStop ? 1 : 0)
+            for (const rel of epc.relatedEpcs || []) insertRelatedEpc.run(epcId, rel.tag, rel.mustDrop ? 1 : 0)
           }
         }
         result.estopPulled = data.zones.length

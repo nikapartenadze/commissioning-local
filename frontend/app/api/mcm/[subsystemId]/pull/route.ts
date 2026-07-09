@@ -35,6 +35,23 @@ async function pullL2SelfCall(subsystemId: number, remoteUrl: string, apiPasswor
 }
 
 /**
+ * Arm the auto-sync re-pull suppression after a scoped pull, exactly like the
+ * legacy /api/cloud/pull route does. Without this, auto-sync's SSE-hint-driven
+ * re-pull (auto-sync.ts guards keyed on _lastManualPullAt) never fires for the
+ * scoped route, so a manual/background scoped pull was not debounced against an
+ * immediate follow-up pull. Best-effort — a missing service must not fail the
+ * pull the operator just completed successfully.
+ */
+async function armRePullSuppression(): Promise<void> {
+  try {
+    const { getAutoSyncService } = await import('@/lib/cloud/auto-sync');
+    getAutoSyncService()?.markManualPull();
+  } catch {
+    // auto-sync not loaded yet — nothing to suppress.
+  }
+}
+
+/**
  * POST /api/mcm/:subsystemId/pull
  *
  * Multi-MCM-safe cloud pull. Mirrors the legacy /api/cloud/pull logic but:
@@ -225,6 +242,7 @@ export async function POST(req: Request, res: Response) {
       // scoped, idempotent delete+reinsert per section, so this is safe.
       const side = await runConfigSidePulls(subsystemId, remoteUrl, apiPassword, { db });
       const l2Pulled = await pullL2SelfCall(subsystemId, remoteUrl, apiPassword);
+      await armRePullSuppression();
       return res.json({
         success: true,
         unchanged: true,
@@ -502,6 +520,10 @@ export async function POST(req: Request, res: Response) {
     // Record the applied cloud signature so the next periodic catch-up can
     // short-circuit if nothing changed (see no-op check above).
     pullHashStore.set(subsystemId, versionHash);
+
+    // Suppress an immediate auto-sync re-pull now that this scoped pull applied
+    // fresh cloud state (mirrors the legacy /api/cloud/pull route).
+    await armRePullSuppression();
 
     console.log(`[MCM ${subsystemIdStr} Pull] DONE — ios=${result}, network=${networkPulled}, estop=${estopPulled}, safety=${safetyPulled}, punchlists=${punchlistsPulled}`);
 

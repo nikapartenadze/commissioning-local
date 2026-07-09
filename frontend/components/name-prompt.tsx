@@ -10,14 +10,16 @@ interface NamePromptProps {
 }
 
 export function NamePrompt({ onNameSet }: NamePromptProps) {
-  const [name, setName] = useState("")
-  const [error, setError] = useState("")
   const [previousName] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('tester-name-previous')
+      return localStorage.getItem('tester-name') ?? localStorage.getItem('tester-name-previous')
     }
     return null
   })
+  // Pre-fill with the last-used name as a convenience, but still require an
+  // explicit Continue so a new operator on the same laptop sets their own name.
+  const [name, setName] = useState(previousName ?? "")
+  const [error, setError] = useState("")
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()

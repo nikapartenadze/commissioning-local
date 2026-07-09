@@ -67,6 +67,34 @@ const STARTED_AT = Date.now();
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// ── Shared-secret auth (opt-in) ──────────────────────────────────────────────
+// The gateway control API can start/stop PLC connections and write output bits,
+// so it must not be openly callable on the container/plant network. When
+// GATEWAY_SECRET is set, every route requires a matching X-Gateway-Key header
+// (the app's gateway-client sends it from the same env). When UNSET the API
+// stays open — so existing deployments don't break — but we warn LOUDLY once so
+// the exposure is never silent. The seam is protected by the secret, not by the
+// bind address, so the app (separate container) can still reach the gateway.
+const GATEWAY_SECRET = process.env.GATEWAY_SECRET || '';
+let warnedNoGatewaySecret = false;
+app.use((req, res, next) => {
+  if (!GATEWAY_SECRET) {
+    if (!warnedNoGatewaySecret) {
+      warnedNoGatewaySecret = true;
+      console.warn(
+        '[plc-gateway] SECURITY: GATEWAY_SECRET is not set — the control API is UNAUTHENTICATED. ' +
+        'Anyone able to reach this port can drive the PLCs. Set GATEWAY_SECRET here and the same ' +
+        'value on the app to require an X-Gateway-Key header.',
+      );
+    }
+    return next();
+  }
+  if (req.header('X-Gateway-Key') !== GATEWAY_SECRET) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+});
+
 // ── Request logging (errors + slow only) ────────────────────────────────────
 app.use((req, res, next) => {
   const start = Date.now();

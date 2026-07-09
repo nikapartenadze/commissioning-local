@@ -67,7 +67,14 @@ export async function GET(req: Request, res: Response) {
           } catch { epc.relatedEpcs = [] }
         }
       }
-    } catch { return res.json({ success: true, connected: singletonConnected, zones: [] }) }
+    } catch (err) {
+      // An unexpected failure building the zone tree (DB read error etc.) must
+      // NOT masquerade as "no E-stop zones configured" — that silently blanks a
+      // SAFETY page and reads as green/empty. Surface it as a real 500 so the UI
+      // shows an error state. A genuinely empty result is handled below.
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      return res.status(500).json({ success: false, error: message })
+    }
 
     if (zones.length === 0) return res.json({ success: true, connected: singletonConnected, zones: [] })
 

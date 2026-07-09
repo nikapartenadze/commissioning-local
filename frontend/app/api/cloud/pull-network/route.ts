@@ -53,10 +53,10 @@ export async function POST(req: Request, res: Response) {
       'INSERT INTO NetworkRings (SubsystemId, Name, McmName, McmIp, McmTag) VALUES (?, ?, ?, ?, ?)'
     )
     const insertNodeStmt = db.prepare(
-      'INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO NetworkNodes (RingId, Name, Position, IpAddress, CableIn, CableOut, StatusTag, TotalPorts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
     const insertPortStmt = db.prepare(
-      'INSERT INTO NetworkPorts (NodeId, PortNumber, DeviceName, DeviceIp, DeviceType, StatusTag) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO NetworkPorts (NodeId, PortNumber, CableLabel, DeviceName, DeviceIp, DeviceType, StatusTag) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
     const updatePortParentStmt = db.prepare(
       'UPDATE NetworkPorts SET ParentPortId = ? WHERE id = ?'
@@ -73,12 +73,12 @@ export async function POST(req: Request, res: Response) {
 
       for (const node of (ring.nodes || [])) {
         totalNodes++
-        const nodeResult = insertNodeStmt.run(ringId, node.name, node.position, node.ipAddress || null, node.statusTag || null, node.totalPorts || 28)
+        const nodeResult = insertNodeStmt.run(ringId, node.name, node.position, node.ipAddress || null, node.cableIn || null, node.cableOut || null, node.statusTag || null, node.totalPorts || 28)
         const nodeId = nodeResult.lastInsertRowid
 
         for (const port of (node.ports || [])) {
           if (port.deviceName) totalDevices++
-          const portResult = insertPortStmt.run(nodeId, port.portNumber, port.deviceName || null, port.deviceIp || null, port.deviceType || null, port.statusTag || null)
+          const portResult = insertPortStmt.run(nodeId, port.portNumber, port.cableLabel || null, port.deviceName || null, port.deviceIp || null, port.deviceType || null, port.statusTag || null)
           const localPortId = Number(portResult.lastInsertRowid)
 
           if (port.id) {

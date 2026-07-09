@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { authMiddleware, adminMiddleware, noTestingOnServerLaptop } from './middleware'
+import { authMiddleware, adminMiddleware } from './middleware'
 
 // Import route handlers
 import * as authLogin from '@/app/api/auth/login/route'
@@ -123,7 +123,6 @@ import * as vfdTestWrite from '@/app/api/vfd-commissioning/test-write/route'
 import * as vfdControlsVerified from '@/app/api/vfd-commissioning/controls-verified/route'
 import * as vfdBumpBlocker from '@/app/api/vfd-commissioning/bump-blocker/route'
 import * as vfdRefreshAddressed from '@/app/api/vfd-commissioning/refresh-addressed/route'
-import * as deviceIdentity from '@/app/api/device/identity/route'
 import * as guidedMapById from '@/app/api/maps/subsystem/[id]/route'
 import * as guidedDevices from '@/app/api/guided/devices/route'
 import * as guidedTest from '@/app/api/guided/test/route'
@@ -180,9 +179,6 @@ export function createApiRouter(): Router {
   router.get('/api/controller-management/projects', authMiddleware, asyncHandler(ctrlMgmtProjects.GET))
   router.post('/api/controller-management/comm-path', authMiddleware, asyncHandler(ctrlMgmtCommPath.POST))
   router.post('/api/controller-management/status', authMiddleware, asyncHandler(ctrlMgmtStatus.POST))
-  // NOTE: not gated by noTestingOnServerLaptop — a program download is inherently a
-  // server-side op (the Logix SDK lives on this node), and the single-device install
-  // runs the operator on the server laptop. adminMiddleware is the right gate.
   router.post('/api/controller-management/mode', adminMiddleware, asyncHandler(ctrlMgmtMode.POST))
   router.post('/api/controller-management/download', adminMiddleware, asyncHandler(ctrlMgmtDownload.POST))
   router.post('/api/controller-management/upload-batch', adminMiddleware, asyncHandler(ctrlMgmtUploadBatch.POST))
@@ -216,12 +212,12 @@ export function createApiRouter(): Router {
   router.put('/api/ios/assign/by-keyword', adminMiddleware, asyncHandler(iosAssignByKeyword.PUT))
   router.get('/api/ios/:id', asyncHandler(ioById.GET))
   router.put('/api/ios/:id', asyncHandler(ioById.PUT))
-  router.post('/api/ios/:id/test', noTestingOnServerLaptop, asyncHandler(ioTest.POST))
-  router.post('/api/ios/:id/reset', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioReset.POST))
+  router.post('/api/ios/:id/test', asyncHandler(ioTest.POST))
+  router.post('/api/ios/:id/reset', authMiddleware, asyncHandler(ioReset.POST))
   // Workflow transition (no PLC required): mark a Failed IO as Addressed / ready to re-check.
-  router.post('/api/ios/:id/addressed', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioAddressed.POST))
+  router.post('/api/ios/:id/addressed', authMiddleware, asyncHandler(ioAddressed.POST))
   router.get('/api/ios/:id/state', authMiddleware, asyncHandler(ioState.GET))
-  router.post('/api/ios/:id/fire-output', noTestingOnServerLaptop, authMiddleware, asyncHandler(ioFireOutput.POST))
+  router.post('/api/ios/:id/fire-output', authMiddleware, asyncHandler(ioFireOutput.POST))
   router.patch('/api/ios/:id/punchlist', authMiddleware, asyncHandler(ioPunchlist.PATCH))
   router.patch('/api/ios/:id/dependencies', authMiddleware, asyncHandler(ioDependencies.PATCH))
 
@@ -233,9 +229,9 @@ export function createApiRouter(): Router {
   router.post('/api/plc/toggle-testing', asyncHandler(plcToggleTesting.POST))
   router.get('/api/plc/toggle-testing', asyncHandler(plcToggleTesting.GET))
   router.post('/api/plc/test-connection', asyncHandler(plcTestConnection.POST))
-  router.post('/api/plc/fire-output', noTestingOnServerLaptop, asyncHandler(plcFireOutput.POST))
-  router.post('/api/plc/mark-passed', noTestingOnServerLaptop, asyncHandler(plcMarkPassed.POST))
-  router.post('/api/plc/mark-failed', noTestingOnServerLaptop, asyncHandler(plcMarkFailed.POST))
+  router.post('/api/plc/fire-output', asyncHandler(plcFireOutput.POST))
+  router.post('/api/plc/mark-passed', asyncHandler(plcMarkPassed.POST))
+  router.post('/api/plc/mark-failed', asyncHandler(plcMarkFailed.POST))
 
   // ── Cloud ──────────────────────────────────────────────────────
   router.post('/api/cloud/pull', asyncHandler(cloudPull.POST))
@@ -330,7 +326,7 @@ export function createApiRouter(): Router {
 
   // ── EStop ──────────────────────────────────────────────────────
   router.get('/api/estop/status', asyncHandler(estopStatus.GET))
-  router.post('/api/estop/check', noTestingOnServerLaptop, asyncHandler(estopCheck.POST))
+  router.post('/api/estop/check', asyncHandler(estopCheck.POST))
 
   // ── Firmware compliance ────────────────────────────────────────
   router.get('/api/firmware', asyncHandler(firmware.GET))
@@ -343,7 +339,7 @@ export function createApiRouter(): Router {
   router.post('/api/safety/bypass', authMiddleware, asyncHandler(safetyBypass.POST))
   router.get('/api/safety/bypass', asyncHandler(safetyBypass.GET))
   router.get('/api/safety/status', asyncHandler(safetyStatus.GET))
-  router.post('/api/safety/fire', noTestingOnServerLaptop, authMiddleware, asyncHandler(safetyFire.POST))
+  router.post('/api/safety/fire', authMiddleware, asyncHandler(safetyFire.POST))
   router.get('/api/safety/outputs', asyncHandler(safetyOutputs.GET))
 
   // ── Sync (cloud-facing endpoints) ─────────────────────────────
@@ -380,9 +376,6 @@ export function createApiRouter(): Router {
   router.post('/api/vfd-commissioning/controls-verified', asyncHandler(vfdControlsVerified.POST))
   router.post('/api/vfd-commissioning/bump-blocker', asyncHandler(vfdBumpBlocker.POST))
   router.post('/api/vfd-commissioning/refresh-addressed', asyncHandler(vfdRefreshAddressed.POST))
-
-  // ── Device Identity ───────────────────────────────────────────
-  router.get('/api/device/identity', asyncHandler(deviceIdentity.GET))
 
   // ── Guided Mode (SVG-driven) ──────────────────────────────────
   router.get('/api/maps/subsystem/:id', asyncHandler(guidedMapById.GET))

@@ -9,6 +9,7 @@
  */
 
 import { db } from '@/lib/db-sqlite'
+import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
 
 // SSE connection states
 // 'auth-failed' (F15, 2026-07-03 sync audit): the cloud rejected our API key
@@ -38,10 +39,18 @@ export interface SseLocalIo { Result: string | null; Version: number }
  *  - punchlistStatus/clarificationNote: applied REGARDLESS of version — the
  *    cloud owns the resolver state and the punchlist PATCH doesn't bump version,
  *    so this is how an admin's Addressed/Clarification lands on a tablet live.
+ *
+ * When `protectResult` is true (the local row is a deliberate operator clear the
+ * cloud value would revert, OR the IO has un-pushed local work queued), the
+ * result/timestamp/comments writes are SKIPPED entirely — definition and
+ * resolver columns still apply. This ports the destructive-pull clear guard
+ * (lib/cloud/pull-guard.ts / delta-sync isProtectedClear) to the live SSE path
+ * so the MCM04 "keeps getting reset" loss can't reopen via SSE.
  */
 export function computeSseIoUpdate(
   event: any,
   localIo: SseLocalIo,
+  protectResult = false,
 ): { clauses: string[]; params: any[] } {
   const clauses: string[] = []
   const params: any[] = []
@@ -52,24 +61,68 @@ export function computeSseIoUpdate(
   if (event.tagType !== undefined) { clauses.push('TagType = ?'); params.push(event.tagType) }
   if (event.version !== undefined) { clauses.push('Version = ?'); params.push(Number(event.version) || 0) }
 
-  const cloudVersion = Number(event.version) || 0
-  const localVersion = localIo.Version ?? 0
-  if (cloudVersion > localVersion) {
-    if (event.result !== undefined) { clauses.push('Result = ?'); params.push(event.result ?? null) }
-    if (event.timestamp !== undefined) { clauses.push('Timestamp = ?'); params.push(event.timestamp ?? null) }
-    if (event.comments !== undefined) { clauses.push('Comments = ?'); params.push(event.comments ?? null) }
-  } else if (!localIo.Result && event.result) {
-    // Local has no result, cloud does — accept regardless of version.
-    clauses.push('Result = ?'); params.push(event.result)
-    clauses.push('Timestamp = ?'); params.push(event.timestamp ?? null)
-    clauses.push('Comments = ?'); params.push(event.comments ?? null)
+  // Result/Timestamp/Comments are field-authored. Skip them entirely when the
+  // local row is protected (deliberate clear / un-pushed local work) — matches
+  // delta-sync's upsertKeepClearStmt, which keeps local result columns while
+  // still applying the cloud definition (+ version) fields.
+  if (!protectResult) {
+    const cloudVersion = Number(event.version) || 0
+    const localVersion = localIo.Version ?? 0
+    if (cloudVersion > localVersion) {
+      if (event.result !== undefined) { clauses.push('Result = ?'); params.push(event.result ?? null) }
+      if (event.timestamp !== undefined) { clauses.push('Timestamp = ?'); params.push(event.timestamp ?? null) }
+      if (event.comments !== undefined) { clauses.push('Comments = ?'); params.push(event.comments ?? null) }
+    } else if (!localIo.Result && event.result) {
+      // Local has no result, cloud does — accept regardless of version.
+      clauses.push('Result = ?'); params.push(event.result)
+      clauses.push('Timestamp = ?'); params.push(event.timestamp ?? null)
+      clauses.push('Comments = ?'); params.push(event.comments ?? null)
+    }
   }
 
-  // Resolver state — cloud-owned, applied regardless of the version gate.
+  // Resolver state — cloud-owned, applied regardless of the version gate (and
+  // regardless of protectResult; R3 keeps resolver behaviour exactly as today).
   if (event.punchlistStatus !== undefined) { clauses.push('PunchlistStatus = ?'); params.push(event.punchlistStatus ?? null) }
   if (event.clarificationNote !== undefined) { clauses.push('ClarificationNote = ?'); params.push(event.clarificationNote ?? null) }
 
   return { clauses, params }
+}
+
+/**
+ * Decide whether an incoming SSE io-update must NOT overwrite the local Result.
+ * Two protected cases, mirroring the destructive-pull guards:
+ *   1. An un-pushed local result is queued for this IO (a PendingSyncs row that
+ *      is not a resolver-only 'Punchlist Updated' edit) — cloud is stale
+ *      relative to local, so keep local until it syncs up.
+ *   2. The local latest TestHistories row is a deliberate 'Cleared' that the
+ *      cloud value has NOT provably superseded — restoring the cloud result
+ *      would revert the operator's clear (the MCM04 reset loop).
+ */
+function isSseResultProtected(event: any): boolean {
+  const ioId = event.id
+  if (!ioId) return false
+  try {
+    const pending = db.prepare(
+      `SELECT COUNT(*) AS c FROM PendingSyncs WHERE IoId = ? AND TestResult != 'Punchlist Updated'`,
+    ).get(ioId) as { c: number } | undefined
+    if (pending && pending.c > 0) return true
+
+    const cloudHasResult = event.result != null && String(event.result).trim() !== ''
+    if (!cloudHasResult) return false // cloud restores nothing → nothing to protect
+    const last = db.prepare(
+      'SELECT Result AS r, Timestamp AS ts FROM TestHistories WHERE IoId = ? ORDER BY id DESC LIMIT 1',
+    ).get(ioId) as { r: string | null; ts: string | null } | undefined
+    if (!last || last.r !== 'Cleared') return false // not a deliberate clear
+    const clearedAt = parseDbTimestamp(last.ts)
+    if (!Number.isFinite(clearedAt)) return true // clear with no ts → protect (safe default)
+    const cloudTs = Date.parse(event.timestamp ?? '')
+    if (Number.isFinite(cloudTs) && cloudTs > clearedAt) return false // real later cloud edit wins
+    return true
+  } catch {
+    // On any DB hiccup, do NOT protect (preserve today's behaviour) — the
+    // destructive-pull guards remain the durable second line of defense.
+    return false
+  }
 }
 
 export class CloudSseClient {
@@ -394,9 +447,14 @@ export class CloudSseClient {
 
       if (!localIo) return // IO doesn't exist locally
 
+      // Clear-protection (R3): if a deliberate local clear or un-pushed local
+      // work would be reverted by this event, keep the local Result — apply only
+      // definition/resolver columns. Same guard the destructive pull uses.
+      const protectResult = isSseResultProtected(event)
+
       // Decide the column writes (pure + unit-tested in
       // __tests__/cloud-sse-io-update.test.ts).
-      const { clauses: setClauses, params } = computeSseIoUpdate(event, localIo)
+      const { clauses: setClauses, params } = computeSseIoUpdate(event, localIo, protectResult)
 
       if (setClauses.length === 0) return
 
@@ -411,10 +469,15 @@ export class CloudSseClient {
           body: JSON.stringify({
             type: 'UpdateIO',
             id: ioId,
-            result: event.result !== undefined ? (event.result || 'Not Tested') : (localIo.Result || 'Not Tested'),
+            // When protecting the local result, tell browsers the LOCAL value
+            // (the kept clear/result), not the cloud value we deliberately did
+            // not write — otherwise the grid would repaint the reverted value.
+            result: protectResult
+              ? (localIo.Result || 'Not Tested')
+              : (event.result !== undefined ? (event.result || 'Not Tested') : (localIo.Result || 'Not Tested')),
             state: '',
-            timestamp: event.timestamp ?? '',
-            comments: event.comments ?? '',
+            timestamp: protectResult ? '' : (event.timestamp ?? ''),
+            comments: protectResult ? '' : (event.comments ?? ''),
             // Carry resolver state so the grid repaints the Addressed/
             // Clarification badge live without a page refresh.
             punchlistStatus: event.punchlistStatus,

@@ -130,8 +130,36 @@ export function getCachedNetworkForMcm(subsystemId: string): NetworkDeviceSnapsh
   return rc().state.network.filter((s) => s.subsystemId === subsystemId).map((s) => s);
 }
 
-export function isCacheFresh(maxAgeMs = 5_000): boolean {
+/**
+ * Staleness threshold for the polled gateway snapshot. The poller runs every
+ * ~750ms; anything older than ~4× a cadence means we've missed several polls
+ * (gateway down / unreachable / event-loop stall), so the cached tag+connection
+ * state must NOT be trusted as live. Override with REMOTE_CACHE_STALE_MS.
+ */
+const STALE_AFTER_MS = Number(process.env.REMOTE_CACHE_STALE_MS) || 3_000;
+
+/**
+ * True when the last gateway poll succeeded AND is recent enough to treat the
+ * snapshot as live. When false, registry getters must degrade to
+ * disconnected/empty rather than serving frozen values (R1).
+ */
+export function isCacheFresh(maxAgeMs = STALE_AFTER_MS): boolean {
   return rc().lastOk && Date.now() - rc().lastPolledAt < maxAgeMs;
+}
+
+/**
+ * Distinct gateway-link health, independent of any PLC's connection state:
+ *   'never' — no poll has ever completed (just booted).
+ *   'ok'    — last poll fresh; the snapshot is trustworthy as live.
+ *   'stale' — last poll failed or is too old; the gateway link is down and the
+ *             snapshot is frozen. This is surfaced separately from "PLC
+ *             disconnected" so operators see the LINK is down, not a real
+ *             (frozen) live reading.
+ */
+export type GatewayLinkState = 'never' | 'ok' | 'stale';
+export function getGatewayLinkState(): GatewayLinkState {
+  if (rc().lastPolledAt === 0) return 'never';
+  return isCacheFresh() ? 'ok' : 'stale';
 }
 
 // ── Low-latency patching from the broadcast stream ─────────────────────────

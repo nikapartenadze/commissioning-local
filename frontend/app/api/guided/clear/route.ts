@@ -13,10 +13,7 @@ import { auditLog } from '@/lib/logging/recovery-log'
  *
  * Guided-mode counterpart to POST /api/ios/:id/reset. Does the same DB
  * work — wipes Result/Comments/Timestamp, bumps Version, writes a
- * Cleared TestHistory row, enqueues a PendingSync — but is NOT gated by
- * noTestingOnServerLaptop so demo/training flows can clear IOs from the
- * same machine that's running the local server (Vite proxy makes the
- * proxied call look like loopback to Express).
+ * Cleared TestHistory row, enqueues a PendingSync.
  *
  * Body: { ioId, currentUser? }
  */

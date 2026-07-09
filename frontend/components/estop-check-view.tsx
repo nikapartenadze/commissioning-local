@@ -216,7 +216,7 @@ function rollupZoneStatus(epcs: Epc[]): ZoneStatus {
 // ── Main Component ─────────────────────────────────────────────────
 
 export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
-  const { currentUser, isServerDevice } = useUser()
+  const { currentUser } = useUser()
   const [data, setData] = useState<EStopStatusResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -334,11 +334,8 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
         body: JSON.stringify(body),
       })
       if (!res.ok) {
-        const errorBody = await res.json().catch(() => null) as { error?: string; reason?: string } | null
-        const message = errorBody?.reason === 'server-laptop-no-testing'
-          ? 'Server Laptop cannot author test results. Mark from a Client Laptop.'
-          : errorBody?.error || `HTTP ${res.status}`
-        throw new Error(message)
+        const errorBody = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(errorBody?.error || `HTTP ${res.status}`)
       }
       setData(prev => prev && {
         ...prev,
@@ -901,7 +898,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                         activeResult === 'pass' && 'bg-emerald-600 hover:bg-emerald-700 text-white',
                         activeResult !== 'pass' && suggestedPass && 'ring-2 ring-emerald-500/50',
                       )}
-                      disabled={isServerDevice || submittingResult !== null}
+                      disabled={submittingResult !== null}
                       onClick={() => submitEpcResult(epc, selectedZone.name, ct, { result: 'pass' })}
                     >
                       {submitting === 'pass' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
@@ -915,7 +912,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                         activeResult === 'fail' && 'bg-red-600 hover:bg-red-700 text-white',
                         activeResult !== 'fail' && suggestedFail && 'ring-2 ring-red-500/50',
                       )}
-                      disabled={isServerDevice || submittingResult !== null}
+                      disabled={submittingResult !== null}
                       onClick={() => {
                         setPendingFailEpc({ epc, zoneName: selectedZone.name, checkType: ct })
                         setFailDialogOpen(true)
@@ -929,7 +926,7 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                         size="sm"
                         variant="ghost"
                         className="gap-1 text-muted-foreground"
-                        disabled={isServerDevice || submittingResult !== null}
+                        disabled={submittingResult !== null}
                         onClick={() => submitEpcResult(epc, selectedZone.name, ct, { reset: true })}
                         title="Clear this result"
                       >
@@ -951,12 +948,6 @@ export default function EStopCheckView({ subsystemId }: EStopCheckViewProps) {
                   {resultError && submittingResult === null && (
                     <p className="text-xs text-red-600 dark:text-red-400">{resultError}</p>
                   )}
-                  {isServerDevice && (
-                    <p className="text-xs text-amber-700 dark:text-amber-300">
-                      Server Laptop cannot author test results — open this view on a Client Laptop to record pass/fail.
-                    </p>
-                  )}
-
                   {/* IO Points */}
                   {finalIo.length > 0 && (
                     <div>

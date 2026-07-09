@@ -20,7 +20,11 @@ export async function GET(req: Request, res: Response) {
       ip: config.ip,
       path: config.path,
       remoteUrl: config.remoteUrl,
-      apiPassword: config.apiPassword,
+      // SECURITY: never send the cloud API key to the browser in cleartext.
+      // Expose only whether one is set (mirror /api/mcm/cloud-config). Callers
+      // that need the key server-side read it from config there, not via this
+      // response; save flows omit apiPassword to keep the existing key.
+      apiKeySet: Boolean(config.apiPassword),
       subsystemId: config.subsystemId,
       updateManifestUrl: config.updateManifestUrl,
       orderMode: config.orderMode,
@@ -67,7 +71,8 @@ export async function PUT(req: Request, res: Response) {
         ip: updatedConfig.ip,
         path: updatedConfig.path,
         remoteUrl: updatedConfig.remoteUrl,
-        apiPassword: updatedConfig.apiPassword,
+        // SECURITY: echo only whether a key is set, never the key itself.
+        apiKeySet: Boolean(updatedConfig.apiPassword),
         subsystemId: updatedConfig.subsystemId,
         updateManifestUrl: updatedConfig.updateManifestUrl,
         orderMode: updatedConfig.orderMode,

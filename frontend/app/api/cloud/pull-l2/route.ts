@@ -11,14 +11,28 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { computeAtRiskL2Cells, parseDbTimestamp, type LocalL2Cell } from '@/lib/cloud/pull-guard'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { configService } from '@/lib/config'
+import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
 
 export async function POST(req: Request, res: Response) {
   try {
-    const { remoteUrl, apiPassword, subsystemId } = req.body || {}
+    const { subsystemId } = req.body || {}
     const force = req.body?.force === true
 
-    if (!remoteUrl || !subsystemId) {
-      return res.status(400).json({ success: false, error: 'remoteUrl and subsystemId are required' })
+    if (!subsystemId) {
+      return res.status(400).json({ success: false, error: 'subsystemId is required' })
+    }
+
+    // Resolve cloud creds SERVER-side. The body may still carry remoteUrl/
+    // apiPassword (legacy callers / the IO pull self-call), but clients should
+    // NOT have to ship the API key: since the H1 change the browser no longer
+    // receives it. Fall back to the saved config when the body omits them.
+    const cfg = await configService.getConfig()
+    const remoteUrl = (req.body?.remoteUrl || cfg.remoteUrl || EMBEDDED_REMOTE_URL || '').replace(/\/$/, '')
+    const apiPassword = req.body?.apiPassword || cfg.apiPassword || ''
+
+    if (!remoteUrl) {
+      return res.status(400).json({ success: false, error: 'No cloud URL configured' })
     }
 
     // ── Pending-queue guard (F5, 2026-07-03 sync audit) ─────────────────

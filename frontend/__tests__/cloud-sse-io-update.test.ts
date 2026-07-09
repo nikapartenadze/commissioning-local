@@ -66,3 +66,43 @@ describe('computeSseIoUpdate — cloud→field SSE merge (resolver status)', () 
     expect(out.clauses).toHaveLength(0)
   })
 })
+
+describe('computeSseIoUpdate — clear-protection (R3, MCM04 reset loop via SSE)', () => {
+  it('does NOT overwrite the result when protected, even with a newer cloud version', () => {
+    // Local was cleared (Result null); cloud still holds a higher-versioned
+    // Passed. Without protection this would revert the clear over SSE.
+    const out = computeSseIoUpdate(
+      { id: 1, version: 9, result: 'Passed', timestamp: 't', comments: 'c' },
+      { Result: null, Version: 5 },
+      true,
+    )
+    const m = asMap(out)
+    expect('Result' in m).toBe(false)
+    expect('Timestamp' in m).toBe(false)
+    expect('Comments' in m).toBe(false)
+    // Definition (version) still applies so metadata stays fresh (matches
+    // delta-sync's upsertKeepClearStmt).
+    expect(m.Version).toBe(9)
+  })
+
+  it('still applies resolver + definition columns while protecting the result', () => {
+    const out = computeSseIoUpdate(
+      { id: 1, version: 9, result: 'Passed', name: 'IO_A', punchlistStatus: 'ADDRESSED' },
+      { Result: null, Version: 5 },
+      true,
+    )
+    const m = asMap(out)
+    expect('Result' in m).toBe(false)
+    expect(m.Name).toBe('IO_A')
+    expect(m.PunchlistStatus).toBe('ADDRESSED')
+  })
+
+  it('applies the result normally when NOT protected (unchanged behaviour)', () => {
+    const out = computeSseIoUpdate(
+      { id: 1, version: 9, result: 'Passed', timestamp: 't', comments: 'c' },
+      { Result: null, Version: 5 },
+      false,
+    )
+    expect(asMap(out).Result).toBe('Passed')
+  })
+})

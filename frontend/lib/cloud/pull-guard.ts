@@ -274,10 +274,15 @@ export function computeDivergentUnqueuedResults(
     // Cloud missing / empty result → computeAtRiskResults already covers it.
     if (!cloud || cloud.result == null || cloud.result === '') continue
     if (cloud.result === row.Result) continue
-    const localTs = row.Timestamp ? Date.parse(row.Timestamp) : NaN
+    // Use parseDbTimestamp (not raw Date.parse): a local Timestamp in SQLite's
+    // zone-less datetime('now') shape would otherwise be read as LOCAL time and
+    // skew the comparison by the machine's UTC offset — the exact bug this guard
+    // must not have. parseDbTimestamp normalizes that shape to UTC and passes
+    // ISO strings through unchanged. Matches computeAtRiskClears above.
+    const localTs = parseDbTimestamp(row.Timestamp)
     // No local timestamp → cannot establish local is newer; don't block.
     if (!Number.isFinite(localTs)) continue
-    const cloudTs = cloud.timestamp ? Date.parse(cloud.timestamp) : NaN
+    const cloudTs = parseDbTimestamp(cloud.timestamp)
     if (Number.isFinite(cloudTs) && cloudTs >= localTs) continue
     out.push({
       id: row.id,

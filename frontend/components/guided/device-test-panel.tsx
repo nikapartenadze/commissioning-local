@@ -296,11 +296,7 @@ export function DeviceTestPanel({
         body: JSON.stringify({ action: 'toggle' }),
       })
       if (!r.ok) {
-        const e = await r.json().catch(() => ({})) as { error?: string; reason?: string; sourceIp?: string }
-        if (e.reason === 'server-laptop-no-testing') {
-          const ipNote = e.sourceIp ? ` (server saw your IP as ${e.sourceIp})` : ''
-          throw new Error(`Cannot fire from Server Laptop${ipNote} — if you're on a Client Laptop, share this IP with support.`)
-        }
+        const e = await r.json().catch(() => ({})) as { error?: string }
         throw new Error(e.error ?? `HTTP ${r.status}`)
       }
     } catch (err) {

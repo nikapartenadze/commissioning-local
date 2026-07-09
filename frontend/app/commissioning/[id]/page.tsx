@@ -181,7 +181,12 @@ function SyncQueueOverlay({
 export default function CommissioningPage() {
   const params = useParams()
   const navigate = useNavigate()
-  const { currentUser, setCurrentUser, isLoading: userLoading } = useUser()
+  const { currentUser, setCurrentUser, isLoading: userLoading, authRequired } = useUser()
+  // Confirm WHO is operating each time this MCM page is opened, so results are
+  // attributed to a person. Prompt once per MCM-open (this component mount);
+  // tab-switches and other in-page navigation don't remount, so they don't
+  // re-prompt. When auth is enforced the JWT identity is authoritative — skip.
+  const [nameConfirmed, setNameConfirmed] = useState(false)
   const paramId = params.id as string
   const projectId = paramId === '_' ? 0 : parseInt(paramId)
   const isUnconfigured = paramId === '_' || isNaN(projectId)
@@ -1386,22 +1391,13 @@ export default function CommissioningPage() {
           )
         }
       } else {
-        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string; sourceIp?: string } | null
+        const errorBody = await response.json().catch(() => null) as { error?: string } | null
         logger.error(`Failed to ${action} output:`, response.status, errorBody)
-        if (errorBody?.reason === 'server-laptop-no-testing') {
-          const ipNote = errorBody.sourceIp ? ` (server saw your IP as ${errorBody.sourceIp})` : ''
-          toast({
-            title: "Cannot fire from Server Laptop",
-            description: `This machine looks like the sync/PLC host${ipNote}. If you're on a Client Laptop and see this, share the IP above with support — the server is misidentifying your connection.`,
-            variant: 'destructive',
-          })
-        } else {
-          toast({
-            title: `Failed to ${action} output`,
-            description: `${io.name}: ${errorBody?.error || `HTTP ${response.status}`}`,
-            variant: 'destructive',
-          })
-        }
+        toast({
+          title: `Failed to ${action} output`,
+          description: `${io.name}: ${errorBody?.error || `HTTP ${response.status}`}`,
+          variant: 'destructive',
+        })
       }
     } catch (error) {
       logger.error(`Error ${action}ing output:`, error)
@@ -1470,7 +1466,7 @@ export default function CommissioningPage() {
       if (response.ok) {
         toast({ title: `${io.name} marked as Passed` })
       } else {
-        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
+        const errorBody = await response.json().catch(() => null) as { error?: string } | null
         logger.error('Failed to mark IO as passed:', response.status, errorBody)
         // Rollback optimistic update — restore failureMode in lockstep.
         setIos(prevIos => prevIos.map(i =>
@@ -1481,19 +1477,11 @@ export default function CommissioningPage() {
             failureMode: previousFailureMode,
           } : i
         ))
-        if (errorBody?.reason === 'server-laptop-no-testing') {
-          toast({
-            title: "Cannot test from Server Laptop",
-            description: "Testing actions must be performed from a Client Laptop browser.",
-            variant: "destructive",
-          })
-        } else {
-          toast({
-            title: "Failed to mark as passed",
-            description: errorBody?.error || `HTTP ${response.status}`,
-            variant: "destructive",
-          })
-        }
+        toast({
+          title: "Failed to mark as passed",
+          description: errorBody?.error || `HTTP ${response.status}`,
+          variant: "destructive",
+        })
       }
     } catch (error) {
       logger.error('Error marking IO as passed:', error)
@@ -1592,7 +1580,7 @@ export default function CommissioningPage() {
           variant: "destructive",
         })
       } else {
-        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
+        const errorBody = await response.json().catch(() => null) as { error?: string } | null
         logger.error('Failed to mark IO as failed:', response.status, errorBody)
         // Rollback optimistic update — also restores the previous failureMode
         // so the Party Responsible column reverts in lockstep.
@@ -1605,19 +1593,11 @@ export default function CommissioningPage() {
             failureMode: previousFailureMode,
           } : i
         ))
-        if (errorBody?.reason === 'server-laptop-no-testing') {
-          toast({
-            title: "Cannot test from Server Laptop",
-            description: "Testing actions must be performed from a Client Laptop browser.",
-            variant: "destructive",
-          })
-        } else {
-          toast({
-            title: "Failed to mark as failed",
-            description: errorBody?.error || `HTTP ${response.status}`,
-            variant: "destructive",
-          })
-        }
+        toast({
+          title: "Failed to mark as failed",
+          description: errorBody?.error || `HTTP ${response.status}`,
+          variant: "destructive",
+        })
       }
     } catch (error) {
       logger.error('Error marking IO as failed:', error)
@@ -1672,7 +1652,7 @@ export default function CommissioningPage() {
         }
         toast({ title: `${io.name} result cleared` })
       } else {
-        const errorBody = await response.json().catch(() => null) as { error?: string; reason?: string } | null
+        const errorBody = await response.json().catch(() => null) as { error?: string } | null
         logger.error('Failed to clear IO:', response.status, errorBody)
         // Rollback optimistic update — restore failureMode too.
         setIos(prevIos => prevIos.map(i =>
@@ -1684,19 +1664,11 @@ export default function CommissioningPage() {
             failureMode: previousFailureMode,
           } : i
         ))
-        if (errorBody?.reason === 'server-laptop-no-testing') {
-          toast({
-            title: "Cannot clear from Server Laptop",
-            description: "Testing actions must be performed from a Client Laptop browser.",
-            variant: "destructive",
-          })
-        } else {
-          toast({
-            title: "Failed to clear result",
-            description: errorBody?.error || `HTTP ${response.status}`,
-            variant: "destructive",
-          })
-        }
+        toast({
+          title: "Failed to clear result",
+          description: errorBody?.error || `HTTP ${response.status}`,
+          variant: "destructive",
+        })
       }
     } catch (error) {
       logger.error('Error clearing IO:', error)
@@ -2046,8 +2018,11 @@ export default function CommissioningPage() {
         <ConnectionGuard /> in App.tsx, so they're intentionally not repeated
         here (doing so without importing them is what caused the
         "ConnectionLostOverlay is not defined" crash). */}
-    {!userLoading && !currentUser && (
-      <NamePrompt onNameSet={(name) => setCurrentUser({ fullName: name, isAdmin: true, loginTime: new Date() })} />
+    {!userLoading && !authRequired && !nameConfirmed && (
+      <NamePrompt onNameSet={(name) => {
+        setCurrentUser({ fullName: name, isAdmin: true, loginTime: new Date() })
+        setNameConfirmed(true)
+      }} />
     )}
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Compact Header Bar */}

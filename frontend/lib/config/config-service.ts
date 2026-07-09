@@ -229,8 +229,17 @@ class ConfigurationService {
     const newConfig: AppConfigExtended = {
       ...currentConfig,
       ...updates,
-      // Ensure apiPassword is saved with correct casing for compatibility
-      apiPassword: updates.apiPassword ?? currentConfig.apiPassword,
+      // apiPassword: only a NON-EMPTY value overwrites the stored key. An
+      // undefined OR empty/whitespace value preserves the existing key. This is
+      // a data-safety hardening tied to the H1 change: now that GET responses no
+      // longer return the key, config dialogs pre-fill an EMPTY password field,
+      // so a save that touches only (say) the PLC IP sends apiPassword:'' — and
+      // the old `?? current` would have WIPED the cloud key. Clearing a key is
+      // not a field workflow (a new key just replaces the old one).
+      apiPassword:
+        typeof updates.apiPassword === 'string' && updates.apiPassword.trim() !== ''
+          ? updates.apiPassword
+          : currentConfig.apiPassword,
       // remoteUrl is embedded — never accept caller-supplied values
       remoteUrl: EMBEDDED_REMOTE_URL,
     };

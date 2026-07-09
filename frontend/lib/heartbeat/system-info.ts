@@ -17,6 +17,7 @@ import {
   getAllNetworkSnapshots,
   hasAnyMcm,
 } from '@/lib/mcm-registry'
+import { getGatewayLinkState } from '@/lib/plc/remote-cache'
 import type { NetworkDeviceSnapshot } from '@/lib/plc/network'
 
 // Captured once at module load — the moment the server process started.
@@ -72,6 +73,14 @@ export interface HeartbeatSystemInfo {
     }>
     connectedMcmCount?: number
     totalMcmCount?: number
+    /**
+     * Split deployment (PLC_MODE=remote) only: TRUE when the app's poll of the
+     * plc-gateway has gone stale (gateway down / unreachable). Distinct from a
+     * PLC being disconnected — it means the LINK to the gateway is down and the
+     * connection/tag readings are frozen, so the cloud should show "gateway link
+     * stale" rather than trusting the (now forced-disconnected) MCM states.
+     */
+    gatewayLinkStale?: boolean
   }
   pendingSyncCount?: number
   lastCloudSyncAt?: string | null
@@ -169,6 +178,10 @@ function collectPlcStatus(): HeartbeatSystemInfo['plc'] {
     try {
       const agg = getAggregateStatus()
       const firstConnected = agg.mcms.find((m) => m.connected) ?? agg.mcms[0]
+      // Distinct gateway-link health (split deployment). agg is already
+      // stale-forced to disconnected by getAggregateStatus; this flag tells the
+      // cloud WHY (link down) vs. a genuine PLC disconnect.
+      const gatewayLinkStale = isCentralDeployment() && getGatewayLinkState() === 'stale'
       return {
         connected: agg.anyConnected,
         host: firstConnected?.ip ?? null,
@@ -183,6 +196,7 @@ function collectPlcStatus(): HeartbeatSystemInfo['plc'] {
         })),
         connectedMcmCount: agg.connectedCount,
         totalMcmCount: agg.totalCount,
+        ...(gatewayLinkStale ? { gatewayLinkStale: true } : {}),
       }
     } catch (err) {
       return {

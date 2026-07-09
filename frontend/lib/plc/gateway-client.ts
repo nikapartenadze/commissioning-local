@@ -35,6 +35,19 @@ const GATEWAY_URL =
 /** Per-request timeout. PLC connect can be slow, so callers can override. */
 const DEFAULT_TIMEOUT_MS = 8_000;
 
+/**
+ * Build request headers for a gateway call, attaching the shared secret when
+ * GATEWAY_SECRET is configured (must match the gateway's own env). Read at call
+ * time so a config change without a restart is picked up.
+ */
+function gatewayHeaders(hasBody: boolean): Record<string, string> | undefined {
+  const headers: Record<string, string> = {};
+  if (hasBody) headers['Content-Type'] = 'application/json';
+  const secret = process.env.GATEWAY_SECRET;
+  if (secret) headers['X-Gateway-Key'] = secret;
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
 export function getGatewayUrl(): string {
   return GATEWAY_URL;
 }
@@ -51,7 +64,7 @@ async function request<T>(
   try {
     const res = await fetch(`${GATEWAY_URL}${path}`, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: gatewayHeaders(body !== undefined),
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });

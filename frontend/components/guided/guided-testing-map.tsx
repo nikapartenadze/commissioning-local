@@ -1,4 +1,5 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
+import DOMPurify from 'dompurify'
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch'
 import type { ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch'
 import type { Device, DeviceState } from '@/lib/guided/types'
@@ -60,6 +61,21 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
   const containerRef = useRef<HTMLDivElement | null>(null)
   const transformRef = useRef<ReactZoomPanPinchContentRef | null>(null)
   const hasAutoCenteredRef = useRef(false)
+
+  // The SVG is fetched at runtime from /api/maps/subsystem/:id (cloud-authored),
+  // so it is NOT a trusted bundled asset — sanitize before injecting to strip
+  // any <script>/on*-handler XSS. Identical DOMPurify config to the sibling
+  // mcm-diagram-view.tsx, keeping the SVG/filter profile plus the data-* and
+  // inkscape:label attributes the SCADA export embeds (element ids, which our
+  // device matching depends on, are preserved by default).
+  const sanitizedSvg = useMemo(
+    () =>
+      DOMPurify.sanitize(svgMarkup, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+        ADD_ATTR: ['data-tagpath', 'data-state', 'data-color', 'data-priority', 'inkscape:label'],
+      }),
+    [svgMarkup],
+  )
 
   /**
    * Selectors used everywhere we iterate device elements. Both <g> groups
@@ -250,8 +266,8 @@ export const GuidedTestingMap = forwardRef<GuidedTestingMapHandle, Props>(functi
         <div
           ref={containerRef}
           className="guided-svg"
-          /* Trusted source: bundled file we ship with the app. */
-          dangerouslySetInnerHTML={{ __html: svgMarkup }}
+          /* Sanitized above — the SVG is fetched from the cloud/API, not bundled. */
+          dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
         />
       </TransformComponent>
     </TransformWrapper>

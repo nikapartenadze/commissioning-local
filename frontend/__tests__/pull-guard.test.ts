@@ -213,6 +213,31 @@ describe('computeDivergentUnqueuedResults (F2 — differing-but-unqueued blind s
     )
     expect(out).toHaveLength(1)
   })
+
+  it('the SQLite-vs-ISO timestamp skew does not hide a newer local result (R10)', () => {
+    // Local wrote at 10:00 UTC but stored zone-less; cloud value stamped 08:00Z.
+    // A naive Date.parse in a UTC+N zone would read the local ts as an earlier
+    // UTC instant and wrongly skip the row. parseDbTimestamp keeps it as 10:00Z,
+    // so the newer local result is still flagged as at-risk in any timezone.
+    const out = computeDivergentUnqueuedResults(
+      [localT(1, 'IO_A', 'Passed', '2026-07-03 10:00:00')],
+      [{ id: 1, result: 'Failed', timestamp: '2026-07-03T08:00:00.000Z' }],
+      none,
+    )
+    expect(out).toHaveLength(1)
+  })
+
+  it('the SQLite-vs-ISO skew does not spuriously flag an OLDER local result (R10)', () => {
+    // Local wrote at 08:00 UTC (zone-less); cloud value is newer at 10:00Z →
+    // normal last-write-wins, must NOT be flagged. A naive Date.parse could
+    // mis-order these in a non-UTC test host; parseDbTimestamp keeps it correct.
+    const out = computeDivergentUnqueuedResults(
+      [localT(1, 'IO_A', 'Passed', '2026-07-03 08:00:00')],
+      [{ id: 1, result: 'Failed', timestamp: '2026-07-03T10:00:00.000Z' }],
+      none,
+    )
+    expect(out).toHaveLength(0)
+  })
 })
 
 describe('parseDbTimestamp', () => {

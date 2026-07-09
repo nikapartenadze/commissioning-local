@@ -14,14 +14,6 @@ interface UserContextType {
   logout: () => void
   isLoading: boolean
   /**
-   * True when this browser is running on the Server Laptop itself (loopback
-   * IP). Used to gate testing UI — the Server Laptop is sync/PLC-broker only,
-   * not a testing terminal. Authoritative enforcement lives in the API
-   * middleware noTestingOnServerLaptop; this flag is for UX (hide buttons,
-   * show a banner) so users aren't pointed at actions that will 403.
-   */
-  isServerDevice: boolean
-  /**
    * True when the server enforces login (AUTH_REQUIRED set). Surfaced from
    * GET /api/auth/mode on boot. When false, the app behaves exactly as before
    * (no login screen, everything open). When true and there's no valid token,
@@ -48,7 +40,6 @@ const UserContext = createContext<UserContextType>({
   setCurrentUser: () => {},
   logout: () => {},
   isLoading: true,
-  isServerDevice: false,
   authRequired: false,
   needsLogin: false,
   mustChangePin: false,
@@ -80,7 +71,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUserState] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isMounted, setIsMounted] = useState(false)
-  const [isServerDevice, setIsServerDevice] = useState(false)
   const [authRequired, setAuthRequired] = useState(false)
   const [needsLogin, setNeedsLogin] = useState(false)
   const [mustChangePin, setMustChangePin] = useState(false)
@@ -107,9 +97,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
   //
   // Boot order:
   //  1. Probe GET /api/auth/mode for whether login is enforced.
-  //  2a. AUTH OFF (default): exactly the previous behavior — server-device gets
-  //      the canonical "Server Laptop" identity, everyone else falls through to
-  //      the localStorage tester-name flow. No login screen, isAdmin stays true.
+  //  2a. AUTH OFF (default): identity comes from the localStorage tester-name
+  //      flow — no login screen, isAdmin stays true. Every device (including the
+  //      sync/PLC-broker laptop) behaves the same way.
   //  2b. AUTH ON: read a stored JWT; if valid, populate the user from its claims;
   //      otherwise flag needsLogin so the shell shows the login screen.
   useEffect(() => {
@@ -153,31 +143,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      // 2a. Open mode — unchanged legacy flow.
-      let serverDevice = false
-      try {
-        const res = await fetch('/api/device/identity', { cache: 'no-store' })
-        if (res.ok) {
-          const data = (await res.json()) as { isServerDevice?: boolean }
-          serverDevice = data.isServerDevice === true
-        }
-      } catch {
-        // ignore
-      }
-
-      if (cancelled) return
-      setIsServerDevice(serverDevice)
-
-      if (serverDevice) {
-        const SERVER_NAME = 'Server Laptop'
-        localStorage.setItem('tester-name', SERVER_NAME)
-        localStorage.removeItem('tester-name-previous')
-        setCurrentUserState({ fullName: SERVER_NAME, isAdmin: true, loginTime: new Date() })
-      } else {
-        const stored = localStorage.getItem('tester-name')
-        if (stored) {
-          setCurrentUserState({ fullName: stored, isAdmin: true, loginTime: new Date() })
-        }
+      // 2a. Open mode — identity is the localStorage tester-name (if any).
+      const stored = localStorage.getItem('tester-name')
+      if (stored) {
+        setCurrentUserState({ fullName: stored, isAdmin: true, loginTime: new Date() })
       }
       setIsLoading(false)
     }
@@ -242,7 +211,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
         setCurrentUser,
         logout,
         isLoading,
-        isServerDevice,
         authRequired,
         needsLogin,
         mustChangePin,

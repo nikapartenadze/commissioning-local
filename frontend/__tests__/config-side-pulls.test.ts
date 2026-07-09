@@ -28,6 +28,7 @@ db.exec(`
   CREATE TABLE EStopEpcs (id INTEGER PRIMARY KEY AUTOINCREMENT, ZoneId INTEGER, Name TEXT, CheckTag TEXT);
   CREATE TABLE EStopIoPoints (id INTEGER PRIMARY KEY AUTOINCREMENT, EpcId INTEGER, Tag TEXT);
   CREATE TABLE EStopVfds (id INTEGER PRIMARY KEY AUTOINCREMENT, EpcId INTEGER, Tag TEXT, StoTag TEXT, MustStop INTEGER);
+  CREATE TABLE EStopRelatedEpcs (id INTEGER PRIMARY KEY AUTOINCREMENT, EpcId INTEGER, Tag TEXT, MustDrop INTEGER);
   CREATE TABLE SafetyZones (id INTEGER PRIMARY KEY AUTOINCREMENT, SubsystemId INTEGER, Name TEXT, StoSignal TEXT, BssTag TEXT);
   CREATE TABLE SafetyZoneDrives (id INTEGER PRIMARY KEY AUTOINCREMENT, ZoneId INTEGER, Name TEXT);
   CREATE TABLE SafetyOutputs (id INTEGER PRIMARY KEY AUTOINCREMENT, SubsystemId INTEGER, Tag TEXT, Description TEXT, OutputType TEXT);
@@ -61,7 +62,10 @@ const cloud = {
   '/api/sync/estop': {
     success: true,
     zones: [{ name: 'Zone A', epcs: [{ name: 'EPC1', checkTag: 'C1',
-      ioPoints: [{ tag: 'IO1' }], vfds: [{ tag: 'V1', stoTag: 'S1', mustStop: true }] }] }],
+      ioPoints: [{ tag: 'IO1' }], vfds: [{ tag: 'V1', stoTag: 'S1', mustStop: true }],
+      // relatedEpcs (must-drop companion e-stops) cascade-delete with EStopEpcs;
+      // the primary side-pull path must re-insert them (regression guard).
+      relatedEpcs: [{ tag: 'REL1', mustDrop: true }, { tag: 'REL2', mustDrop: false }] }] }],
   },
   '/api/sync/safety': {
     success: true,
@@ -84,10 +88,13 @@ const counts = (sid: number) => ({
 describe('runConfigSidePulls', () => {
   beforeEach(() => {
     db.exec(`DELETE FROM NetworkRings; DELETE FROM NetworkNodes; DELETE FROM NetworkPorts;
-             DELETE FROM EStopZones; DELETE FROM EStopEpcs; DELETE FROM EStopIoPoints; DELETE FROM EStopVfds;
+             DELETE FROM EStopZones; DELETE FROM EStopEpcs; DELETE FROM EStopIoPoints; DELETE FROM EStopVfds; DELETE FROM EStopRelatedEpcs;
              DELETE FROM SafetyZones; DELETE FROM SafetyZoneDrives; DELETE FROM SafetyOutputs;
              DELETE FROM Punchlists; DELETE FROM PunchlistItems;`)
   })
+
+  const relatedEpcCount = () =>
+    (db.prepare('SELECT COUNT(*) c FROM EStopRelatedEpcs').get() as { c: number }).c
 
   it('inserts network, e-stop, safety and punchlist rows for the subsystem', async () => {
     const res = await runConfigSidePulls(16, 'http://cloud', 'key', { db, fetchImpl: makeFetch(cloud) })
@@ -96,12 +103,16 @@ describe('runConfigSidePulls', () => {
     expect(res.safetyPulled).toBe(1)
     expect(res.networkPulled).toBe(1)
     expect(res.estopPulled).toBe(1)
+    // Related EPCs (must-drop companions) are re-inserted on the primary path.
+    expect(relatedEpcCount()).toBe(2)
   })
 
   it('is idempotent — running twice does not duplicate rows', async () => {
     await runConfigSidePulls(16, 'http://cloud', 'key', { db, fetchImpl: makeFetch(cloud) })
     await runConfigSidePulls(16, 'http://cloud', 'key', { db, fetchImpl: makeFetch(cloud) })
     expect(counts(16)).toEqual({ rings: 1, zones: 1, safetyZones: 1, safetyOutputs: 1, punchlists: 1 })
+    // Related EPCs are replaced, not duplicated, across repeated pulls.
+    expect(relatedEpcCount()).toBe(2)
   })
 
   it('never touches another subsystem’s rows', async () => {
