@@ -1,0 +1,66 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# Secret-leak guard (commissioning-local).
+#
+# Blocks a commit that stages a secret-bearing FILE or a secret-looking VALUE.
+# Self-contained: if the `gitleaks` binary is installed it is used for a
+# thorough scan; otherwise a built-in regex fallback still catches the common
+# cases. No external framework required.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+# Emergency bypass:        git commit --no-verify   (then ROTATE the secret!)
+# ---------------------------------------------------------------------------
+set -eu
+
+staged=$(git diff --cached --name-only --diff-filter=AM || true)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# 1) Filenames that must never be committed (templates .env.example are allowed).
+badfiles=$(printf '%s\n' "$staged" \
+  | grep -EI '(^|/)\.env$|(^|/)\.env\.[^.]+$|(^|/)appsettings(\.[^.]+)?\.json$|(^|/)\.jwt-secret$|.*battle-dev-config.*\.json$|.*dev-config-mcm.*\.json$|\.(pem|pfx|p12|key)$' \
+  | grep -Ev '\.env\.example$|\.env\.sample$' || true)
+if [ -n "$badfiles" ]; then
+  echo "x pre-commit: refusing to commit secret-bearing file(s):"
+  printf '    %s\n' $badfiles
+  echo "  These belong in .gitignore + a real secret store, not git."
+  fail=1
+fi
+
+# 2) Prefer gitleaks if present (scans the staged diff only).
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact --config .gitleaks.toml >/dev/null 2>&1; then
+    echo "x pre-commit: gitleaks found a secret in the staged changes."
+    gitleaks protect --staged --redact --config .gitleaks.toml || true
+    fail=1
+  fi
+else
+  # 3) Fallback regex scan of ADDED lines (no gitleaks installed).
+  added=$(git diff --cached -U0 --diff-filter=AM | grep -E '^\+' | grep -Ev '^\+\+\+' || true)
+  # Strip obvious placeholders so templates don't trip the guard.
+  suspect=$(printf '%s\n' "$added" \
+    | grep -Ev '(\*\*\*REMOVED\*\*\*|change-me|your[-_]|example\.com|placeholder|local:local@|xxxx)' \
+    | grep -EIn \
+      -e 'postgres(ql)?://[^:@/ ]+:[^@/ ]+@' \
+      -e '"SecretKey"[[:space:]]*:[[:space:]]*"[^"]{12,}"' \
+      -e '"ApiPassword"[[:space:]]*:[[:space:]]*"[^"]{4,}"' \
+      -e '(AZURE_AD_CLIENT_SECRET|CLIENT_SECRET|ClientSecret)[[:space:]]*[:=][[:space:]]*.{20,}' \
+      -e 'NEXTAUTH_SECRET[[:space:]]*=[[:space:]]*.{16,}' \
+      -e 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' \
+    || true)
+  if [ -n "$suspect" ]; then
+    echo "x pre-commit: staged changes look like they contain a secret:"
+    printf '%s\n' "$suspect" | sed 's/^/    /'
+    echo "  (install gitleaks for a stronger scan; bypass with --no-verify only if this is a false positive.)"
+    fail=1
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "Commit blocked. If a real secret was involved, ROTATE it - removing it"
+  echo "from a commit does not un-leak anything already pushed. See SECURITY.md."
+  exit 1
+fi
+exit 0

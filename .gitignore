@@ -130,3 +130,19 @@ frontend/_churn.js
 frontend/.claude/
 frontend/logs/
 check this file.txt
+
+# ── Secrets (never commit — see SECURITY.md) ────────────────────────────────
+# History was purged of leaked secrets 2026-07-09; these rules keep them out.
+.env
+.env.*
+!.env.example
+!.env.sample
+**/appsettings.json
+**/appsettings.*.json
+**/.jwt-secret
+**/*battle-dev-config*.json
+**/*dev-config-mcm*.json
+*.pem
+*.pfx
+*.p12
+*.key

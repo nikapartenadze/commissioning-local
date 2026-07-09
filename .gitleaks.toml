@@ -1,0 +1,55 @@
+# gitleaks config for commissioning-local.
+# Used by the pre-commit hook (.githooks/pre-commit), the GitLab CI
+# `gitleaks-scan` job, and the GitHub `gitleaks` workflow.
+#
+# History was purged of leaked secrets on 2026-07-09 (git filter-repo);
+# see SECURITY.md. This config prevents re-introduction.
+
+title = "commissioning-local secret scan"
+
+# Start from gitleaks' built-in rule set (AWS keys, private keys, generic
+# high-entropy tokens, JWTs, connection strings, etc.) and layer our own.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "postgres-connection-string-with-password"
+description = "PostgreSQL URL containing inline credentials"
+regex = '''postgres(ql)?://[^:@/\s]+:[^@/\s]+@'''
+tags = ["database", "credentials"]
+
+[[rules]]
+id = "dotnet-jwt-secretkey"
+description = "ASP.NET appsettings JWT SecretKey"
+regex = '''(?i)"SecretKey"\s*:\s*"[^"]{12,}"'''
+tags = ["jwt", "dotnet"]
+
+[[rules]]
+id = "field-tool-api-password"
+description = "Field tool ApiPassword value"
+regex = '''(?i)"ApiPassword"\s*:\s*"(?!\s*")[^"]{4,}"'''
+tags = ["api-key"]
+
+[[rules]]
+id = "azure-ad-client-secret"
+description = "Azure AD client secret (value form)"
+regex = '''(?i)(AZURE_AD_CLIENT_SECRET|ClientSecret)\s*[:=]\s*["']?[A-Za-z0-9_.~-]{30,}["']?'''
+tags = ["azure", "oauth"]
+
+[allowlist]
+description = "Placeholders, templates, and the post-purge redaction marker"
+regexes = [
+  '''\*\*\*REMOVED\*\*\*''',
+  '''change-me''',
+  '''your[-_]''',
+  '''example\.com''',
+  '''(?i)xx+''',
+  '''(?i)placeholder''',
+  '''local:local@''',            # throwaway dev Postgres in *.compose.yml
+]
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''(^|/)\.env\.sample$''',
+  '''\.gitleaks\.toml$''',
+  '''SECURITY\.md$''',
+]

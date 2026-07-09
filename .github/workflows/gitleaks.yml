@@ -1,0 +1,20 @@
+name: gitleaks
+# Server-side secret scan for the GitHub remote (the local pre-commit hook can
+# be bypassed with --no-verify; this cannot). Mirrors the GitLab `gitleaks-scan`
+# job. Scans the full history on push and the diff on PRs.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so a reintroduced secret in any commit is caught
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml

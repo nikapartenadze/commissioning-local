@@ -71,6 +71,23 @@ frontend-verify:
       junit: frontend/test-results/junit.xml
     expire_in: 30 days
 
+# ── gitleaks-scan ─────────────────────────────────────────────────────────────
+# Server-side secret scan (can't be bypassed like the local pre-commit hook).
+# Fails the pipeline if a secret is committed. History was purged 2026-07-09;
+# this keeps secrets from being reintroduced. See SECURITY.md / .gitleaks.toml.
+gitleaks-scan:
+  stage: verify
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+  script:
+    - gitleaks detect --source . --config .gitleaks.toml --redact --verbose --exit-code 1
+  timeout: 10m
+
 # ── refresh-cloud-image ──────────────────────────────────────────────────────
 # Copies the current prod commissioning-cloud image into THIS project's
 # registry as cloud:latest so the nightly pulls a known tag. Light enough for
@@ -257,7 +274,8 @@ battle-e2e:
     CLOUD_NODE_ENV: development
     CLOUD_DEV_BYPASS: "true"
     SUBSYSTEM_ID: "38"
-    CLOUD_API_KEY: ***REMOVED***
+    # CLOUD_API_KEY comes from a MASKED CI/CD variable (was hardcoded here and
+    # leaked; purged 2026-07-09). Set it in GitLab: Settings > CI/CD > Variables.
   script:
     # 1. Bring up ONLY the connected services (no chaos/crew/observer/mutator).
     #    The tiny python/node images (seeder) build; the heavy ones are already
