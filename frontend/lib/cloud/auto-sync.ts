@@ -24,6 +24,7 @@ import { reconcileConfiguredSubsystems } from '@/lib/cloud/result-reconciler'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
+import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
 import { getMcmStatus, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
 import { runJournalUpload } from '@/lib/cloud/journal-uploader'
@@ -873,38 +874,9 @@ class AutoSyncService {
    * applies a retry cap so an unrecoverable row can't wedge the queue forever.
    */
   private async pushEstopCheckSyncs(remoteUrl: string, apiPassword: string | undefined): Promise<void> {
-    const PENDING_RETRY_CAP = 10
-
-    const pending = db.prepare(
-      'SELECT * FROM EStopCheckPendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT 50'
-    ).all() as Array<{
-      id: number; SubsystemId: number; ZoneName: string; CheckTag: string
-      CheckType: string | null
-      Result: string | null; Comments: string | null; FailureMode: string | null
-      TestedBy: string | null; TestedAt: string | null; Version: number; RetryCount: number
-    }>
-    if (pending.length === 0) return
-
     // CheckType ('preliminary' | 'final') is part of the identity — a row from
     // an old build may have it NULL/empty, treat that as 'preliminary'.
     const ct = (p: { CheckType: string | null }) => p.CheckType || 'preliminary'
-
-    // Dedupe per check — keep the lowest Version (closest to cloud's real version).
-    // Identity includes CheckType so preliminary + final for the same EPC are
-    // tracked separately and never collapse into one.
-    const byCheck = new Map<string, typeof pending[number]>()
-    const stale: number[] = []
-    for (const p of pending) {
-      const key = `${p.SubsystemId}|${p.ZoneName}|${p.CheckTag}|${ct(p)}`
-      const existing = byCheck.get(key)
-      if (!existing) byCheck.set(key, p)
-      else if (p.Version < existing.Version) { stale.push(existing.id); byCheck.set(key, p) }
-      else stale.push(p.id)
-    }
-    if (stale.length > 0) {
-      const ph = stale.map(() => '?').join(',')
-      try { db.prepare(`DELETE FROM EStopCheckPendingSyncs WHERE id IN (${ph})`).run(...stale) } catch { /* best-effort */ }
-    }
 
     const readLatest = db.prepare(
       'SELECT Result, Comments, FailureMode, TestedBy, TestedAt, Version FROM EStopEpcChecks WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?'
@@ -912,80 +884,59 @@ class AutoSyncService {
     const deleteAllForCheck = db.prepare(
       'DELETE FROM EStopCheckPendingSyncs WHERE SubsystemId = ? AND ZoneName = ? AND CheckTag = ? AND CheckType = ?'
     )
-    const bumpRetry = db.prepare(
-      'UPDATE EStopCheckPendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
-    )
-    const noteError = db.prepare(
-      'UPDATE EStopCheckPendingSyncs SET LastError = ? WHERE id = ?'
-    )
 
-    for (const p of Array.from(byCheck.values())) {
-      if (p.RetryCount >= PENDING_RETRY_CAP) {
+    type EstopRow = SimpleQueueRow & {
+      ZoneName: string; CheckTag: string; CheckType: string | null
+      Result: string | null; Comments: string | null; FailureMode: string | null
+      TestedBy: string | null; TestedAt: string | null; Version: number
+    }
+
+    await drainSimpleQueue<EstopRow>({
+      db,
+      tableName: 'EStopCheckPendingSyncs',
+      retryCap: 10,
+      remoteUrl,
+      apiPassword,
+      endpoint: '/api/sync/estop-checks',
+      // Dedupe per check — keep the lowest Version (closest to cloud's real
+      // version). Identity includes CheckType so preliminary + final for the
+      // same EPC are tracked separately and never collapse into one.
+      dedupeKey: p => `${p.SubsystemId}|${p.ZoneName}|${p.CheckTag}|${ct(p)}`,
+      preferReplacement: (candidate, existing) => candidate.Version < existing.Version,
+      buildBody: p => {
+        const latest = readLatest.get(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) as
+          { Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null; Version: number } | undefined
+        return {
+          subsystemId: p.SubsystemId,
+          checks: [{
+            zoneName: p.ZoneName,
+            checkTag: p.CheckTag,
+            checkType: ct(p),
+            // Cloud /api/sync/estop-checks validates result ∈ {Passed,Failed};
+            // the local EStop tables store lowercase pass/fail — normalize here.
+            result: ((latest ? latest.Result : p.Result) === 'pass' ? 'Passed'
+              : (latest ? latest.Result : p.Result) === 'fail' ? 'Failed'
+              : (latest ? latest.Result : p.Result)),
+            comments: latest ? latest.Comments : p.Comments,
+            failureMode: latest ? latest.FailureMode : p.FailureMode,
+            testedBy: latest ? latest.TestedBy : p.TestedBy,
+            testedAt: latest ? latest.TestedAt : p.TestedAt,
+            version: p.Version,
+          }],
+        }
+      },
+      deleteRowsForIdentity: p => { deleteAllForCheck.run(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) },
+      park: {
         // PARK, don't DELETE — e-stop results are SAFETY data. Deleting at the
         // cap left zero trace while the local UI still read "checked" (the
         // MCM11 silent-loss class). Keep the row (DeadLettered=1), out of the
         // active loop, and audit it for attention/recovery.
-        try {
-          db.prepare("UPDATE EStopCheckPendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'estop retry cap exhausted') WHERE id = ?").run(p.id)
-        } catch { /* best-effort */ }
-        try {
-          auditLog({
-            type: 'sync.push.park',
-            subsystemId: p.SubsystemId,
-            reason: 'estop check retry cap exhausted',
-            detail: { zoneName: p.ZoneName, checkTag: p.CheckTag, checkType: ct(p), result: p.Result, retries: p.RetryCount },
-          })
-        } catch { /* best-effort */ }
-        console.warn(`[AutoSync] PARKED EStop check pending row id=${p.id} (${p.ZoneName}/${p.CheckTag}) — exceeded retry cap (kept for recovery)`)
-        continue
-      }
-      const latest = readLatest.get(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) as
-        { Result: string | null; Comments: string | null; FailureMode: string | null; TestedBy: string | null; TestedAt: string | null; Version: number } | undefined
-
-      let resp: globalThis.Response
-      try {
-        resp = await fetch(`${remoteUrl}/api/sync/estop-checks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
-          body: JSON.stringify({
-            subsystemId: p.SubsystemId,
-            checks: [{
-              zoneName: p.ZoneName,
-              checkTag: p.CheckTag,
-              checkType: ct(p),
-              // Cloud /api/sync/estop-checks validates result ∈ {Passed,Failed};
-              // the local EStop tables store lowercase pass/fail — normalize here.
-              result: ((latest ? latest.Result : p.Result) === 'pass' ? 'Passed'
-                : (latest ? latest.Result : p.Result) === 'fail' ? 'Failed'
-                : (latest ? latest.Result : p.Result)),
-              comments: latest ? latest.Comments : p.Comments,
-              failureMode: latest ? latest.FailureMode : p.FailureMode,
-              testedBy: latest ? latest.TestedBy : p.TestedBy,
-              testedAt: latest ? latest.TestedAt : p.TestedAt,
-              version: p.Version,
-            }],
-          }),
-          signal: AbortSignal.timeout(15000),
-        })
-      } catch {
-        // Offline / timeout — keep the row, no strike (next cycle retries).
-        break
-      }
-      if (resp.ok) {
-        try { deleteAllForCheck.run(p.SubsystemId, p.ZoneName, p.CheckTag, ct(p)) } catch { /* best-effort */ }
-      } else if (isNetworkLevelFailure({ httpStatus: resp.status })) {
-        // 429 / ≥500 / 401 — the cloud never ruled on this SAFETY row. Do NOT
-        // burn a retry-cap strike (the TPA8/MCM08 premature-park class that let
-        // the pull wipe results): just record the reason and stop the batch —
-        // every later row would fail the same way and each costs up to a 15 s
-        // timeout. Mirrors the IO / L2 / device-blocker drains.
-        try { noteError.run(`HTTP ${resp.status} (network-level, no strike)`, p.id) } catch { /* best-effort */ }
-        break
-      } else {
-        // Genuine cloud verdict (permanent 4xx) — burn a strike toward the cap.
-        try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
-      }
-    }
+        defaultError: 'estop retry cap exhausted',
+        auditReason: 'estop check retry cap exhausted',
+        auditDetail: p => ({ zoneName: p.ZoneName, checkTag: p.CheckTag, checkType: ct(p), result: p.Result, retries: p.RetryCount }),
+        logMessage: p => `[AutoSync] PARKED EStop check pending row id=${p.id} (${p.ZoneName}/${p.CheckTag}) — exceeded retry cap (kept for recovery)`,
+      },
+    })
   }
 
   /**
@@ -994,95 +945,45 @@ class AutoSyncService {
    * wins, so only the NEWEST pending row per task is pushed and the rest dropped.
    */
   private async pushGuidedTaskStateSyncs(remoteUrl: string, apiPassword: string | undefined): Promise<void> {
-    const PENDING_RETRY_CAP = 10
-
-    const pending = db.prepare(
-      'SELECT * FROM GuidedTaskStatePendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT 50'
-    ).all() as Array<{
-      id: number; SubsystemId: number; TaskId: string; Status: string
-      Reason: string | null; ActorName: string | null; UpdatedAt: string | null; RetryCount: number
-    }>
-    if (pending.length === 0) return
-
-    // Dedupe per task — keep the NEWEST row (highest id), drop older ones.
-    const byTask = new Map<string, typeof pending[number]>()
-    const stale: number[] = []
-    for (const p of pending) {
-      const key = `${p.SubsystemId}|${p.TaskId}`
-      const existing = byTask.get(key)
-      if (!existing) byTask.set(key, p)
-      else if (p.id > existing.id) { stale.push(existing.id); byTask.set(key, p) }
-      else stale.push(p.id)
-    }
-    if (stale.length > 0) {
-      const ph = stale.map(() => '?').join(',')
-      try { db.prepare(`DELETE FROM GuidedTaskStatePendingSyncs WHERE id IN (${ph})`).run(...stale) } catch { /* best-effort */ }
-    }
-
     const deleteAllForTask = db.prepare(
       'DELETE FROM GuidedTaskStatePendingSyncs WHERE SubsystemId = ? AND TaskId = ?'
     )
-    const bumpRetry = db.prepare(
-      'UPDATE GuidedTaskStatePendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
-    )
-    const noteError = db.prepare(
-      'UPDATE GuidedTaskStatePendingSyncs SET LastError = ? WHERE id = ?'
-    )
 
-    for (const p of Array.from(byTask.values())) {
-      if (p.RetryCount >= PENDING_RETRY_CAP) {
+    type GuidedRow = SimpleQueueRow & {
+      TaskId: string; Status: string
+      Reason: string | null; ActorName: string | null; UpdatedAt: string | null
+    }
+
+    await drainSimpleQueue<GuidedRow>({
+      db,
+      tableName: 'GuidedTaskStatePendingSyncs',
+      retryCap: 10,
+      remoteUrl,
+      apiPassword,
+      endpoint: '/api/sync/guided-task-state',
+      // Dedupe per task — keep the NEWEST row (highest id), drop older ones.
+      dedupeKey: p => `${p.SubsystemId}|${p.TaskId}`,
+      preferReplacement: (candidate, existing) => candidate.id > existing.id,
+      buildBody: p => ({
+        subsystemId: p.SubsystemId,
+        states: [{
+          taskId: p.TaskId,
+          status: p.Status,
+          reason: p.Reason,
+          actorName: p.ActorName,
+          updatedAt: p.UpdatedAt,
+        }],
+      }),
+      deleteRowsForIdentity: p => { deleteAllForTask.run(p.SubsystemId, p.TaskId) },
+      park: {
         // PARK, don't DELETE — keep the skip/complete override + reason for
         // recovery instead of silently dropping it at the cap.
-        try {
-          db.prepare("UPDATE GuidedTaskStatePendingSyncs SET DeadLettered = 1, LastError = COALESCE(LastError, 'guided task-state retry cap exhausted') WHERE id = ?").run(p.id)
-        } catch { /* best-effort */ }
-        try {
-          auditLog({
-            type: 'sync.push.park',
-            subsystemId: p.SubsystemId,
-            reason: 'guided task-state retry cap exhausted',
-            detail: { taskId: p.TaskId, status: p.Status, retries: p.RetryCount },
-          })
-        } catch { /* best-effort */ }
-        console.warn(`[AutoSync] PARKED guided task-state pending row id=${p.id} (task ${p.TaskId}) — exceeded retry cap (kept for recovery)`)
-        continue
-      }
-
-      let resp: globalThis.Response
-      try {
-        resp = await fetch(`${remoteUrl}/api/sync/guided-task-state`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
-          body: JSON.stringify({
-            subsystemId: p.SubsystemId,
-            states: [{
-              taskId: p.TaskId,
-              status: p.Status,
-              reason: p.Reason,
-              actorName: p.ActorName,
-              updatedAt: p.UpdatedAt,
-            }],
-          }),
-          signal: AbortSignal.timeout(15000),
-        })
-      } catch {
-        break
-      }
-      if (resp.ok) {
-        try { deleteAllForTask.run(p.SubsystemId, p.TaskId) } catch { /* best-effort */ }
-      } else if (isNetworkLevelFailure({ httpStatus: resp.status })) {
-        // 429 / ≥500 / 401 — the cloud never ruled on this row. Do NOT burn a
-        // retry-cap strike (the TPA8/MCM08 premature-park class): record the
-        // reason and stop the batch — every later row would fail the same way
-        // and each costs up to a 15 s timeout. Mirrors the IO / L2 /
-        // device-blocker drains.
-        try { noteError.run(`HTTP ${resp.status} (network-level, no strike)`, p.id) } catch { /* best-effort */ }
-        break
-      } else {
-        // Genuine cloud verdict (permanent 4xx) — burn a strike toward the cap.
-        try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
-      }
-    }
+        defaultError: 'guided task-state retry cap exhausted',
+        auditReason: 'guided task-state retry cap exhausted',
+        auditDetail: p => ({ taskId: p.TaskId, status: p.Status, retries: p.RetryCount }),
+        logMessage: p => `[AutoSync] PARKED guided task-state pending row id=${p.id} (task ${p.TaskId}) — exceeded retry cap (kept for recovery)`,
+      },
+    })
   }
 
   private _lastManualPullAt = 0
