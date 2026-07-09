@@ -92,7 +92,6 @@ function appendLog(file: string, line: string): void {
 const CONSOLE_PATTERNS = [
   /Commissioning Tool/,
   /Ready in \d+ms/,
-  /Starting Next\.js/,
   /Background auto-sync started/,
   /Shutting down/,
   /Connection status: (connected|error)/,
@@ -175,7 +174,6 @@ const SUPPRESS_PATTERNS = [
   /ConfigService.*Error in change/,
   /ConfigService.*Error starting/,
   /Request error/,
-  /prisma:error/,
   /\[DB\] WAL mode/,
   /\[DB\] busy_timeout/,
   /Failed to send to client/,

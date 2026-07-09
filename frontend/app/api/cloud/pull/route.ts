@@ -6,6 +6,7 @@ import { computeAtRiskResults, computeAtRiskComments, computeDivergentUnqueuedRe
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { configService } from '@/lib/config'
+import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
 import type { CloudPullResponse } from '@/lib/cloud/types'
 
 // ── Prepared statements (created once at module load) ──────────────────
@@ -110,7 +111,16 @@ function classifyDescription(desc: string | null): string | null {
 export async function POST(req: Request, res: Response) {
   try {
     const body = req.body
-    const { remoteUrl, apiPassword } = body
+    // Resolve cloud creds SERVER-side. Since the API key is no longer sent to
+    // the browser (/api/plc/status now returns apiKeySet, not the key), the
+    // dialog can call this route with just { subsystemId } and we fall back to
+    // the saved config. The body is still honored when present so a legacy
+    // caller — or an operator pulling a DIFFERENT project — can override.
+    // Config-read failure is tolerated (assume a legacy single-MCM tablet).
+    let cfg: Awaited<ReturnType<typeof configService.getConfig>> | null = null
+    try { cfg = await configService.getConfig() } catch { /* use body creds / embedded */ }
+    const remoteUrl = body.remoteUrl || cfg?.remoteUrl || EMBEDDED_REMOTE_URL || ''
+    const apiPassword = body.apiPassword || cfg?.apiPassword || ''
     const subsystemId = typeof body.subsystemId === 'string'
       ? parseInt(body.subsystemId, 10)
       : body.subsystemId
@@ -131,10 +141,9 @@ export async function POST(req: Request, res: Response) {
     // central / multi-MCM deployment the same wipe destroys every other
     // MCM's IOs, FV, safety and e-stop data (the MCM17 incident class).
     // Refuse and point at the scoped per-MCM pull.
-    try {
-      const cfg = await configService.getConfig()
-      const mcmCount = cfg.mcms?.length ?? 0
-      if (cfg.mcmsExplicit || mcmCount > 1) {
+    {
+      const mcmCount = cfg?.mcms?.length ?? 0
+      if (cfg?.mcmsExplicit || mcmCount > 1) {
         return res.status(409).json({
           success: false,
           error:
@@ -143,8 +152,6 @@ export async function POST(req: Request, res: Response) {
             `(POST /api/mcm/${subsystemId}/pull) or the MCM page's Pull button instead.`,
         } as CloudPullResponse)
       }
-    } catch {
-      // Config unreadable → assume legacy single-MCM tablet and continue.
     }
 
     // Refuse to pull while the PLC is connected. A pull rewrites the Ios

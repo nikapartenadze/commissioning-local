@@ -44,12 +44,17 @@ export async function POST(req: Request, res: Response) {
 
     const currentConfig = await configService.getConfig();
 
+    // Cloud creds resolve SERVER-side: the browser no longer receives the API
+    // key (/api/plc/status returns apiKeySet, not the key), so the dialog may
+    // POST connect with an empty remoteUrl/apiPassword — fall back to the saved
+    // config (|| not ??, so an empty string also falls back). A non-empty body
+    // value still overrides.
     await configService.saveConfig({
       ip: body.ip,
       path: body.path,
       subsystemId: body.subsystemId ?? currentConfig.subsystemId,
-      remoteUrl: body.remoteUrl ?? currentConfig.remoteUrl,
-      apiPassword: body.apiPassword ?? currentConfig.apiPassword,
+      remoteUrl: body.remoteUrl || currentConfig.remoteUrl,
+      apiPassword: body.apiPassword || currentConfig.apiPassword,
       orderMode: body.orderMode !== undefined
         ? (body.orderMode ? '1' : '0')
         : currentConfig.orderMode,

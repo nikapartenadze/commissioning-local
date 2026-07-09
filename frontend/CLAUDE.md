@@ -188,8 +188,8 @@ Override with `CONFIG_PATH` env var if needed.
 ## Sync Behavior
 
 - **Instant push:** local save → immediate HTTP POST to cloud (~1-2 sec)
-- **Background retry:** every 30 seconds, `lib/cloud/sync-queue.ts` retries any failed syncs
-- **Pull:** only on SSE reconnect, not polling
+- **Background retry:** every ~10 seconds (`pushIntervalMs` default), `lib/cloud/auto-sync.ts` drains the SQLite `PendingSyncs` queue. (`lib/cloud/sync-queue.ts` is a per-key single-flight guard, not the retry loop.)
+- **Pull:** on SSE reconnect, plus a ~15-minute safety catch-up sweep (`SYNC_SAFETY_PULL_MINUTES`) — not continuous polling
 - **Multi-user:** different IOs merge cleanly; same IO = last-write-wins in UI, both preserved in TestHistory audit trail
 - **Data authority:** local SQLite is the sole authority for test results; cloud is a read-only receiver
 - **Database backup:** automatic before any manual "Pull IOs" operation

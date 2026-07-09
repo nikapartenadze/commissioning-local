@@ -225,7 +225,12 @@ export function PlcConfigDialog({
           ip: status.plcIp || "",
           path: status.plcPath || "1,0",
           subsystemId: status.subsystemId || "",
-          apiPassword: status.apiPassword || "",
+          // The API key is no longer sent to the browser (status returns
+          // apiKeySet, not the key). Leave the field blank — connect/pull
+          // resolve the saved key server-side; a value typed here still
+          // overrides. Blank does NOT wipe the saved key (saveConfig ignores
+          // an empty apiPassword).
+          apiPassword: "",
           remoteUrl: status.remoteUrl || EMBEDDED_REMOTE_URL
         })
         // Set live status for showing connection state
@@ -998,7 +1003,7 @@ export function PlcConfigDialog({
                         type="text"
                         value={localConfig.apiPassword || ""}
                         onChange={(e) => setLocalConfig({ ...localConfig, apiPassword: e.target.value })}
-                        placeholder="Project API password"
+                        placeholder="Leave blank to keep saved key"
                         disabled={busy}
                         className="h-8 text-sm"
                       />

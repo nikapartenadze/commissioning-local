@@ -1,13 +1,14 @@
 /**
  * Cloud Sync Service
  *
- * TypeScript port of the C# ResilientCloudSyncService.
- * Handles:
- * - Fetching IOs from remote PostgreSQL server
- * - Syncing test results to cloud
- * - Offline queue management (PendingSyncs)
- * - Batch sync with configurable size and delay
- * - Retry logic with exponential backoff
+ * Real-time push of a single IO/test-result update to the cloud, plus the
+ * device-blocker queue drain. Handles:
+ * - Fetching IOs from the remote server
+ * - Syncing test results to cloud (one update at a time)
+ *
+ * NOTE: this service does NOT own an offline queue. Durability lives in the
+ * SQLite PendingSyncs table, drained by AutoSync (lib/cloud/auto-sync.ts).
+ * Do not reintroduce an in-memory queue here — there must be exactly one.
  */
 
 import {
@@ -225,50 +226,10 @@ export class CloudSyncService {
     }
   }
 
-  private async fetchWithRetry(
-    url: string,
-    options: RequestInit = {},
-    maxRetries: number = this.localConfig.maxRetries
-  ): Promise<Response> {
-    let lastError: Error | null = null
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        const response = await this.fetchWithTimeout(url, options)
-
-        if (response.ok) {
-          return response
-        }
-
-        // Authentication error - don't retry
-        if (response.status === 401) {
-          log.error('Authentication failed - invalid API password')
-          throw new Error('Authentication failed - check API password')
-        }
-
-        lastError = new Error(`HTTP ${response.status}: ${response.statusText}`)
-      } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') {
-          lastError = new Error('Request timed out')
-        } else {
-          lastError = error instanceof Error ? error : new Error(String(error))
-        }
-      }
-
-      if (attempt < maxRetries) {
-        // Exponential backoff: 1s, 2s, 4s, ...
-        const delay = 1000 * Math.pow(2, attempt)
-        log.debug(`Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`)
-        await this.delay(delay)
-      }
-    }
-
-    throw lastError || new Error('Request failed after all retries')
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms))
-  }
+  // (removed) fetchWithRetry + delay helpers — dead code. Real-time syncs use
+  // fetchWithTimeout directly and durability is owned by the SQLite
+  // PendingSyncs queue + AutoSync drain, so this retry/backoff pair had no
+  // caller. Deleted in the 2026-07 tech-debt cleanup.
 
   // ===========================================================================
   // Cloud Availability Check

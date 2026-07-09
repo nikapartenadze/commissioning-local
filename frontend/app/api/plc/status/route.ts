@@ -68,7 +68,10 @@ export async function GET(req: Request, res: Response) {
         connectionConfig: { ip: mcm.ip, path: mcm.path },
         plcIp: mcm.ip,
         plcPath: mcm.path,
-        apiPassword: config.apiPassword || '',
+        // SECURITY: never send the cloud API key to the browser. Expose only
+        // whether one is set (mirror /api/configuration + /api/mcm/cloud-config).
+        // Connect/pull routes resolve the key server-side from config.
+        apiKeySet: Boolean(config.apiPassword),
         remoteUrl: EMBEDDED_REMOTE_URL,
         performanceStats,
         library: libraryStatus,
@@ -134,7 +137,10 @@ export async function GET(req: Request, res: Response) {
       plcIp: connectionConfig?.ip || config.ip || '',
       plcPath: connectionConfig?.path || config.path || '1,0',
       subsystemId: config.subsystemId || '',
-      apiPassword: config.apiPassword || '',
+      // SECURITY: never send the cloud API key to the browser. Expose only
+      // whether one is set (mirror /api/configuration + /api/mcm/cloud-config).
+      // Connect/pull routes resolve the key server-side from config.
+      apiKeySet: Boolean(config.apiPassword),
       remoteUrl: EMBEDDED_REMOTE_URL,
       plcProfiles: (config as any).plcProfiles || [],
       performanceStats,
@@ -159,7 +165,7 @@ export async function GET(req: Request, res: Response) {
       plcIp: '',
       plcPath: '1,0',
       subsystemId: '',
-      apiPassword: '',
+      apiKeySet: false,
       remoteUrl: '',
       isTesting: false,
       isTestingUsers: [],

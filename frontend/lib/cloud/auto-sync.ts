@@ -2,7 +2,7 @@
  * Automatic Bidirectional Sync Service
  *
  * Runs in the background on the server:
- * - Push: Drains PendingSync queue to cloud every 30s
+ * - Push: Drains PendingSync queue to cloud every 10s (pushIntervalMs default)
  * - Pull: On SSE (re)connect only — no polling. SSE is the primary real-time channel;
  *         a full pull on reconnect catches any events missed during disconnect.
  *
@@ -33,13 +33,11 @@ export interface AutoSyncConfig {
                             // cloud→laptop commands (ping/update) round-trip
                             // in seconds rather than minutes.
   enabled: boolean          // default true
-  maxRetries: number        // default 3
 }
 
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 10000,
   enabled: true,
-  maxRetries: 3,
 }
 
 export interface AutoSyncStatus {
@@ -103,7 +101,7 @@ class AutoSyncService {
 
     // Do an initial push attempt after 5 seconds (let server fully start).
     // Same logic for heartbeat — let a freshly-started tool report in
-    // right away rather than waiting a full 30 s cycle.
+    // right away rather than waiting a full 10 s cycle.
     setTimeout(() => {
       this.pushToCloud()
       void sendHeartbeat()
@@ -613,8 +611,8 @@ class AutoSyncService {
         // value we're trying to send, but local doesn't know. Capping the
         // retries means the stuck row clears itself; if cloud actually
         // doesn't have the value, the user's next write creates a fresh
-        // pending row at the current version. With 30 s sync intervals, a
-        // cap of 10 = ~5 minutes of trying before we give up on the row.
+        // pending row at the current version. With 10 s sync intervals, a
+        // cap of 10 = ~100 s of trying before we give up on the row.
         const PENDING_RETRY_CAP = 10
         // Capture the rows BEFORE deleting so each discarded L2 cell value lands
         // in the recovery audit log (parallel to the IO drop above).
@@ -1186,8 +1184,9 @@ class AutoSyncService {
    */
   private _lastB7ReconcileAt = 0
   private async reconcileVersionConflicts(): Promise<void> {
-    // 2 min: drains run every ~30 s and a conflicted row strikes once per
-    // drain, so the reconcile must fire well before 10 strikes accumulate.
+    // 2 min: drains run every ~10 s and a conflicted row strikes once per
+    // drain. updatedCount=0 (at-least-once ghost) rows get 2× the retry cap
+    // before parking, so this 2 min throttle still fires before they park.
     const THROTTLE_MS = 2 * 60_000
     if (Date.now() - this._lastB7ReconcileAt < THROTTLE_MS) return
 

@@ -834,11 +834,19 @@ export function initializeSchema() {
   // VFD commissioning state is now stored entirely in L2CellValues
   // (columns: "Verify Identity", "Motor HP (Field)", "VFD HP (Field)",
   // "Check Direction", "Belt Tracked", "Speed Set Up"). The old VfdCheckState
-  // table is dropped on startup — any data that was in it is already mirrored in L2.
+  // table is dropped as a ONE-TIME migration — any data that was in it is
+  // already mirrored in L2. Gate the DROP on the table actually existing so it
+  // fires once on a legacy DB and is a cheap no-op skip on every startup after
+  // (rather than issuing a DROP unconditionally forever). Safe if absent.
   try {
-    db.exec('DROP TABLE IF EXISTS VfdCheckState')
+    const hasVfdCheckState = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='VfdCheckState'")
+      .get()
+    if (hasVfdCheckState) {
+      db.exec('DROP TABLE IF EXISTS VfdCheckState')
+    }
   } catch {
-    // Best-effort — if the drop fails the table is simply unused now.
+    // Best-effort — if the check/drop fails the table is simply unused now.
   }
 
   // Step 4 "Controls Verified" has no L2 column — it's a manual confirmation

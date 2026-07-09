@@ -2,7 +2,6 @@
  * Cloud Sync Types
  *
  * Type definitions for cloud API requests/responses and configuration.
- * These mirror the DTOs used in the C# backend.
  */
 
 // =============================================================================

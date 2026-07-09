@@ -10,7 +10,6 @@ export async function POST(req: Request, res: Response) {
       if (req.body) {
         if (req.body.pushIntervalMs) config.pushIntervalMs = req.body.pushIntervalMs
         if (req.body.enabled !== undefined) config.enabled = req.body.enabled
-        if (req.body.maxRetries) config.maxRetries = req.body.maxRetries
       }
     } catch {
       // No body or invalid JSON — use defaults

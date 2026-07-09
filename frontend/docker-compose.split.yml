@@ -30,8 +30,10 @@ services:
       GATEWAY_HOST: 0.0.0.0
       # Events flow gateway -> app's broadcast receiver -> browsers.
       WS_BROADCAST_URL: http://app:3102/broadcast
-    # DB-free: NO volume. Connections are rebuilt by the gateway's own 5s
-    # auto-reconnect if the gateway itself is ever replaced.
+    # DB-free: NO volume, so the connection registry is IN-MEMORY only. The 5s
+    # auto-reconnect only re-establishes connections already in that registry —
+    # a restarted/replaced gateway process starts EMPTY, so the app (or operator)
+    # must re-drive connect after a gateway restart to repopulate it.
     #
     # Phase B (Linux plant host) — for no-NAT EtherNet/IP to real PLCs, give the
     # gateway the host NIC and point the app at the host. Uncomment:
