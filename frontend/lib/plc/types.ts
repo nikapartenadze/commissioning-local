@@ -312,6 +312,26 @@ export interface UpdateIOMessage {
   clarificationNote?: string | null
 }
 
+/**
+ * Coalesced batch of IO result/comment updates — one WS frame carrying many
+ * rows, fanned out client-side to the same per-IO callbacks as UpdateIO. Sent by
+ * the cloud→field delta apply (lib/cloud/delta-sync) so a large resync doesn't
+ * fire one broadcast POST per row. Mirrors the cloud SSE `batch_ios_updated`.
+ */
+export interface BatchUpdateIOMessage {
+  type: 'BatchUpdateIO'
+  updates: Array<{
+    id: number
+    result: string
+    state: string
+    timestamp: string
+    comments: string
+    failureMode?: string | null
+    punchlistStatus?: string | null
+    clarificationNote?: string | null
+  }>
+}
+
 export interface CommentUpdateMessage {
   type: 'CommentUpdate'
   ioId: number
@@ -466,6 +486,7 @@ export interface RingStatusUpdateMessage {
 export type PlcWebSocketMessage =
   | UpdateStateMessage
   | UpdateIOMessage
+  | BatchUpdateIOMessage
   | CommentUpdateMessage
   | NetworkStatusChangedMessage
   | ErrorEventMessage

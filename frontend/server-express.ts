@@ -635,15 +635,17 @@ httpServer.listen(PORT, HOSTNAME, () => {
 // Automatic Background Sync
 // ============================================================================
 
-// Start auto-sync after a delay to let server fully initialize
+// Start auto-sync after a delay to let server fully initialize. Start it
+// IN-PROCESS (call the starter directly) rather than via a single self-fetch to
+// localhost: that one un-retried HTTP round-trip could fail (port not yet bound,
+// transient loopback hiccup) and then background sync NEVER started for the
+// whole process lifetime — only a console.warn marked it. The direct call has
+// no network failure mode.
 setTimeout(async () => {
   try {
-    const resp = await fetch(`http://localhost:${PORT}/api/cloud/auto-sync`, { method: 'POST' });
-    if (resp.ok) {
-      console.log('[Server] Background auto-sync started');
-    } else {
-      console.warn(`[Server] Auto-sync startup returned ${resp.status}`);
-    }
+    const { startAutoSync } = await import('@/lib/cloud/auto-sync');
+    startAutoSync();
+    console.log('[Server] Background auto-sync started (in-process)');
   } catch (e: any) {
     console.warn('[Server] Auto-sync startup failed:', e.message);
   }

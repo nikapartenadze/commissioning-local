@@ -658,9 +658,16 @@ export function getCloudSyncService(config?: Partial<CloudSyncConfig>): CloudSyn
   if (!cloudSyncServiceInstance) {
     cloudSyncServiceInstance = new CloudSyncService(config)
   } else if (config) {
-    // updateConfig is async (writes through to configService), but we fire-and-forget
-    // for backward compatibility with callers that don't await
-    cloudSyncServiceInstance.updateConfig(config)
+    // updateConfig is async (writes config.json through configService), but this
+    // getter stays sync for backward compatibility with callers that don't await.
+    // A rejected disk write must NOT become an unhandled rejection (which would
+    // also silently leave on-disk config lagging memory) — track it with a
+    // .catch that logs so the desync is at least visible in the logs.
+    void cloudSyncServiceInstance.updateConfig(config).catch((err) => {
+      log.error(
+        `getCloudSyncService: background updateConfig failed — on-disk config may lag memory: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    })
   }
   return cloudSyncServiceInstance
 }

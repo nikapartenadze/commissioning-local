@@ -333,18 +333,25 @@ export async function fetchAndApplyDelta(
   const result = applyDelta(subsystemId, payload)
 
   // Nudge browser tabs to refresh the IOs we changed (deletes are reflected on
-  // next reload). Best-effort.
-  for (const io of payload.ios?.upserts ?? []) {
+  // next reload). Coalesced into ONE batch POST rather than one fetch PER
+  // upserted IO: a large resync fired N un-awaited posts at the broadcast API,
+  // flooding it so grid-refresh events could be dropped and the UI left stale.
+  // The browser fans the batch back out to per-IO callbacks (mirrors the
+  // TagSnapshot / cloud SSE batch_ios_updated shape). Best-effort.
+  const upserts = payload.ios?.upserts ?? []
+  if (upserts.length > 0) {
     fetch(WS_BROADCAST_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        type: 'UpdateIO',
-        id: io.id,
-        result: io.result || 'Not Tested',
-        state: '',
-        timestamp: io.timestamp ?? '',
-        comments: io.comments ?? '',
+        type: 'BatchUpdateIO',
+        updates: upserts.map((io) => ({
+          id: io.id,
+          result: io.result || 'Not Tested',
+          state: '',
+          timestamp: io.timestamp ?? '',
+          comments: io.comments ?? '',
+        })),
       }),
     }).catch(() => { /* WS broadcast best-effort */ })
   }

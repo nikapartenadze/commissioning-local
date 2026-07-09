@@ -288,6 +288,12 @@ export async function POST(req: Request, res: Response) {
     //    Best-effort either way: L2 cells are already cleared above.
     const plcWrites: Array<{ field: string; ok: boolean; error?: string }> = []
     let plcAttempted = false
+    // Whether the target PLC was actually reachable when clearPlc was requested.
+    // Distinct from plcAttempted (which is only ever true when connected): it
+    // lets the client tell "PLC reset not requested" from "requested but the
+    // controller was offline, so the physical latch reset was SKIPPED" — the
+    // MCM14 latch-confusion class, where a silent skip left stale latches.
+    let plcConnected = false
     if (clearPlc) {
       if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
         // Registry MCM: pulse through the mode-aware typed batch ops — same
@@ -307,6 +313,7 @@ export async function POST(req: Request, res: Response) {
         ]
         const r = await writeTypedTagsForMcm(String(subsystemId), batch.map(({ name, value, dataType }) => ({ name, value, dataType })))
         if (r.connected) {
+          plcConnected = true
           plcAttempted = true
           for (let i = 0; i < batch.length; i++) {
             const w = r.results[i]
@@ -318,6 +325,7 @@ export async function POST(req: Request, res: Response) {
         const client = getPlcClient()
         const { connectionConfig } = getPlcStatus()
         if (client.isConnected && connectionConfig) {
+          plcConnected = true
           plcAttempted = true
           const timeoutMs = connectionConfig.timeout || 5000
           const fields: Array<'Invalidate_Map' | 'Invalidate_HP' | 'Invalidate_Direction'> = [
@@ -341,6 +349,12 @@ export async function POST(req: Request, res: Response) {
       sheetName: target.sheetName,
       cellsCleared,
       plcAttempted,
+      plcConnected,
+      // True when the caller asked for the PLC latch reset but the controller
+      // was offline, so the Invalidate_* / polarity pulses did NOT run. The L2
+      // cells are cleared either way; the client should warn the operator to
+      // reset the latches once the PLC is back.
+      plcResetSkipped: clearPlc === true && !plcConnected,
       plcWrites,
     })
   } catch (error) {

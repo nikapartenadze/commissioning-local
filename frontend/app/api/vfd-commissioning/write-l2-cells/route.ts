@@ -300,9 +300,17 @@ export async function POST(req: Request, res: Response) {
         .catch(() => { /* best-effort */ })
     }
 
-    return res.json({
-      success: written.every(w => w.ok),
+    // A dropped cell (column not found in the sheet) means the durable record of
+    // an operator action — e.g. "Polarity" — was discarded. Returning HTTP 200
+    // let a caller that only checks the status code (not the `written` array)
+    // believe the value was stored: this is the CDW5-polarity data-loss class.
+    // Signal it with HTTP 422 and enumerate the dropped cells so the failure is
+    // impossible to miss, while still persisting the cells that DID match.
+    const dropped = written.filter(w => !w.ok)
+    return res.status(dropped.length > 0 ? 422 : 200).json({
+      success: dropped.length === 0,
       written,
+      dropped,
       sheet: target.sheetName,
       deviceId: target.deviceId,
     })

@@ -39,6 +39,9 @@ export async function POST(req: Request, res: Response) {
     const newState = action === 'toggle' ? !result.currentState : action !== 'stop'
     return res.json({ success: true, tag, state: newState })
   } catch (error) {
+    // Safety-critical write: leave a diagnostic trail behind the generic client
+    // message so a failed STD_ intermediary fire isn't silently swallowed.
+    console.error('[SafetyFire] Error firing safety output:', error)
     return res.status(500).json({ success: false, error: 'Failed to fire safety output' })
   }
 }

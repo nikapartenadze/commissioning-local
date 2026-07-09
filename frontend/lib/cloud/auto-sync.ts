@@ -28,6 +28,7 @@ import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-
 import { getMcmStatus, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
 import { runJournalUpload } from '@/lib/cloud/journal-uploader'
+import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -1537,8 +1538,24 @@ class AutoSyncService {
       // Change detection — hash all versions to detect any change anywhere
       const versionHash = cloudIos.map((io: any) => `${io.id}:${io.version}:${io.result || '-'}`).join('|')
       if (versionHash === this.lastPullVersion) {
+        // IO set unchanged — skip the IO merge, but STILL refresh the config/FV
+        // sections. network/estop/safety/L2 changes on the cloud do NOT move the
+        // IO version hash, so before this the legacy tablet path skipped them
+        // here and they only reached the field after a service restart cleared
+        // this in-memory hash. Mirrors the scoped /api/mcm/:id/pull no-op branch:
+        // runConfigSidePulls is a scoped, idempotent per-section delete+reinsert,
+        // and pullL2Scoped self-calls the FV pull — safe to run every cycle.
+        try {
+          const sid = parseInt(String(subsystemId), 10)
+          if (Number.isFinite(sid)) {
+            await runConfigSidePulls(sid, remoteUrl, apiPassword || '', { db })
+            await this.pullL2Scoped(sid, remoteUrl, apiPassword)
+          }
+        } catch (e) {
+          console.warn('[AutoSync] no-op config/FV side-pull failed:', e instanceof Error ? e.message : e)
+        }
         this._lastPullAt = new Date()
-        this._lastPullResult = 'no changes detected'
+        this._lastPullResult = 'no IO changes — refreshed config/FV'
         return
       }
 

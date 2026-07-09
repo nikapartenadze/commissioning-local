@@ -51,10 +51,39 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   const [bypassConfirmZone, setBypassConfirmZone] = useState<SafetyZone | null>(null)
   const [activeBypass, setActiveBypass] = useState<SafetyZone | null>(null)
   const activeBypassRef = useRef<SafetyZone | null>(null)
+  // Set when the server tore the keep-alive down under us (PLC disconnect /
+  // repeated write failure) so the overlay closes and the operator is warned.
+  const [bypassLostNotice, setBypassLostNotice] = useState(false)
 
   // Keep ref in sync for cleanup
   useEffect(() => {
     activeBypassRef.current = activeBypass
+  }, [activeBypass])
+
+  // Reflect a server-side keep-alive teardown. The server drops the bypass from
+  // its active map (and broadcasts BypassEnded) when the PLC disconnects or the
+  // hold-bit write keeps failing — but this view has no WS subscription, so poll
+  // the active-bypass list while the overlay is up and close it if our tag is
+  // gone. Without this the operator keeps seeing "BYPASS ACTIVE" while the STO
+  // bit is no longer actually held.
+  useEffect(() => {
+    if (!activeBypass) return
+    let active = true
+    const check = async () => {
+      try {
+        const res = await authFetch('/api/safety/bypass')
+        if (!res.ok || !active) return
+        const data = await res.json()
+        const tag = activeBypassRef.current?.bssTag
+        const stillHeld = Array.isArray(data.active) && tag != null && data.active.includes(tag)
+        if (!stillHeld && active) {
+          setActiveBypass(null)
+          setBypassLostNotice(true)
+        }
+      } catch { /* transient — try again next tick */ }
+    }
+    const interval = setInterval(check, 2000)
+    return () => { active = false; clearInterval(interval) }
   }, [activeBypass])
 
   // Fetch outputs
@@ -133,6 +162,7 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
         body: JSON.stringify({ bssTag: zone.bssTag, action: "start", subsystemId }),
       })
       setBypassConfirmZone(null)
+      setBypassLostNotice(false)
       setActiveBypass(zone)
     } catch {
       // ignore
@@ -156,6 +186,24 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
 
   return (
     <div className="space-y-6 py-4">
+      {/* Bypass-ended warning: the server tore the keep-alive down (PLC
+          disconnect / repeated write failure) while the overlay was up. */}
+      {bypassLostNotice && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive"
+        >
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            Bypass ended unexpectedly — the STO bypass bit is no longer being held
+            (PLC connection lost or the hold-bit write kept failing). Re-check the
+            zone before relying on it.
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => setBypassLostNotice(false)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
       {/* Section A: Safety Outputs */}
       {/* STO Bypass Zones */}
       <div>

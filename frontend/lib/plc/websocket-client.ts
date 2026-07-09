@@ -364,6 +364,36 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           break
         }
 
+        // Coalesced multi-IO update from the cloud→field delta apply — one
+        // frame, fanned out to the same per-IO callbacks as UpdateIO so a large
+        // resync repaints the grid without flooding the broadcast API with one
+        // POST per row. Mirrors the TagSnapshot fan-out above.
+        case 'BatchUpdateIO': {
+          const batchMsg = message as import('./types').BatchUpdateIOMessage
+          if (Array.isArray(batchMsg.updates)) {
+            for (const u of batchMsg.updates) {
+              const update: IOUpdate = {
+                Id: u.id,
+                Result: u.result as IOUpdate['Result'],
+                State: u.state === 'TRUE' ? 'TRUE' : u.state === 'FALSE' ? 'FALSE' : 'NOT_SET' as any,
+                Timestamp: u.timestamp,
+                Comments: u.comments,
+                FailureMode: u.failureMode,
+                PunchlistStatus: u.punchlistStatus,
+                ClarificationNote: u.clarificationNote,
+              }
+              ioCallbacksRef.current.forEach((cb) => {
+                try {
+                  cb(update)
+                } catch (error) {
+                  console.error('[PlcWebSocket] Error in IO callback (batch):', error)
+                }
+              })
+            }
+          }
+          break
+        }
+
         case 'ConfigReload': {
           const configMsg = message as import('./types').ConfigReloadMessage
           setIsConfigReloading(configMsg.status === 'reloading')
