@@ -3,6 +3,7 @@ import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { getBroadcastUrl } from '@/lib/broadcast-config'
 
 /**
  * POST /api/vfd-commissioning/write-l2-cells
@@ -224,7 +225,8 @@ export async function POST(req: Request, res: Response) {
     const updatedAt = new Date().toISOString()
     // Honour WS_BROADCAST_URL (dev runs the bridge on :3112) — a hardcoded
     // port broadcasts into the void and the open grid never live-refreshes.
-    const broadcastUrl = process.env.WS_BROADCAST_URL || 'http://127.0.0.1:3102/broadcast'
+    // Single-sourced via lib/broadcast-config so the port can't drift (D8).
+    const broadcastUrl = getBroadcastUrl()
     for (const b of localBroadcasts) {
       fetch(broadcastUrl, {
         method: 'POST',

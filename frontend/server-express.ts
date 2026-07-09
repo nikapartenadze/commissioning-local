@@ -24,6 +24,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { createApiRouter } from './routes';
 import { resolveLogsDirPath } from '@/lib/storage-paths';
 import { getPlcTags, connectPlc, loadPlcTags } from '@/lib/plc-client-manager';
+import { getBroadcastPort } from '@/lib/broadcast-config';
 import { configService } from '@/lib/config';
 import { db } from '@/lib/db-sqlite';
 import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
@@ -47,7 +48,6 @@ const SERVER_VERSION = process.env.NEXT_PUBLIC_BUILD_HASH || getAppVersion();
 // Startup backup is deferred to after server starts listening (see httpServer.listen callback)
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const WS_PORT = parseInt(process.env.PLC_WS_PORT || '3002', 10);
 const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 // Broadcast receiver bind host. Stays loopback-only for the monolith; in the
 // split deployment it must be reachable so the plc-gateway can POST events.
@@ -269,10 +269,12 @@ function shouldDeliver(message: any, ws: AliveWebSocket): boolean {
 }
 
 // ============================================================================
-// Broadcast HTTP API (internal, port WS_PORT + 100)
+// Broadcast HTTP API (internal, port PLC_WS_PORT + 100)
 // ============================================================================
 
-const HTTP_PORT = WS_PORT + 100;
+// Single-sourced with every broadcast poster's client-url fallback (D8) so
+// changing PLC_WS_PORT can never move the listener without moving the clients.
+const HTTP_PORT = getBroadcastPort();
 const broadcastHttpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
   // No CORS: this is an INTERNAL, server-to-server API (PLC/sync posters →
   // WS fan-out). It is never called cross-origin from a browser, so the old

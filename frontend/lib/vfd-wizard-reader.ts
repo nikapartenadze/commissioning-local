@@ -25,6 +25,7 @@ import {
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
+import { getBroadcastUrl } from '@/lib/broadcast-config'
 
 /**
  * Read a REAL (float32) from a tag by reading raw uint32 bytes and
@@ -103,7 +104,7 @@ function getTagDefs(deviceName: string): TagDef[] {
 // bridge on :3112 (and another app may own :3102), so a hardcoded port sends
 // wizard updates into the void and Step 0 never sees Check_Allowed flip.
 
-const BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://127.0.0.1:3102/broadcast'
+const BROADCAST_URL = getBroadcastUrl()
 
 function broadcast(message: object): void {
   fetch(BROADCAST_URL, {

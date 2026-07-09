@@ -255,6 +255,176 @@ export function computeAtRiskL2Cells(
   return out
 }
 
+// ── Route-level composition (D5) ─────────────────────────────────────────────
+// The full at-risk / divergent / clear guard + 409 refuse block was duplicated
+// verbatim in /api/cloud/pull and /api/mcm/[subsystemId]/pull, so every guard
+// fix (F2, R10, F-reset) had to land twice. computePullRiskOrRefuse below runs
+// the identical DB reads + the four compute* functions above and builds the
+// exact 409 the routes returned inline, driven by `scope`:
+//   - scope.subsystemId === null → the legacy global pull: unscoped queries and
+//     the generic refuse message.
+//   - scope.subsystemId === <n>  → the per-MCM pull: SubsystemId-scoped queries
+//     and the "exist locally for MCM <n>" refuse message.
+// Pure extraction — no behavior change; the response SHAPE is identical for both
+// and each route's exact log/error text is reproduced per scope.
+
+/** Minimal better-sqlite3 surface the guard needs — decouples it from db-sqlite. */
+interface PullGuardDb {
+  prepare(sql: string): {
+    all(...params: unknown[]): unknown[]
+    get(...params: unknown[]): unknown
+  }
+}
+
+export interface PullGuardScope {
+  db: PullGuardDb
+  /** null → legacy global pull (unscoped); a number → per-MCM scoped pull. */
+  subsystemId: number | null
+  /** Console prefix, matching each route's existing log tag. */
+  logPrefix: string
+}
+
+export interface PullRiskDecision {
+  /** Non-null → the caller must return res.status(status).json(body). */
+  refuse: { status: number; body: Record<string, unknown> } | null
+  atRisk: AtRiskResult[]
+  atRiskComments: AtRiskComment[]
+  divergent: DivergentUnqueuedResult[]
+  atRiskClears: AtRiskClear[]
+}
+
+/**
+ * Second/third line of defense for the destructive pull: compares the ACTUAL
+ * local results/comments/clears against the ACTUAL cloud payload (never trusting
+ * the pending queue, which the retry cap can silently empty) and refuses with a
+ * 409 when the pull would erase unsynced field work — unless `force` is set.
+ *
+ * Returns the computed risk arrays either way so the caller can log the FORCE
+ * override, decide whether a backup is mandatory, and record the audit trail.
+ */
+export function computePullRiskOrRefuse(
+  scope: PullGuardScope,
+  cloudIos: Array<{ id: number | string; result?: string | null; comments?: string | null; timestamp?: string | null }>,
+  force: boolean,
+): PullRiskDecision {
+  const { db, subsystemId, logPrefix } = scope
+  const scoped = subsystemId !== null
+
+  const localWithResults = (
+    scoped
+      ? db.prepare(
+          `SELECT id, Name, Result, Timestamp FROM Ios WHERE SubsystemId = ? AND Result IS NOT NULL AND Result != ''`,
+        ).all(subsystemId)
+      : db.prepare(
+          `SELECT id, Name, Result, Timestamp FROM Ios WHERE Result IS NOT NULL AND Result != ''`,
+        ).all()
+  ) as Array<{ id: number; Name: string; Result: string; Timestamp: string | null }>
+  const atRisk = computeAtRiskResults(localWithResults, cloudIos)
+
+  const localWithComments = (
+    scoped
+      ? db.prepare(
+          `SELECT id, Name, Comments FROM Ios WHERE SubsystemId = ? AND Comments IS NOT NULL AND TRIM(Comments) != ''`,
+        ).all(subsystemId)
+      : db.prepare(
+          `SELECT id, Name, Comments FROM Ios WHERE Comments IS NOT NULL AND TRIM(Comments) != ''`,
+        ).all()
+  ) as Array<{ id: number; Name: string; Comments: string }>
+  const atRiskComments = computeAtRiskComments(localWithComments, cloudIos)
+
+  const queuedIoIds = new Set(
+    (
+      scoped
+        ? db.prepare(
+            `SELECT ps.IoId FROM PendingSyncs ps JOIN Ios i ON i.id = ps.IoId WHERE i.SubsystemId = ?`,
+          ).all(subsystemId)
+        : db.prepare('SELECT IoId FROM PendingSyncs').all()
+    ).map((r) => (r as { IoId: number }).IoId),
+  )
+  const divergent = computeDivergentUnqueuedResults(localWithResults, cloudIos, queuedIoIds)
+
+  const localCleared = (
+    scoped
+      ? db.prepare(
+          `SELECT i.id AS id, i.Name AS Name,
+            (SELECT th.Result    FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS lastResult,
+            (SELECT th.Timestamp FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS clearedAt
+           FROM Ios i
+           WHERE i.SubsystemId = ? AND (i.Result IS NULL OR i.Result = '')`,
+        ).all(subsystemId)
+      : db.prepare(
+          `SELECT i.id AS id, i.Name AS Name,
+            (SELECT th.Result    FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS lastResult,
+            (SELECT th.Timestamp FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS clearedAt
+           FROM Ios i WHERE (i.Result IS NULL OR i.Result = '')`,
+        ).all()
+  ) as Array<{ id: number; Name: string; lastResult: string | null; clearedAt: string | null }>
+  const atRiskClears = computeAtRiskClears(
+    localCleared.filter((r) => r.lastResult === 'Cleared').map((r) => ({ id: r.id, Name: r.Name, clearedAt: r.clearedAt })),
+    cloudIos,
+  )
+
+  const hasRisk = atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0 || atRiskClears.length > 0
+
+  if (hasRisk && !force) {
+    const sample = [...atRisk, ...divergent, ...atRiskClears].slice(0, 5).map((r) => r.name).join(', ')
+    console.warn(
+      `${logPrefix} REFUSED: pull would erase ${atRisk.length} local result(s), ` +
+      `${atRiskComments.length} local comment(s) the cloud does not have, overwrite ` +
+      `${divergent.length} newer local result(s) that differ from stale cloud values, and ` +
+      `revert ${atRiskClears.length} deliberate local clear(s)` +
+      (scoped ? ' the cloud still holds a stale value for ' : ' ') +
+      `(e.g. ${sample}). ` +
+      'Resend with force=true to override.',
+    )
+    const parts = [
+      atRisk.length > 0 ? `${atRisk.length} test result(s) the cloud lacks` : null,
+      atRiskComments.length > 0 ? `${atRiskComments.length} comment(s) the cloud lacks` : null,
+      divergent.length > 0 ? `${divergent.length} newer local result(s) that differ from stale cloud values` : null,
+      atRiskClears.length > 0 ? `${atRiskClears.length} deliberate local clear(s) the cloud would revert` : null,
+    ].filter(Boolean).join(', ')
+    const error = scoped
+      ? `Pull refused: ${parts} exist locally for MCM ${subsystemId} — ` +
+        'pulling now would erase them. They are likely unsynced field work. ' +
+        'Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)'
+      : `Pull refused: ${parts} — pulling now would erase them. ` +
+        'They are likely unsynced field work. ' +
+        'Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)'
+    return {
+      refuse: {
+        status: 409,
+        body: {
+          success: false,
+          requiresForce: true,
+          wouldLoseResults: atRisk.length,
+          wouldLoseComments: atRiskComments.length,
+          wouldOverwriteNewerLocal: divergent.length,
+          wouldRevertClears: atRiskClears.length,
+          atRiskSample: atRisk.slice(0, 10),
+          atRiskCommentSample: atRiskComments.slice(0, 10),
+          divergentSample: divergent.slice(0, 10),
+          atRiskClearSample: atRiskClears.slice(0, 10),
+          error,
+        },
+      },
+      atRisk,
+      atRiskComments,
+      divergent,
+      atRiskClears,
+    }
+  }
+
+  if (hasRisk) {
+    console.warn(
+      `${logPrefix} FORCE override: erasing ${atRisk.length} result(s) + ` +
+      `${atRiskComments.length} comment(s) + overwriting ${divergent.length} newer divergent result(s) + ` +
+      `reverting ${atRiskClears.length} deliberate clear(s) (user confirmed)`,
+    )
+  }
+
+  return { refuse: null, atRisk, atRiskComments, divergent, atRiskClears }
+}
+
 export function computeDivergentUnqueuedResults(
   localRows: LocalResultRowWithTs[],
   cloudIos: Array<{ id: number | string; result?: string | null; timestamp?: string | null }>,

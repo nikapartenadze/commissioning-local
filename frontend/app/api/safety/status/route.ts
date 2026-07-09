@@ -1,11 +1,8 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
-import { hasMcm, readTypedTagsForMcm } from '@/lib/mcm-registry'
-
-let createdTags = new Set<string>()
-let failedTags = new Set<string>()
-let lastConnectedState = false
+import { hasMcm } from '@/lib/mcm-registry'
+import { readBoolTagsBySubsystem } from '@/lib/plc/read-bool-tags'
 
 /**
  * GET /api/safety/status — live values for safety zone BSS tags, drive
@@ -19,11 +16,6 @@ let lastConnectedState = false
 export async function GET(req: Request, res: Response) {
   try {
     const singletonConnected = hasPlcClient() && getPlcClient().isConnected
-    if (!singletonConnected) {
-      lastConnectedState = false
-    } else if (!lastConnectedState) {
-      createdTags = new Set<string>(); failedTags = new Set<string>(); lastConnectedState = true
-    }
 
     const registryTagsBySid = new Map<string, Set<string>>()
     const legacyTags = new Set<string>()
@@ -51,40 +43,11 @@ export async function GET(req: Request, res: Response) {
       return res.json({ success: true, connected: singletonConnected, tags: {} })
     }
 
-    const results: Record<string, boolean | null> = {}
-    let anyConnected = false
-
-    for (const [sid, tags] of Array.from(registryTagsBySid.entries())) {
-      try {
-        const batch = await readTypedTagsForMcm(sid, Array.from(tags).map((name) => ({ name, dataType: 'BOOL' as const })))
-        if (!batch.connected) continue
-        anyConnected = true
-        for (const r of batch.results) {
-          results[r.name] = r.success ? (r.value === true || r.value === 1) : null
-        }
-      } catch { /* MCM read failed — its tags read as unknown */ }
-    }
-
-    if (singletonConnected && legacyTags.size > 0) {
-      anyConnected = true
-      const client = getPlcClient()
-      const tagsToCreate: string[] = []
-      for (const tagName of Array.from(legacyTags)) {
-        if (!createdTags.has(tagName) && !failedTags.has(tagName) && !client.hasTag(tagName)) tagsToCreate.push(tagName)
-      }
-      if (tagsToCreate.length > 0) {
-        const tagReader = (client as any).tagReader
-        if (tagReader) {
-          const result = await tagReader.createTags(tagsToCreate)
-          for (const name of result.successful) createdTags.add(name)
-          for (const f of result.failed) failedTags.add(f.name)
-        }
-      }
-      for (const tagName of Array.from(legacyTags)) {
-        if (failedTags.has(tagName)) { results[tagName] = null; continue }
-        results[tagName] = client.readTagCached(tagName)
-      }
-    }
+    // Shared bucketed read (registry typed-batch + legacy singleton) — same
+    // helper the estop and network status routes use. This route only needs the
+    // value map; the per-tag diagnostics are unused here.
+    const { values: results, anyConnected } =
+      await readBoolTagsBySubsystem({ registryTagsBySid, legacyTags, singletonConnected })
 
     return res.json({ success: true, connected: anyConnected || singletonConnected, tags: results })
   } catch (error) {

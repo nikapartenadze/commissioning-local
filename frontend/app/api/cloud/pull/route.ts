@@ -2,7 +2,7 @@ import { Request, Response } from 'express'
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl, getPlcClient } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
-import { computeAtRiskResults, computeAtRiskComments, computeDivergentUnqueuedResults, computeAtRiskClears } from '@/lib/cloud/pull-guard'
+import { computePullRiskOrRefuse } from '@/lib/cloud/pull-guard'
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { configService } from '@/lib/config'
@@ -326,74 +326,13 @@ export async function POST(req: Request, res: Response) {
     // at all — it compares actual local results against the actual cloud
     // payload, and refuses when the pull would erase results the cloud
     // doesn't have. The user can override with body.force === true after an
-    // explicit confirmation in the UI.
-    const localWithResults = db.prepare(
-      `SELECT id, Name, Result, Timestamp FROM Ios WHERE Result IS NOT NULL AND Result != ''`
-    ).all() as Array<{ id: number; Name: string; Result: string; Timestamp: string | null }>
-    const atRisk = computeAtRiskResults(localWithResults, cloudIos)
-    // B2: also detect local COMMENTS the pull would erase (the wipe drops them
-    // too, and the old warning never mentioned them).
-    const localWithComments = db.prepare(
-      `SELECT id, Name, Comments FROM Ios WHERE Comments IS NOT NULL AND TRIM(Comments) != ''`
-    ).all() as Array<{ id: number; Name: string; Comments: string }>
-    const atRiskComments = computeAtRiskComments(localWithComments, cloudIos)
-    // F2 (2026-07-03 audit): third check — a local result that DIFFERS from a
-    // stale cloud value with no queue row left (retry-cap-emptied queue) is
-    // also unsynced field work; only a provably-newer cloud value wins freely.
-    const queuedIoIds = new Set(
-      (db.prepare('SELECT IoId FROM PendingSyncs').all() as Array<{ IoId: number }>).map(r => r.IoId)
-    )
-    const divergent = computeDivergentUnqueuedResults(localWithResults, cloudIos, queuedIoIds)
-    // F-reset (2026-07-08 MCM04): also protect a deliberate operator CLEAR the
-    // destructive reinsert would revert (cleared IOs have Result=NULL → invisible
-    // to the guards above). Latest TestHistories row 'Cleared', cloud still holds
-    // a not-provably-newer result.
-    const localCleared = db.prepare(
-      `SELECT i.id AS id, i.Name AS Name,
-        (SELECT th.Result    FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS lastResult,
-        (SELECT th.Timestamp FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS clearedAt
-       FROM Ios i WHERE (i.Result IS NULL OR i.Result = '')`
-    ).all() as Array<{ id: number; Name: string; lastResult: string | null; clearedAt: string | null }>
-    const atRiskClears = computeAtRiskClears(
-      localCleared.filter(r => r.lastResult === 'Cleared').map(r => ({ id: r.id, Name: r.Name, clearedAt: r.clearedAt })),
-      cloudIos,
-    )
-
-    if ((atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0 || atRiskClears.length > 0) && body.force !== true) {
-      console.warn(
-        `[CloudPull] REFUSED: pull would erase ${atRisk.length} local result(s), ` +
-        `${atRiskComments.length} local comment(s) the cloud does not have, overwrite ` +
-        `${divergent.length} newer local result(s) that differ from stale cloud values, and ` +
-        `revert ${atRiskClears.length} deliberate local clear(s) ` +
-        `(e.g. ${[...atRisk, ...divergent, ...atRiskClears].slice(0, 5).map(r => r.name).join(', ')}). ` +
-        `Resend with force=true to override.`
-      )
-      const parts = [
-        atRisk.length > 0 ? `${atRisk.length} test result(s) the cloud lacks` : null,
-        atRiskComments.length > 0 ? `${atRiskComments.length} comment(s) the cloud lacks` : null,
-        divergent.length > 0 ? `${divergent.length} newer local result(s) that differ from stale cloud values` : null,
-        atRiskClears.length > 0 ? `${atRiskClears.length} deliberate local clear(s) the cloud would revert` : null,
-      ].filter(Boolean).join(', ')
-      return res.status(409).json({
-        success: false,
-        requiresForce: true,
-        wouldLoseResults: atRisk.length,
-        wouldLoseComments: atRiskComments.length,
-        wouldOverwriteNewerLocal: divergent.length,
-        wouldRevertClears: atRiskClears.length,
-        atRiskSample: atRisk.slice(0, 10),
-        atRiskCommentSample: atRiskComments.slice(0, 10),
-        divergentSample: divergent.slice(0, 10),
-        atRiskClearSample: atRiskClears.slice(0, 10),
-        error:
-          `Pull refused: ${parts} — pulling now would erase them. ` +
-          `They are likely unsynced field work. ` +
-          `Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)`,
-      } as CloudPullResponse)
+    // explicit confirmation in the UI. Shared verbatim with the per-MCM pull
+    // via computePullRiskOrRefuse (subsystemId: null = legacy global scope).
+    const guard = computePullRiskOrRefuse({ db, subsystemId: null, logPrefix: '[CloudPull]' }, cloudIos, body.force === true)
+    if (guard.refuse) {
+      return res.status(guard.refuse.status).json(guard.refuse.body)
     }
-    if (atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0 || atRiskClears.length > 0) {
-      console.warn(`[CloudPull] FORCE override: erasing ${atRisk.length} result(s) + ${atRiskComments.length} comment(s) + overwriting ${divergent.length} newer divergent result(s) + reverting ${atRiskClears.length} deliberate clear(s) (user confirmed)`)
-    }
+    const { atRisk, atRiskComments, divergent } = guard
 
     const localCountRow = getPullStmts().ioCount.get() as { cnt: number }
     const localIoCount = localCountRow.cnt

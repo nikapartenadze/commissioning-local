@@ -18,6 +18,7 @@
 
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getSyncCursor, setSyncCursor } from '@/lib/cloud/sync-cursor'
+import { getBroadcastUrl } from '@/lib/broadcast-config'
 import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
 import { auditLog } from '@/lib/logging/recovery-log'
 
@@ -29,7 +30,7 @@ import { auditLog } from '@/lib/logging/recovery-log'
 // explicit full pull.
 const MASS_DELETE_LIMIT = 50
 
-const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
+const WS_BROADCAST_URL = getBroadcastUrl()
 
 export interface DeltaIo {
   id: number

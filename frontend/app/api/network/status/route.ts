@@ -1,11 +1,8 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { getPlcClient, hasPlcClient } from '@/lib/plc-client-manager'
-import { hasMcm, readTypedTagsForMcm } from '@/lib/mcm-registry'
-
-let createdTags = new Set<string>()
-let failedTags = new Set<string>()
-let lastConnectedState = false
+import { hasMcm } from '@/lib/mcm-registry'
+import { readBoolTagsBySubsystem } from '@/lib/plc/read-bool-tags'
 
 // Diagnostic: per-tag last-known value, used to log transitions like
 // "X:I.ConnectionFaulted false → true". The IO grid greys out rows whose
@@ -33,14 +30,6 @@ export async function GET(req: Request, res: Response) {
     const subsystemId = parseInt(req.query.subsystemId as string || '')
 
     const singletonConnected = hasPlcClient() && getPlcClient().isConnected
-    if (!singletonConnected) {
-      lastConnectedState = false
-    } else if (!lastConnectedState) {
-      createdTags = new Set<string>()
-      failedTags = new Set<string>()
-      lastConnectedState = true
-      console.log('[NetworkStatus] PLC (re)connected, resetting tag handles')
-    }
 
     const rings = !isNaN(subsystemId)
       ? db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(subsystemId) as any[]
@@ -101,52 +90,11 @@ export async function GET(req: Request, res: Response) {
       return res.json({ success: true, connected: singletonConnected, tags: {} })
     }
 
-    const results: Record<string, boolean | null> = {}
-    let anyConnected = false
-
-    // Registry MCM rings: one typed batch per subsystem, mode-aware (works
-    // identically embedded and via the gateway in PLC_MODE=remote). StatusTag
-    // names are flattened into one response map — they're controller-scoped
-    // and unique per device on real sites.
-    for (const [sid, tags] of Array.from(registryTagsBySid.entries())) {
-      try {
-        const batch = await readTypedTagsForMcm(sid, Array.from(tags).map((name) => ({ name, dataType: 'BOOL' as const })))
-        if (!batch.connected) continue
-        anyConnected = true
-        for (const r of batch.results) {
-          results[r.name] = r.success ? (r.value === true || r.value === 1) : null
-        }
-      } catch { /* MCM read failed — its tags read as unknown */ }
-    }
-
-    // Legacy singleton rings (single-MCM field tablets / unregistered subsystems).
-    if (singletonConnected && legacyTags.size > 0) {
-      anyConnected = true
-      const client = getPlcClient()
-      const tagArray = Array.from(legacyTags)
-      const tagsToCreate: string[] = []
-      for (const tagName of tagArray) {
-        if (!createdTags.has(tagName) && !failedTags.has(tagName) && !client.hasTag(tagName)) {
-          tagsToCreate.push(tagName)
-        }
-      }
-
-      if (tagsToCreate.length > 0) {
-        console.log(`[NetworkStatus] Creating ${tagsToCreate.length} network tag handles`)
-        const tagReader = (client as any).tagReader
-        if (tagReader) {
-          const result = await tagReader.createTags(tagsToCreate)
-          for (const name of result.successful) createdTags.add(name)
-          for (const f of result.failed) failedTags.add(f.name)
-          console.log(`[NetworkStatus] ${result.successful.length} success, ${result.failed.length} failed`)
-        }
-      }
-
-      for (const tagName of tagArray) {
-        if (failedTags.has(tagName)) { results[tagName] = null; continue }
-        results[tagName] = client.readTagCached(tagName)
-      }
-    }
+    // Shared bucketed read (registry typed-batch + legacy singleton) — same
+    // helper the estop and safety status routes use. The transition logging
+    // below consumes the value map; per-tag diagnostics are unused here.
+    const { values: results, anyConnected } =
+      await readBoolTagsBySubsystem({ registryTagsBySid, legacyTags, singletonConnected })
 
     const connected = anyConnected || singletonConnected
 

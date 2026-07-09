@@ -17,9 +17,11 @@ import {
 } from './plc';
 import { NetworkPoller, type NetworkDeviceSnapshot, type RingStatus } from './plc/network';
 import { configService } from './config';
+import { getBroadcastUrl } from './broadcast-config';
 
-// WebSocket broadcast HTTP endpoint (WS port + 100 = HTTP broadcast port)
-const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast';
+// WebSocket broadcast HTTP endpoint (PLC_WS_PORT + 100). Single-sourced with the
+// server-express listener via lib/broadcast-config (D8) so the port never drifts.
+const WS_BROADCAST_URL = getBroadcastUrl();
 
 /**
  * Get the WebSocket broadcast URL. Shared by all API routes.

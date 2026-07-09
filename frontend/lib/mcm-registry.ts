@@ -43,12 +43,14 @@ import {
   getCachedState,
   isCacheFresh,
 } from './plc/remote-cache';
+import { getBroadcastUrl } from './broadcast-config';
 
 /** True when PLC connections live in a separate plc-gateway process. */
 const REMOTE = process.env.PLC_MODE === 'remote';
 
-// WebSocket broadcast HTTP endpoint — same as legacy manager, shared port.
-const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast';
+// WebSocket broadcast HTTP endpoint — same as legacy manager, shared port
+// (single-sourced via lib/broadcast-config so PLC_WS_PORT can't drift it — D8).
+const WS_BROADCAST_URL = getBroadcastUrl();
 
 async function broadcast(message: object): Promise<void> {
   try {

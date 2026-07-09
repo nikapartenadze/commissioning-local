@@ -5,7 +5,7 @@ import { EMBEDDED_REMOTE_URL } from '@/lib/config/types';
 import { invalidateIoSubsystemCache, getMcmStatus } from '@/lib/mcm-registry';
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { createBackup } from '@/lib/db/backup';
-import { computeAtRiskResults, computeAtRiskComments, computeDivergentUnqueuedResults, computeAtRiskClears } from '@/lib/cloud/pull-guard';
+import { computePullRiskOrRefuse } from '@/lib/cloud/pull-guard';
 import { auditLog } from '@/lib/logging/recovery-log';
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls';
 
@@ -258,85 +258,22 @@ export async function POST(req: Request, res: Response) {
     }
 
     // ── Result-loss guard (2026-06-04 TPA8/MCM08 incident) ──────────────
-    // Same second line of defense as the legacy /api/cloud/pull, scoped to
-    // this subsystem: the pending-queue check above failed catastrophically
-    // when the retry cap silently emptied the queue, so this guard ignores
-    // the queue and compares actual local results/comments against the
-    // actual cloud payload. Override requires an explicit body.force after
-    // user confirmation in the UI.
-    const localWithResults = db.prepare(
-      `SELECT id, Name, Result, Timestamp FROM Ios WHERE SubsystemId = ? AND Result IS NOT NULL AND Result != ''`,
-    ).all(subsystemId) as Array<{ id: number; Name: string; Result: string; Timestamp: string | null }>;
-    const atRisk = computeAtRiskResults(localWithResults, cloudIos);
-    const localWithComments = db.prepare(
-      `SELECT id, Name, Comments FROM Ios WHERE SubsystemId = ? AND Comments IS NOT NULL AND TRIM(Comments) != ''`,
-    ).all(subsystemId) as Array<{ id: number; Name: string; Comments: string }>;
-    const atRiskComments = computeAtRiskComments(localWithComments, cloudIos);
-    // F2 (2026-07-03 audit): third check — a local result that DIFFERS from a
-    // stale cloud value with no queue row left (retry-cap-emptied queue) is
-    // also unsynced field work; only a provably-newer cloud value wins freely.
-    const queuedIoIds = new Set(
-      (db.prepare(
-        `SELECT ps.IoId FROM PendingSyncs ps JOIN Ios i ON i.id = ps.IoId WHERE i.SubsystemId = ?`,
-      ).all(subsystemId) as Array<{ IoId: number }>).map((r) => r.IoId),
+    // Same second/third line of defense as the legacy /api/cloud/pull, scoped
+    // to this subsystem: the pending-queue check above failed catastrophically
+    // when the retry cap silently emptied the queue, so this guard ignores the
+    // queue and compares actual local results/comments/clears against the actual
+    // cloud payload. Override requires an explicit body.force after user
+    // confirmation in the UI. Shared verbatim with the legacy route via
+    // computePullRiskOrRefuse (subsystemId set = per-MCM scoped queries).
+    const guard = computePullRiskOrRefuse(
+      { db, subsystemId, logPrefix: `[MCM ${subsystemIdStr} Pull]` },
+      cloudIos,
+      force,
     );
-    const divergent = computeDivergentUnqueuedResults(localWithResults, cloudIos, queuedIoIds);
-    // F-reset (2026-07-08 MCM04 "keeps getting reset"): a deliberate operator
-    // CLEAR is invisible to the guards above (they need a non-null local Result),
-    // so the destructive reinsert would restore the stale cloud value the operator
-    // just cleared. Flag IOs whose latest TestHistories row is 'Cleared' where the
-    // cloud still carries a not-provably-newer result.
-    const localCleared = db.prepare(
-      `SELECT i.id AS id, i.Name AS Name,
-        (SELECT th.Result    FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS lastResult,
-        (SELECT th.Timestamp FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS clearedAt
-       FROM Ios i
-       WHERE i.SubsystemId = ? AND (i.Result IS NULL OR i.Result = '')`,
-    ).all(subsystemId) as Array<{ id: number; Name: string; lastResult: string | null; clearedAt: string | null }>;
-    const clearedRows = localCleared
-      .filter((r) => r.lastResult === 'Cleared')
-      .map((r) => ({ id: r.id, Name: r.Name, clearedAt: r.clearedAt }));
-    const atRiskClears = computeAtRiskClears(clearedRows, cloudIos);
-
-    if ((atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0 || atRiskClears.length > 0) && !force) {
-      console.warn(
-        `[MCM ${subsystemIdStr} Pull] REFUSED: pull would erase ${atRisk.length} local result(s), ` +
-        `${atRiskComments.length} local comment(s) the cloud does not have, overwrite ` +
-        `${divergent.length} newer local result(s) that differ from stale cloud values, and ` +
-        `revert ${atRiskClears.length} deliberate local clear(s) the cloud still holds a stale value for ` +
-        `(e.g. ${[...atRisk, ...divergent, ...atRiskClears].slice(0, 5).map((r) => r.name).join(', ')}). ` +
-        'Resend with force=true to override.',
-      );
-      const parts = [
-        atRisk.length > 0 ? `${atRisk.length} test result(s) the cloud lacks` : null,
-        atRiskComments.length > 0 ? `${atRiskComments.length} comment(s) the cloud lacks` : null,
-        divergent.length > 0 ? `${divergent.length} newer local result(s) that differ from stale cloud values` : null,
-        atRiskClears.length > 0 ? `${atRiskClears.length} deliberate local clear(s) the cloud would revert` : null,
-      ].filter(Boolean).join(', ');
-      return res.status(409).json({
-        success: false,
-        requiresForce: true,
-        wouldLoseResults: atRisk.length,
-        wouldLoseComments: atRiskComments.length,
-        wouldOverwriteNewerLocal: divergent.length,
-        wouldRevertClears: atRiskClears.length,
-        atRiskSample: atRisk.slice(0, 10),
-        atRiskCommentSample: atRiskComments.slice(0, 10),
-        divergentSample: divergent.slice(0, 10),
-        atRiskClearSample: atRiskClears.slice(0, 10),
-        error:
-          `Pull refused: ${parts} exist locally for MCM ${subsystemId} — ` +
-          'pulling now would erase them. They are likely unsynced field work. ' +
-          'Sync first, or confirm the overwrite to proceed. (A pre-pull backup is taken regardless.)',
-      });
+    if (guard.refuse) {
+      return res.status(guard.refuse.status).json(guard.refuse.body);
     }
-    if (atRisk.length > 0 || atRiskComments.length > 0 || divergent.length > 0 || atRiskClears.length > 0) {
-      console.warn(
-        `[MCM ${subsystemIdStr} Pull] FORCE override: erasing ${atRisk.length} result(s) + ` +
-        `${atRiskComments.length} comment(s) + overwriting ${divergent.length} newer divergent result(s) + ` +
-        `reverting ${atRiskClears.length} deliberate clear(s) (user confirmed)`,
-      );
-    }
+    const { atRisk, atRiskComments, divergent, atRiskClears } = guard;
 
     // ── Pre-pull safety backup (moved AFTER the guard — B6 churn fix) ─────
     // The rewrite below is DESTRUCTIVE (scoped DELETE FROM Ios + reinsert). A

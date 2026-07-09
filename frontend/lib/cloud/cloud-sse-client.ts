@@ -10,6 +10,7 @@
 
 import { db } from '@/lib/db-sqlite'
 import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
+import { getBroadcastUrl } from '@/lib/broadcast-config'
 
 // SSE connection states
 // 'auth-failed' (F15, 2026-07-03 sync audit): the cloud rejected our API key
@@ -24,7 +25,7 @@ export interface CloudSseConfig {
   subsystemId: string | number
 }
 
-const WS_BROADCAST_URL = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
+const WS_BROADCAST_URL = getBroadcastUrl()
 
 /** A local IO row's fields needed to decide an SSE merge. */
 export interface SseLocalIo { Result: string | null; Version: number }
