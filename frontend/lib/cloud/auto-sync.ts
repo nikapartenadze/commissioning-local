@@ -15,8 +15,6 @@ import { db } from '@/lib/db-sqlite'
 import type { PendingSync } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { startCloudSse, stopCloudSse, getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
-import { fetchAndApplyDelta } from '@/lib/cloud/delta-sync'
-import { setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-repository'
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
@@ -25,10 +23,21 @@ import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
-import { getMcmStatus, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
-import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
 import { runJournalUpload } from '@/lib/cloud/journal-uploader'
-import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
+import {
+  type TelemetryState,
+  pushNetworkStatus,
+  pushEstopStatus,
+  pushNetworkDiagnostics,
+} from '@/lib/cloud/auto-sync-telemetry'
+import {
+  type PullState,
+  createPullState,
+  pullFromCloud,
+  pullAllConfiguredMcms,
+  pullSubsystemOnHint,
+  pullVfdAddressedForConfigured,
+} from '@/lib/cloud/auto-sync-pull'
 
 export interface AutoSyncConfig {
   pushIntervalMs: number    // default 10000 (10s) — was 30s; tightened so
@@ -62,19 +71,20 @@ class AutoSyncService {
   private sseSubsystemChangedUnsub: (() => void) | null = null
   private config: AutoSyncConfig
   private isPushing = false
-  private isPulling = false
-  private isPushingNetworkStatus = false
-  private isPushingEstopStatus = false
-  private isPushingNetworkDiagnostics = false
   private mcmSafetyTimer: NodeJS.Timeout | null = null
-  private isPullingMcms = false
-  private _lastMcmCatchupAt = 0
-  private lastPullVersion: string | null = null
   private _lastPushAt: Date | null = null
-  private _lastPullAt: Date | null = null
   private _lastPushResult: string | null = null
-  private _lastPullResult: string | null = null
   private _running = false
+  // Per-instance re-entrancy guards for the extracted telemetry pushers.
+  private telemetry: TelemetryState = {
+    isPushingNetworkStatus: false,
+    isPushingEstopStatus: false,
+    isPushingNetworkDiagnostics: false,
+  }
+  // Per-instance run state for the extracted pull / catch-up paths (guards,
+  // throttle timestamps, last-pull status, IO version hash). Mutated by
+  // reference inside auto-sync-pull.ts.
+  private pull: PullState = createPullState()
 
   constructor(config: Partial<AutoSyncConfig> = {}) {
     this.config = { ...DEFAULT_AUTO_SYNC_CONFIG, ...config }
@@ -110,19 +120,19 @@ class AutoSyncService {
     }, 5000)
 
     // Push network status to cloud every 5 seconds (lightweight, tag booleans only)
-    this.networkStatusTimer = setInterval(() => this.pushNetworkStatus(), 5000)
+    this.networkStatusTimer = setInterval(() => pushNetworkStatus(this.telemetry), 5000)
 
     // Push estop status to cloud every 5 seconds
-    this.estopStatusTimer = setInterval(() => this.pushEstopStatus(), 5000)
+    this.estopStatusTimer = setInterval(() => pushEstopStatus(this.telemetry), 5000)
 
     // Push UDT_NETWORK_NODE diagnostics batch to cloud every 60 seconds.
     // Heavier payload than network-status (108 bytes per device, dozens of
     // counters each), so spaced out far more — diagnostics counters change
     // slowly and the cloud modal only polls at 30 s anyway.
-    this.networkDiagnosticsTimer = setInterval(() => this.pushNetworkDiagnostics(), 60_000)
+    this.networkDiagnosticsTimer = setInterval(() => pushNetworkDiagnostics(this.telemetry), 60_000)
     // First push 15 s after startup so the cloud has data soon after a tool
     // launch, rather than waiting a full minute.
-    setTimeout(() => this.pushNetworkDiagnostics(), 15_000)
+    setTimeout(() => pushNetworkDiagnostics(this.telemetry), 15_000)
 
     // Ship recovery-journal (audit-*.jsonl) lines to the cloud so forensics
     // survive tablet loss. Slow cadence — the journal is low-frequency and the
@@ -142,7 +152,7 @@ class AutoSyncService {
         // Re-enqueue orphaned local results FIRST so the pull's guard sees them
         // as pending work and protects them, and the next push delivers them.
         void this.reconcileOrphans('periodic safety')
-        void this.pullAllConfiguredMcms('periodic safety')
+        void pullAllConfiguredMcms(this.pull, 'periodic safety')
       },
       safetyMinutes * 60_000
     )
@@ -169,10 +179,10 @@ class AutoSyncService {
             // Catch up EVERY configured MCM (central-server), not just the one
             // in config.subsystemId — events missed during the disconnect could
             // belong to any MCM.
-            void this.pullAllConfiguredMcms('SSE reconnect')
+            void pullAllConfiguredMcms(this.pull, 'SSE reconnect')
             // Refresh the cloud-authoritative belt-tracking ADDRESSED flag
             // (mechanic-set, cloud-only) so the field VFD page reflects it.
-            void this.pullVfdAddressedForConfigured('SSE reconnect')
+            void pullVfdAddressedForConfigured(this.pull, 'SSE reconnect')
           })
           // React to cloud-side CRUD hints (IO add/delete, network/estop/safety
           // import) the moment they happen — the io_updated result path doesn't
@@ -180,7 +190,7 @@ class AutoSyncService {
           // or 15-min safety sweep. The client debounces bursts per subsystem.
           if (this.sseSubsystemChangedUnsub) this.sseSubsystemChangedUnsub()
           this.sseSubsystemChangedUnsub = sseClient.onSubsystemChanged((sid) => {
-            void this.pullSubsystemOnHint(sid)
+            void pullSubsystemOnHint(this.pull, sid)
           })
         }
       } catch (err) {
@@ -245,9 +255,9 @@ class AutoSyncService {
       running: this._running,
       config: this.config,
       lastPushAt: this._lastPushAt?.toISOString() ?? null,
-      lastPullAt: this._lastPullAt?.toISOString() ?? null,
+      lastPullAt: this.pull.lastPullAt?.toISOString() ?? null,
       lastPushResult: this._lastPushResult,
-      lastPullResult: this._lastPullResult,
+      lastPullResult: this.pull.lastPullResult,
       pendingCount,
     }
   }
@@ -987,11 +997,9 @@ class AutoSyncService {
     })
   }
 
-  private _lastManualPullAt = 0
-
   /** Call after a manual Pull IOs to prevent auto-sync from overwriting with stale data */
   markManualPull(): void {
-    this._lastManualPullAt = Date.now()
+    this.pull.lastManualPullAt = Date.now()
   }
 
   private _lastReconcileAt = 0
@@ -1018,65 +1026,6 @@ class AutoSyncService {
     }
   }
 
-  private _lastVfdAddressedPullAt = 0
-  /**
-   * Pull the cloud-authoritative belt-tracking ADDRESSED flag for every
-   * configured subsystem and mirror it into the local VfdAddressed table, so the
-   * field VFD Commissioning page shows what a MECHANIC marked on the cloud.
-   * Field is read-only here — marking happens cloud-side only. Throttled and
-   * best-effort; never throws. Falls back to the single configured subsystem on
-   * a field tablet (no MCM list).
-   */
-  private async pullVfdAddressedForConfigured(trigger: string): Promise<void> {
-    const THROTTLE_MS = 30_000
-    if (Date.now() - this._lastVfdAddressedPullAt < THROTTLE_MS) return
-    this._lastVfdAddressedPullAt = Date.now()
-    try {
-      const cfg = await configService.getConfig()
-      if (!cfg.remoteUrl) return
-
-      // Resolve subsystem ids: configured MCM list (central) or the single
-      // configured subsystem (field tablet).
-      const ids = new Set<number>()
-      try {
-        const mcms = await configService.getMcms()
-        for (const m of mcms) {
-          if (m.enabled === false) continue
-          const sid = parseInt(m.subsystemId, 10)
-          if (Number.isFinite(sid) && sid > 0) ids.add(sid)
-        }
-      } catch { /* fall through to single-subsystem */ }
-      if (ids.size === 0 && cfg.subsystemId) {
-        const sid = typeof cfg.subsystemId === 'number' ? cfg.subsystemId : parseInt(String(cfg.subsystemId), 10)
-        if (Number.isFinite(sid) && sid > 0) ids.add(sid)
-      }
-      if (ids.size === 0) return
-
-      let total = 0
-      for (const sid of Array.from(ids)) {
-        total += await pullVfdAddressed(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
-      }
-      if (total > 0) {
-        console.log(`[AutoSync] ${trigger}: mirrored ${total} VFD ADDRESSED row(s) from cloud`)
-      }
-    } catch (e) {
-      console.warn('[AutoSync] VFD addressed pull failed (non-fatal):', e instanceof Error ? e.message : e)
-    }
-  }
-
-  /**
-   * Catch-up pull for EVERY configured MCM (central-server multi-MCM).
-   *
-   * The legacy pullFromCloud() reconciles only config.subsystemId; on a central
-   * server running N MCMs the other N-1 would never reconcile events missed
-   * during an SSE disconnect. This loops over the configured MCM list and reuses
-   * POST /api/mcm/:id/pull, which REFUSES (409) to pull over unsynced local
-   * changes — so it can never clobber a result that hasn't been pushed yet.
-   *
-   * Throttled to once per MIN_CATCHUP_GAP to avoid pull storms on flaky links.
-   * Falls back to the legacy single-subsystem pull when no MCMs are configured
-   * (field-tablet deployments are unchanged).
-   */
   /**
    * B7 reconcile — resolve `updatedCount=0` (version-conflict) pending rows
    * against CLOUD TRUTH instead of blind retries. See the call site in the
@@ -1216,967 +1165,6 @@ class AutoSyncService {
     }
   }
 
-  /**
-   * Delta-first reaction to a cloud `subsystem_changed` hint. The cloud
-   * broadcasts every subsystem's hint to every authorized subscriber, so we
-   * first confirm THIS tool manages the subsystem (a configured MCM, or the
-   * single config.subsystemId on a field tablet) — otherwise a tablet would
-   * pull a foreign project's IOs.
-   *
-   * Then it applies a GRANULAR, non-destructive delta (IO upserts + guarded
-   * deletes) instead of the old destructive full pull. Falls back to the scoped
-   * full pull only when needed: a `resync` verdict (fresh cursor / pruning gap),
-   * a changed network/estop/safety section (no granular local section endpoint),
-   * or a delta error. A changed L2 section uses the granular pull-l2 route.
-   */
-  private async pullSubsystemOnHint(subsystemId: number): Promise<void> {
-    if (!Number.isFinite(subsystemId)) return
-    if (Date.now() - this._lastManualPullAt < 30_000) return // a manual pull just ran
-
-    // Is this subsystem one we manage?
-    let managed = false
-    try {
-      const mcms = await configService.getMcms()
-      managed = mcms.some((m) => m.enabled !== false && parseInt(m.subsystemId, 10) === subsystemId)
-    } catch { /* fall through to single-subsystem check */ }
-    if (!managed) {
-      try {
-        const cfg = await configService.getConfig()
-        managed = parseInt(String(cfg.subsystemId), 10) === subsystemId
-      } catch { /* no config yet */ }
-    }
-    if (!managed) {
-      console.log(`[AutoSync] Ignoring subsystem_changed hint for unmanaged subsystem ${subsystemId}`)
-      return
-    }
-
-    let cfg
-    try { cfg = await configService.getConfig() } catch { return }
-    if (!cfg.remoteUrl) return
-
-    try {
-      const result = await fetchAndApplyDelta(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
-
-      if (result.resync) {
-        // Empty resync (old cloud without snapshot support) → full-pull fallback.
-        // Do NOT seed the cursor here: the full pull may be queue-gated, and
-        // seeding past un-applied changes creates a propagation gap. An updated
-        // cloud returns the snapshot inline (applyDelta applies it + advances the
-        // cursor), so this branch is the backward-compat path only.
-        console.log(`[AutoSync] delta resync for ${subsystemId} (no snapshot) → full pull`)
-        await this.scopedFullPull(subsystemId)
-        return
-      }
-
-      // Re-pull the config sections the delta flagged. vfd-addressed (ADDRESSED
-      // handoff + VFD blocker) and L2 have granular local routes; network/estop/
-      // safety and the rarer punchlist/change-request/roadmap have no granular
-      // pull, so a scoped full pull refreshes them (gated; skips if local work
-      // pending). guided_task is field-authored — nothing to pull back.
-      const s = result.sections
-      if (s.vfdBlocker) {
-        await pullVfdAddressed(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
-      }
-      if (s.l2) {
-        await this.pullL2Scoped(subsystemId, cfg.remoteUrl, cfg.apiPassword)
-      }
-      if (s.network || s.estop || s.safety || s.punchlist || s.changeRequest || s.roadmap) {
-        await this.scopedFullPull(subsystemId)
-      }
-
-      this._lastPullAt = new Date()
-      this._lastPullResult =
-        `delta ${subsystemId}: +${result.applied}/-${result.deleted}` +
-        (result.skippedDeletes.length ? ` (kept ${result.skippedDeletes.length} w/ local work)` : '')
-      console.log(`[AutoSync] ${this._lastPullResult}`)
-    } catch (e) {
-      console.warn(`[AutoSync] delta for ${subsystemId} failed (${e instanceof Error ? e.message : 'fetch'}); falling back to full pull`)
-      await this.scopedFullPull(subsystemId)
-    }
-  }
-
-  /** Existing destructive scoped pull — now only a fallback (resync / section change / error). */
-  private async scopedFullPull(subsystemId: number): Promise<void> {
-    const port = process.env.PORT || '3000'
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${encodeURIComponent(String(subsystemId))}/pull`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ background: true }),
-        signal: AbortSignal.timeout(120_000),
-      })
-      if (r.status === 409) {
-        console.log(`[AutoSync] scoped full pull for ${subsystemId} skipped (unsynced local work)`)
-        return
-      }
-      const data = (await r.json().catch(() => ({}))) as { success?: boolean; iosCount?: number }
-      this._lastPullAt = new Date()
-      this._lastPullResult = `scoped pull ${subsystemId}: ${data?.success ? `ok(${data.iosCount ?? '?'})` : `err(${r.status})`}`
-      console.log(`[AutoSync] ${this._lastPullResult}`)
-    } catch (e) {
-      console.warn(`[AutoSync] scoped full pull for ${subsystemId} failed: ${e instanceof Error ? e.message : 'fetch'}`)
-    }
-  }
-
-  /** Granular L2/FV refresh (used when only the L2 section changed). */
-  private async pullL2Scoped(subsystemId: number, remoteUrl: string, apiPassword?: string): Promise<void> {
-    const port = process.env.PORT || '3000'
-    try {
-      await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId }),
-        signal: AbortSignal.timeout(60_000),
-      })
-    } catch (e) {
-      console.warn(`[AutoSync] pull-l2 for ${subsystemId} failed: ${e instanceof Error ? e.message : 'fetch'}`)
-    }
-  }
-
-  private async pullAllConfiguredMcms(trigger: string): Promise<void> {
-    if (this.isPullingMcms) return
-    const MIN_CATCHUP_GAP = 30_000
-    if (Date.now() - this._lastMcmCatchupAt < MIN_CATCHUP_GAP) return
-    if (Date.now() - this._lastManualPullAt < 30_000) return // a manual pull just ran
-
-    let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }>
-    try {
-      mcms = await configService.getMcms()
-    } catch {
-      void this.pullFromCloud()
-      return
-    }
-
-    // Only reconcile ACTIVE stations — those with an IP, i.e. connected/tested on
-    // this server. Blank-IP stations aren't in use here and get freshened on
-    // their first Connect (Connect All auto-pull), so re-pulling all 19 every
-    // reconnect would be pure waste.
-    const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
-    if (active.length === 0) {
-      void this.pullFromCloud() // legacy field-tablet mode / nothing active yet
-      return
-    }
-
-    this.isPullingMcms = true
-    this._lastMcmCatchupAt = Date.now()
-    const port = process.env.PORT || '3000'
-    console.log(`[AutoSync] ${trigger}: catch-up pull for ${active.length} active MCM(s)`)
-
-    let cfg: Awaited<ReturnType<typeof configService.getConfig>> | null = null
-    try { cfg = await configService.getConfig() } catch { cfg = null }
-
-    // Gated full pull (destructive; refuses with 409 while local work is pending).
-    const mcmFullPull = async (sid: number): Promise<string> => {
-      try {
-        const r = await fetch(`http://127.0.0.1:${port}/api/mcm/${sid}/pull`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ background: true }),
-          signal: AbortSignal.timeout(120_000),
-        })
-        if (r.status === 409) return 'skip-pending'
-        const data = (await r.json().catch(() => ({}))) as { success?: boolean; iosCount?: number }
-        return data?.success ? `ok(${data.iosCount ?? '?'})` : `err(${r.status})`
-      } catch (e) {
-        return `err(${e instanceof Error ? e.message : 'fetch'})`
-      }
-    }
-
-    try {
-      const outcomes = await Promise.all(
-        active.map(async (m) => {
-          const sid = parseInt(m.subsystemId, 10)
-          if (!Number.isFinite(sid)) return `${m.subsystemId}:bad-id`
-          // Delta-first catch-up: the granular apply is NOT gated by the offline
-          // queue, so cloud changes propagate even while local work is pending —
-          // fixing the `skip-pending` stall the battle delta run exposed. Full
-          // pull is only the fallback (resync / config-section change / error).
-          if (!cfg || !cfg.remoteUrl) return `${sid}:${await mcmFullPull(sid)}`
-          try {
-            const result = await fetchAndApplyDelta(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
-            if (result.resync) {
-              // Empty resync (old cloud, no snapshot) → full-pull fallback, no
-              // cursor seed (gated pull + seed = propagation gap). Updated cloud
-              // returns the snapshot inline (applyDelta applies it + seeds).
-              return `${sid}:resync->${await mcmFullPull(sid)}`
-            }
-            const s = result.sections
-            // ADDRESSED / VFD blocker has a granular route — refresh it without a
-            // (gated, destructive) full pull.
-            if (s.vfdBlocker) {
-              try { await pullVfdAddressed(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword }) } catch { /* best-effort */ }
-            }
-            if (s.network || s.estop || s.safety || s.punchlist || s.changeRequest || s.roadmap) {
-              return `${sid}:delta(+${result.applied}/-${result.deleted})+sect->${await mcmFullPull(sid)}`
-            }
-            return `${sid}:delta(+${result.applied}/-${result.deleted})`
-          } catch (e) {
-            return `${sid}:delta-err->${await mcmFullPull(sid)}`
-          }
-        })
-      )
-      this._lastPullAt = new Date()
-      this._lastPullResult = `mcm catch-up: ${outcomes.join(' ')}`
-      console.log(`[AutoSync] catch-up done: ${outcomes.join(' ')}`)
-
-      // Populate each active MCM's FV/L2 data ONCE (scoped per-MCM pull). The
-      // per-MCM IO pull deliberately skips L2, so without this an MCM's FV page
-      // stays empty on a central server until someone manually hits "Pull FV"
-      // (the 2026-06-18 "FV shows only one MCM" report). Guarded to a one-time
-      // pull per MCM — skip any MCM that already has scoped L2 devices — so it
-      // never re-wipes or churns; ongoing cell edits arrive live via SSE, and a
-      // manual Pull FV still forces a refresh.
-      try {
-        const remoteUrl = cfg?.remoteUrl
-        const apiPassword = cfg?.apiPassword
-        if (remoteUrl) {
-          const countStmt = db.prepare('SELECT COUNT(*) as c FROM L2Devices WHERE SubsystemId = ?')
-          for (const m of active) {
-            const sid = parseInt(m.subsystemId, 10)
-            if (!Number.isFinite(sid)) continue
-            if ((countStmt.get(sid) as { c: number }).c > 0) continue
-            try {
-              await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remoteUrl, apiPassword, subsystemId: sid }),
-                signal: AbortSignal.timeout(60_000),
-              })
-            } catch {
-              /* best-effort per MCM — next catch-up retries */
-            }
-          }
-        }
-      } catch {
-        /* best-effort L2 population */
-      }
-    } finally {
-      this.isPullingMcms = false
-    }
-  }
-
-  private async pullFromCloud(): Promise<void> {
-    if (this.isPulling) return
-
-    // Skip auto-pull if a manual pull just happened (within 30 seconds)
-    // The manual pull already has the correct data — auto-pull would race with stale config
-    if (Date.now() - this._lastManualPullAt < 30000) {
-      this._lastPullResult = 'skipped (recent manual pull)'
-      return
-    }
-
-    this.isPulling = true
-
-    try {
-      const config = await configService.getConfig()
-      const remoteUrl = config.remoteUrl
-      const apiPassword = config.apiPassword
-      const subsystemId = config.subsystemId
-
-      // Keep SSE client in sync with current config
-      const sseClient = getCloudSseClient()
-      if (sseClient && config.remoteUrl && config.subsystemId) {
-        sseClient.updateConfig({
-          remoteUrl: config.remoteUrl,
-          apiPassword: config.apiPassword || '',
-          subsystemId: config.subsystemId,
-        })
-      }
-
-      if (!remoteUrl || !subsystemId) {
-        this._lastPullResult = !remoteUrl ? 'no remote URL configured' : 'no subsystem configured'
-        return
-      }
-
-      // Only ACTIVE (un-parked) rows gate the pull. Parked rows (DeadLettered=1)
-      // are writes the cloud PERMANENTLY rejected — they will never sync, so
-      // counting them here would block cloud→field propagation FOREVER: a tablet
-      // with a single SPARE-Passed mistake (or any parked row) would stop pulling
-      // coordinator/other-tablet changes indefinitely. The per-IO no-clobber set
-      // below still preserves each parked IO's local value during the merge.
-      const pendingIoCount = (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 0').get() as { count: number }).count
-      const pendingL2Count = (db.prepare('SELECT COUNT(*) as count FROM L2PendingSyncs WHERE DeadLettered = 0').get() as { count: number }).count
-      if (pendingIoCount > 0 || pendingL2Count > 0) {
-        this._lastPullResult = `skipped (local pending syncs: io=${pendingIoCount}, l2=${pendingL2Count})`
-        return
-      }
-
-      const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`
-      const response = await fetch(cloudUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiPassword || '',
-        },
-        signal: AbortSignal.timeout(15000),
-      })
-
-      if (!response.ok) {
-        this._lastPullResult = `HTTP ${response.status}`
-        return
-      }
-
-      const cloudData = await response.json()
-      const cloudIos = Array.isArray(cloudData) ? cloudData : (cloudData.ios || cloudData.Ios || [])
-
-      // Seed the delta cursor to the cloud's current max seq right after the
-      // baseline pull, so subsequent cloud changes arrive as granular deltas.
-      // Without this the cursor stays 0 and the delta path can't bootstrap —
-      // the resync→full-pull that would otherwise seed it is gated by the
-      // offline queue, which never drains under continuous field activity
-      // (caught by the battle `delta` scenario). Forward-only; safe every pull.
-      if (typeof cloudData?.cursorSeq === 'number' && cloudData.cursorSeq > 0) {
-        try { setSyncCursor(parseInt(subsystemId, 10), cloudData.cursorSeq) } catch { /* cursor table optional */ }
-      }
-
-      if (cloudIos.length === 0) {
-        this._lastPullAt = new Date()
-        this._lastPullResult = 'no IOs from cloud'
-        return
-      }
-
-      // Change detection — hash all versions to detect any change anywhere
-      const versionHash = cloudIos.map((io: any) => `${io.id}:${io.version}:${io.result || '-'}`).join('|')
-      if (versionHash === this.lastPullVersion) {
-        // IO set unchanged — skip the IO merge, but STILL refresh the config/FV
-        // sections. network/estop/safety/L2 changes on the cloud do NOT move the
-        // IO version hash, so before this the legacy tablet path skipped them
-        // here and they only reached the field after a service restart cleared
-        // this in-memory hash. Mirrors the scoped /api/mcm/:id/pull no-op branch:
-        // runConfigSidePulls is a scoped, idempotent per-section delete+reinsert,
-        // and pullL2Scoped self-calls the FV pull — safe to run every cycle.
-        try {
-          const sid = parseInt(String(subsystemId), 10)
-          if (Number.isFinite(sid)) {
-            await runConfigSidePulls(sid, remoteUrl, apiPassword || '', { db })
-            await this.pullL2Scoped(sid, remoteUrl, apiPassword)
-          }
-        } catch (e) {
-          console.warn('[AutoSync] no-op config/FV side-pull failed:', e instanceof Error ? e.message : e)
-        }
-        this._lastPullAt = new Date()
-        this._lastPullResult = 'no IO changes — refreshed config/FV'
-        return
-      }
-
-      console.log(`[AutoSync] Pulling ${cloudIos.length} IO definitions from cloud...`)
-
-      let updatedCount = 0
-      let mergedResults = 0
-      const subsystemIdNum = parseInt(subsystemId, 10)
-      const pendingIoIds = new Set(
-        (db.prepare('SELECT DISTINCT IoId FROM PendingSyncs').all() as Array<{ IoId: number }>).map(row => row.IoId)
-      )
-
-      const selectStmt = db.prepare('SELECT Result, Version FROM Ios WHERE id = ?')
-      const insertStmt = db.prepare(`
-        INSERT OR IGNORE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      const updateDefStmt = db.prepare(`
-        UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType)
-        WHERE id = ?
-      `)
-      const updateWithResultStmt = db.prepare(`
-        UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType),
-        Result = ?, Timestamp = ?, Comments = ?
-        WHERE id = ?
-      `)
-
-      const pullTransaction = db.transaction(() => {
-        // Auto-pull must never switch subsystems behind the user's back.
-        const existingSubIds = db.prepare('SELECT DISTINCT SubsystemId FROM Ios').all() as { SubsystemId: number }[]
-        const hasOtherSubsystems = existingSubIds.some(s => s.SubsystemId !== subsystemIdNum)
-        if (hasOtherSubsystems) {
-          throw new Error(`auto-pull refused subsystem switch from ${existingSubIds.map(s => s.SubsystemId).join(',')} to ${subsystemIdNum}`)
-        }
-
-        for (const cloudIo of cloudIos) {
-          if (!cloudIo.name || cloudIo.id <= 0) continue
-
-          try {
-            const localIo = selectStmt.get(cloudIo.id) as { Result: string | null, Version: number } | undefined
-
-            const cloudVersion = Number(cloudIo.version) || 0
-            const localVersion = localIo?.Version ?? 0
-            const hasLocalPendingSync = pendingIoIds.has(cloudIo.id)
-
-            // Never overwrite local dirty state. Only merge cloud results/comments when cloud is newer
-            // and this IO has no unsynced local writes waiting in PendingSyncs.
-            const shouldMergeResult =
-              cloudIo.result !== undefined &&
-              !hasLocalPendingSync &&
-              cloudVersion > localVersion
-
-            if (!localIo) {
-              // Insert new IO
-              insertStmt.run(
-                cloudIo.id,
-                subsystemIdNum,
-                cloudIo.name,
-                cloudIo.description ?? null,
-                cloudIo.order ?? null,
-                cloudVersion,
-                cloudIo.tagType ?? null,
-                cloudIo.result ?? null,
-                cloudIo.timestamp ?? null,
-                cloudIo.comments ?? null,
-              )
-            } else if (shouldMergeResult) {
-              updateWithResultStmt.run(
-                cloudIo.name,
-                cloudIo.description ?? null,
-                cloudIo.order ?? null,
-                cloudVersion,
-                cloudIo.tagType ?? null,
-                cloudIo.result || null,
-                cloudIo.timestamp ?? null,
-                cloudIo.comments ?? null,
-                cloudIo.id,
-              )
-              mergedResults++
-            } else {
-              updateDefStmt.run(
-                cloudIo.name,
-                cloudIo.description ?? null,
-                cloudIo.order ?? null,
-                cloudVersion,
-                cloudIo.tagType ?? null,
-                cloudIo.id,
-              )
-            }
-            updatedCount++
-          } catch {
-            // Skip individual IO errors
-          }
-        }
-      })
-
-      pullTransaction()
-
-      this.lastPullVersion = versionHash
-      this._lastPullAt = new Date()
-      this._lastPullResult = `updated ${updatedCount} IOs${mergedResults > 0 ? `, merged ${mergedResults} results from other users` : ''}`
-
-      if (updatedCount > 0) {
-        console.log(`[AutoSync] Updated ${updatedCount} IOs from cloud${mergedResults > 0 ? ` (merged ${mergedResults} test results from other users)` : ''}`)
-
-        // Broadcast to all connected browsers
-        try {
-          const broadcastUrl = process.env.WS_BROADCAST_URL || 'http://localhost:3102/broadcast'
-          await fetch(broadcastUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'IOsUpdated', count: updatedCount, source: 'auto-sync' }),
-          })
-        } catch { /* WS server might not be running */ }
-      }
-
-      // Pull back change request status updates from cloud
-      try {
-        const syncedRequests = db.prepare(
-          "SELECT * FROM ChangeRequests WHERE CloudId IS NOT NULL AND Status = 'synced' LIMIT 100"
-        ).all() as any[]
-
-        if (syncedRequests.length > 0 && remoteUrl) {
-          const cloudIds = syncedRequests.map(r => r.CloudId).filter(Boolean)
-          const crResp = await fetch(`${remoteUrl}/api/sync/change-requests/status?ids=${cloudIds.join(',')}`, {
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' },
-            signal: AbortSignal.timeout(10000),
-          })
-          if (crResp.ok) {
-            const crData = await crResp.json()
-            if (Array.isArray(crData.requests)) {
-              const updateCrStatusStmt = db.prepare(
-                'UPDATE ChangeRequests SET Status = ?, ReviewedBy = ?, ReviewNote = ?, UpdatedAt = ? WHERE CloudId = ?'
-              )
-              for (const cr of crData.requests) {
-                if (cr.cloudId && cr.status && cr.status !== 'synced') {
-                  try {
-                    updateCrStatusStmt.run(
-                      cr.status,
-                      cr.reviewedBy || null,
-                      cr.reviewNote || null,
-                      new Date().toISOString(),
-                      cr.cloudId,
-                    )
-                  } catch (e) { console.warn('[AutoSync] Failed to update CR status:', e) }
-                }
-              }
-              console.log(`[AutoSync] Pulled ${crData.requests.length} change request status updates`)
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[AutoSync] Change request pull error:', err instanceof Error ? err.message : err)
-      }
-
-      try {
-        const { getCloudSyncService } = await import('@/lib/cloud/cloud-sync-service')
-        getCloudSyncService().setConnectionState('connected')
-      } catch (err) {
-        console.warn('[AutoSync] Failed to set cloud connection state:', err)
-      }
-
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      this._lastPullResult = `error: ${msg}`
-      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED')) {
-        console.warn(`[AutoSync] Pull error: ${msg}`)
-      }
-    } finally {
-      this.isPulling = false
-    }
-  }
-
-  private async pushNetworkStatus(): Promise<void> {
-    if (this.isPushingNetworkStatus) return
-    this.isPushingNetworkStatus = true
-
-    try {
-      const config = await configService.getConfig()
-      const remoteUrl = config.remoteUrl
-      const apiPassword = config.apiPassword
-      if (!remoteUrl) return
-
-      // ── Central / multi-MCM reporting (2026-06-16 MCM11 incident) ────────
-      // The legacy path below only ever reported config.subsystemId via the
-      // in-process SINGLETON PLC client. On a central server that (a) runs
-      // PLC_MODE=remote (no in-process client at all → singleton.isConnected
-      // is always false) and (b) hosts many MCMs, every MCM showed
-      // disconnected ("Red") in the cloud even while live. Report each active
-      // MCM's OWN state from the mode-agnostic registry status (which reflects
-      // the gateway-polled cache in REMOTE mode and the live clients in
-      // embedded mode). Guarded so single-MCM tablets are untouched.
-      let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
-      try { mcms = await configService.getMcms() } catch { mcms = [] }
-      const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
-      const remoteMode = process.env.PLC_MODE === 'remote'
-      const centralMode = remoteMode || active.length > 1
-
-      if (centralMode && active.length >= 1) {
-        for (const m of active) {
-          const sid = m.subsystemId
-          const sidNum = parseInt(sid, 10)
-          if (!Number.isFinite(sidNum)) continue
-          // Mode-agnostic per-MCM connection state.
-          let connected = getMcmStatus(sid)?.connected ?? false
-          // Embedded-mode tags (and a singleton fallback for the configured
-          // subsystem) — in REMOTE mode tag values live in the gateway, so we
-          // report the connection flag with empty tags (still flips the MCM
-          // green; far better than the old all-Red behavior).
-          let tags: Record<string, boolean | null> = {}
-          if (!remoteMode) {
-            const conn = getEmbeddedMcmConnection(sid)
-            if (conn) {
-              connected = true
-              tags = this.readNetworkTags(sidNum, conn.client)
-            }
-          }
-          // Disconnected-clobber guard (2026-07-08 audit — parity with estop):
-          // never push a disconnected/empty status — it would overwrite live
-          // data from another tool that IS connected to this MCM. The cloud
-          // greys NET by staleness on its own.
-          if (!connected) continue
-          await this.postNetworkStatus(remoteUrl, apiPassword, sidNum, connected, tags)
-        }
-        return
-      }
-
-      // ── Legacy single-MCM (singleton) path — unchanged behavior ──────────
-      const subsystemId = config.subsystemId
-      if (!subsystemId) return
-
-      let connected = false
-      let tags: Record<string, boolean | null> = {}
-      try {
-        const { hasPlcClient, getPlcClient } = await import('@/lib/plc-client-manager')
-        if (hasPlcClient() && getPlcClient().isConnected) {
-          connected = true
-          tags = this.readNetworkTags(parseInt(String(subsystemId), 10), getPlcClient())
-        }
-      } catch {
-        // PLC not available — skip push (see guard below)
-      }
-
-      // Disconnected-clobber guard (2026-07-08 audit — parity with estop):
-      // pushing connected=false would overwrite live data from another tool
-      // instance that IS connected to the same subsystem. Skip; the cloud
-      // greys NET by staleness on its own.
-      if (!connected) return
-
-      await this.postNetworkStatus(
-        remoteUrl,
-        apiPassword,
-        parseInt(String(subsystemId), 10),
-        connected,
-        tags,
-      )
-    } catch {
-      // Network status push is best-effort — don't log noise
-    } finally {
-      this.isPushingNetworkStatus = false
-    }
-  }
-
-  /** Read every network StatusTag value for a subsystem from a connected client. */
-  private readNetworkTags(
-    subsystemIdNum: number,
-    client: { readTagCached: (name: string) => boolean | null },
-  ): Record<string, boolean | null> {
-    const tags: Record<string, boolean | null> = {}
-    const rings = db.prepare('SELECT * FROM NetworkRings WHERE SubsystemId = ?').all(subsystemIdNum) as any[]
-    for (const ring of rings) {
-      if (ring.McmTag) tags[ring.McmTag] = client.readTagCached(ring.McmTag)
-      const nodes = db.prepare('SELECT * FROM NetworkNodes WHERE RingId = ?').all(ring.id) as any[]
-      for (const node of nodes) {
-        if (node.StatusTag) tags[node.StatusTag] = client.readTagCached(node.StatusTag)
-        const ports = db.prepare('SELECT * FROM NetworkPorts WHERE NodeId = ?').all(node.id) as any[]
-        for (const port of ports) {
-          if (port.StatusTag) tags[port.StatusTag] = client.readTagCached(port.StatusTag)
-        }
-      }
-    }
-    return tags
-  }
-
-  /** POST one subsystem's live network status to the cloud (best-effort). */
-  private async postNetworkStatus(
-    remoteUrl: string,
-    apiPassword: string | undefined,
-    subsystemId: number,
-    connected: boolean,
-    tags: Record<string, boolean | null>,
-  ): Promise<void> {
-    try {
-      await fetch(`${remoteUrl}/api/sync/network-status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiPassword || '',
-        },
-        body: JSON.stringify({
-          subsystemId,
-          connected,
-          tags,
-          timestamp: new Date().toISOString(),
-        }),
-        signal: AbortSignal.timeout(5000),
-      })
-    } catch {
-      // best-effort — don't log noise
-    }
-  }
-
-  private async pushEstopStatus(): Promise<void> {
-    if (this.isPushingEstopStatus) return
-    this.isPushingEstopStatus = true
-
-    try {
-      const config = await configService.getConfig()
-      const remoteUrl = config.remoteUrl
-      const apiPassword = config.apiPassword
-      if (!remoteUrl) return
-
-      // ── Central / multi-MCM reporting (2026-06-16 MCM11 incident) ────────
-      // Mirrors pushNetworkStatus(): the legacy path below only ever reported
-      // config.subsystemId via the in-process SINGLETON PLC client, reading
-      // EStopZones UNSCOPED. On a central server (PLC_MODE=remote → no
-      // singleton, singleton.isConnected always false; and N hosted MCMs) the
-      // disconnected-status guard short-circuited and pushed NOTHING, so every
-      // MCM read "Red" in the cloud even while live. Report each active MCM's
-      // OWN estop state, scoped to its subsystem, from the mode-agnostic
-      // registry. Guarded so single-MCM tablets are untouched.
-      let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
-      try { mcms = await configService.getMcms() } catch { mcms = [] }
-      const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
-      const remoteMode = process.env.PLC_MODE === 'remote'
-      const centralMode = remoteMode || active.length > 1
-
-      if (centralMode && active.length >= 1) {
-        for (const m of active) {
-          const sid = m.subsystemId
-          const sidNum = parseInt(sid, 10)
-          if (!Number.isFinite(sidNum)) continue
-          // Mode-agnostic per-MCM connection state.
-          let connected = getMcmStatus(sid)?.connected ?? false
-          // Embedded-mode tags (and a singleton fallback is unnecessary here —
-          // the registry owns every MCM on a central server). In REMOTE mode
-          // estop tag values live in the gateway, so we report the connection
-          // flag with empty tags (still flips the MCM out of all-Red).
-          let tags: Record<string, boolean | null> = {}
-          if (!remoteMode) {
-            const conn = getEmbeddedMcmConnection(sid)
-            if (conn) {
-              connected = true
-              tags = this.readEstopTags(sidNum, conn.client)
-            }
-          }
-          // Preserve the per-MCM "don't push disconnected status" intent — a
-          // disconnected push would clobber live data from a tool that IS
-          // connected to this MCM.
-          if (!connected) continue
-          await this.postEstopStatus(remoteUrl, apiPassword, sidNum, connected, tags)
-        }
-        return
-      }
-
-      // ── Legacy single-MCM (singleton) path — unchanged behavior ──────────
-      const subsystemId = config.subsystemId
-      if (!subsystemId) return
-
-      // Only push estop status when PLC is actually connected.
-      // If PLC is not connected, skip entirely — avoids overwriting
-      // live data from another tool instance on the same subsystem.
-      let connected = false
-      let tags: Record<string, boolean | null> = {}
-
-      try {
-        const { hasPlcClient, getPlcClient } = await import('@/lib/plc-client-manager')
-        if (hasPlcClient() && getPlcClient().isConnected) {
-          connected = true
-          // Read estop tags scoped to the configured subsystem.
-          tags = this.readEstopTags(parseInt(String(subsystemId), 10), getPlcClient())
-        }
-      } catch {
-        // PLC not available — skip push
-      }
-
-      // Don't send disconnected status to cloud — it would overwrite
-      // live data from a tool that IS connected to the PLC
-      if (!connected) return
-
-      await this.postEstopStatus(
-        remoteUrl,
-        apiPassword,
-        parseInt(String(subsystemId), 10),
-        connected,
-        tags,
-      )
-    } catch {
-      // Estop status push is best-effort — don't log noise
-    } finally {
-      this.isPushingEstopStatus = false
-    }
-  }
-
-  /**
-   * Read every EStop status tag for ONE subsystem from a connected client.
-   * Scoped via EStopZones.SubsystemId so a central server reads only the
-   * MCM's own zones → epcs → ioPoints/vfds/relatedEpcs (the legacy path read
-   * EStopZones unscoped, which on multi-MCM mixed every MCM's tags together).
-   */
-  private readEstopTags(
-    subsystemIdNum: number,
-    client: { readTagCached: (name: string) => boolean | null },
-  ): Record<string, boolean | null> {
-    const tags: Record<string, boolean | null> = {}
-    const zones = db.prepare('SELECT * FROM EStopZones WHERE SubsystemId = ?').all(subsystemIdNum) as any[]
-
-    for (const zone of zones) {
-      // Zone-level <ZONE>_Nominal_OK — the single bit the cloud needs to
-      // roll a zone (and the whole MCM) up to nominal/fault. The DB zone
-      // Name carries the MCM prefix (MCM02_ZONE_01_01) for grouping, but
-      // the PLC tag lives at controller scope as ZONE_01_01_Nominal_OK,
-      // so strip the leading MCM##_ to match what's on the PLC. Same
-      // derivation as app/api/estop/status/route.ts.
-      const zm = /^([A-Z]+\d+)_(.+)$/.exec(zone.Name)
-      const zoneLabel = zm ? zm[2] : zone.Name
-      const nominalOkTag = `${zoneLabel}_Nominal_OK`
-      tags[nominalOkTag] = client.readTagCached(nominalOkTag)
-
-      const epcs = db.prepare('SELECT * FROM EStopEpcs WHERE ZoneId = ?').all(zone.id) as any[]
-      for (const epc of epcs) {
-        if (epc.CheckTag) tags[epc.CheckTag] = client.readTagCached(epc.CheckTag)
-
-        const ioPoints = db.prepare('SELECT * FROM EStopIoPoints WHERE EpcId = ?').all(epc.id) as any[]
-        for (const ioPoint of ioPoints) {
-          if (ioPoint.Tag) tags[ioPoint.Tag] = client.readTagCached(ioPoint.Tag)
-        }
-
-        const vfds = db.prepare('SELECT * FROM EStopVfds WHERE EpcId = ?').all(epc.id) as any[]
-        for (const vfd of vfds) {
-          if (vfd.StoTag) tags[vfd.StoTag] = client.readTagCached(vfd.StoTag)
-        }
-
-        // 2026 Zone Matrix: include the cross-EPC dependency tags
-        // (ESTOPs_Must_Drop / ESTOPs_Must_Stay_OK) so the cloud
-        // view can render their live state. Guarded for older
-        // databases that don't yet have the table.
-        try {
-          const related = db.prepare('SELECT * FROM EStopRelatedEpcs WHERE EpcId = ?').all(epc.id) as any[]
-          for (const rel of related) {
-            if (rel.Tag) tags[rel.Tag] = client.readTagCached(rel.Tag)
-          }
-        } catch { /* table absent on pre-migration DBs */ }
-      }
-    }
-    return tags
-  }
-
-  /** POST one subsystem's live EStop status to the cloud (best-effort). */
-  private async postEstopStatus(
-    remoteUrl: string,
-    apiPassword: string | undefined,
-    subsystemId: number,
-    connected: boolean,
-    tags: Record<string, boolean | null>,
-  ): Promise<void> {
-    try {
-      await fetch(`${remoteUrl}/api/sync/estop-status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiPassword || '',
-        },
-        body: JSON.stringify({
-          subsystemId,
-          connected,
-          tags,
-          timestamp: new Date().toISOString(),
-        }),
-        signal: AbortSignal.timeout(5000),
-      })
-    } catch {
-      // best-effort — don't log noise
-    }
-  }
-
-  /**
-   * Push the latest UDT_NETWORK_NODE_DATA snapshot batch to the cloud
-   * (commissioning-cloud /api/sync/network-diagnostics). Used by the cloud
-   * network page's Diagnostics modal to show the same per-port view the
-   * local tool has. Runs once a minute; skips silently when:
-   *   - cloud isn't configured (no remoteUrl / subsystemId)
-   *   - the PLC isn't connected (no snapshots in the cache)
-   *   - the network poller is disabled (snapshots map stays empty)
-   *
-   * Stale cleanup: getLatestNetworkDeviceSnapshots() already filters out
-   * snapshots older than STALE_SNAPSHOT_MS (60s) at the poller layer, so
-   * a dead device won't keep being shipped to cloud after the PLC restarts.
-   */
-  private async pushNetworkDiagnostics(): Promise<void> {
-    if (this.isPushingNetworkDiagnostics) return
-    this.isPushingNetworkDiagnostics = true
-
-    try {
-      const config = await configService.getConfig()
-      const remoteUrl = config.remoteUrl
-      const apiPassword = config.apiPassword
-      if (!remoteUrl) return
-
-      // ── Central / multi-MCM reporting (2026-06-16 MCM11 incident) ────────
-      // Mirrors pushNetworkStatus()/pushEstopStatus(): the legacy path below
-      // only ever reported config.subsystemId via the in-process SINGLETON
-      // (getLatestNetworkDeviceSnapshots()), so on a central server hosting N
-      // MCMs the cloud Diagnostics modal showed data for at most one MCM. Use
-      // the registry's getAllNetworkSnapshots() — each snapshot is decorated
-      // with its owning `subsystemId` — group by subsystem, and POST one batch
-      // per subsystem. Guarded so single-MCM tablets are untouched.
-      let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
-      try { mcms = await configService.getMcms() } catch { mcms = [] }
-      const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
-      const remoteMode = process.env.PLC_MODE === 'remote'
-      const centralMode = remoteMode || active.length > 1
-
-      // Controller Identity folded into the batch so the cloud's fleet firmware
-      // compliance sees the PLC itself (not a network node). Cached after the
-      // first read → no recurring CIP load. Tagged isController so the cloud's
-      // per-port topology view filters it out.
-      const { getControllerPushSnapshots } = await import('@/lib/plc/identity/firmware-service')
-
-      if (centralMode) {
-        const { getAllNetworkSnapshots } = await import('@/lib/mcm-registry')
-        const all = getAllNetworkSnapshots()
-        const allArr = Array.isArray(all) ? all : []
-        const controllerSnaps = await getControllerPushSnapshots()
-        if (allArr.length === 0 && controllerSnaps.length === 0) return
-
-        // Group snapshots by their decorated subsystemId.
-        const bySubsystem = new Map<number, any[]>()
-        const addToSubsystem = (sidNum: number, rest: any) => {
-          const list = bySubsystem.get(sidNum)
-          if (list) list.push(rest)
-          else bySubsystem.set(sidNum, [rest])
-        }
-        for (const snap of allArr) {
-          const sidNum = parseInt(String(snap.subsystemId), 10)
-          if (!Number.isFinite(sidNum)) continue
-          // Strip the routing-only `subsystemId` field — the cloud receives it
-          // as the top-level batch key, not per-snapshot.
-          const { subsystemId: _drop, ...rest } = snap
-          addToSubsystem(sidNum, rest)
-        }
-        for (const cs of controllerSnaps) {
-          const sidNum = parseInt(String(cs.subsystemId), 10)
-          if (!Number.isFinite(sidNum)) continue
-          const { subsystemId: _drop, ...rest } = cs
-          addToSubsystem(sidNum, rest)
-        }
-
-        for (const [sidNum, snapshots] of bySubsystem) {
-          if (snapshots.length === 0) continue
-          await this.postNetworkDiagnostics(remoteUrl, apiPassword, sidNum, snapshots)
-        }
-        return
-      }
-
-      // ── Legacy single-MCM (singleton) path — unchanged behavior ──────────
-      const subsystemId = config.subsystemId
-      if (!subsystemId) return
-
-      // Only push when PLC is up — same gate as pushEstopStatus, for the
-      // same reason: a snapshot batch from a tool that isn't actually
-      // connected would race a live tool on the same subsystem and clobber
-      // its data.
-      const { hasPlcClient, getPlcClient, getLatestNetworkDeviceSnapshots } = await import('@/lib/plc-client-manager')
-      if (!hasPlcClient() || !getPlcClient().isConnected) return
-
-      const snapshots = getLatestNetworkDeviceSnapshots()
-      // Append the controller so the cloud sees the PLC's firmware too.
-      const controllerSnaps = await getControllerPushSnapshots()
-      const batch = [...(Array.isArray(snapshots) ? snapshots : []), ...controllerSnaps]
-      if (batch.length === 0) return
-
-      await this.postNetworkDiagnostics(
-        remoteUrl,
-        apiPassword,
-        parseInt(String(subsystemId), 10),
-        batch,
-      )
-    } catch (err) {
-      // Best-effort; don't spam logs on every transient HTTP failure.
-      const msg = err instanceof Error ? err.message : String(err)
-      if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED') && !msg.includes('TimeoutError')) {
-        console.warn('[AutoSync] Network diagnostics push error:', msg)
-      }
-    } finally {
-      this.isPushingNetworkDiagnostics = false
-    }
-  }
-
-  /** POST one subsystem's network-diagnostics snapshot batch to the cloud (best-effort). */
-  private async postNetworkDiagnostics(
-    remoteUrl: string,
-    apiPassword: string | undefined,
-    subsystemId: number,
-    snapshots: any[],
-  ): Promise<void> {
-    await fetch(`${remoteUrl}/api/sync/network-diagnostics`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': apiPassword || '',
-      },
-      body: JSON.stringify({
-        subsystemId,
-        snapshots,
-        timestamp: new Date().toISOString(),
-      }),
-      signal: AbortSignal.timeout(15_000),
-    })
-  }
 }
 
 // Singleton
