@@ -662,6 +662,12 @@ export default function CommissioningPage() {
     const isSpare = io.description?.toUpperCase().includes('SPARE')
     const isTrigger = currentPlcStatus.isTesting && stateActuallyChanged && nextState === 'TRUE'
 
+    // An IO whose failure was ADDRESSED is back in the testable pool: it still
+    // carries result="Failed" underneath, but the operator must be able to
+    // re-test it, so a TRUE edge should fire the Pass/Fail prompt just like an
+    // untested IO (not be suppressed as "already has a result").
+    const isAddressedRetest = io.punchlistStatus === 'ADDRESSED' || io.result === 'Addressed'
+
     // Always-on field diagnostics for the "I didn't get a prompt" complaint.
     // Logs WHY a TRUE-edge transition either fired or was suppressed. Volume is
     // bounded by transition rate (a few per minute under realistic field use),
@@ -694,7 +700,7 @@ export default function CommissioningPage() {
         clearTimeout(pendingSpareTimers.current.get(portKey)!)
       }
       pendingSpareTimers.current.set(portKey, timer)
-    } else if (isTrigger && !isSpare && !io.result) {
+    } else if (isTrigger && !isSpare && (!io.result || isAddressedRetest)) {
       const portKey = getPortPairKey(io.name)
       if (pendingSpareTimers.current.has(portKey)) {
         clearTimeout(pendingSpareTimers.current.get(portKey)!)
@@ -719,10 +725,11 @@ export default function CommissioningPage() {
       } else {
         logSkip(`assigned to "${updatedIo.assignedTo}", current user is "${user.fullName}"`)
       }
-    } else if (isTrigger && !isSpare && io.result) {
+    } else if (isTrigger && !isSpare && io.result && !isAddressedRetest) {
       // Common operator confusion: "I triggered the IO, why no prompt?" — because
       // they already passed/failed it earlier and the helper short-circuits on
       // !io.result. Surface the explanation so they know to click Clear.
+      // (Addressed IOs are exempt above — they re-test without a Clear.)
       logSkip(`IO already has result="${io.result}" — click Clear in the grid to re-test`)
     }
 
@@ -1321,6 +1328,10 @@ export default function CommissioningPage() {
           result: 'Passed',
           timestamp: new Date().toISOString(),
           failureMode: null,
+          // Retesting resolves any Addressed/Clarification resolver state locally
+          // so the cell shows the fresh Passed result, not "Addressed" again.
+          punchlistStatus: null,
+          clarificationNote: null,
         } : i
       ))
 
@@ -1422,6 +1433,10 @@ export default function CommissioningPage() {
           comments: displayComment || null,
           timestamp: new Date().toISOString(),
           failureMode: failureMode ?? null,
+          // A fresh failure supersedes any prior Addressed/Clarification resolver
+          // state — this becomes a plain (unaddressed) Failed again, not "Addressed".
+          punchlistStatus: null,
+          clarificationNote: null,
         } : i
       ))
 

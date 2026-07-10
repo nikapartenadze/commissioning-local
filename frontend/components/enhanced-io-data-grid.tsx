@@ -1412,18 +1412,24 @@ export function EnhancedIoDataGrid({
                        style={{ width: `${COLUMN_WIDTHS.result}px` }}
                      >
                        <div className="flex flex-col items-center gap-1">
-                         {io.result ? (
+                         {(io.punchlistStatus === 'ADDRESSED' || io.result === 'Addressed') ? (
+                           // Addressed = the failure was resolved and this IO is ready to
+                           // RE-TEST. Show ONLY "Addressed" (never the underlying Failed),
+                           // and treat it as testable — triggering it fires the Pass/Fail
+                           // prompt again (see the trigger handler in the commissioning page).
+                           <Badge
+                             variant="outline"
+                             title="Previously Failed — Addressed. Trigger this IO to re-test (Pass/Fail)."
+                             className="text-sm font-bold px-3 py-1 bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/50"
+                           >
+                             Addressed
+                           </Badge>
+                         ) : io.result ? (
                            <Badge variant={getResultBadgeVariant(io.result)} className="text-sm font-bold px-3 py-1">
                              {io.result}
                            </Badge>
                          ) : (
                            <span className="text-muted-foreground text-sm">—</span>
-                         )}
-                         {/* Resolver-state overlay pulled from the cloud punchlist. */}
-                         {io.punchlistStatus === 'ADDRESSED' && (
-                           <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/40">
-                             Addressed
-                           </span>
                          )}
                          {io.punchlistStatus === 'CLARIFICATION' && (
                            <span
