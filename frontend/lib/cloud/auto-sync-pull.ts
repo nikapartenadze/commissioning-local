@@ -20,6 +20,7 @@ import { fetchAndApplyDelta } from '@/lib/cloud/delta-sync'
 import { setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
+import { mcmTag } from '@/lib/logging/mcm-tag'
 
 /**
  * Per-instance pull run state. Owned by AutoSyncService and passed by
@@ -29,6 +30,7 @@ import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
 export interface PullState {
   isPulling: boolean
   isPullingMcms: boolean
+  isSweeping: boolean
   lastPullVersion: string | null
   lastMcmCatchupAt: number
   lastManualPullAt: number
@@ -41,6 +43,7 @@ export function createPullState(): PullState {
   return {
     isPulling: false,
     isPullingMcms: false,
+    isSweeping: false,
     lastPullVersion: null,
     lastMcmCatchupAt: 0,
     lastManualPullAt: 0,
@@ -171,6 +174,71 @@ export async function pullSubsystemOnHint(state: PullState, subsystemId: number)
   } catch (e) {
     console.warn(`[AutoSync] delta for ${subsystemId} failed (${e instanceof Error ? e.message : 'fetch'}); falling back to full pull`)
     await scopedFullPull(state, subsystemId)
+  }
+}
+
+/**
+ * Periodic cloud→field DELTA SWEEP — safety net for a LOST SSE hint.
+ *
+ * The cloud writes a durable change-log row on every commit and broadcasts a
+ * `subsystem_changed` hint, but if that hint never arrives (cloud crash between
+ * commit and broadcast, a future 2nd cloud replica, a dropped SSE frame) nothing
+ * on the field fetches the change until the next unrelated hint or SSE reconnect
+ * — unbounded staleness. This timer periodically walks every MANAGED subsystem
+ * and runs the SAME granular delta path the SSE hint uses
+ * (`pullSubsystemOnHint` → `fetchAndApplyDelta`), so it reuses the cursor, the
+ * non-destructive apply, the bulk-delete circuit breaker and the result-authority
+ * guard already there — no second apply path. For a subsystem with nothing new
+ * since its cursor the delta is a cheap no-op poll, so this adds negligible load
+ * and never triggers a destructive/full pull on its own (only the granular delta
+ * does, and only its own section-change/resync fallbacks — identical to a hint).
+ *
+ * Reentrant-safe: skips its own tick while a sweep or the multi-MCM catch-up is
+ * already in flight. Coalescing with the hint path is implicit — a hint that just
+ * advanced a subsystem's cursor makes this sweep's delta for it a no-op; and
+ * `pullSubsystemOnHint` itself already yields for 30 s after a manual pull.
+ */
+export async function sweepConfiguredMcmsDelta(state: PullState, trigger: string): Promise<void> {
+  if (state.isSweeping) return
+  // A full multi-MCM catch-up (SSE reconnect / 15-min safety sweep) already
+  // reconciles everything — don't double up.
+  if (state.isPullingMcms) return
+
+  // Resolve the subsystems this tool MANAGES: the configured MCM list on a
+  // central server, or the single configured subsystem on a field tablet — the
+  // same notion of "managed" the SSE-hint path and pullVfdAddressedForConfigured
+  // use.
+  const ids = new Set<number>()
+  try {
+    const mcms = await configService.getMcms()
+    for (const m of mcms) {
+      if (m.enabled === false) continue
+      const sid = parseInt(m.subsystemId, 10)
+      if (Number.isFinite(sid) && sid > 0) ids.add(sid)
+    }
+  } catch { /* fall through to single-subsystem */ }
+  if (ids.size === 0) {
+    try {
+      const cfg = await configService.getConfig()
+      const sid = typeof cfg.subsystemId === 'number' ? cfg.subsystemId : parseInt(String(cfg.subsystemId), 10)
+      if (Number.isFinite(sid) && sid > 0) ids.add(sid)
+    } catch { /* no config yet */ }
+  }
+  if (ids.size === 0) return
+
+  state.isSweeping = true
+  try {
+    for (const sid of Array.from(ids)) {
+      // Reuse the SSE-hint path verbatim — granular delta, non-destructive
+      // apply, guarded deletes, result-authority. Sequential so a wide fleet
+      // can't fan out a burst of concurrent fetches.
+      await pullSubsystemOnHint(state, sid)
+    }
+    console.log(`${mcmTag(null)}[AutoSync] ${trigger}: delta swept ${ids.size} managed subsystem(s)`)
+  } catch (e) {
+    console.warn('[AutoSync] delta sweep failed (non-fatal):', e instanceof Error ? e.message : e)
+  } finally {
+    state.isSweeping = false
   }
 }
 

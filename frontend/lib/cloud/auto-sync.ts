@@ -38,6 +38,7 @@ import {
   pullAllConfiguredMcms,
   pullSubsystemOnHint,
   pullVfdAddressedForConfigured,
+  sweepConfiguredMcmsDelta,
 } from '@/lib/cloud/auto-sync-pull'
 
 export interface AutoSyncConfig {
@@ -50,6 +51,19 @@ export interface AutoSyncConfig {
 const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   pushIntervalMs: 10000,
   enabled: true,
+}
+
+// Periodic cloud→field delta sweep cadence. The SSE `subsystem_changed` hint is
+// the primary real-time channel; this timer is the safety net so a LOST hint
+// (cloud crash between commit and broadcast, a future 2nd replica, a dropped SSE
+// frame) can never leave a tablet stale for more than a few minutes. Conservative
+// default — a no-op delta poll is cheap, but this must not hammer the endpoint.
+// Overridable via CLOUD_DELTA_SWEEP_SECONDS (mirrors SYNC_SAFETY_PULL_MINUTES).
+const DEFAULT_DELTA_SWEEP_SECONDS = 120
+function resolveDeltaSweepMs(): number {
+  const s = parseInt(process.env.CLOUD_DELTA_SWEEP_SECONDS || '', 10)
+  const seconds = Number.isFinite(s) && s > 0 ? s : DEFAULT_DELTA_SWEEP_SECONDS
+  return seconds * 1000
 }
 
 export interface AutoSyncStatus {
@@ -68,6 +82,7 @@ class AutoSyncService {
   private estopStatusTimer: NodeJS.Timeout | null = null
   private networkDiagnosticsTimer: NodeJS.Timeout | null = null
   private journalUploadTimer: NodeJS.Timeout | null = null
+  private deltaSweepTimer: NodeJS.Timeout | null = null
   private sseUnsubscribe: (() => void) | null = null
   private sseSubsystemChangedUnsub: (() => void) | null = null
   private config: AutoSyncConfig
@@ -158,6 +173,20 @@ class AutoSyncService {
       safetyMinutes * 60_000
     )
 
+    // Periodic cloud→field DELTA SWEEP (default ~120s). Tighter cadence than the
+    // 15-min full-pull safety net above, but far cheaper: it runs ONLY the
+    // granular delta path (`pullSubsystemOnHint` → `fetchAndApplyDelta`) per
+    // managed subsystem, which is a no-op poll when nothing changed since the
+    // cursor. Its job is to bound cloud→field staleness when an SSE hint is
+    // lost, so a missed change can't sit unfetched until the next unrelated
+    // hint/reconnect. Self-guards against overlap and recent manual pulls.
+    const deltaSweepMs = resolveDeltaSweepMs()
+    this.deltaSweepTimer = setInterval(
+      () => { void sweepConfiguredMcmsDelta(this.pull, 'periodic delta sweep') },
+      deltaSweepMs
+    )
+    console.log(`[AutoSync] Delta sweep every ${Math.round(deltaSweepMs / 1000)}s (lost-hint safety net)`)
+
     // Start SSE client for real-time cloud updates (after 10s to let config load)
     setTimeout(async () => {
       try {
@@ -234,12 +263,14 @@ class AutoSyncService {
     if (this.networkDiagnosticsTimer) clearInterval(this.networkDiagnosticsTimer)
     if (this.journalUploadTimer) clearInterval(this.journalUploadTimer)
     if (this.mcmSafetyTimer) clearInterval(this.mcmSafetyTimer)
+    if (this.deltaSweepTimer) clearInterval(this.deltaSweepTimer)
     this.pushTimer = null
     this.networkStatusTimer = null
     this.estopStatusTimer = null
     this.networkDiagnosticsTimer = null
     this.journalUploadTimer = null
     this.mcmSafetyTimer = null
+    this.deltaSweepTimer = null
     this._running = false
     console.log('[AutoSync] Stopped')
   }
