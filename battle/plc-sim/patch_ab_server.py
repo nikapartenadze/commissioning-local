@@ -170,6 +170,92 @@ patch(
 """,
 )
 
+# ── 3. cip.c — serve the CIP Identity Object (Class 0x01, Instance 1) ───────
+# The field tool's firmware-compliance scan reads every controller's Identity
+# via a @raw Get_Attributes_All (service 0x01). Stock ab_server answers
+# CIP_ERR_UNSUPPORTED → the tool reports the controller "unreachable" and the
+# firmware feature is untestable on the rig. Serve a canned 1756-L85E identity
+# (rev 33.11) so firmware scenarios can flip compliant/non_compliant purely by
+# changing the cloud-stage baseline data.
+patch(
+    SRC / "cip.c",
+    """slice_s cip_dispatch_unconnected_request(slice_s input, slice_s output, plc_s *plc) {
+""",
+    """/* BATTLE PATCH: canned CIP Identity Object (Class 0x01, Instance 1).
+   Vendor 1 (Rockwell), type 14 (PLC), product code 168 (1756-L85E),
+   firmware rev 33.11. Read-only Get_Attributes_All; anything else on the
+   Identity class still returns unsupported. */
+static slice_s handle_identity_request(uint8_t cip_service, slice_s cip_service_path, slice_s output) {
+    size_t offset = 0;
+    const char *name = "1756-L85E BATTLE-SIM/B";
+    size_t name_len = strlen(name);
+
+    /* only [0x20 0x01 0x24 0x01] — class 0x01, instance 1, 8-bit segments */
+    if(slice_len(cip_service_path) != 4 || slice_get_uint8(cip_service_path, 0) != 0x20
+       || slice_get_uint8(cip_service_path, 1) != 0x01 || slice_get_uint8(cip_service_path, 2) != 0x24
+       || slice_get_uint8(cip_service_path, 3) != 0x01) {
+        return make_cip_log_error(output, cip_service, CIP_ERR_UNSUPPORTED, false, 0);
+    }
+
+    slice_set_uint8(output, offset, cip_service | CIP_DONE);
+    offset++;
+    slice_set_uint8(output, offset, 0); /* reserved */
+    offset++;
+    slice_set_uint8(output, offset, 0); /* general status: OK */
+    offset++;
+    slice_set_uint8(output, offset, 0); /* no extended status */
+    offset++;
+    slice_set_uint16_le(output, offset, 1); /* Vendor ID: Rockwell */
+    offset += 2;
+    slice_set_uint16_le(output, offset, 14); /* Device Type: PLC */
+    offset += 2;
+    slice_set_uint16_le(output, offset, 168); /* Product Code */
+    offset += 2;
+    slice_set_uint8(output, offset, 33); /* Major firmware revision */
+    offset++;
+    slice_set_uint8(output, offset, 11); /* Minor firmware revision */
+    offset++;
+    slice_set_uint16_le(output, offset, 0x0060); /* Status */
+    offset += 2;
+    slice_set_uint32_le(output, offset, 0x00B47713UL); /* Serial */
+    offset += 4;
+    slice_set_uint8(output, offset, (uint8_t)name_len);
+    offset++;
+    for(size_t i = 0; i < name_len; i++) {
+        slice_set_uint8(output, offset, (uint8_t)name[i]);
+        offset++;
+    }
+
+    return slice_from_slice(output, 0, offset);
+}
+
+
+slice_s cip_dispatch_unconnected_request(slice_s input, slice_s output, plc_s *plc) {
+""",
+)
+
+patch(
+    SRC / "cip.c",
+    """        case CIP_SRV_PCCC_EXECUTE: return dispatch_pccc_request(input, output, plc); break;
+""",
+    """        case CIP_SRV_PCCC_EXECUTE: return dispatch_pccc_request(input, output, plc); break;
+
+        /* BATTLE PATCH: Get_Attributes_All on the Identity Object */
+        case 0x01: return handle_identity_request(cip_service, cip_service_path, output); break;
+""",
+)
+
+patch(
+    SRC / "cip.c",
+    """        case CIP_SRV_MULTI: return handle_multi_request(cip_service, cip_service_path, cip_service_payload, output, plc); break;
+""",
+    """        case CIP_SRV_MULTI: return handle_multi_request(cip_service, cip_service_path, cip_service_payload, output, plc); break;
+
+        /* BATTLE PATCH: Get_Attributes_All on the Identity Object */
+        case 0x01: return handle_identity_request(cip_service, cip_service_path, output); break;
+""",
+)
+
 # strcmp needs string.h — ensure the include exists in cip.c (idempotent).
 cip = SRC / "cip.c"
 text = cip.read_text()

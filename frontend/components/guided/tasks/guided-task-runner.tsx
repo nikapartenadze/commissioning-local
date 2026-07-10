@@ -630,8 +630,6 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   }, [currentStep?.id, subsystemId])
 
   // poll the firmware-compliance verdict for the firmware-check auto_detect step.
-  // NEEDS LIVE VERIFICATION (battle sim / real MCM) before release — the polling,
-  // scan trigger and task completion can't be exercised without a connected PLC.
   useEffect(() => {
     if (currentStep?.kind !== 'auto_detect' || currentStep.verdictSource !== '/api/firmware') return
     let active = true
@@ -641,7 +639,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         if (!res.ok || !active) return
         const scan = (await res.json())?.scan
         if (!scan || !scan.connected) {
-          setFirmwareVerdict({ verdict: 'unknown', nonCompliant: 0, deviceCount: 0, scanned: false })
+          setFirmwareVerdict({ verdict: 'unknown', nonCompliant: 0, unverified: 0, deviceCount: 0, scanned: false })
           return
         }
         // Scope to this subsystem on a central server (devices carry subsystemId);
@@ -650,7 +648,18 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           (d: { subsystemId?: string }) => d.subsystemId == null || String(d.subsystemId) === String(subsystemId),
         )
         const nonCompliant = devs.filter((d: { verdict?: string }) => d.verdict === 'non_compliant').length
-        setFirmwareVerdict({ verdict: nonCompliant > 0 ? 'fail' : 'pass', nonCompliant, deviceCount: devs.length, scanned: true })
+        const unverified = devs.filter(
+          (d: { verdict?: string }) => d.verdict === 'no_baseline' || d.verdict === 'unreachable',
+        ).length
+        // A device that couldn't be judged is NOT a pass — pass only when every
+        // read device verified compliant (and there was at least one).
+        setFirmwareVerdict({
+          verdict: nonCompliant > 0 ? 'fail' : unverified > 0 || devs.length === 0 ? 'unknown' : 'pass',
+          nonCompliant,
+          unverified,
+          deviceCount: devs.length,
+          scanned: true,
+        })
       } catch {
         /* ignore — next tick retries */
       }
@@ -1087,6 +1096,9 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 type FirmwareVerdict = {
   verdict: 'pass' | 'fail' | 'unknown'
   nonCompliant: number
+  /** Devices that could not be judged — no_baseline or unreachable. They must
+   *  never read as a pass ("ALL COMPLIANT" with zero verified devices). */
+  unverified: number
   deviceCount: number
   scanned: boolean
 } | null
@@ -1214,9 +1226,13 @@ function renderStepBody(p: BodyProps) {
     const tone = v === 'pass' ? 'gt-verdict-pass' : v === 'fail' ? 'gt-verdict-fail' : 'gt-verdict-unknown'
     const label = !fv || !fv.scanned
       ? 'SCANNING…'
-      : v === 'pass'
-        ? `ALL ${fv.deviceCount} COMPLIANT`
-        : `${fv.nonCompliant} NON-COMPLIANT`
+      : v === 'fail'
+        ? `${fv.nonCompliant} NON-COMPLIANT`
+        : fv.deviceCount === 0
+          ? 'NO DEVICES READ'
+          : v === 'pass'
+            ? `ALL ${fv.deviceCount} COMPLIANT`
+            : `${fv.unverified} OF ${fv.deviceCount} UNVERIFIED — NO BASELINE / UNREACHABLE`
     return (
       <>
         <div className={`gt-verdict ${tone}`}>
