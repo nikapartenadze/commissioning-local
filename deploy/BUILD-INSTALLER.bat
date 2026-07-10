@@ -58,7 +58,13 @@ REM ── Step 1: Build portable distribution first ──
 echo.
 echo [1/2] Building portable distribution...
 echo.
-if not exist "%PORTABLE_DIR%\app\dist-server\server-express.js" (
+REM  The split installer needs BOTH entrypoints in the bundle: the app
+REM  (server-express.js) AND the plc-gateway (gateway-server.js). Require both,
+REM  so a stale portable dir built before the gateway existed forces a rebuild.
+set "PORTABLE_READY=1"
+if not exist "%PORTABLE_DIR%\app\dist-server\server-express.js" set "PORTABLE_READY="
+if not exist "%PORTABLE_DIR%\app\dist-server\gateway-server.js" set "PORTABLE_READY="
+if not defined PORTABLE_READY (
     set "APP_VERSION=%APP_VERSION%"
     call "%DEPLOY_DIR%BUILD-PORTABLE.bat"
     if %errorlevel% neq 0 (
@@ -67,7 +73,7 @@ if not exist "%PORTABLE_DIR%\app\dist-server\server-express.js" (
         exit /b 1
     )
 ) else (
-    echo   Portable build already exists, skipping. Delete portable\ to force rebuild.
+    echo   Portable build already exists ^(app + gateway^), skipping. Delete portable\ to force rebuild.
 )
 
 REM ── Ensure VC++ redistributable is available to bundle (best-effort fallback) ──
@@ -89,25 +95,18 @@ if exist "%VCREDIST%" (
     echo   WARNING: vc_redist.x64.exe not bundled ^(download failed^); relying on app-local vcruntime140.dll.
 )
 
-REM ── CENTRAL (multi-MCM split) build flag ──
-REM  Set CENTRAL=1 to build the centralized-server installer (two services:
-REM  plc-gateway + app in PLC_MODE=remote). Output: CommissioningTool-Central-
-REM  Setup-vX.exe. Unset → the standard single-process field-tablet installer.
-set "CENTRAL_DEF="
-if "%CENTRAL%"=="1" (
-    set "CENTRAL_DEF=/DCENTRAL=1"
-    echo   CENTRAL build: two-service split ^(plc-gateway + app remote^)
-)
-
 REM ── Step 2: Compile NSIS installer ──
+REM  ONE installer, no flags: always builds the two-service split (plc-gateway
+REM  + app in PLC_MODE=remote). Output: CommissioningTool-Setup-vX.exe. The
+REM  split scales a single box from 1 MCM to 15+; the end user just runs the exe.
 echo.
 echo [2/2] Compiling installer...
 echo.
 
 if defined VCREDIST_DEF (
-    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" !CENTRAL_DEF! "!VCREDIST_DEF!" "%DEPLOY_DIR%installer.nsi"
+    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" "!VCREDIST_DEF!" "%DEPLOY_DIR%installer.nsi"
 ) else (
-    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" !CENTRAL_DEF! "%DEPLOY_DIR%installer.nsi"
+    "%MAKENSIS%" /DAPP_VERSION=%APP_VERSION% "/DPORTABLE_DIR=%PORTABLE_DIR%" "/DNSSM_PATH=%NSSM_PATH%" "%DEPLOY_DIR%installer.nsi"
 )
 
 if %errorlevel% neq 0 (
@@ -127,9 +126,12 @@ echo.
 echo This installer:
 echo   - Installs to C:\Program Files\CommissioningTool
 echo   - Stores data in C:\ProgramData\CommissioningTool
-echo   - Creates Windows service (auto-start on boot)
+echo   - Creates TWO Windows services (auto-start on boot):
+echo       * CommissioningGateway - owns PLC/libplctag on 127.0.0.1:3200
+echo       * CommissioningTool     - app in PLC_MODE=remote on :3000
 echo   - Sets up firewall rules
 echo   - Upgrades in-place (preserves database + config)
+echo   - Scales one box from 1 MCM to 15+ (no build flags, no params)
 echo.
 pause
 exit /b 0

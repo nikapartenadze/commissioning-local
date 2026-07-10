@@ -24,23 +24,29 @@
 !define SERVICE_NAME "CommissioningTool"
 !define SERVICE_DISPLAY "Commissioning Tool"
 
-; ── CENTRAL (multi-MCM split) build ─────────────────────────
-; Define CENTRAL on the makensis command line (/DCENTRAL=1) to build the
-; centralized-server installer: TWO services — a plc-gateway that owns every
-; PLC connection (PLC_MODE unset, libplctag, :3200) and the app in
-; PLC_MODE=remote that routes all PLC I/O to the gateway. This is the
-; production architecture for a single box driving many MCMs (the app event
-; loop never blocks on tag I/O). Without CENTRAL the installer builds the
-; unchanged single-process embedded field-tablet service.
+; ── SPLIT TOPOLOGY (default, and only, build) ───────────────
+; The standard installer ALWAYS deploys the two-service split: a plc-gateway
+; that owns every PLC connection (PLC_MODE=embedded, libplctag, :3200) and the
+; app in PLC_MODE=remote that routes all PLC I/O to the gateway over :3200.
+; This is the topology proven to scale a single box from 1 MCM to 15+ (the app
+; event loop never blocks on tag I/O). ONE .exe, NO build flags — the end user
+; runs a single setup that works for 1 MCM or 10+ with no params.
+;
+; LEGACY escape hatch (rarely needed): define LEGACY_EMBEDDED on the makensis
+; command line (/DLEGACY_EMBEDDED=1) to build the old single-process embedded
+; field-tablet installer (one service, the app owns libplctag directly). This
+; is NOT the default and only exists for a single-MCM tablet that must run fully
+; self-contained. Every split-specific block below is gated with
+; `!ifndef LEGACY_EMBEDDED`, so with no flag you always get the split.
 !define GATEWAY_SERVICE_NAME "CommissioningGateway"
 !define GATEWAY_SERVICE_DISPLAY "Commissioning PLC Gateway"
 
 Var DATA_DIR
 
 ; ── Installer Settings ──────────────────────────────────────
-!ifdef CENTRAL
-Name "${APP_NAME} (Central) ${APP_VERSION}"
-OutFile "..\CommissioningTool-Central-Setup-v${APP_VERSION}.exe"
+!ifdef LEGACY_EMBEDDED
+Name "${APP_NAME} (Embedded) ${APP_VERSION}"
+OutFile "..\CommissioningTool-Embedded-Setup-v${APP_VERSION}.exe"
 !else
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "..\CommissioningTool-Setup-v${APP_VERSION}.exe"
@@ -187,10 +193,11 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   nsExec::ExecToLog 'sc.exe delete ${SERVICE_NAME}'
   Sleep 1000
 
-  ; Stop + remove the plc-gateway service UNCONDITIONALLY (even on a non-central
-  ; build). A prior CENTRAL install leaves CommissioningGateway running; if this
-  ; cleanup is skipped, its node.exe/nssm.exe keep the install files locked and
-  ; the copy below fails with "error opening file for writing node.exe".
+  ; Stop + remove the plc-gateway service UNCONDITIONALLY (even on a
+  ; LEGACY_EMBEDDED build). Any prior split install leaves CommissioningGateway
+  ; running; if this cleanup is skipped, its node.exe/nssm.exe keep the install
+  ; files locked and the copy below fails with "error opening file for writing
+  ; node.exe". Runs unconditionally so an embedded downgrade also clears it.
   ; CRITICAL: poll for STOPPED exactly like the app
   ; service above. A fixed Sleep was too short — if the gateway took >2s to
   ; die, `nssm remove` ran while node.exe was still live and the file copy
@@ -344,8 +351,8 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   SetOutPath "$INSTDIR\app"
   File /r "${PORTABLE_DIR}\app\*.*"
 
-!ifdef CENTRAL
-  ; ── Logix SDK bridge venv (best-effort, CENTRAL build only) ──
+!ifndef LEGACY_EMBEDDED
+  ; ── Logix SDK bridge venv (best-effort, split build) ──
   ; "Program Download" drives the Rockwell Logix Designer SDK via a Python venv
   ; at $INSTDIR\app\logix-sdk-bridge\.venv. provision.ps1 (shipped above) builds
   ; it ONLY when this box has Studio 5000 + the SDK wheel + Python 3.12/3.13 —
@@ -424,9 +431,9 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; file copies, so node.exe couldn't keep locks on the new binaries).
   ; Just install fresh below — no second remove needed.
 
-!ifdef CENTRAL
+!ifndef LEGACY_EMBEDDED
   ; ════════════════════════════════════════════════════════════════════
-  ; PLC GATEWAY SERVICE (central build). Owns libplctag + every PLC
+  ; PLC GATEWAY SERVICE (default split build). Owns libplctag + every PLC
   ; connection (PLC_MODE unset = embedded owner), listens on 127.0.0.1:3200,
   ; and POSTs tag/connection events to the app's :3102 broadcast seam. Same
   ; lifecycle hardening as the app service. Must be up before the app's
@@ -521,7 +528,7 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   ; Trigger restart on any failure type (not just non-zero exit code).
   nsExec::ExecToLog 'sc.exe failureflag ${SERVICE_NAME} 1'
 
-!ifdef CENTRAL
+!ifndef LEGACY_EMBEDDED
   ; App runs in remote mode and depends on the gateway. PLC_MODE/GATEWAY_URL
   ; are also in .env (belt-and-suspenders), but set them on the service env
   ; too so they apply regardless of dotenv load order. DependOnService makes
@@ -611,8 +618,8 @@ StrCpy $DATA_DIR "$DATA_DIR\CommissioningTool"
   Sleep 2000
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE_NAME} confirm'
 
-!ifdef CENTRAL
-  ; Central build also has the plc-gateway service.
+!ifndef LEGACY_EMBEDDED
+  ; Split build (the default) also has the plc-gateway service.
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${GATEWAY_SERVICE_NAME}'
   Sleep 2000
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${GATEWAY_SERVICE_NAME} confirm'
