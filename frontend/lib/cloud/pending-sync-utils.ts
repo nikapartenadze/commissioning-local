@@ -3,6 +3,7 @@ import { pendingSyncRepository } from '@/lib/db/repositories/pending-sync-reposi
 import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import type { IoUpdateDto } from '@/lib/cloud/types'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { mcmTag } from '@/lib/logging/mcm-tag'
 
 export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
   return {
@@ -56,11 +57,20 @@ export async function drainPendingSyncsForIo(
 ): Promise<void> {
   const syncService = getCloudSyncService()
 
+  // Per-MCM log tag so this IO's instant-sync lines are grep-able in the single
+  // central app.log (best-effort — null subsystem yields an empty tag).
+  let ioSubsystemId: number | null = null
+  try {
+    const ioRow = db.prepare('SELECT SubsystemId FROM Ios WHERE id = ?').get(ioId) as { SubsystemId: number | null } | undefined
+    ioSubsystemId = ioRow?.SubsystemId ?? null
+  } catch { /* best-effort — leave untagged */ }
+  const tag = mcmTag(ioSubsystemId)
+
   while (true) {
     const pending = getOldestPendingSyncForIo(ioId)
     if (!pending) return
 
-    console.log(`[${logPrefix}] Attempting instant sync for pending ${pending.id} (IO ${ioId})`)
+    console.log(`${tag}[${logPrefix}] Attempting instant sync for pending ${pending.id} (IO ${ioId})`)
 
     const result = await syncService.syncIoUpdate({
       ...mapPendingSyncToIoUpdate(pending),
@@ -69,7 +79,7 @@ export async function drainPendingSyncsForIo(
 
     if (result.ok) {
       pendingSyncRepository.delete(pending.id)
-      console.log(`[${logPrefix}] Instant sync succeeded for pending ${pending.id} (IO ${ioId})`)
+      console.log(`${tag}[${logPrefix}] Instant sync succeeded for pending ${pending.id} (IO ${ioId})`)
       continue
     }
 
@@ -81,12 +91,9 @@ export async function drainPendingSyncsForIo(
       // park-not-delete everywhere, so a wrong rejection is recoverable from
       // the queue itself, not only from this journal line).
       // Best-effort SubsystemId so this parked result can be attributed to its
-      // MCM on a central server (parity with the auto-sync drop/park audits).
-      let subsystemId: number | null = null
-      try {
-        const ioRow = db.prepare('SELECT SubsystemId FROM Ios WHERE id = ?').get(ioId) as { SubsystemId: number | null } | undefined
-        subsystemId = ioRow?.SubsystemId ?? null
-      } catch { /* best-effort — record null */ }
+      // MCM on a central server (parity with the auto-sync drop/park audits) —
+      // resolved once above and reused for both the audit and the log tag.
+      const subsystemId = ioSubsystemId
       const reasonStr = typeof result.reason === 'string' ? result.reason : JSON.stringify(result.reason ?? 'permanent')
       auditLog({
         type: 'sync.push.park',
@@ -106,7 +113,7 @@ export async function drainPendingSyncsForIo(
       })
       pendingSyncRepository.deadLetter(pending.id, `permanent reject (instant path): ${reasonStr}`)
       console.warn(
-        `[${logPrefix}] PARKED-PERMANENT pendingId=${pending.id} ioId=${ioId} ` +
+        `${tag}[${logPrefix}] PARKED-PERMANENT pendingId=${pending.id} ioId=${ioId} ` +
         `reason=${JSON.stringify(result.reason ?? 'unknown')} ` +
         `result=${JSON.stringify(pending.TestResult)} version=${pending.Version}`,
       )
@@ -114,7 +121,7 @@ export async function drainPendingSyncsForIo(
     }
 
     console.log(
-      `[${logPrefix}] Instant sync deferred for pending ${pending.id} (IO ${ioId}) — ` +
+      `${tag}[${logPrefix}] Instant sync deferred for pending ${pending.id} (IO ${ioId}) — ` +
       `${result.reason ?? 'unknown'}, queued for retry`,
     )
     return

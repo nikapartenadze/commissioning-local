@@ -6,6 +6,7 @@ import { invalidateIoSubsystemCache, getMcmStatus } from '@/lib/mcm-registry';
 import { getWsBroadcastUrl } from '@/lib/plc-client-manager';
 import { createBackup } from '@/lib/db/backup';
 import { auditLog } from '@/lib/logging/recovery-log';
+import { mcmTag } from '@/lib/logging/mcm-tag';
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls';
 import { runFullPull } from '@/lib/cloud/pull-core';
 
@@ -37,7 +38,7 @@ async function pullL2SelfCall(
     }
     return { l2Pulled: l2Data.l2Pulled || l2Data.devices || 0, l2CellsPulled: l2Data.l2CellsPulled || 0, l2Error: null };
   } catch (e) {
-    console.warn(`[MCM ${subsystemId} Pull] L2 pull failed:`, e instanceof Error ? e.message : e);
+    console.warn(`${mcmTag(subsystemId)}[MCM ${subsystemId} Pull] L2 pull failed:`, e instanceof Error ? e.message : e);
     return { l2Pulled: 0, l2CellsPulled: 0, l2Error: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -167,7 +168,7 @@ export async function POST(req: Request, res: Response) {
     }
 
     const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`;
-    console.log(`[MCM ${subsystemIdStr} Pull] GET ${cloudUrl}`);
+    console.log(`${mcmTag(subsystemIdStr)}[MCM ${subsystemIdStr} Pull] GET ${cloudUrl}`);
 
     let cloudResponse: globalThis.Response | null = null;
     let lastErr: unknown = null;
@@ -183,7 +184,7 @@ export async function POST(req: Request, res: Response) {
         break;
       } catch (err) {
         lastErr = err;
-        console.warn(`[MCM ${subsystemIdStr} Pull] attempt ${attempt}/${MAX_ATTEMPTS} failed:`,
+        console.warn(`${mcmTag(subsystemIdStr)}[MCM ${subsystemIdStr} Pull] attempt ${attempt}/${MAX_ATTEMPTS} failed:`,
           err instanceof Error ? err.message : err);
         if (attempt < MAX_ATTEMPTS) {
           await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
@@ -290,7 +291,7 @@ export async function POST(req: Request, res: Response) {
       force,
       isBackground,
       subsystemName: mcm.name || `Subsystem ${subsystemId}`,
-      logPrefix: `[MCM ${subsystemIdStr} Pull]`,
+      logPrefix: `${mcmTag(subsystemIdStr)}[MCM ${subsystemIdStr} Pull]`,
       deps: { createBackup, extractDeviceName, pullL2: pullL2SelfCall },
     });
 
@@ -343,7 +344,7 @@ export async function POST(req: Request, res: Response) {
     // fresh cloud state (mirrors the legacy /api/cloud/pull route).
     await armRePullSuppression();
 
-    console.log(`[MCM ${subsystemIdStr} Pull] DONE — ios=${result}, network=${networkPulled}, estop=${estopPulled}, safety=${safetyPulled}, punchlists=${punchlistsPulled}`);
+    console.log(`${mcmTag(subsystemIdStr)}[MCM ${subsystemIdStr} Pull] DONE — ios=${result}, network=${networkPulled}, estop=${estopPulled}, safety=${safetyPulled}, punchlists=${punchlistsPulled}`);
 
     // Durable recovery-log trace of this DESTRUCTIVE pull (the no-op short-
     // circuit above rewrote nothing and is intentionally not logged). Log-only.
@@ -370,7 +371,7 @@ export async function POST(req: Request, res: Response) {
       l2Pulled,
     });
   } catch (error) {
-    console.error(`[MCM ${subsystemIdStr} Pull] error:`, error);
+    console.error(`${mcmTag(subsystemIdStr)}[MCM ${subsystemIdStr} Pull] error:`, error);
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Internal server error',

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { connectConfiguredMcm } from '@/lib/services/mcm-connect';
 import { auditLog } from '@/lib/logging/recovery-log';
+import { mcmTag } from '@/lib/logging/mcm-tag';
 
 /**
  * POST /api/mcm/:subsystemId/plc/connect
@@ -49,7 +50,7 @@ export async function POST(req: Request, res: Response) {
           : (r.success && r.pulledIos ? `Pulled ${r.pulledIos} IOs from cloud, then connected` : undefined),
     });
   } catch (error) {
-    console.error(`[MCM ${subsystemId}] Connect error:`, error);
+    console.error(`${mcmTag(subsystemId)}[MCM ${subsystemId}] Connect error:`, error);
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to connect to PLC',

@@ -4,6 +4,7 @@ import { getWsBroadcastUrl, getPlcClient } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
 import { runFullPull } from '@/lib/cloud/pull-core'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { mcmTag } from '@/lib/logging/mcm-tag'
 import { configService } from '@/lib/config'
 import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
 import type { CloudPullResponse } from '@/lib/cloud/types'
@@ -179,7 +180,7 @@ export async function POST(req: Request, res: Response) {
       // there's no live connection to protect.
     }
 
-    console.log(`[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
+    console.log(`${mcmTag(subsystemId)}[CloudPull] Starting pull for subsystem ${subsystemId} from ${remoteUrl}`)
     console.log(`[CloudPull] API Password provided: ${apiPassword ? 'yes (' + apiPassword.length + ' chars)' : 'no'}`)
 
     // Split the IO queue: ACTIVE rows can still sync; PARKED rows (DeadLettered=1)
@@ -340,7 +341,7 @@ export async function POST(req: Request, res: Response) {
       remoteUrl,
       apiPassword: apiPassword || '',
       force: body.force === true,
-      logPrefix: '[CloudPull]',
+      logPrefix: `${mcmTag(subsystemId)}[CloudPull]`,
       deps: { createBackup, extractDeviceName, pullL2: pullL2SelfCall },
     })
 

@@ -44,6 +44,7 @@ import {
   isCacheFresh,
 } from './plc/remote-cache';
 import { getBroadcastUrl } from './broadcast-config';
+import { mcmTag } from './logging/mcm-tag';
 
 /** True when PLC connections live in a separate plc-gateway process. */
 const REMOTE = process.env.PLC_MODE === 'remote';
@@ -1022,7 +1023,7 @@ function setupListeners(entry: McmEntry): void {
         clearKnownMissingTags(`MCM ${subsystemId} (re)connected — possible program download, re-discovering CMD tags`);
         await syncValidationFlags(`mcm-${subsystemId}-reconnect`);
       } catch (err) {
-        console.warn(`[McmRegistry ${subsystemId}] VFD validation sync failed:`, err);
+        console.warn(`${mcmTag(subsystemId)}[McmRegistry ${subsystemId}] VFD validation sync failed:`, err);
       }
     }, 3000); // 3 s delay — let the tag reader settle first (same as legacy manager)
 

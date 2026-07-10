@@ -21,6 +21,7 @@ import { mapPendingSyncToIoUpdate } from '@/lib/cloud/pending-sync-utils'
 import { reconcileConfiguredSubsystems } from '@/lib/cloud/result-reconciler'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { mcmTag } from '@/lib/logging/mcm-tag'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
 import { runJournalUpload } from '@/lib/cloud/journal-uploader'
@@ -364,8 +365,9 @@ class AutoSyncService {
             `Pull IOs to verify; re-pass/fail/clear in the grid if any result is missing.`
           )
           for (const p of toDrop) {
+            const droppedSubsystemId = this.ioSubsystemId(p.IoId)
             console.warn(
-              `[AutoSync] DROP-DETAIL pendingId=${p.id} ioId=${p.IoId} ` +
+              `${mcmTag(droppedSubsystemId)}[AutoSync] DROP-DETAIL pendingId=${p.id} ioId=${p.IoId} ` +
               `result=${JSON.stringify(p.TestResult)} ` +
               `version=${p.Version} tester=${JSON.stringify(p.InspectorName)} ` +
               `state=${JSON.stringify(p.State)} ` +
@@ -377,7 +379,7 @@ class AutoSyncService {
             auditLog({
               type: 'sync.push.drop',
               ioId: p.IoId,
-              subsystemId: this.ioSubsystemId(p.IoId),
+              subsystemId: droppedSubsystemId,
               version: p.Version,
               result: p.TestResult,
               user: p.InspectorName,
@@ -490,7 +492,7 @@ class AutoSyncService {
             // actually reach cloud?" without joining the summary line below
             // back to the queue snapshot.
             console.log(
-              `[AutoSync] Pushed pendingId=${pending.id} ioId=${pending.IoId} ` +
+              `${mcmTag(this.ioSubsystemId(pending.IoId))}[AutoSync] Pushed pendingId=${pending.id} ioId=${pending.IoId} ` +
               `result=${JSON.stringify(pending.TestResult)} version=${pending.Version} ` +
               `tester=${JSON.stringify(pending.InspectorName)}`,
             )
@@ -504,10 +506,11 @@ class AutoSyncService {
             pendingSyncRepository.deadLetter(pending.id, r.reason ?? 'cloud permanently rejected')
             // Durable 2-week audit trail for the rejected result (was console
             // only) — so "why did this IO never reach cloud" is answerable later.
+            const parkedSubsystemId = this.ioSubsystemId(pending.IoId)
             auditLog({
               type: 'sync.push.park',
               ioId: pending.IoId,
-              subsystemId: this.ioSubsystemId(pending.IoId),
+              subsystemId: parkedSubsystemId,
               version: pending.Version,
               result: pending.TestResult,
               user: pending.InspectorName,
@@ -515,7 +518,7 @@ class AutoSyncService {
               detail: { pendingId: pending.id, comments: pending.Comments, state: pending.State },
             })
             console.warn(
-              `[AutoSync] PARKED-PERMANENT pendingId=${pending.id} ioId=${pending.IoId} ` +
+              `${mcmTag(parkedSubsystemId)}[AutoSync] PARKED-PERMANENT pendingId=${pending.id} ioId=${pending.IoId} ` +
               `reason=${JSON.stringify(r.reason ?? 'unknown')} ` +
               `result=${JSON.stringify(pending.TestResult)} version=${pending.Version}`,
             )

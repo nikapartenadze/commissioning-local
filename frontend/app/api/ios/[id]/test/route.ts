@@ -18,6 +18,7 @@ import {
 } from '@/lib/services/io-test-service'
 import { checkInstallGate } from '@/lib/services/install-gate'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { mcmTag } from '@/lib/logging/mcm-tag'
 
 /**
  * POST /api/ios/:id/test
@@ -208,7 +209,7 @@ export async function POST(req: Request, res: Response) {
         newTrade,
       )
       console.log(
-        `[Test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
+        `${mcmTag(subsystemId)}[Test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
         `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
       )
 
@@ -222,14 +223,14 @@ export async function POST(req: Request, res: Response) {
         try {
           await drainPendingSyncsForIo(ioId, 'Test', currentUser)
         } catch (syncErr) {
-          console.warn(`[Test] Instant sync error for IO ${ioId}:`, syncErr instanceof Error ? syncErr.message : syncErr)
+          console.warn(`${mcmTag(subsystemId)}[Test] Instant sync error for IO ${ioId}:`, syncErr instanceof Error ? syncErr.message : syncErr)
         }
       })
     } catch (syncError) {
       // SQLite IO write already succeeded above — this is the silent-loss
       // vector if we don't log it loudly with full context.
       console.error(
-        `[Test] PENDING-QUEUE-FAIL ioId=${ioId} ` +
+        `${mcmTag(subsystemId)}[Test] PENDING-QUEUE-FAIL ioId=${ioId} ` +
         `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1} ` +
         `err=${syncError instanceof Error ? syncError.message : String(syncError)}`,
       )
@@ -258,7 +259,7 @@ export async function POST(req: Request, res: Response) {
       // WebSocket broadcast is best-effort
     }
 
-    console.log(`Test recorded for IO ${ioId}: ${normalizedResult} by ${currentUser ?? 'Unknown'}`)
+    console.log(`${mcmTag(subsystemId)}Test recorded for IO ${ioId}: ${normalizedResult} by ${currentUser ?? 'Unknown'}`)
 
     return res.json({
       success: true,

@@ -21,6 +21,7 @@ import { getSyncCursor, setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { getBroadcastUrl } from '@/lib/broadcast-config'
 import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { mcmTag } from '@/lib/logging/mcm-tag'
 
 // Mass-delete circuit breaker (2026-07-08 durability audit): a delta payload
 // carrying more than this many IO deletes is treated as a cloud-side anomaly
@@ -240,7 +241,7 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   if (deletes.length > MASS_DELETE_LIMIT) {
     massDeleteBlocked = deletes.length
     console.warn(
-      `[Delta] Subsystem ${subsystemId}: MASS-DELETE BLOCKED — payload asked to delete ` +
+      `${mcmTag(subsystemId)}[Delta] Subsystem ${subsystemId}: MASS-DELETE BLOCKED — payload asked to delete ` +
       `${massDeleteBlocked} IOs (> ${MASS_DELETE_LIMIT}). Skipping ALL deletes; upserts still ` +
       `apply and the cursor advances. Rows stay local until an operator runs an explicit full pull.`
     )
@@ -294,10 +295,10 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   }
 
   if (skippedDeletes.length > 0) {
-    console.warn(`[Delta] Subsystem ${subsystemId}: kept ${skippedDeletes.length} cloud-deleted IO(s) with un-pushed local results: ${skippedDeletes.join(', ')}`)
+    console.warn(`${mcmTag(subsystemId)}[Delta] Subsystem ${subsystemId}: kept ${skippedDeletes.length} cloud-deleted IO(s) with un-pushed local results: ${skippedDeletes.join(', ')}`)
   }
   if (protectedClears > 0) {
-    console.warn(`[Delta] Subsystem ${subsystemId}: preserved ${protectedClears} deliberate local clear(s) the cloud would have reverted (stale higher-versioned result held back).`)
+    console.warn(`${mcmTag(subsystemId)}[Delta] Subsystem ${subsystemId}: preserved ${protectedClears} deliberate local clear(s) the cloud would have reverted (stale higher-versioned result held back).`)
   }
 
   return {
