@@ -60,8 +60,8 @@
     "tailwindcss-animate": "^1.0.7",
     "tsc-alias": "^1.8.16",
     "tsconfig-paths": "^4.2.0",
+    "write-excel-file": "^4.1.1",
     "ws": "^8.19.0",
-    "xlsx": "^0.18.5",
     "zod": "^4.3.6",
     "zustand": "^4.5.5"
   },

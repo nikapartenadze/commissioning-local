@@ -452,10 +452,16 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
 
   const handleExport = useCallback(async () => {
     if (!data || data.sheets.length === 0) return
-    const XLSX = await import('xlsx')
-    const wb = XLSX.utils.book_new()
+    // write-excel-file (advisory-free, ~lightweight) replaces the retired `xlsx`
+    // (SheetJS) dependency. Export only — same one-file workbook, one worksheet
+    // per FV sheet, same rows/columns, same 31-char sheet-name truncation, same
+    // Functional-Validation-<date>.xlsx browser download.
+    const { default: writeExcelFile } = await import('write-excel-file/browser')
 
-    for (const sheet of data.sheets) {
+    // Each sheet descriptor: { data: rows-of-cells, sheet: name, columns: widths }.
+    // Cells are plain strings; empty cells are `null` (write-excel-file's
+    // representation of a blank cell — output-identical to an empty string).
+    const sheets = data.sheets.map(sheet => {
       const sheetCols = data.columns
         .filter(c => c.SheetId === sheet.id)
         .sort((a, b) => a.DisplayOrder - b.DisplayOrder)
@@ -480,22 +486,29 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       })
 
       const wsData = [headers, ...rows]
-      const ws = XLSX.utils.aoa_to_sheet(wsData)
-      ws['!cols'] = [
-        { wch: 25 }, { wch: 12 }, { wch: 15 },
+      // Map empty strings to null (write-excel-file's blank-cell form); other
+      // values pass through as plain string cells (String type inferred).
+      const cells = wsData.map(row => row.map(v => (v === '' ? null : v)))
+      const columns = [
+        { width: 25 }, { width: 12 }, { width: 15 },
         ...sheetCols.map(c => ({
-          wch: normalizeFVInputType(c.ColumnType, c.InputType) === 'pass_fail'
+          width: normalizeFVInputType(c.ColumnType, c.InputType) === 'pass_fail'
             ? 10
             : normalizeFVInputType(c.ColumnType, c.InputType) === 'text'
               ? 20
               : 15
         }))
       ]
-      XLSX.utils.book_append_sheet(wb, ws, (sheet.DisplayName || sheet.Name).slice(0, 31))
-    }
+      return {
+        data: cells,
+        sheet: (sheet.DisplayName || sheet.Name).slice(0, 31),
+        columns,
+      }
+    })
 
     const date = new Date().toISOString().split('T')[0]
-    XLSX.writeFile(wb, `Functional-Validation-${date}.xlsx`)
+    // Browser build: `.toFile(name)` triggers the "Save As" / download.
+    await writeExcelFile(sheets).toFile(`Functional-Validation-${date}.xlsx`)
   }, [data, cellValues])
 
   // User-facing label: this same component powers both the Functional tab and
