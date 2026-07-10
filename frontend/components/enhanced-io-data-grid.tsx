@@ -8,46 +8,16 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Copy, Check, ChevronUp, ChevronDown, ChevronsUpDown, Wifi, WifiOff, Network } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Wifi, WifiOff, Network } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
 import { getPartyResponsible } from "@/lib/party-responsible"
-
-type IoItem = {
-  id: number
-  name: string
-  description: string | null
-  result: string | null
-  timestamp: string | null
-  comments: string | null
-  state: string | null
-  subsystemName: string
-  tagType?: string | null
-  failureMode?: string | null
-  assignedTo?: string | null
-  networkDeviceName?: string | null
-  hasNetworkDevice?: boolean
-  installationStatus?: string | null
-  installationPercent?: number | null
-  poweredUp?: boolean | null
-  hasDependencies?: boolean | null
-  // Punchlist resolver state, owned by the cloud and pulled down here. A Failed
-  // IO an electrician/admin marked ADDRESSED (fixed, ready to re-check) or
-  // CLARIFICATION (parked, awaiting engineer input). result stays Pass/Fail.
-  punchlistStatus?: string | null
-  clarificationNote?: string | null
-  trade?: string | null
-}
-
-type TestHistory = {
-  id: number
-  result: string | null
-  state: string | null
-  comments: string | null
-  testedBy: string | null
-  timestamp: string
-}
+import type { IoItem, TestHistory, SortColumn, SortDir } from "./enhanced-io-data-grid/types"
+import { isBlockedByInstallGate, naturalCompare, installRank, extractLane, compareLanes } from "./enhanced-io-data-grid/helpers"
+import { ROW_HEIGHT, LANE_HEADER_HEIGHT } from "./enhanced-io-data-grid/constants"
+import { SortHeader } from "./enhanced-io-data-grid/sort-header"
+import { CopyButton, getStateDisplay } from "./enhanced-io-data-grid/cells"
 
 interface EnhancedIoDataGridProps {
   ios: IoItem[]
@@ -78,115 +48,6 @@ interface EnhancedIoDataGridProps {
    * only drives the UX (button disable + tooltip).
    */
   requireInstalledForTesting?: boolean
-}
-
-/**
- * Mirror of server-side checkInstallGate. Returns true when the install-status
- * gate would block a Pass/Fail attempt on this IO. SPARE IOs are exempt to
- * match the server. Kept inline (rather than in a shared module) because the
- * grid sees the lowercase API shape, not the SQLite PascalCase Io type.
- */
-function isBlockedByInstallGate(io: IoItem, gateActive: boolean): boolean {
-  if (!gateActive) return false
-  const desc = (io.description ?? '').toUpperCase()
-  if (desc.includes('SPARE')) return false
-  return (io.installationStatus ?? '').toLowerCase() !== 'complete'
-}
-
-// Natural sort: "X2" before "X10", "UL26_19" before "UL26_20".
-function naturalCompare(a: string, b: string): number {
-  const ax = (a || '').match(/(\d+)|(\D+)/g) || []
-  const bx = (b || '').match(/(\d+)|(\D+)/g) || []
-  const len = Math.min(ax.length, bx.length)
-  for (let i = 0; i < len; i++) {
-    const av = ax[i]
-    const bv = bx[i]
-    const an = /^\d+$/.test(av)
-    const bn = /^\d+$/.test(bv)
-    if (an && bn) {
-      const d = parseInt(av, 10) - parseInt(bv, 10)
-      if (d !== 0) return d
-    } else if (av !== bv) {
-      return av < bv ? -1 : 1
-    }
-  }
-  return ax.length - bx.length
-}
-
-// Columns the user can click to sort by. Live PLC values (State, Net) are
-// intentionally excluded — they change continuously and would reshuffle rows
-// under the operator's fingers. Default is "ioPoint" ascending, which matches
-// the grid's historical always-natural-sort-by-name behaviour.
-type SortColumn = 'ioPoint' | 'description' | 'result' | 'timestamp' | 'comments' | 'installStatus' | 'reason'
-type SortDir = 'asc' | 'desc'
-
-// Install sort: complete sinks below in-progress so "what still needs work"
-// floats to the top in ascending order. Unknown percent counts as 0.
-function installRank(io: IoItem): number {
-  if ((io.installationStatus ?? '').toLowerCase() === 'complete') return 101
-  return io.installationPercent ?? 0
-}
-
-// Top-level lane = leading "UL<digits>" prefix. Everything else → "Other".
-function extractLane(name: string): string {
-  const m = (name || '').match(/^(UL\d+)/i)
-  return m ? m[1].toUpperCase() : 'Other'
-}
-
-// UL lanes by numeric id ascending, "Other" last.
-function compareLanes(a: string, b: string): number {
-  if (a === b) return 0
-  if (a === 'Other') return 1
-  if (b === 'Other') return -1
-  const an = parseInt(a.replace(/^UL/i, ''), 10)
-  const bn = parseInt(b.replace(/^UL/i, ''), 10)
-  if (!isNaN(an) && !isNaN(bn)) return an - bn
-  return a < b ? -1 : 1
-}
-
-// Sort direction indicator shown in clickable column headers.
-function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
-  if (!active) return <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-30" />
-  return dir === 'asc'
-    ? <ChevronUp className="h-3 w-3 shrink-0" />
-    : <ChevronDown className="h-3 w-3 shrink-0" />
-}
-
-// Clickable column header. The wrapper div keeps the column's width / sticky /
-// background styling; the inner <button> owns padding + click. Rendering the
-// hit target as a <button> also lets the grid's drag-to-scroll guard
-// (target.closest('button')) skip it, so clicking a header sorts instead of
-// starting a drag.
-function SortHeader({
-  column, label, active, dir, onSort, align = 'left', className, style, title,
-}: {
-  column: SortColumn
-  label: string
-  active: boolean
-  dir: SortDir
-  onSort: (c: SortColumn) => void
-  align?: 'left' | 'center'
-  className?: string
-  style?: React.CSSProperties
-  title?: string
-}) {
-  return (
-    <div className={cn("flex-shrink-0", className)} style={style} title={title}>
-      <button
-        type="button"
-        onClick={() => onSort(column)}
-        className={cn(
-          "w-full h-full px-4 py-3 text-sm font-bold uppercase tracking-wide flex items-center gap-1 select-none transition-colors hover:text-[#C6941A]",
-          align === 'center' ? "justify-center" : "justify-start",
-          active ? "text-[#C6941A]" : "text-foreground"
-        )}
-        title={active ? `Sorted ${dir === 'asc' ? 'ascending' : 'descending'} — click to reverse` : `Sort by ${label}`}
-      >
-        <span className="truncate">{label}</span>
-        <SortArrow active={active} dir={dir} />
-      </button>
-    </div>
-  )
 }
 
 // Column widths — responsive via hook
@@ -266,34 +127,6 @@ function useColumnWidths() {
     mute: 50, output: 60,
   }
 }
-
-// Small copy button with check feedback
-function CopyButton({ text, title }: { text: string; title: string }) {
-  const [copied, setCopied] = useState(false)
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-  return (
-    <button
-      className={cn(
-        "ml-1 shrink-0 transition-opacity",
-        copied ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-        copied ? "text-green-400" : "text-muted-foreground hover:text-foreground"
-      )}
-      onClick={handleCopy}
-      title={copied ? "Copied!" : title}
-    >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-    </button>
-  )
-}
-
-// Row height for better touch targets
-const ROW_HEIGHT = 56
-const LANE_HEADER_HEIGHT = 36
 
 type VirtualRow =
   | { type: 'header'; lane: string; count: number }
@@ -926,21 +759,6 @@ export function EnhancedIoDataGrid({
     if (io.result === TEST_CONSTANTS.RESULT_FAILED) return "row-failed"
     if (currentTestIo?.id === io.id) return "row-current-test"
     return "row-default"
-  }
-
-  const getStateDisplay = (state: string | null) => {
-    if (!state || state === 'UNKNOWN') {
-      return <div className="w-6 h-6 min-w-[24px] rounded-full bg-gray-300 dark:bg-gray-600" />
-    }
-
-    if (state === 'TRUE' || state === 'ON' || state === 'HIGH' || state === 'ACTIVE' || state === '1') {
-      return <div className="w-6 h-6 min-w-[24px] rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" />
-    }
-    if (state === 'FALSE' || state === 'OFF' || state === 'LOW' || state === 'INACTIVE' || state === '0') {
-      return <div className="w-6 h-6 min-w-[24px] rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
-    }
-
-    return <div className="w-6 h-6 min-w-[24px] rounded-full bg-gray-300 dark:bg-gray-600" />
   }
 
   // Output / safety-output classification lives in @/lib/io-classification
