@@ -3,6 +3,7 @@ import {
   compareRevision,
   findBaseline,
   evaluateCompliance,
+  displayVerdict,
   type FirmwareBaseline,
 } from '@/lib/plc/identity/compliance'
 import type { DeviceIdentity } from '@/lib/plc/identity/identity-parse'
@@ -59,5 +60,27 @@ describe('evaluateCompliance', () => {
   it('is non_compliant when live revision is older than the minimum', () => {
     expect(evaluateCompliance(ident(1, 166, 32, 50), baselines[0])).toBe('non_compliant')
     expect(evaluateCompliance(ident(1, 166, 33, 10), baselines[0])).toBe('non_compliant')
+  })
+})
+
+describe('displayVerdict (mismatch surfacing)', () => {
+  it('refines compliant to mismatch when live differs from approved', () => {
+    expect(displayVerdict('compliant', '36.11', '36.1')).toBe('mismatch')
+    expect(displayVerdict('compliant', '8.1', '7.1')).toBe('mismatch')
+  })
+
+  it('keeps compliant when live equals approved exactly', () => {
+    expect(displayVerdict('compliant', '36.11', '36.11')).toBe('compliant')
+  })
+
+  it('never touches non-compliant / no_baseline / unreachable verdicts', () => {
+    expect(displayVerdict('non_compliant', '32.0', '33.11')).toBe('non_compliant')
+    expect(displayVerdict('no_baseline', '5.1', null)).toBe('no_baseline')
+    expect(displayVerdict('unreachable', null, '5.1')).toBe('unreachable')
+  })
+
+  it('stays compliant when either revision string is missing', () => {
+    expect(displayVerdict('compliant', '5.1', null)).toBe('compliant')
+    expect(displayVerdict('compliant', null, '5.1')).toBe('compliant')
   })
 })

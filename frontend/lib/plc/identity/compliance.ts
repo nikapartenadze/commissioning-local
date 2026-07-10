@@ -72,3 +72,28 @@ export function evaluateCompliance(
     ? 'compliant'
     : 'non_compliant'
 }
+
+/**
+ * Display-level refinement of a compliant verdict: 'mismatch' when the live
+ * revision differs from the approved revision even though it satisfies the
+ * minimum (i.e. the device runs NEWER firmware than the project was engineered
+ * against). Gating semantics are untouched — a mismatch still counts as
+ * compliant everywhere decisions are made (guided step, filters on
+ * non_compliant); this exists so a deviation from the approved revision is
+ * SHOWN, never silently absorbed into a green badge.
+ *
+ * Takes the pre-formatted "major.minor" strings the scan results already carry
+ * so UI callers need no re-parse; string equality is exact because both sides
+ * are formatted identically.
+ */
+export type DisplayVerdict = ComplianceVerdict | 'mismatch'
+
+export function displayVerdict(
+  verdict: ComplianceVerdict,
+  liveRevision: string | null,
+  approvedMin: string | null,
+): DisplayVerdict {
+  if (verdict !== 'compliant') return verdict
+  if (liveRevision == null || approvedMin == null) return verdict
+  return liveRevision === approvedMin ? 'compliant' : 'mismatch'
+}

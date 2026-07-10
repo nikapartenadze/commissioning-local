@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { AutstandLogo } from '@/components/autstand-logo'
 import { authFetch } from '@/lib/api-config'
+import { displayVerdict, type DisplayVerdict } from '@/lib/plc/identity/compliance'
 
 /**
  * Standalone firmware-compliance inventory page (field tool).
@@ -50,14 +51,17 @@ interface ScanResult {
   error?: string
 }
 
-const VERDICT_META: Record<Verdict, { label: string; cls: string; Icon: typeof CheckCircle2 }> = {
+const VERDICT_META: Record<DisplayVerdict, { label: string; cls: string; Icon: typeof CheckCircle2 }> = {
   compliant: { label: 'Compliant', cls: 'border-success/40 bg-success/10 text-success', Icon: CheckCircle2 },
+  // Satisfies the minimum but runs a DIFFERENT revision than approved (newer
+  // than the project was engineered against) — shown, never silently green.
+  mismatch: { label: 'Differs from approved', cls: 'border-warning/40 bg-warning/10 text-warning', Icon: AlertTriangle },
   non_compliant: { label: 'Below minimum', cls: 'border-destructive/40 bg-destructive/10 text-destructive', Icon: XCircle },
   no_baseline: { label: 'No baseline', cls: 'border-warning/40 bg-warning/10 text-warning', Icon: HelpCircle },
   unreachable: { label: 'Unreachable', cls: 'border-border bg-muted text-muted-foreground', Icon: CircleSlash },
 }
 
-function VerdictBadge({ verdict }: { verdict: Verdict }) {
+function VerdictBadge({ verdict }: { verdict: DisplayVerdict }) {
   const m = VERDICT_META[verdict]
   return (
     <span className={cn('inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-semibold', m.cls)}>
@@ -116,14 +120,18 @@ export default function FirmwarePage() {
     return scan.controllers ? [...scan.controllers, ...scan.devices] : scan.devices
   }, [scan])
 
+  // "Issues" = below minimum OR revision differs from approved (mismatch).
   const rows = useMemo(
-    () => (nonCompliantOnly ? allRows.filter((d) => d.verdict === 'non_compliant') : allRows),
+    () => (nonCompliantOnly
+      ? allRows.filter((d) => displayVerdict(d.verdict, d.liveRevision, d.approvedMin) !== 'compliant'
+          && d.verdict !== 'no_baseline' && d.verdict !== 'unreachable')
+      : allRows),
     [allRows, nonCompliantOnly],
   )
 
   const counts = useMemo(() => {
-    const c = { compliant: 0, non_compliant: 0, no_baseline: 0, unreachable: 0 }
-    for (const d of allRows) c[d.verdict]++
+    const c = { compliant: 0, mismatch: 0, non_compliant: 0, no_baseline: 0, unreachable: 0 }
+    for (const d of allRows) c[displayVerdict(d.verdict, d.liveRevision, d.approvedMin)]++
     return c
   }, [allRows])
 
@@ -183,13 +191,14 @@ export default function FirmwarePage() {
         {scan?.connected && allRows.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <SummaryChip n={counts.compliant} verdict="compliant" />
+            <SummaryChip n={counts.mismatch} verdict="mismatch" />
             <SummaryChip n={counts.non_compliant} verdict="non_compliant" />
             <SummaryChip n={counts.no_baseline} verdict="no_baseline" />
             <SummaryChip n={counts.unreachable} verdict="unreachable" />
             <div className="flex-1" />
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
               <input type="checkbox" checked={nonCompliantOnly} onChange={(e) => setNonCompliantOnly(e.target.checked)} className="accent-destructive" />
-              Show non-compliant only
+              Show issues only
             </label>
           </div>
         )}
@@ -206,7 +215,7 @@ export default function FirmwarePage() {
           </div>
         ) : rows.length === 0 ? (
           <div className="text-center py-20 text-muted-foreground text-sm">
-            {nonCompliantOnly ? 'No non-compliant devices. 🎉' : 'No devices found in this scan.'}
+            {nonCompliantOnly ? 'No firmware issues — every device matches the approved baseline. 🎉' : 'No devices found in this scan.'}
           </div>
         ) : (
           <div className="overflow-x-auto rounded-md border border-border">
@@ -230,7 +239,7 @@ export default function FirmwarePage() {
                     <td className="px-3 py-2 text-muted-foreground">{d.modelName || '—'}</td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums">{d.liveRevision ?? '—'}</td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">{d.approvedMin ?? '—'}</td>
-                    <td className="px-3 py-2"><VerdictBadge verdict={d.verdict} /></td>
+                    <td className="px-3 py-2"><VerdictBadge verdict={displayVerdict(d.verdict, d.liveRevision, d.approvedMin)} /></td>
                     <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground tabular-nums">{d.serial ?? '—'}</td>
                   </tr>
                 ))}
@@ -247,7 +256,7 @@ export default function FirmwarePage() {
   )
 }
 
-function SummaryChip({ n, verdict }: { n: number; verdict: Verdict }) {
+function SummaryChip({ n, verdict }: { n: number; verdict: DisplayVerdict }) {
   const m = VERDICT_META[verdict]
   return (
     <span className={cn('inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold', n === 0 ? 'border-border bg-muted/40 text-muted-foreground' : m.cls)}>
