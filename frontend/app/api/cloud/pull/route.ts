@@ -2,8 +2,7 @@ import { Request, Response } from 'express'
 import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl, getPlcClient } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
-import { computePullRiskOrRefuse } from '@/lib/cloud/pull-guard'
-import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
+import { runFullPull } from '@/lib/cloud/pull-core'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { configService } from '@/lib/config'
 import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
@@ -80,29 +79,35 @@ function describeFetchError(err: unknown): string {
   return err.message
 }
 
-function classifyDescription(desc: string | null): string | null {
-  if (!desc) return null
-  const dl = desc.toLowerCase()
-  if (dl.includes('beacon')) return 'BCN 24V Segment 1'
-  if (dl.includes('pushbutton light') || dl.includes('pb_lt') || dl.includes('pblt') || (dl.includes('button') && dl.includes('light')))
-    return 'Button Light'
-  if (dl.includes('pushbutton') || dl.includes('push button'))
-    return 'Button Press'
-  if (dl.includes('photoeye') || dl.includes('tpe'))
-    return 'TPE Dark Operated'
-  if (dl.includes('vfd') || dl.includes('motor'))
-    return 'Motor/VFD'
-  if (dl.includes('disconnect'))
-    return 'Disconnect Switch'
-  if (dl.includes('light') || dl.includes('lamp') || dl.includes('indicator'))
-    return 'Indicator Light'
-  if (dl.includes('sensor') || dl.includes('prox'))
-    return 'Sensor'
-  if (dl.includes('valve') || dl.includes('solenoid'))
-    return 'Valve/Solenoid'
-  if (dl.includes('safety') || dl.includes('e-stop') || dl.includes('estop'))
-    return 'Safety Device'
-  return null
+/**
+ * L2/FV self-call — POSTs to the scoped /api/cloud/pull-l2 route (its own scoped
+ * delete+insert + FV risk guard). Best-effort: an L2 failure is surfaced via
+ * l2Error but never aborts the IO pull. Passed into runFullPull as deps.pullL2.
+ */
+async function pullL2SelfCall(
+  subsystemId: number,
+  remoteUrl: string,
+  apiPassword: string,
+  force: boolean,
+): Promise<{ l2Pulled: number; l2CellsPulled: number; l2Error: string | null }> {
+  try {
+    const port = process.env.PORT || '3000'
+    const l2Res = await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // Propagate force: an operator who explicitly confirmed the at-risk
+      // overwrite shouldn't have the L2 leg refused by its own FV guard.
+      body: JSON.stringify({ remoteUrl, apiPassword, subsystemId, force }),
+      signal: AbortSignal.timeout(60_000),
+    })
+    const l2Data = await l2Res.json().catch(() => ({} as { success?: boolean; error?: string; l2Pulled?: number; l2CellsPulled?: number }))
+    if (!l2Res.ok || l2Data.success === false) {
+      return { l2Pulled: 0, l2CellsPulled: 0, l2Error: l2Data.error || `L2 pull HTTP ${l2Res.status}` }
+    }
+    return { l2Pulled: l2Data.l2Pulled || 0, l2CellsPulled: l2Data.l2CellsPulled || 0, l2Error: null }
+  } catch (e) {
+    return { l2Pulled: 0, l2CellsPulled: 0, l2Error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /**
@@ -317,183 +322,60 @@ export async function POST(req: Request, res: Response) {
 
     console.log(`[CloudPull] Retrieved ${cloudIos.length} IOs from cloud, upserting to local database...`)
 
-    // ── Result-loss guard (2026-06-04 TPA8/MCM08 incident) ────────────────
-    // The pull below is destructive (DELETE FROM Ios + reinsert cloud state).
-    // The pending-queue check above is the first line of defense, but it
-    // failed catastrophically when the retry cap silently emptied the queue
-    // while the site was offline: the guard saw 0 pending and let the pull
-    // erase 818 unsynced results. This second guard doesn't trust the queue
-    // at all — it compares actual local results against the actual cloud
-    // payload, and refuses when the pull would erase results the cloud
-    // doesn't have. The user can override with body.force === true after an
-    // explicit confirmation in the UI. Shared verbatim with the per-MCM pull
-    // via computePullRiskOrRefuse (subsystemId: null = legacy global scope).
-    const guard = computePullRiskOrRefuse({ db, subsystemId: null, logPrefix: '[CloudPull]' }, cloudIos, body.force === true)
-    if (guard.refuse) {
-      return res.status(guard.refuse.status).json(guard.refuse.body)
-    }
-    const { atRisk, atRiskComments, divergent } = guard
-
-    const localCountRow = getPullStmts().ioCount.get() as { cnt: number }
-    const localIoCount = localCountRow.cnt
-    let pullWarning: string | undefined
-    if (localIoCount > 0 && cloudIos.length < localIoCount) {
-      const reduction = ((localIoCount - cloudIos.length) / localIoCount) * 100
-      if (reduction > 50) {
-        pullWarning = `Cloud returned ${cloudIos.length} IOs but local has ${localIoCount} (${reduction.toFixed(0)}% fewer). Proceeding as requested.`
-        console.warn(`[CloudPull] WARNING: ${pullWarning}`)
-      }
-    }
-
-    const result = db.transaction(() => {
-      const existingProject = getPullStmts().getProject.get(1)
-      if (!existingProject) {
-        getPullStmts().insertProject.run(1, 'Default Project')
-      }
-
-      const existingSubsystem = getPullStmts().getSubsystem.get(subsystemId)
-      if (!existingSubsystem) {
-        getPullStmts().insertSubsystem.run(subsystemId, 1, `Subsystem ${subsystemId}`)
-      }
-      console.log(`[CloudPull] Ensured subsystem ${subsystemId} exists`)
-
-      const beforeCount = (getPullStmts().ioCount.get() as any).cnt
-      const deleteResult = getPullStmts().deleteAllIos.run()
-      console.log(`[CloudPull] DELETE FROM Ios: had ${beforeCount}, deleted ${deleteResult.changes}`)
-      const afterCount = (getPullStmts().ioCount.get() as any).cnt
-      console.log(`[CloudPull] After delete: ${afterCount} IOs remaining`)
-      // F1 (2026-07-03 audit): config sections (network/e-stop/safety/
-      // punchlists) are NO LONGER deleted here. The old pattern deleted them
-      // inside this transaction and re-inserted them only if the later cloud
-      // fetch succeeded — any mid-pull network failure left the section EMPTY
-      // (silent config loss). They are now rewritten by runConfigSidePulls
-      // below: each section does its own scoped delete+reinsert ONLY after
-      // its fetch succeeds (the same shared code path as the per-MCM pull).
-      // Here we only clean up rows belonging to a DIFFERENT subsystem (stale
-      // after a tablet subsystem switch) — the multi-MCM fence above
-      // guarantees this box is single-MCM, so anything not belonging to the
-      // target subsystem is a leftover tenant.
-      const cleanupStale = (sql: string) => db.prepare(sql).run(subsystemId)
-      cleanupStale('DELETE FROM EStopIoPoints WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId != ?))')
-      cleanupStale('DELETE FROM EStopVfds WHERE EpcId IN (SELECT id FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId != ?))')
-      cleanupStale('DELETE FROM EStopEpcs WHERE ZoneId IN (SELECT id FROM EStopZones WHERE SubsystemId != ?)')
-      cleanupStale('DELETE FROM EStopZones WHERE SubsystemId != ?')
-      cleanupStale('DELETE FROM SafetyZoneDrives WHERE ZoneId IN (SELECT id FROM SafetyZones WHERE SubsystemId != ?)')
-      cleanupStale('DELETE FROM SafetyZones WHERE SubsystemId != ?')
-      cleanupStale('DELETE FROM SafetyOutputs WHERE SubsystemId != ?')
-      cleanupStale('DELETE FROM NetworkPorts WHERE NodeId IN (SELECT id FROM NetworkNodes WHERE RingId IN (SELECT id FROM NetworkRings WHERE SubsystemId != ?))')
-      cleanupStale('DELETE FROM NetworkNodes WHERE RingId IN (SELECT id FROM NetworkRings WHERE SubsystemId != ?)')
-      cleanupStale('DELETE FROM NetworkRings WHERE SubsystemId != ?')
-      cleanupStale('DELETE FROM PunchlistItems WHERE PunchlistId IN (SELECT id FROM Punchlists WHERE SubsystemId != ?)')
-      cleanupStale('DELETE FROM Punchlists WHERE SubsystemId != ?')
-      // NOTE: L2 data is NOT deleted here — it's only cleared when fresh L2 data
-      // is successfully fetched from cloud (see L2 pull section below).
-      // This prevents losing FV data if the L2 pull fails.
-      console.log('[CloudPull] Cleaned up stale other-subsystem config rows (target subsystem config is rewritten by side-pulls after fetch success)')
-
-      const upsertStmt = getPullStmts().upsertIo
-      let upsertedCount = 0
-
-      for (const cloudIo of cloudIos) {
-        if (!cloudIo.name || cloudIo.id <= 0) {
-          console.warn(`[CloudPull] Skipping invalid IO: id=${cloudIo.id}, name=${cloudIo.name}`)
-          continue
-        }
-
-        try {
-          upsertStmt.run({
-            id: cloudIo.id,
-            Name: cloudIo.name,
-            Description: cloudIo.description ?? null,
-            SubsystemId: subsystemId,
-            Result: cloudIo.result ?? null,
-            Comments: cloudIo.comments ?? null,
-            Timestamp: cloudIo.timestamp ?? null,
-            TestedBy: cloudIo.testedBy ?? null,
-            IoNumber: cloudIo.order ?? null,
-            InstallationStatus: cloudIo.installationStatus ?? null,
-            InstallationPercent: cloudIo.installationPercent ?? null,
-            PoweredUp: cloudIo.poweredUp === true ? 1 : cloudIo.poweredUp === false ? 0 : null,
-            TagType: cloudIo.tagType ?? null,
-            Version: Number(cloudIo.version) || 0,
-            Trade: cloudIo.trade ?? null,
-            ClarificationNote: cloudIo.clarificationNote ?? null,
-            NetworkDeviceName: cloudIo.networkDeviceName ?? null,
-            PunchlistStatus: cloudIo.punchlistStatus ?? null,
-            CloudSyncedAt: new Date().toISOString(),
-            Order: cloudIo.order ?? null,
-          })
-          upsertedCount++
-        } catch (error) {
-          console.error(`[CloudPull] Failed to upsert IO ${cloudIo.id}:`, error)
-        }
-      }
-
-      const iosWithoutDevice = getPullStmts().getIosWithoutDevice.all() as { id: number; Name: string }[]
-      const updateDeviceStmt = getPullStmts().updateDeviceName
-      for (const io of iosWithoutDevice) {
-        const deviceName = extractDeviceName(io.Name)
-        if (deviceName) {
-          updateDeviceStmt.run(deviceName, io.id)
-        }
-      }
-
-      return upsertedCount
-    })()
-
-    console.log(`[CloudPull] Successfully upserted ${result} IOs to local database`)
-
+    // ── Destructive core (SHARED with the per-MCM pull) ───────────────────
+    // The risk guard → pre-pull backup → scope-correct DELETE+upsert →
+    // TestHistories → tagType backfill → >50% warning → side-pulls + L2 all live
+    // in lib/cloud/pull-core.ts so the two routes can no longer drift (the scoped
+    // route used to silently LACK TestHistories/tagType/>50%). `global: true`
+    // selects the legacy single-MCM behavior: UNSCOPED `DELETE FROM Ios` + the
+    // other-subsystem stale-config cleanup, and whole-table guard/history/backfill
+    // queries. The multi-MCM fence above guarantees this box is single-MCM.
     const cloudHistories = cloudData.testHistories || []
-    let historiesPulled = 0
-    if (cloudHistories.length > 0) {
-      try {
-        db.transaction(() => {
-          getPullStmts().deleteHistories.run()
-          const insertHistoryStmt = getPullStmts().insertHistory
+    const pull = await runFullPull({
+      db,
+      subsystemId,
+      global: true,
+      cloudIos,
+      cloudHistories,
+      remoteUrl,
+      apiPassword: apiPassword || '',
+      force: body.force === true,
+      logPrefix: '[CloudPull]',
+      deps: { createBackup, extractDeviceName, pullL2: pullL2SelfCall },
+    })
 
-          for (const h of cloudHistories) {
-            if (!h.ioId || !h.timestamp) continue
-            try {
-              insertHistoryStmt.run(
-                h.ioId,
-                h.result ?? null,
-                h.testedBy ?? null,
-                h.comments ?? null,
-                h.failureMode ?? null,
-                h.state ?? null,
-                h.timestamp,
-                h.source ?? 'cloud',
-              )
-              historiesPulled++
-            } catch {
-              // Skip individual history records that fail
-            }
-          }
-        })()
-        console.log(`[CloudPull] Pulled ${historiesPulled} test history records from cloud`)
-      } catch (e) {
-        console.error('[CloudPull] Test history pull failed:', e)
+    if (pull.kind !== 'ok') {
+      if (pull.kind === 'refuse') {
+        return res.status(pull.status).json(pull.body)
       }
+      if (pull.kind === 'backup-failed') {
+        return res.status(500).json({
+          success: false,
+          error:
+            'Pre-pull safety backup failed, so the pull was aborted to protect your local data. ' +
+            'A destructive pull without a backup risks unrecoverable loss of unsynced results. ' +
+            'Check disk space / backups folder permissions and try again.',
+        } as CloudPullResponse)
+      }
+      // 'pending-appeared' cannot arise on the global path (no TOCTOU re-check),
+      // but keep the union exhaustive.
+      return res.status(409).json({
+        success: false,
+        error: 'Pull skipped — local test activity was detected during the pull. Local data is preserved.',
+      } as CloudPullResponse)
     }
 
-    try {
-      const untyped = getPullStmts().getUntypedIos.all() as { id: number; Description: string | null }[]
-      let assigned = 0
-      const updateTagTypeStmt = getPullStmts().updateTagType
-      for (const io of untyped) {
-        const tagType = classifyDescription(io.Description)
-        if (tagType) {
-          updateTagTypeStmt.run(tagType, io.id)
-          assigned++
-        }
-      }
-      if (assigned > 0) {
-        console.log(`[CloudPull] Auto-assigned tagType to ${assigned} IOs based on descriptions`)
-      }
-    } catch (error) {
-      console.error('[CloudPull] Error assigning tag types:', error)
-    }
+    const result = pull.iosCount
+    const {
+      historiesPulled, networkPulled, estopPulled, safetyPulled, punchlistsPulled,
+      l2Pulled, l2CellsPulled, l2Error, pullWarning,
+    } = pull
+    console.log(`[CloudPull] Side-pulls done: network=${networkPulled}, estop=${estopPulled}, safety=${safetyPulled}, punchlists=${punchlistsPulled}`)
+    if (l2Error) console.error(`[CloudPull] L2/FV pull failed: ${l2Error}`)
 
+    // ── Legacy single-MCM tail (NOT part of the shared body) ──────────────
+    // Persist the cloud creds + subsystem so a legacy single-MCM tablet reopens
+    // on the same subsystem. The scoped route intentionally does NOT do this.
     try {
       const { configService } = await import('@/lib/config')
       await configService.saveConfig({
@@ -561,55 +443,6 @@ export async function POST(req: Request, res: Response) {
       console.log('[CloudPull] Broadcast skipped:', (e as Error).message)
     }
 
-    // F1 (2026-07-03 audit): network / e-stop / safety / punchlists now come
-    // from the SAME success-gated, subsystem-scoped delete+reinsert helper the
-    // per-MCM pull uses. A failed/empty fetch keeps the existing local rows
-    // instead of leaving a section that the old in-transaction delete had
-    // already emptied.
-    console.log('[CloudPull] Running config side-pulls (network/estop/safety/punchlists)...')
-    const sidePulls = await runConfigSidePulls(subsystemId, remoteUrl, apiPassword || '', { db })
-    const networkPulled = sidePulls.networkPulled
-    const estopPulled = sidePulls.estopPulled
-    const safetyPulled = sidePulls.safetyPulled
-    const punchlistsPulled = sidePulls.punchlistsPulled
-    console.log(`[CloudPull] Side-pulls done: network=${networkPulled}, estop=${estopPulled}, safety=${safetyPulled}, punchlists=${punchlistsPulled}`)
-
-    // Pull L2 (Functional Validation) data via the SCOPED /api/cloud/pull-l2
-    // route. The old inline block here ran `DELETE FROM L2CellValues` (and
-    // L2Devices/Columns/Sheets) UNSCOPED — wiping EVERY MCM's local FV — and
-    // re-inserted devices with no SubsystemId. On a multi-MCM/server laptop a
-    // single "Pull" therefore destroyed other MCMs' functional-validation work.
-    // pull-l2 deletes ONLY this subsystem's cells/devices, stamps SubsystemId,
-    // takes its own pre-pull backup, and triggers the VFD flag sync — one
-    // correct L2 code path shared with the per-MCM pull. Best-effort: an L2
-    // failure is surfaced via l2Error but never aborts the IO pull.
-    let l2Pulled = 0
-    let l2CellsPulled = 0
-    let l2Error: string | null = null
-    try {
-      const port = process.env.PORT || '3000'
-      const l2Res = await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // Propagate force: an operator who explicitly confirmed the at-risk
-        // overwrite shouldn't have the L2 leg refused by its own FV guard.
-        body: JSON.stringify({ remoteUrl, apiPassword, subsystemId, force: body.force === true }),
-        signal: AbortSignal.timeout(60_000),
-      })
-      const l2Data = await l2Res.json().catch(() => ({} as { success?: boolean; error?: string; l2Pulled?: number; l2CellsPulled?: number }))
-      if (!l2Res.ok || l2Data.success === false) {
-        l2Error = l2Data.error || `L2 pull HTTP ${l2Res.status}`
-        console.error(`[CloudPull] L2/FV pull failed: ${l2Error}`)
-      } else {
-        l2Pulled = l2Data.l2Pulled || 0
-        l2CellsPulled = l2Data.l2CellsPulled || 0
-        console.log(`[CloudPull] L2 PULL SUCCESS (scoped to subsystem ${subsystemId}): ${l2Pulled} devices, ${l2CellsPulled} cells`)
-      }
-    } catch (e) {
-      l2Error = e instanceof Error ? e.message : String(e)
-      console.error('[CloudPull] L2/FV pull EXCEPTION:', l2Error)
-    }
-
     // Durable recovery-log trace of this DESTRUCTIVE pull (F1: the legacy
     // route previously left NO recovery-log record of a global wipe).
     auditLog({
@@ -627,9 +460,9 @@ export async function POST(req: Request, res: Response) {
         punchlistsPulled,
         l2Pulled,
         l2CellsPulled,
-        overrodeAtRiskResults: atRisk.length,
-        overrodeAtRiskComments: atRiskComments.length,
-        overrodeDivergentNewer: divergent.length,
+        overrodeAtRiskResults: pull.atRisk.length,
+        overrodeAtRiskComments: pull.atRiskComments.length,
+        overrodeDivergentNewer: pull.divergent.length,
       },
     })
 
