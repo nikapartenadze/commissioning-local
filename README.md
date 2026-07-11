@@ -2,6 +2,8 @@
 
 Field commissioning tool for industrial PLC systems. Used by technicians on tablets and laptops to test, validate, and commission conveyor and VFD systems on-site. Runs either as a **single-laptop field tool** or as a **centralized server** that drives many MCMs from one machine over the site LAN.
 
+> **In progress:** [FV-HARDENING-PLAN.md](FV-HARDENING-PLAN.md) — fail-loud FV saves, cloud-controlled minimum-version lockout, and fleet startup/outdated alerts, following the 2026-07-11 MCM04/MCM11 FV data-loss incident. Implementation is partially in the working tree (this repo + `commissioning-cloud/`).
+
 ## What It Does
 
 - Connects to Allen-Bradley PLCs over Ethernet/IP
