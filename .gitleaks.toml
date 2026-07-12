@@ -27,7 +27,11 @@ tags = ["jwt", "dotnet"]
 [[rules]]
 id = "field-tool-api-password"
 description = "Field tool ApiPassword value"
-regex = '''(?i)"ApiPassword"\s*:\s*"(?!\s*")[^"]{4,}"'''
+# RE2 (gitleaks' engine) has no lookahead — `(?!\s*")` here panicked gitleaks
+# on config load, so EVERY scan since 2026-07-09 crashed without scanning.
+# Equivalent intent without lookahead: value must contain a non-space char
+# and be at least 4 chars long.
+regex = '''(?i)"ApiPassword"\s*:\s*"\s*[^"\s][^"]{2,}"'''
 tags = ["api-key"]
 
 [[rules]]
@@ -36,8 +40,15 @@ description = "Azure AD client secret (value form)"
 regex = '''(?i)(AZURE_AD_CLIENT_SECRET|ClientSecret)\s*[:=]\s*["']?[A-Za-z0-9_.~-]{30,}["']?'''
 tags = ["azure", "oauth"]
 
-[allowlist]
+# NOTE: modern [[allowlists]] syntax (gitleaks >= 8.25). The legacy singular
+# [allowlist] table was silently ignored by newer gitleaks, so even the
+# ***REMOVED*** purge markers and local:local@ throwaways were reported.
+# regexTarget = "match" — these patterns describe the matched line, not just
+# the extracted secret.
+
+[[allowlists]]
 description = "Placeholders, templates, and the post-purge redaction marker"
+regexTarget = "match"
 regexes = [
   '''\*\*\*REMOVED\*\*\*''',
   '''change-me''',
@@ -45,11 +56,33 @@ regexes = [
   '''example\.com''',
   '''(?i)xx+''',
   '''(?i)placeholder''',
-  '''local:local@''',            # throwaway dev Postgres in *.compose.yml
+  '''"ApiPassword"\s*:\s*"secret"''',      # literal docs example (CLAUDE.md history)
+  '''(?i)"apiPassword"\s*:\s*"password\d+"''', # password123/456 docs examples (backend/ history)
+  '''user:pass@''',                        # README connection-string example
 ]
+
+[[allowlists]]
+description = "Throwaway single-word dev credentials of the local test stacks (compose files, harnesses)"
+regexTarget = "match"
+regexes = [
+  '''local:local@''',               # local-cloud.compose.yml
+  '''dev:dev@''',                   # delta-harness
+  '''battle:battle@''',             # battle soak stack
+  '''postgres:password@localhost''', # env.example template
+  '''POSTGRES_PASSWORD[:=]\s*"?(dev|battle|local|postgres)"?\s*$''',
+  '''devkey123''',                  # delta-harness / battle API key
+]
+
+[[allowlists]]
+description = "Template/docs files and historical build artifacts (committed portable builds pre-2026; .next manifests carry per-build Next.js encryption keys, purged dirs no longer exist at HEAD)"
 paths = [
-  '''(^|/)\.env\.example$''',
+  '''(^|/)\.?env\.example$''',
   '''(^|/)\.env\.sample$''',
   '''\.gitleaks\.toml$''',
   '''SECURITY\.md$''',
+  '''(^|/)\.next/''',
+  '''^deploy/umui/umui\.zip$''',
+  '''^io-checkout-v[0-9.]+-portable/''',
+  '''^IO-Checkout-Tool-Portable/''',
+  '''^commissioning-tool-frontend/''',
 ]
