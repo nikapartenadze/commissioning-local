@@ -265,7 +265,7 @@ export function createVersionLockGuard(getState: () => VersionLockState = getVer
       message: state.quarantined
         ? (state.quarantineMessage ?? 'This tool has been remotely paused by the administrator.')
         : state.lockMessage
-          ?? `This tool version (${state.currentVersion}) is below the minimum allowed (${state.minVersion}). Update to continue.`,
+          ?? `Tool disabled: version ${state.currentVersion} is behind the required minimum ${state.minVersion}. Update to continue.`,
       currentVersion: state.currentVersion,
       minVersion: state.minVersion,
       quarantined: state.quarantined,

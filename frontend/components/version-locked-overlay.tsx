@@ -121,14 +121,14 @@ export function VersionLockedOverlay() {
           <ShieldAlert className="h-7 w-7 text-amber-500" />
         </div>
         <h2 className="text-lg font-bold text-foreground">
-          {lock.quarantined ? 'Tool paused by administrator' : 'Update required to continue'}
+          {lock.quarantined ? 'Tool paused by administrator' : 'TOOL DISABLED — version too far behind'}
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
           {lock.quarantined
             ? (lock.quarantineMessage
               ?? 'This tool has been remotely paused by the administrator — contact the commissioning lead. Work already saved on this machine keeps syncing.')
             : lock.lockMessage
-              ?? 'This version of the commissioning tool has been locked out because a newer version contains required data-safety fixes.'}
+              ?? 'You are behind on versions. This tool has been disabled because newer versions contain required data-safety fixes — nothing can be tested or saved on it until it updates.'}
         </p>
         {!lock.quarantined && (
           <p className="mt-3 text-sm font-medium text-foreground">
