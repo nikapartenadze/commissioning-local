@@ -149,20 +149,26 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
     })()
   }, [])
 
-  useEffect(() => {
-    if (health !== 'ok') return
-    ;(async () => {
-      try {
-        const r = await apiCall<{ projects: Project[] }>('/api/controller-management/projects')
-        setProjects(r.projects)
+  // Load the .ACD list. autoSelect matches an MCM to its project on first load;
+  // a post-upload refresh passes false so it never yanks the user's selection.
+  const loadProjects = useCallback(async (autoSelect: boolean) => {
+    try {
+      const r = await apiCall<{ projects: Project[] }>('/api/controller-management/projects')
+      setProjects(r.projects)
+      if (autoSelect) {
         const n = norm(mcm.name)
         const exact = r.projects.find((p) => norm(p.name) === n)
         const subs = r.projects.filter((p) => { const pn = norm(p.name); return pn.includes(n) || n.includes(pn) })
         if (exact) setAcd(exact.path); else if (subs.length === 1) setAcd(subs[0].path)
-      } catch (e) { setErr(`Failed to list projects: ${e instanceof Error ? e.message : e}`) }
-      finally { setLoaded(true) }
-    })()
-  }, [mcm.name, health])
+      }
+    } catch (e) { setErr(`Failed to list projects: ${e instanceof Error ? e.message : e}`) }
+    finally { setLoaded(true) }
+  }, [mcm.name])
+
+  useEffect(() => {
+    if (health !== 'ok') return
+    loadProjects(true)
+  }, [health, loadProjects])
 
   // When an ACD is selected, reflect the path it actually targets: if Studio
   // stored a comm path, pull the IP + slot out of it; otherwise keep the MCM's.
@@ -260,13 +266,13 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
             if (upPollRef.current) window.clearInterval(upPollRef.current); upPollRef.current = null
             setUpBusy(false)
             const it = j.items?.[0]
-            if (it?.status === 'done') setOk(`Upload complete${it.out ? ` → ${it.out.split(/[\\/]/).pop()}` : ''}`)
+            if (it?.status === 'done') { setOk(`Upload complete${it.out ? ` → ${it.out.split(/[\\/]/).pop()}` : ''}`); loadProjects(false) }
             else setErr(`Upload failed: ${it?.error || j.error || 'unknown error'}`)
           }
         } catch { /* keep polling */ }
       }, 600)
     } catch (e) { setUpBusy(false); setUpJob(null); setErr(`Could not start upload: ${e instanceof Error ? e.message : e}`) }
-  }, [ip, mcm])
+  }, [ip, mcm, loadProjects])
 
   const anyBusy = !!busy || upBusy
   const t = tone(mode)
@@ -313,6 +319,10 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
           {connected ? 'Online' : 'Not read'}
         </div>
       </div>
+
+      {/* shared status banner — covers read, mode change, download and upload */}
+      {err && <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"><XCircle className="w-4 h-4 shrink-0" />{err}</div>}
+      {ok && <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success"><CheckCircle2 className="w-4 h-4 shrink-0" />{ok}</div>}
 
       {/* program select */}
       <div className="space-y-1.5">
@@ -404,9 +414,6 @@ export function ControllerConsole({ mcm }: { mcm: ConsoleTarget }) {
             </div>
           </div>
         )}
-
-        {err && <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"><XCircle className="w-4 h-4 shrink-0" />{err}</div>}
-        {ok && <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm text-success"><CheckCircle2 className="w-4 h-4 shrink-0" />{ok}</div>}
 
         <button onClick={startDownload} disabled={downloadBlocked} className={cn(btnPrimary, 'w-full py-3 text-sm')}>
           {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
