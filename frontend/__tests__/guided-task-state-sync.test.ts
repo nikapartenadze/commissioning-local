@@ -127,18 +127,39 @@ describe('enqueueGuidedTaskStateSync', () => {
     expect(memDb.prepare('SELECT * FROM GuidedTaskStatePendingSyncs').all()).toHaveLength(0)
   })
 
-  it('keeps the pending row when the cloud push fails (HTTP 500) for background retry', async () => {
-    const fetchMock = vi.fn(async () => new Response('boom', { status: 500 }))
-    vi.stubGlobal('fetch', fetchMock)
+  // Transient failures must NOT strike toward the park cap on the instant-push
+  // path — mirrors drain-simple-queue's classification (2026-07-12 fix; this
+  // path had drifted and struck on 401/429/5xx).
+  it.each([[500], [503], [429], [401]])(
+    'keeps the pending row WITHOUT a strike on transient HTTP %i',
+    async (status) => {
+      const fetchMock = vi.fn(async () => new Response('boom', { status }))
+      vi.stubGlobal('fetch', fetchMock)
 
-    enqueueGuidedTaskStateSync(16, 'task:x', 'skipped', 'reason', 'ASH')
-    await flush()
+      enqueueGuidedTaskStateSync(16, 'task:x', 'skipped', 'reason', 'ASH')
+      await flush()
 
-    const pending = memDb.prepare('SELECT * FROM GuidedTaskStatePendingSyncs').all() as any[]
-    expect(pending).toHaveLength(1)
-    expect(pending[0].RetryCount).toBe(1)
-    expect(pending[0].LastError).toContain('500')
-  })
+      const pending = memDb.prepare('SELECT * FROM GuidedTaskStatePendingSyncs').all() as any[]
+      expect(pending).toHaveLength(1)
+      expect(pending[0].RetryCount).toBe(0)
+    },
+  )
+
+  it.each([[400], [422]])(
+    'strikes (RetryCount+1) on a permanent HTTP %i, row kept for the drain to park',
+    async (status) => {
+      const fetchMock = vi.fn(async () => new Response('rejected', { status }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      enqueueGuidedTaskStateSync(16, 'task:x', 'skipped', 'reason', 'ASH')
+      await flush()
+
+      const pending = memDb.prepare('SELECT * FROM GuidedTaskStatePendingSyncs').all() as any[]
+      expect(pending).toHaveLength(1)
+      expect(pending[0].RetryCount).toBe(1)
+      expect(pending[0].LastError).toContain(String(status))
+    },
+  )
 
   it('keeps the pending row when the network is offline (fetch throws)', async () => {
     const fetchMock = vi.fn(async () => { throw new Error('network down') })

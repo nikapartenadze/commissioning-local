@@ -141,20 +141,45 @@ describe('enqueueEstopCheckSync', () => {
     expect(pendingAfter).toHaveLength(0)
   })
 
-  it('keeps the pending row when the cloud push fails (HTTP 500) for background retry', async () => {
-    seedCheck({ version: 1, result: 'pass' })
+  // Transient failures (cloud restarting, rate limit, auth blip) must NOT
+  // burn strikes toward the park cap on this instant-push path — this is
+  // SAFETY data, and the push can fire many times during a cloud flap. The
+  // background drain (drain-simple-queue) already classified this correctly;
+  // this enqueue-time path had drifted and struck on everything (2026-07-12).
+  it.each([[500], [503], [429], [401]])(
+    'keeps the pending row WITHOUT a strike on transient HTTP %i',
+    async (status) => {
+      seedCheck({ version: 1, result: 'pass' })
 
-    const fetchMock = vi.fn(async () => new Response('boom', { status: 500 }))
-    vi.stubGlobal('fetch', fetchMock)
+      const fetchMock = vi.fn(async () => new Response('boom', { status }))
+      vi.stubGlobal('fetch', fetchMock)
 
-    enqueueEstopCheckSync(16, 'Zone A', 'EPC_01_Check')
-    await flush()
+      enqueueEstopCheckSync(16, 'Zone A', 'EPC_01_Check')
+      await flush()
 
-    const pending = memDb.prepare('SELECT * FROM EStopCheckPendingSyncs').all() as any[]
-    expect(pending).toHaveLength(1)
-    expect(pending[0].RetryCount).toBe(1)
-    expect(pending[0].LastError).toContain('500')
-  })
+      const pending = memDb.prepare('SELECT * FROM EStopCheckPendingSyncs').all() as any[]
+      expect(pending).toHaveLength(1)
+      expect(pending[0].RetryCount).toBe(0) // transient — no strike toward the park cap
+    },
+  )
+
+  it.each([[400], [422]])(
+    'strikes (RetryCount+1) on a permanent HTTP %i, row kept for the drain to park',
+    async (status) => {
+      seedCheck({ version: 1, result: 'pass' })
+
+      const fetchMock = vi.fn(async () => new Response('rejected', { status }))
+      vi.stubGlobal('fetch', fetchMock)
+
+      enqueueEstopCheckSync(16, 'Zone A', 'EPC_01_Check')
+      await flush()
+
+      const pending = memDb.prepare('SELECT * FROM EStopCheckPendingSyncs').all() as any[]
+      expect(pending).toHaveLength(1)
+      expect(pending[0].RetryCount).toBe(1)
+      expect(pending[0].LastError).toContain(String(status))
+    },
+  )
 
   it('keeps the pending row when the network is offline (fetch throws)', async () => {
     seedCheck({ version: 1, result: 'pass' })

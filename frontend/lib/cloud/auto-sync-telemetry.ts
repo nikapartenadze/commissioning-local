@@ -14,6 +14,7 @@
 
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
+import { resolveActiveMcms } from '@/lib/cloud/active-mcms'
 import { getMcmStatus, getEmbeddedMcmConnection } from '@/lib/mcm-registry'
 
 /** Per-instance re-entrancy guards for the telemetry pushers. */
@@ -42,11 +43,7 @@ export async function pushNetworkStatus(state: TelemetryState): Promise<void> {
     // MCM's OWN state from the mode-agnostic registry status (which reflects
     // the gateway-polled cache in REMOTE mode and the live clients in
     // embedded mode). Guarded so single-MCM tablets are untouched.
-    let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
-    try { mcms = await configService.getMcms() } catch { mcms = [] }
-    const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
-    const remoteMode = process.env.PLC_MODE === 'remote'
-    const centralMode = remoteMode || active.length > 1
+    const { active, remoteMode, centralMode } = await resolveActiveMcms()
 
     if (centralMode && active.length >= 1) {
       for (const m of active) {
@@ -181,11 +178,7 @@ export async function pushEstopStatus(state: TelemetryState): Promise<void> {
     // MCM read "Red" in the cloud even while live. Report each active MCM's
     // OWN estop state, scoped to its subsystem, from the mode-agnostic
     // registry. Guarded so single-MCM tablets are untouched.
-    let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
-    try { mcms = await configService.getMcms() } catch { mcms = [] }
-    const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
-    const remoteMode = process.env.PLC_MODE === 'remote'
-    const centralMode = remoteMode || active.length > 1
+    const { active, remoteMode, centralMode } = await resolveActiveMcms()
 
     if (centralMode && active.length >= 1) {
       for (const m of active) {
@@ -367,11 +360,7 @@ export async function pushNetworkDiagnostics(state: TelemetryState): Promise<voi
     // the registry's getAllNetworkSnapshots() — each snapshot is decorated
     // with its owning `subsystemId` — group by subsystem, and POST one batch
     // per subsystem. Guarded so single-MCM tablets are untouched.
-    let mcms: Array<{ subsystemId: string; enabled?: boolean; ip?: string }> = []
-    try { mcms = await configService.getMcms() } catch { mcms = [] }
-    const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
-    const remoteMode = process.env.PLC_MODE === 'remote'
-    const centralMode = remoteMode || active.length > 1
+    const { active, remoteMode, centralMode } = await resolveActiveMcms()
 
     // Controller Identity folded into the batch so the cloud's fleet firmware
     // compliance sees the PLC itself (not a network node). Cached after the

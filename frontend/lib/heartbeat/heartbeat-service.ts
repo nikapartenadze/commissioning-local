@@ -238,9 +238,9 @@ let loopTimer: NodeJS.Timeout | null = null
 
 /**
  * Start a standalone heartbeat loop. Most callers should instead let
- * auto-sync.ts piggyback on its existing 30 s pushTimer (one timer,
- * one log line per cycle). This is here for callers that want an
- * independent loop (e.g. unit tests, scripts).
+ * auto-sync.ts piggyback on its existing pushTimer (pushIntervalMs,
+ * default 10 s — one timer, one log line per cycle). This is here for
+ * callers that want an independent loop (e.g. unit tests, scripts).
  */
 export function startHeartbeatLoop(intervalMs = 30_000): void {
   if (loopTimer) return

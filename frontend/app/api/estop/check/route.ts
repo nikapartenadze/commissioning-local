@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
+import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
@@ -157,8 +158,16 @@ export function enqueueEstopCheckSync(subsystemId: number, zoneName: string, che
 
     if (!resp.ok) {
       // Cloud/proxy did not accept — keep the pending row; background drain retries.
+      // Strike ONLY on a permanent 4xx. A transient failure (401/429/5xx —
+      // cloud restarting, rate limit, auth blip) must not burn strikes toward
+      // the park cap: this instant-push can fire many times while the cloud
+      // flaps, and this is SAFETY data. Mirrors drain-simple-queue's
+      // classification (the background drain already got this right; this
+      // enqueue-time path had drifted — 2026-07-12 unification).
       console.warn(`[EStopCheck Sync] HTTP ${resp.status} pushing ${zoneName}/${checkTag} (${checkType}) — leaving pending for background retry`)
-      try { incrementPendingRetry.run(`HTTP ${resp.status}`, subsystemId, zoneName, checkTag, checkType) } catch { /* best-effort */ }
+      if (!isNetworkLevelFailure({ httpStatus: resp.status })) {
+        try { incrementPendingRetry.run(`HTTP ${resp.status}`, subsystemId, zoneName, checkTag, checkType) } catch { /* best-effort */ }
+      }
       return
     }
 

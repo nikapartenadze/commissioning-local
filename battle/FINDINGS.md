@@ -829,3 +829,27 @@ runner now reports "N OF M UNVERIFIED — NO BASELINE / UNREACHABLE" (gray).
 Gotcha reminder: `up` re-runs the seeder (KEEP_DATA=0) which re-seeds the tool
 DB — guided/firmware state does NOT survive a stack recreate; that's the
 harness, not a persistence bug (verified: the GuidedTaskState write persists).
+
+## 2026-07-12 — I8_FV vs cloud-flap on the NEW binary (s3, 30min, FV-heavy): GREEN — reconnections cannot wipe FV
+Purpose-built proof run for the "constant reconnections were wiping FV" hypothesis
+(2026-07-11 incident follow-up). Tool image rebuilt LOCALLY from main 9963447 —
+first soak exercising the v2.43.0 non-destructive FV pull + the FV-hardening
+batch (this closes the 07-08 follow-up #1 for local runs; registry image still
+needs build_and_push for the nightly). SCENARIO=s3 (link down 2min of every 6 —
+~5 full disconnect/reconnect cycles), FV_FRACTION=0.4, HOT_FRACTION=0, 6 bots.
+
+Verdict pass=true. **I8_FV: fv_writes=497, judged=386 (single-writer),
+missing_local=0, divergent=0.** I18: 386/0 mismatches (non-vacuous). I4: 406 IO
+writes, 0 wipes, 0 silent drops. I1 p95 8.9ms, 0 gaps. Cloud leg
+inconclusive-safe (active=71 still draining at judgment — pending, not loss).
+Counts as clean run 2 of 2 toward flipping I8_FV to GATE (run 1 = 07-08), BUT
+that run was the old binary — recommend one more nightly on a freshly pushed
+registry image before the flip.
+
+Known-explained: l2_pending_parked_at_end=1063 — the L2 drain counts version
+conflicts as strikes (rebase +1 each), and bot-speed re-edits of the same cell
+during a flap burn the cap. Values verified present locally (I8_FV) and the
+park message points at cloud having them. Real techs don't re-edit one cell 10×
+in minutes; still, this is drift dimension #1 in SYNC-HARDENING-PLAN's
+queue-unification section (IO defers conflicts to B7 with 2× cap; L2 strikes)
+— resolve there, not by tuning the harness.

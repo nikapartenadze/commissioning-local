@@ -21,6 +21,7 @@ import { setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
 import { mcmTag } from '@/lib/logging/mcm-tag'
+import { isActiveMcm } from '@/lib/cloud/active-mcms'
 import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
@@ -329,7 +330,7 @@ export async function pullAllConfiguredMcms(state: PullState, trigger: string): 
   // this server. Blank-IP stations aren't in use here and get freshened on
   // their first Connect (Connect All auto-pull), so re-pulling all 19 every
   // reconnect would be pure waste.
-  const active = mcms.filter((m) => m.enabled !== false && m.subsystemId && m.ip && m.ip.trim())
+  const active = mcms.filter(isActiveMcm)
   if (active.length === 0) {
     void pullFromCloud(state) // legacy field-tablet mode / nothing active yet
     return

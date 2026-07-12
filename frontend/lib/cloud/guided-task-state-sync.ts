@@ -20,6 +20,7 @@
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { enqueueSyncPush } from '@/lib/cloud/sync-queue'
+import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
 
 const insertPendingSync = db.prepare(
   `INSERT INTO GuidedTaskStatePendingSyncs (SubsystemId, TaskId, Status, Reason, ActorName, UpdatedAt)
@@ -95,8 +96,14 @@ export function enqueueGuidedTaskStateSync(
     }
 
     if (!resp.ok) {
+      // Strike ONLY on a permanent 4xx — transient failures (401/429/5xx) must
+      // not burn strikes toward the park cap on this instant-push path; the
+      // background drain (drain-simple-queue) classifies the same way. This
+      // path had drifted and struck on everything (2026-07-12 unification).
       console.warn(`[GuidedTaskState Sync] HTTP ${resp.status} pushing task ${taskId} — leaving pending for background retry`)
-      try { incrementPendingRetry.run(`HTTP ${resp.status}`, subsystemId, taskId) } catch { /* best-effort */ }
+      if (!isNetworkLevelFailure({ httpStatus: resp.status })) {
+        try { incrementPendingRetry.run(`HTTP ${resp.status}`, subsystemId, taskId) } catch { /* best-effort */ }
+      }
       return
     }
 

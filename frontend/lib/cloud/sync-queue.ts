@@ -66,11 +66,3 @@ async function runPushLoop(key: string, entry: QueueEntry, pushFn: () => Promise
     queue.delete(key)
   }
 }
-
-/**
- * Returns true if there is currently a push running or queued for this key.
- * Useful for diagnostics — not for control flow.
- */
-export function isSyncPending(key: string): boolean {
-  return queue.has(key)
-}

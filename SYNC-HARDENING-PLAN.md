@@ -69,6 +69,28 @@ forensics **~40% of mutation classes trailed, ~15% reconstructable end-to-end**.
    punchlist triage, VFD blocker set/clear (row DELETE loses existence), cloud e-stop
    upserts, access-key role changes (privilege escalation is invisible today).
 
+## Queue-drain unification — state of play (2026-07-12 review)
+
+A full inventory of the five `*PendingSyncs` drains found the background paths
+healthier than the 07-09 audit assumed: **all five PARK at cap (none delete)**,
+e-stop + guided already share the extracted `drain-simple-queue.ts` engine, and
+every background drain classifies transient failures correctly via
+`sync-failure-classification.ts`. Shipped same-day: the **instant-push** paths
+for e-stop and guided had drifted (struck toward the park cap on 401/429/5xx —
+safety data burning strikes during a cloud flap) — fixed + regression-tested;
+the active-MCM/central-mode predicate (a data-safety rule) existed as 5 copies
+— unified into `lib/cloud/active-mcms.ts`; dead `isSyncPending` export deleted.
+
+**Deliberately NOT unified (needs a reviewed design, not a drive-by):** folding
+the IO and L2 hand-rolled loops into the shared engine. Their semantics
+genuinely differ (L2 batches one POST for the whole batch; IO parks permanent
+rejects immediately, runs the B7 conflict reconciler, and doubles the cap for
+version conflicts; audit namespaces differ l2.push.* vs sync.push.*; only IO+L2
+broadcast a park toast). A unified engine must first pick ONE policy per
+dimension — that choice changes data-safety behavior and belongs in a review,
+ideally together with P2 item 10 (idempotency + lte gate), which would delete
+most of the version-conflict machinery outright.
+
 ## P2 — hardening / hygiene
 
 10. Op-UUID idempotency on cloud `/api/sync/update` + keep `lte` gate → cleanly kills
