@@ -117,3 +117,35 @@ describe('mergeHistories', () => {
     expect(out[0].source).toBe('local')
   })
 })
+
+describe('mergeHistories — subsystem-wide (All Test History) behavior', () => {
+  it('does NOT dedup same-result same-time rows on DIFFERENT IOs', () => {
+    const out = mergeHistories(
+      [localRow({ ioId: 10 })],
+      [cloudRow({ ioId: 11 })],
+    )
+    expect(out).toHaveLength(2)
+  })
+
+  it('preserves ioName/ioDescription/subsystemName from cloud rows', () => {
+    const out = mergeHistories(
+      [],
+      [cloudRow({ id: 900, ioName: 'UL17_18:I.In_5', ioDescription: 'Belt PE', subsystemName: 'MCM04' }) as any],
+    )
+    expect(out).toHaveLength(1)
+    const row = out[0] as any
+    expect(row.ioName).toBe('UL17_18:I.In_5')
+    expect(row.subsystemName).toBe('MCM04')
+    expect(row.source).toBe('cloud')
+  })
+
+  it('shows synthesized punchlist entries (negative cloud ids) as their own rows', () => {
+    const out = mergeHistories(
+      [localRow()],
+      [cloudRow({ id: -3, result: 'Addressed', testedBy: 'coordinator@lci.ge', timestamp: '2026-07-12T08:00:00.500Z' })],
+    )
+    // Same 5s window as the local Failed row but different result — distinct.
+    expect(out).toHaveLength(2)
+    expect(out.find(r => r.result === 'Addressed')!.id).toBe(-3)
+  })
+})

@@ -40,7 +40,7 @@ export interface MergedHistoryEntry {
   source: 'local' | 'cloud'
 }
 
-export type LocalHistoryInput = Omit<MergedHistoryEntry, 'source'>
+export type LocalHistoryInput = Omit<MergedHistoryEntry, 'source'> & Record<string, unknown>
 export interface CloudHistoryInput {
   id: number
   ioId: number
@@ -50,6 +50,10 @@ export interface CloudHistoryInput {
   state?: string | null
   comments?: string | null
   failureMode?: string | null
+  /** Subsystem-wide feeds also carry ioName/ioDescription/subsystemName —
+   *  preserved verbatim on the merged row (the All Test History dialog
+   *  renders them). */
+  [extra: string]: unknown
 }
 
 const DEDUP_WINDOW_MS = 5_000
@@ -87,6 +91,10 @@ export function mergeHistories(
     const cMs = epoch(c.timestamp)
     const dup = merged.find((m) => {
       if (m.source !== 'local') return false
+      // ioId must match — the subsystem-wide (All Test History) merge runs
+      // over many IOs, and near-simultaneous same-result events on DIFFERENT
+      // IOs are distinct entries. No-op for the per-IO merge.
+      if (m.ioId !== c.ioId) return false
       if ((m.result ?? '') !== (c.result ?? '')) return false
       if (!testedByCompatible(m.testedBy, c.testedBy)) return false
       const mMs = epoch(m.timestamp)
@@ -101,6 +109,9 @@ export function mergeHistories(
       continue
     }
     merged.push({
+      // Spread first: subsystem-wide feeds carry ioName/ioDescription/
+      // subsystemName, which must survive onto the merged row.
+      ...c,
       id: c.id,
       ioId: c.ioId,
       result: c.result ?? null,
