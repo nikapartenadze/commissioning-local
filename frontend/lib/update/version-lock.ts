@@ -33,6 +33,11 @@ export interface VersionLockPolicy {
   lockMessage: string | null
   /** ISO timestamp of when this policy was fetched from the cloud. */
   fetchedAt: string
+  /** Per-machine quarantine (2026-07-12): admin froze THIS box regardless of
+   *  version. Delivered via the heartbeat response, persisted like the rest of
+   *  the policy so it survives restarts/offline. */
+  quarantined?: boolean
+  quarantineMessage?: string | null
 }
 
 export interface VersionLockState {
@@ -40,6 +45,10 @@ export interface VersionLockState {
   currentVersion: string
   minVersion: string | null
   lockMessage: string | null
+  /** True when the lock is a per-machine quarantine (updating won't clear it —
+   *  only an admin release does). */
+  quarantined: boolean
+  quarantineMessage: string | null
   /** 'live' = from this process's manifest fetches; 'persisted' = restored from
    *  disk (cloud not reachable yet); 'none' = no policy ever seen (fail-open). */
   policySource: 'live' | 'persisted' | 'none'
@@ -52,12 +61,15 @@ export function evaluateVersionLock(
   policySource: VersionLockState['policySource'],
 ): VersionLockState {
   const minVersion = policy?.minVersion ?? null
-  const locked = !!minVersion && compareVersions(currentVersion, minVersion) < 0
+  const quarantined = policy?.quarantined === true
+  const locked = quarantined || (!!minVersion && compareVersions(currentVersion, minVersion) < 0)
   return {
     locked,
     currentVersion,
     minVersion,
     lockMessage: policy?.lockMessage ?? null,
+    quarantined,
+    quarantineMessage: policy?.quarantineMessage ?? null,
     policySource,
   }
 }
@@ -77,6 +89,8 @@ function readPersistedPolicy(): VersionLockPolicy | null {
         minVersion: typeof parsed.minVersion === 'string' ? parsed.minVersion : null,
         lockMessage: typeof parsed.lockMessage === 'string' ? parsed.lockMessage : null,
         fetchedAt: typeof parsed.fetchedAt === 'string' ? parsed.fetchedAt : '',
+        quarantined: parsed.quarantined === true,
+        quarantineMessage: typeof parsed.quarantineMessage === 'string' ? parsed.quarantineMessage : null,
       }
     }
   } catch { /* absent/corrupt → no persisted policy */ }
@@ -125,6 +139,10 @@ export async function refreshVersionLock(): Promise<VersionLockState> {
       minVersion: typeof manifest.minVersion === 'string' && manifest.minVersion.trim() ? manifest.minVersion.trim() : null,
       lockMessage: typeof manifest.lockMessage === 'string' && manifest.lockMessage.trim() ? manifest.lockMessage.trim() : null,
       fetchedAt: new Date().toISOString(),
+      // The manifest knows nothing about per-machine quarantine — preserve the
+      // heartbeat-delivered flag across manifest refreshes.
+      quarantined: cachedPolicy?.quarantined === true,
+      quarantineMessage: cachedPolicy?.quarantineMessage ?? null,
     }
     const changed = !cachedPolicy
       || cachedPolicy.minVersion !== next.minVersion
@@ -140,6 +158,45 @@ export async function refreshVersionLock(): Promise<VersionLockState> {
     }
   }
   return getVersionLockState()
+}
+
+/**
+ * Apply policy fields delivered on the heartbeat RESPONSE (second channel
+ * beside the manifest — works even when the manifest URL is blocked), plus the
+ * per-machine quarantine flag that ONLY the heartbeat carries. Persisted so a
+ * quarantined box stays frozen across restarts/offline.
+ */
+export function applyHeartbeatPolicy(
+  versionPolicy: { minVersion?: string | null; lockMessage?: string | null } | null | undefined,
+  quarantine: { quarantined?: boolean; message?: string | null } | null | undefined,
+): void {
+  bootstrapFromDisk()
+  if (versionPolicy === undefined && quarantine === undefined) return
+  const next: VersionLockPolicy = {
+    minVersion: versionPolicy !== undefined
+      ? (typeof versionPolicy?.minVersion === 'string' && versionPolicy.minVersion.trim() ? versionPolicy.minVersion.trim() : null)
+      : cachedPolicy?.minVersion ?? null,
+    lockMessage: versionPolicy !== undefined
+      ? (typeof versionPolicy?.lockMessage === 'string' && versionPolicy.lockMessage.trim() ? versionPolicy.lockMessage.trim() : null)
+      : cachedPolicy?.lockMessage ?? null,
+    fetchedAt: new Date().toISOString(),
+    quarantined: quarantine !== undefined ? quarantine?.quarantined === true : cachedPolicy?.quarantined === true,
+    quarantineMessage: quarantine !== undefined ? (quarantine?.message ?? null) : cachedPolicy?.quarantineMessage ?? null,
+  }
+  const changed = !cachedPolicy
+    || cachedPolicy.minVersion !== next.minVersion
+    || cachedPolicy.lockMessage !== next.lockMessage
+    || (cachedPolicy.quarantined === true) !== (next.quarantined === true)
+    || (cachedPolicy.quarantineMessage ?? null) !== (next.quarantineMessage ?? null)
+  cachedPolicy = next
+  cachedSource = 'live'
+  if (changed) {
+    persistPolicy(next)
+    const state = evaluateVersionLock(getCurrentAppVersion(), cachedPolicy, cachedSource)
+    console.log(
+      `[VersionLock] heartbeat policy: minVersion=${next.minVersion ?? 'none'} quarantined=${state.quarantined} → ${state.locked ? 'LOCKED' : 'ok'}`,
+    )
+  }
 }
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -205,11 +262,13 @@ export function createVersionLockGuard(getState: () => VersionLockState = getVer
     if (!state.locked) return next()
     return res.status(503).json({
       error: 'version_locked',
-      message:
-        state.lockMessage
-        ?? `This tool version (${state.currentVersion}) is below the minimum allowed (${state.minVersion}). Update to continue.`,
+      message: state.quarantined
+        ? (state.quarantineMessage ?? 'This tool has been remotely paused by the administrator.')
+        : state.lockMessage
+          ?? `This tool version (${state.currentVersion}) is below the minimum allowed (${state.minVersion}). Update to continue.`,
       currentVersion: state.currentVersion,
       minVersion: state.minVersion,
+      quarantined: state.quarantined,
     })
   }
 }

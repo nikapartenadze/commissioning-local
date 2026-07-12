@@ -63,6 +63,10 @@ export interface HeartbeatPayload {
 interface HeartbeatResponseBody {
   ok?: boolean
   commands?: IncomingCommand[]
+  /** Version-lock policy (second delivery channel beside the manifest). */
+  versionPolicy?: { minVersion?: string | null; lockMessage?: string | null } | null
+  /** Per-machine quarantine — ONLY the heartbeat carries this. */
+  quarantine?: { quarantined?: boolean; message?: string | null } | null
 }
 
 /**
@@ -209,6 +213,17 @@ export async function sendHeartbeat(): Promise<void> {
   // command executor must never crash the heartbeat loop.
   try {
     const body = (await resp.json()) as HeartbeatResponseBody
+    // Version-lock / quarantine riding the response (2026-07-12). Best-effort;
+    // a malformed field must never break the heartbeat loop.
+    if (body && (body.versionPolicy !== undefined || body.quarantine !== undefined)) {
+      try {
+        const { applyHeartbeatPolicy } = await import('@/lib/update/version-lock')
+        applyHeartbeatPolicy(body.versionPolicy, body.quarantine ?? undefined)
+      } catch (e) {
+        console.warn('[Heartbeat] applyHeartbeatPolicy failed:', e instanceof Error ? e.message : e)
+      }
+    }
+
     const commands = Array.isArray(body?.commands) ? body.commands : []
     if (commands.length === 0) return
 

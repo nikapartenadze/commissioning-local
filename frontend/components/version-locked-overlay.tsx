@@ -28,6 +28,8 @@ interface VersionLockInfo {
   currentVersion: string
   minVersion: string | null
   lockMessage: string | null
+  quarantined?: boolean
+  quarantineMessage?: string | null
 }
 
 type InstallPhase = 'idle' | 'launching' | 'in-progress' | 'launch-failed'
@@ -118,17 +120,29 @@ export function VersionLockedOverlay() {
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-500/15">
           <ShieldAlert className="h-7 w-7 text-amber-500" />
         </div>
-        <h2 className="text-lg font-bold text-foreground">Update required to continue</h2>
+        <h2 className="text-lg font-bold text-foreground">
+          {lock.quarantined ? 'Tool paused by administrator' : 'Update required to continue'}
+        </h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          {lock.lockMessage
-            ?? 'This version of the commissioning tool has been locked out because a newer version contains required data-safety fixes.'}
+          {lock.quarantined
+            ? (lock.quarantineMessage
+              ?? 'This tool has been remotely paused by the administrator — contact the commissioning lead. Work already saved on this machine keeps syncing.')
+            : lock.lockMessage
+              ?? 'This version of the commissioning tool has been locked out because a newer version contains required data-safety fixes.'}
         </p>
-        <p className="mt-3 text-sm font-medium text-foreground">
-          Running <span className="font-mono">{lock.currentVersion}</span> — minimum allowed{' '}
-          <span className="font-mono">{lock.minVersion ?? '?'}</span>
-        </p>
+        {!lock.quarantined && (
+          <p className="mt-3 text-sm font-medium text-foreground">
+            Running <span className="font-mono">{lock.currentVersion}</span> — minimum allowed{' '}
+            <span className="font-mono">{lock.minVersion ?? '?'}</span>
+          </p>
+        )}
 
-        {phase === 'in-progress' ? (
+        {lock.quarantined ? (
+          <p className="mt-5 text-xs text-muted-foreground">
+            Updating does not clear a quarantine — only the administrator can release this tool.
+            The screen clears itself automatically when released (checked every heartbeat).
+          </p>
+        ) : phase === 'in-progress' ? (
           <div className="mt-5 flex flex-col items-center gap-2">
             <Loader2 className="h-6 w-6 animate-spin text-amber-500" />
             <p className="text-sm text-muted-foreground">

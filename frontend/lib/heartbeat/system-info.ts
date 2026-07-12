@@ -107,6 +107,17 @@ export interface HeartbeatSystemInfo {
    * cloud can attribute diagnostics to the correct MCM.
    */
   networkDevices?: Array<NetworkDeviceSnapshot & { subsystemId?: string }>
+  /**
+   * Outbox health across ALL FIVE pending-sync queues (active/parked/oldest
+   * age) — drives the cloud's tool_stuck_queue fleet alert. 2026-07-12.
+   */
+  queueStats?: import('@/lib/heartbeat/queue-stats').QueueStats
+  /**
+   * Recovery-audit event counts since process start (e.g. l2.cell.fail,
+   * l2.outbox.evict) — a box whose techs keep hitting save failures becomes
+   * visible fleet-side without reading its logs.
+   */
+  auditCounters?: Record<string, number>
 }
 
 function bytesToMb(bytes: number): number {
@@ -288,6 +299,35 @@ function collectActiveOperators(): string[] {
 /**
  * Build the full systemInfo blob for a heartbeat payload. Pure read-only.
  */
+function collectQueueStatsSafe() {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { collectQueueStats } = require('@/lib/heartbeat/queue-stats') as typeof import('@/lib/heartbeat/queue-stats')
+    return collectQueueStats()
+  } catch {
+    return undefined
+  }
+}
+
+function collectAuditCountersSafe(): Record<string, number> | undefined {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAuditCounts } = require('@/lib/logging/recovery-log') as typeof import('@/lib/logging/recovery-log')
+    const counts = getAuditCounts()
+    // Ship only the failure-class counters the cloud alerts on — the full map
+    // is noise (io.test alone would dominate).
+    const keep = ['l2.cell.fail', 'l2.outbox.evict', 'l2.push.park', 'sync.push.park', 'sync.push.drop', 'l2.pull.blocked']
+    const out: Record<string, number> = {}
+    for (const k of keep) {
+      const v = (counts as Record<string, number | undefined>)[k]
+      if (v) out[k] = v
+    }
+    return Object.keys(out).length > 0 ? out : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function collectSystemInfo(): HeartbeatSystemInfo {
   const cpus = os.cpus()
   const cpuModel = cpus[0]?.model ?? 'unknown'
@@ -324,6 +364,11 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
     plc: collectPlcStatus(),
     pendingSyncCount: collectPendingSyncCount(),
     lastCloudSyncAt: collectLastCloudSyncAt(),
+    // Queue health across ALL FIVE outbox tables + audit-event counters since
+    // process start — the cloud's fleet-alert sweep (tool_stuck_queue, save-
+    // failure visibility) reads these. Best-effort, never breaks a heartbeat.
+    queueStats: collectQueueStatsSafe(),
+    auditCounters: collectAuditCountersSafe(),
     // Only emitted on central servers, so field-tablet payloads are unchanged.
     ...(isCentralDeployment() ? { central: true } : {}),
     ...(activeOperators.length > 0 ? { activeOperators } : {}),

@@ -18,6 +18,7 @@
  *     and the heartbeat loop is replaced wholesale by the new build.
  */
 
+import { spawnSync } from 'child_process'
 import { getMachineId } from './machine-id'
 import { launchUpdateInstall } from '@/lib/update/install-launcher'
 
@@ -69,6 +70,23 @@ export async function executeCommand(cmd: IncomingCommand): Promise<CommandResul
 
       case 'update': {
         return await handleUpdateCommand(cmd)
+      }
+
+      // ── Remote ops batch (2026-07-12) ─────────────────────────────────────
+      case 'restart': {
+        return handleRestartCommand(cmd)
+      }
+
+      case 'force-sync': {
+        return await handleForceSyncCommand(cmd)
+      }
+
+      case 'set-config': {
+        return await handleSetConfigCommand(cmd)
+      }
+
+      case 'upload-journals': {
+        return await handleUploadJournalsCommand(cmd)
       }
 
       default: {
@@ -134,5 +152,105 @@ async function handleUpdateCommand(cmd: IncomingCommand): Promise<CommandResult>
     id: cmd.id,
     status: outcome.ok ? 'done' : 'failed',
     result: clampResult(outcome.message),
+  }
+}
+
+// ── Remote ops batch (2026-07-12) ──────────────────────────────────────────
+
+/** True when the tool runs as the NSSM Windows service (auto-restarts on exit). */
+function isServiceMode(): boolean {
+  if (process.platform !== 'win32') return false
+  try {
+    const r = spawnSync('sc', ['query', 'CommissioningTool'], { timeout: 5000, encoding: 'utf8' })
+    return r.status === 0 && /RUNNING|START_PENDING/.test(r.stdout ?? '')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Clean restart. ONLY valid under the NSSM service (AppExit Restart relaunches
+ * us); a portable install would just die and stay down, so it refuses. The
+ * exit is DELAYED past the next heartbeat tick so the 'done' ack ships first.
+ */
+function handleRestartCommand(cmd: IncomingCommand): CommandResult {
+  if (!isServiceMode()) {
+    return {
+      id: cmd.id,
+      status: 'failed',
+      result: 'not running as the CommissioningTool service (portable mode?) — a restart would stay down; restart on the box instead',
+    }
+  }
+  const DELAY_MS = 25_000 // > heartbeat tick, so the ack reaches the cloud first
+  console.warn(`[Command] restart requested from cloud — exiting in ${DELAY_MS / 1000}s (NSSM relaunches)`)
+  const t = setTimeout(() => process.exit(0), DELAY_MS)
+  t.unref?.()
+  return { id: cmd.id, status: 'done', result: `restarting in ${DELAY_MS / 1000}s (service auto-relaunch)` }
+}
+
+/**
+ * Unpark the four non-IO queues (L2/e-stop/guided/blocker) and kick an
+ * immediate push drain. IO rows stay operator-gated via push-force by design —
+ * force-writing IO results past the version gate needs a human decision.
+ */
+async function handleForceSyncCommand(cmd: IncomingCommand): Promise<CommandResult> {
+  try {
+    const { db } = await import('@/lib/db-sqlite')
+    const { auditLog } = await import('@/lib/logging/recovery-log')
+    const tables = ['L2PendingSyncs', 'EStopCheckPendingSyncs', 'GuidedTaskStatePendingSyncs', 'DeviceBlockerPendingSyncs']
+    let unparked = 0
+    for (const t of tables) {
+      try {
+        const r = db.prepare(`UPDATE ${t} SET DeadLettered = 0, RetryCount = 0 WHERE DeadLettered = 1`).run()
+        unparked += r.changes
+      } catch { /* table missing on old DB */ }
+    }
+    if (unparked > 0) {
+      auditLog({ type: 'sync.reconcile.enqueue', reason: `cloud force-sync command unparked ${unparked} row(s)`, detail: { commandId: cmd.id } })
+    }
+    try {
+      const { getAutoSyncService } = await import('@/lib/cloud/auto-sync')
+      getAutoSyncService()?.kickPush()
+    } catch { /* push tick will pick the rows up anyway */ }
+    return { id: cmd.id, status: 'done', result: `unparked ${unparked} row(s) (L2/e-stop/guided/blocker) + push kicked; IO parks need push-force on the box` }
+  } catch (err) {
+    return { id: cmd.id, status: 'failed', result: clampResult(`force-sync failed: ${err instanceof Error ? err.message : String(err)}`) }
+  }
+}
+
+/**
+ * Remote subsystem reassignment for a SINGLE-MCM tablet (the "walking back and
+ * forth to fix a wrong assignment" case). Central boxes refuse — their MCM
+ * list is managed on the box and a blind swap could disconnect live MCMs.
+ */
+async function handleSetConfigCommand(cmd: IncomingCommand): Promise<CommandResult> {
+  const payload = (cmd.payload ?? {}) as { subsystemId?: unknown }
+  const sid = typeof payload.subsystemId === 'number' && Number.isInteger(payload.subsystemId) && payload.subsystemId > 0
+    ? payload.subsystemId
+    : null
+  if (!sid) return { id: cmd.id, status: 'failed', result: 'set-config requires payload.subsystemId (positive integer)' }
+  try {
+    const { configService } = await import('@/lib/config')
+    if (process.env.PLC_MODE === 'remote' || (await configService.getMcms()).length > 0) {
+      return { id: cmd.id, status: 'failed', result: 'central/multi-MCM box — manage the MCM list on the box, not via set-config' }
+    }
+    const before = String((await configService.getConfig()).subsystemId ?? '')
+    await configService.saveConfig({ subsystemId: String(sid) })
+    const { auditLog } = await import('@/lib/logging/recovery-log')
+    auditLog({ type: 'config.remote', reason: 'cloud set-config command', detail: { commandId: cmd.id, subsystemId: { from: before, to: String(sid) } } })
+    return { id: cmd.id, status: 'done', result: `subsystemId ${before || '(unset)'} -> ${sid}` }
+  } catch (err) {
+    return { id: cmd.id, status: 'failed', result: clampResult(`set-config failed: ${err instanceof Error ? err.message : String(err)}`) }
+  }
+}
+
+/** Ship the recovery journal to the cloud NOW (same uploader as the 6 h timer). */
+async function handleUploadJournalsCommand(cmd: IncomingCommand): Promise<CommandResult> {
+  try {
+    const { runJournalUpload } = await import('@/lib/cloud/journal-uploader')
+    await runJournalUpload()
+    return { id: cmd.id, status: 'done', result: 'journal upload run completed (see cloud /api/sync/journal store)' }
+  } catch (err) {
+    return { id: cmd.id, status: 'failed', result: clampResult(`journal upload failed: ${err instanceof Error ? err.message : String(err)}`) }
   }
 }

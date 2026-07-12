@@ -1036,6 +1036,14 @@ class AutoSyncService {
     this.pull.lastManualPullAt = Date.now()
   }
 
+  /**
+   * Kick an immediate push drain (remote `force-sync` command, 2026-07-12) —
+   * same code path as the periodic tick, just now. Fire-and-forget.
+   */
+  kickPush(): void {
+    void this.pushToCloud().catch(() => { /* tick loop keeps retrying */ })
+  }
+
   private _lastReconcileAt = 0
   /**
    * Throttled orphan reconcile: re-enqueue local results/comments the cloud is

@@ -55,6 +55,7 @@ export type AuditEventType =
   | 'plc.connect'
   | 'plc.disconnect'
   | 'mcm.import'
+  | 'config.remote' // cloud-pushed set-config command changed local config (who/what in detail)
   | 'server.start'
   | 'db.sanity'; // runtime schema-sanity sweep found drift (missing table/column, forbidden DDL, quick_check failure)
 
@@ -110,8 +111,20 @@ let _cachedDir = '';
 let _cachedDay = '';
 let _cachedPath = '';
 
+// In-memory per-type counters since process start (2026-07-12). Cheap fleet
+// telemetry: the heartbeat ships these so the cloud can alert on a box whose
+// techs are fighting the tool (many l2.cell.fail / outbox evictions) without
+// anyone reading its logs. Reset on restart by design — the JSONL files stay
+// the durable record.
+const _countsByType: Partial<Record<AuditEventType, number>> = {};
+
+export function getAuditCounts(): Partial<Record<AuditEventType, number>> {
+  return { ..._countsByType };
+}
+
 export function auditLog(event: AuditEvent): void {
   try {
+    _countsByType[event.type] = (_countsByType[event.type] ?? 0) + 1;
     const now = new Date();
     const day = dayStamp(now);
     const logDir = resolveLogsDirPath();
