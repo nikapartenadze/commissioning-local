@@ -853,3 +853,20 @@ park message points at cloud having them. Real techs don't re-edit one cell 10×
 in minutes; still, this is drift dimension #1 in SYNC-HARDENING-PLAN's
 queue-unification section (IO defers conflicts to B7 with 2× cap; L2 strikes)
 — resolve there, not by tuning the harness.
+
+## 2026-07-12 — v2.43.1 RELEASE soak (all, 60min, fresh tool+cloud images): FULL PASS
+Release-gate run for v2.43.1 (tag 9c66945) with BOTH heavy images rebuilt from
+the shipped code (tool = v2.43.1 tree incl. remote-ops/quarantine/updating-
+freeze; cloud = today's deployed f871cdc/6b3fe3e with tolerant heartbeat +
+fleet alerts). SCENARIO=all: download storm + cloud flap 3-12min + mutator +
+full feature fractions.
+
+Verdict pass=true, every gate green and non-vacuous:
+I4 482 IO writes / 0 wipes / 0 silent drops; I8_FV 1,718 FV writes / 0 missing
+/ 0 divergent; I18 908 judged / 0 mismatches; I22 estop 0, I23 guided (48) 0,
+I24 blocker (72) 0, I25 punchlist (205) + deps (248) 0/0, I26 vfd-wizard (318)
+0 mismatches. I3 1 injected download → restores seen. I1 p95 19.4ms, 0 gaps.
+I7 inconclusive-safe (queue never drained under continuous chaos — pull
+correctly deferred). I2/I20 inconclusive by design (<120min window — nightly's
+job). The new heartbeat queueStats/auditCounters fields flowed through the
+tolerant cloud heartbeat without issue.
