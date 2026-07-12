@@ -13,6 +13,9 @@ type TestHistory = {
   comments: string | null
   testedBy: string | null
   timestamp: string
+  /** 'cloud' = action done on another tablet / the cloud UI, merged in by
+   *  /api/history/:ioId. Local and cloud ids can collide — key on both. */
+  source?: 'local' | 'cloud'
 }
 
 interface TestHistoryDialogProps {
@@ -89,7 +92,7 @@ export function TestHistoryDialog({
               </thead>
               <tbody className="bg-background divide-y divide-border">
                 {history.map((record) => (
-                  <tr key={record.id} className="hover:bg-muted/50">
+                  <tr key={`${record.source ?? 'local'}-${record.id}`} className="hover:bg-muted/50">
                     <td className="px-4 py-3 text-sm">
                       {formatTimestamp(record.timestamp)}
                     </td>
