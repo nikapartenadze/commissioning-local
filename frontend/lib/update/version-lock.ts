@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { NextFunction, Request, Response } from 'express'
-import { compareVersions, fetchReleaseManifest, getCurrentAppVersion } from '@/lib/update/update-utils'
+import { compareVersions, fetchReleaseManifest, getCurrentAppVersion, isUpdateInProgress } from '@/lib/update/update-utils'
 import { resolveUpdateStatePath } from '@/lib/storage-paths'
 
 /**
@@ -251,13 +251,37 @@ export function isVersionLockExempt(method: string, pathname: string): boolean {
   return VERSION_LOCK_ALLOWLIST.some(p => pathname === p || pathname.startsWith(`${p}/`))
 }
 
+// isUpdateInProgress() reads update-status.json — cache it briefly so the
+// guard doesn't stat the file on every mutating request.
+let _updatingCache: { value: boolean; at: number } | null = null
+function isUpdatingCached(): boolean {
+  if (_updatingCache && Date.now() - _updatingCache.at < 3000) return _updatingCache.value
+  const value = isUpdateInProgress()
+  _updatingCache = { value, at: Date.now() }
+  return value
+}
+
 /**
- * Express middleware: 503 `version_locked` on every mutating API route while
- * the lock is active. Mounted BEFORE the API router in server-express.ts.
+ * Express middleware: 503 on every mutating API route while the lock is
+ * active OR an update is genuinely in flight (download/install window —
+ * operators wait behind the "updating" screen instead of writing into a
+ * process that is about to be replaced). Mounted BEFORE the API router.
+ * A failed/stale update reads as terminal (stuck-state healing), so the
+ * freeze clears itself and the tool resumes on the old version — the
+ * graceful fallback.
  */
-export function createVersionLockGuard(getState: () => VersionLockState = getVersionLockState) {
+export function createVersionLockGuard(
+  getState: () => VersionLockState = getVersionLockState,
+  isUpdating: () => boolean = isUpdatingCached,
+) {
   return function versionLockGuard(req: Request, res: Response, next: NextFunction) {
     if (isVersionLockExempt(req.method, req.path)) return next()
+    if (isUpdating()) {
+      return res.status(503).json({
+        error: 'updating',
+        message: 'Tool is updating — please wait. It restarts automatically; if the update fails, the tool resumes by itself.',
+      })
+    }
     const state = getState()
     if (!state.locked) return next()
     return res.status(503).json({

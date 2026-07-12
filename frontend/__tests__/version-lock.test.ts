@@ -217,6 +217,31 @@ describe('version-lock Express guard', () => {
     expect(isVersionLockExempt('POST', '/api/updates-feed')).toBe(false)
   })
 
+  it('blocks writes with 503 "updating" while an install is in flight — and releases when it ends', () => {
+    let updating = true
+    const guard = createVersionLockGuard(() => UNLOCKED, () => updating)
+    let { req, res, next } = fakeReqRes('POST', '/api/l2/cell')
+    guard(req, res, next)
+    expect(next).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(503)
+    expect(res.body.error).toBe('updating')
+
+    // Graceful fallback: install failed/finished → terminal state → writes flow.
+    updating = false
+    ;({ req, res, next } = fakeReqRes('POST', '/api/l2/cell'))
+    guard(req, res, next)
+    expect(next).toHaveBeenCalled()
+  })
+
+  it('the update/status/auth surface stays reachable during an update', () => {
+    const guard = createVersionLockGuard(() => UNLOCKED, () => true)
+    for (const p of ['/api/update/install', '/api/auth/login', '/api/health/check']) {
+      const { req, res, next } = fakeReqRes('POST', p)
+      guard(req, res, next)
+      expect(next).toHaveBeenCalled()
+    }
+  })
+
   it('guard consults live state via _setPolicyForTests + getVersionLockState default', () => {
     _setPolicyForTests({ minVersion: '2.43.0', lockMessage: null, fetchedAt: '' }, 'live')
     const guard = createVersionLockGuard()

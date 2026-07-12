@@ -38,7 +38,9 @@ export function VersionLockedOverlay() {
   const [lock, setLock] = useState<VersionLockInfo | null>(null)
   const [phase, setPhase] = useState<InstallPhase>('idle')
   const [installMessage, setInstallMessage] = useState<string | null>(null)
+  const [updateTarget, setUpdateTarget] = useState<string | null>(null)
   const wasLockedRef = useRef(false)
+  const updatingRef = useRef(false)
 
   const applyStatus = useCallback((status: any) => {
     const vl = status?.versionLock
@@ -56,9 +58,16 @@ export function VersionLockedOverlay() {
     if (st === 'checking' || st === 'downloading' || st === 'installing' || st === 'restarting') {
       setPhase('in-progress')
       setInstallMessage(status?.installState?.message ?? null)
+      setUpdateTarget(status?.installState?.version ?? null)
     } else if (st === 'error') {
+      // Graceful fallback: the install died (or went stale) — the freeze
+      // clears, the tool keeps working on the current version, and the cloud
+      // gets the update-stalled alert. Only the LOCKED screen keeps showing
+      // the failure detail (it has the retry button).
       setPhase(p => (p === 'in-progress' || p === 'launching' ? 'launch-failed' : p))
       setInstallMessage(status?.installState?.message ?? null)
+    } else if (st === 'success' || st === 'idle') {
+      setPhase(p => (p === 'in-progress' ? 'idle' : p))
     }
   }, [])
 
@@ -70,7 +79,7 @@ export function VersionLockedOverlay() {
         const res = await fetch('/api/update/status', { cache: 'no-store' })
         if (!cancelled && res.ok) applyStatus(await res.json())
       } catch { /* server unreachable — the connection guard handles that */ }
-      if (!cancelled) timer = setTimeout(poll, wasLockedRef.current ? 10_000 : 30_000)
+      if (!cancelled) timer = setTimeout(poll, updatingRef.current ? 4_000 : wasLockedRef.current ? 10_000 : 30_000)
     }
     void poll()
     // Fast path: the WS client relays HeartbeatAck.versionLock as a window event.
@@ -104,6 +113,45 @@ export function VersionLockedOverlay() {
       setInstallMessage(e instanceof Error ? e.message : 'network error')
     }
   }, [])
+
+  const updating = phase === 'in-progress'
+  updatingRef.current = updating
+
+  // Cloud-pushed (or lock-screen) update in flight, on a tool that is NOT
+  // version-locked: freeze every browser with a plain "updating" screen. The
+  // server is 503ing writes behind this anyway; when the service restarts the
+  // connection-lost overlay takes over, and the WS version-change detection
+  // reloads everyone onto the new build. If the install FAILS, installState
+  // goes terminal → this screen clears itself and work resumes (fallback).
+  if (updating && !lock?.locked) {
+    return (
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-live="assertive"
+        aria-label="Tool is updating"
+        className="fixed inset-0 z-[9998] flex items-center justify-center bg-slate-950/85 backdrop-blur-sm"
+        onKeyDownCapture={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation() } }}
+      >
+        <div className="mx-4 max-w-lg rounded-xl border-2 border-sky-500/70 bg-card p-6 text-center shadow-2xl">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-sky-500/15">
+            <Loader2 className="h-7 w-7 animate-spin text-sky-500" />
+          </div>
+          <h2 className="text-lg font-bold text-foreground">
+            TOOL IS UPDATING{updateTarget ? ` to v${updateTarget}` : ''}
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {installMessage ?? 'The administrator pushed an update.'} Please wait — testing is paused
+            on every screen until the tool restarts on the new version. This screen clears itself.
+          </p>
+          <p className="mt-4 text-xs text-muted-foreground">
+            Nothing is lost: work already saved keeps syncing, and if the update fails the tool
+            resumes on the current version automatically.
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   if (!lock?.locked) return null
 
