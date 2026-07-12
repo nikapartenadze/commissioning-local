@@ -4,6 +4,7 @@ import { UserProvider, useUser } from '@/lib/user-context'
 import { Toaster } from '@/components/ui/toaster'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { ConnectionGuard } from '@/components/connection-guard'
+import { VersionLockedOverlay } from '@/components/version-locked-overlay'
 import { LoginScreen } from '@/components/login-screen'
 import { ChangePinGate } from '@/components/change-pin-gate'
 import { router } from './router'
@@ -38,6 +39,9 @@ export function App() {
           {/* App-wide browser↔server connection guard: full-screen blocking
               overlay on heartbeat loss + slow banner, on every route. */}
           <ConnectionGuard />
+          {/* Cloud-controlled minimum-version lockout: full-screen update
+              screen while this build is below the fleet minimum (F7). */}
+          <VersionLockedOverlay />
           <Toaster />
         </ThemeProvider>
       </UserProvider>

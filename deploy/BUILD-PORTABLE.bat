@@ -9,7 +9,6 @@ echo.
 set "PROJECT_DIR=%~dp0.."
 set "FRONTEND_DIR=%PROJECT_DIR%\frontend"
 set "OUTPUT_DIR=%PROJECT_DIR%\portable"
-if not defined APP_VERSION set "APP_VERSION=1.0.0"
 
 set "PLCTAG_VER=v2.6.15"
 set "PLCTAG_URL=https://github.com/libplctag/libplctag/releases/download/%PLCTAG_VER%/libplctag_%PLCTAG_VER:~1%_windows_x64.zip"
@@ -27,6 +26,17 @@ if %errorlevel% neq 0 (
 )
 for /f "tokens=*" %%v in ('node --version') do set "NODE_VER=%%v"
 echo   Node.js %NODE_VER%
+
+REM ── Default APP_VERSION from frontend/package.json (never a stale hardcode) ──
+if not defined APP_VERSION (
+    for /f "usebackq tokens=*" %%v in (`node -p "require('%FRONTEND_DIR:\=\\%\\package.json').version"`) do set "APP_VERSION=%%v"
+)
+if not defined APP_VERSION (
+    echo   ERROR: could not resolve APP_VERSION from frontend\package.json
+    pause
+    exit /b 1
+)
+echo   App version: %APP_VERSION%
 
 REM ══════════════════════════════════════════════════════════════
 REM  Step 2: Download plctag.dll if missing

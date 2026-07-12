@@ -20,6 +20,13 @@ let cached: string | null = null;
 
 export function getAppVersion(): string {
   if (cached) return cached;
+  // Packaged builds may not have package.json where the probes expect it, but
+  // the build scripts stamp APP_VERSION into the runtime .env — trust it first.
+  const envVersion = process.env.APP_VERSION?.trim();
+  if (envVersion) {
+    cached = envVersion;
+    return cached;
+  }
   const candidates = [
     path.join(process.cwd(), 'package.json'),
     path.join(__dirname, '..', 'package.json'),

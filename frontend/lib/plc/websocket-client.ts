@@ -577,8 +577,16 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
         }
 
         case 'HeartbeatAck': {
-          const ackMsg = message as unknown as { serverVersion: string; timestamp: number }
+          const ackMsg = message as unknown as { serverVersion: string; timestamp: number; versionLock?: { locked: boolean } }
           lastAckRef.current = Date.now()
+
+          // Version lockout (F7): relay the server's lock state to the app-wide
+          // overlay (components/version-locked-overlay.tsx) without threading a
+          // new context through every WS consumer. The overlay also polls
+          // /api/update/status, so this is just the fast path.
+          if (ackMsg.versionLock && typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('version-lock-changed', { detail: ackMsg.versionLock }))
+          }
 
           // Server version changed across a 'lost' gap → assume the binary
           // was upgraded, full page reload picks up new client assets.

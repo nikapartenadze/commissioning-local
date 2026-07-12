@@ -195,7 +195,13 @@ export async function sendHeartbeat(): Promise<void> {
     // 5xx means cloud is having a moment. The drained results never
     // made it to durable storage — requeue so they retry next tick.
     requeue(drained)
-    console.warn(`[Heartbeat] Cloud responded ${resp.status}`)
+    // Log the response BODY, not just the status: during the 2026-07-11
+    // incident every heartbeat 400'd on a Zod validation detail that was
+    // invisible in the field logs — the fleet view went blind and nobody
+    // could see the box's version. Truncated; body read is best-effort.
+    let bodyText = ''
+    try { bodyText = (await resp.text()).slice(0, 500) } catch { /* ignore */ }
+    console.warn(`[Heartbeat] Cloud responded ${resp.status}${bodyText ? `: ${bodyText}` : ''}`)
     return
   }
 

@@ -28,6 +28,7 @@ import { getBroadcastPort } from '@/lib/broadcast-config';
 import { configService } from '@/lib/config';
 import { db } from '@/lib/db-sqlite';
 import { reconcileUpdateStateOnBoot } from '@/lib/update/update-utils';
+import { createVersionLockGuard, getVersionLockState, startVersionLockRefresh } from '@/lib/update/version-lock';
 import { getAppVersion } from '@/lib/app-version';
 import { startRemotePolling, applyBroadcastToCache } from '@/lib/plc/remote-cache';
 import { appendDailyLog } from '@/lib/logging/file-log';
@@ -446,7 +447,10 @@ plcWss.on('connection', (ws: AliveWebSocket) => {
         ws.send(JSON.stringify({
           type: 'HeartbeatAck',
           serverVersion: SERVER_VERSION,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          // Version lockout (F7): piggyback the lock state on the ack so a
+          // connected client learns about a new lock within one heartbeat.
+          versionLock: getVersionLockState(),
         }));
         return;
       }
@@ -523,6 +527,14 @@ app.use((req, res, next) => {
   next();
 });
 
+// Version lockout guard (FV-HARDENING-PLAN.md F7): while the running version is
+// below the cloud-set minimum, mutating API routes 503 `version_locked`. Sits
+// BEFORE the router so no handler can write. Allowlisted prefixes (update/
+// health/config/cloud-status/auth/logs) stay usable to see the lock, log in,
+// and run the update. Internal queue drains are library calls, not HTTP — they
+// keep pushing queued work to the cloud while locked.
+app.use(createVersionLockGuard());
+
 // Mount all API routes
 app.use(createApiRouter());
 
@@ -598,6 +610,11 @@ httpServer.listen(PORT, HOSTNAME, () => {
   // correlate "data looks off after a restart" with exactly when the process
   // came up (see lib/logging/recovery-log).
   auditLog({ type: 'server.start', detail: { version: SERVER_VERSION, plcMode: PLC_REMOTE ? 'remote' : 'embedded', pid: process.pid } });
+
+  // Version lockout (F7): fetch the cloud minimum-version policy now and every
+  // minute. The last-seen policy is persisted, so a restart while offline keeps
+  // an existing lock in force; a tool that never saw a policy fails open.
+  startVersionLockRefresh();
 
   // Runtime schema sanity (2026-07-08): "are the tables I expect still there?"
   // First sweep 15s after boot, then every 6h. Drift is journaled (db.sanity)

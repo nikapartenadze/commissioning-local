@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Field Tool — Hardening & Refactor Report</title>
+<style>
+  @page { size: A4; margin: 15mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:#1a2027; line-height:1.5; font-size:10.5pt; margin:0; }
+  h1 { font-size:21pt; margin:0 0 2pt; color:#0f1b2d; }
+  .sub { color:#6b7684; font-size:9.5pt; margin:0 0 4pt; }
+  .meta { color:#8892a0; font-size:8.5pt; margin:0 0 14pt; }
+  h2 { font-size:13.5pt; margin:20pt 0 6pt; color:#0f5d78; border-bottom:2px solid #d9e2ec; padding-bottom:3pt; }
+  h3 { font-size:11pt; margin:12pt 0 3pt; color:#243b53; }
+  p { margin:0 0 7pt; }
+  ul { margin:2pt 0 8pt; padding-left:16pt; } li { margin:2pt 0; }
+  code { font-family:"JetBrains Mono",Consolas,monospace; font-size:8.8pt; background:#eef2f6; padding:1px 4px; border-radius:3px; color:#0b3a4a; }
+  table { border-collapse:collapse; width:100%; margin:4pt 0 10pt; font-size:9pt; }
+  th,td { border:1px solid #d9e2ec; padding:5px 8px; text-align:left; vertical-align:top; }
+  th { background:#f4f7fa; font-weight:600; color:#243b53; }
+  strong { color:#102a43; }
+  .banner { border-radius:7px; padding:11px 14px; margin:6pt 0 12pt; font-size:9.7pt; }
+  .ok { background:#e6f6ec; border:1px solid #a7e0bd; color:#1b5e34; }
+  .warn { background:#fff8e6; border:1px solid #f5d97a; color:#6b5312; }
+  .kpi { display:flex; gap:10px; flex-wrap:wrap; margin:8pt 0 12pt; }
+  .kpi div { flex:1; min-width:120px; border:1px solid #d9e2ec; border-radius:7px; padding:9px 11px; background:#f9fbfd; }
+  .kpi .n { font-size:17pt; font-weight:700; color:#0f5d78; display:block; }
+  .kpi .l { font-size:8pt; color:#6b7684; text-transform:uppercase; letter-spacing:.04em; }
+  .tag { display:inline-block; font-size:7.5pt; font-weight:700; text-transform:uppercase; padding:1px 6px; border-radius:4px; }
+  .r{background:#fde2e2;color:#9b1c1c}.a{background:#fdecc8;color:#8a5a00}.g{background:#d7f0df;color:#1b5e34}.b{background:#dbeafe;color:#1e40af}
+  h2,table { break-inside:avoid; } thead{display:table-header-group;}
+  .foot { margin-top:18pt; padding-top:8pt; border-top:1px solid #d9e2ec; font-size:8.5pt; color:#8892a0; }
+</style>
+</head>
+<body>
+<h1>Field Tool — Hardening &amp; Refactor Report</h1>
+<p class="sub">Performance · Security · Reliability · Tech-debt cleanup — commissioning field tool (<code>frontend/</code>)</p>
+<p class="meta">Branch <code>feat/network-ring-commissioning</code> · 10 commits · not pushed (local only) · generated 2026-07-10</p>
+
+<div class="banner ok"><strong>Verified:</strong> 735/735 unit tests pass · server &amp; client builds compile clean · browser smoke — commissioning page, IO grid, and guided mode all render with zero non-PLC console errors. Every change committed in small, build+test-verified batches (fully revertible).</div>
+<div class="banner warn"><strong>Not verified (the honest caveat):</strong> no live PLC/sim was attached, so hardware paths (fire output, VFD/PLC writes, live IO auto-pass, e-stop verdicts) are verified only at the code/build level; and the 15-MCM battle soak was not run. Recommend a live-PLC run + battle soak before field use.</div>
+
+<div class="kpi">
+  <div><span class="n">735</span><span class="l">unit tests pass</span></div>
+  <div><span class="n">18 → 1</span><span class="l">security advisories (0 high)</span></div>
+  <div><span class="n">78</span><span class="l">code files changed</span></div>
+  <div><span class="n">+4645 / −3583</span><span class="l">lines (net simpler)</span></div>
+</div>
+
+<h2>What changed, by area</h2>
+
+<h3>Security <span class="tag r">high impact</span></h3>
+<ul>
+  <li>Dependency advisories <strong>18 → 1</strong> (0 high/critical; the remaining is a dev-server-only Low). Cleared <code>ws</code>, <code>react-router-dom</code>, <code>vite</code>, <code>dompurify</code>, <code>lodash</code>, <code>shell-quote</code> (critical), and dropped <code>xlsx</code> (replaced by the lighter <code>write-excel-file</code>).</li>
+  <li>Closed <strong>two cleartext API-key leaks</strong> — <code>/api/configuration</code> and <code>/api/plc/status</code> no longer return the cloud key (creds resolved server-side).</li>
+  <li>The PLC-gateway control API and the internal broadcast API are now <strong>secret-gated</strong> (optional shared secret, no deployment breakage); wildcard CORS removed.</li>
+  <li>Guided-map SVG is now <strong>DOMPurify-sanitized</strong> (stored-XSS closed).</li>
+</ul>
+
+<h3>Reliability &amp; safety <span class="tag r">high impact</span></h3>
+<p>Fixed the class of bugs that could <strong>silently lose or misrepresent data</strong> — several on safety surfaces:</p>
+<table>
+  <tr><th>Fix</th><th>What it prevents</th></tr>
+  <tr><td>Remote-cache freshness gate</td><td>App was showing a dead PLC as "connected" with frozen tag values served as live (CRITICAL)</td></tr>
+  <tr><td>SSE clear-protection</td><td>A cloud update could silently overwrite an operator's deliberate clear</td></tr>
+  <tr><td><code>EStopRelatedEpcs</code> re-insert</td><td>The normal pull was cascade-wiping companion e-stops and never restoring them (confirmed data loss)</td></tr>
+  <tr><td>Dropped-L2-cell → HTTP 422</td><td>A wizard value silently discarded (the CDW5 "polarity lost" class)</td></tr>
+  <tr><td>Safety-bypass keep-alive</td><td>Bypass could die while the screen still showed "active"; now tolerates transient failures + notifies the UI</td></tr>
+  <tr><td>E-stop status 500-on-error</td><td>A safety page was blanking to "no zones" on an internal error</td></tr>
+  <tr><td>Server no longer exits on a stray promise rejection</td><td>One un-awaited promise was dropping all PLC connections</td></tr>
+  <tr><td>Sticky <code>failedTags</code> TTL</td><td>A transiently-failed tag stayed "not found" until a full PLC reconnect</td></tr>
+  <tr><td>Pull-guard timestamp parse unified</td><td>Could wrongly overwrite a newer local result</td></tr>
+  <tr><td>vfd-clear reports PLC state; safety writes log their error</td><td>Latch-reset skipped when PLC offline was reported as success; safety writes left no diagnostic trail</td></tr>
+</table>
+
+<h3>Sync <span class="tag a">medium</span></h3>
+<ul>
+  <li>Legacy pull path now runs its <strong>config/L2 side-pulls</strong> (it was skipping them entirely).</li>
+  <li>Background sync now starts <strong>in-process</strong> (was a single un-retried loopback fetch that, if it failed, meant sync never started).</li>
+  <li>Config writes are no longer a fire-and-forget unhandled rejection; delta broadcasts coalesced into one message (was one per row → flooded the UI on large syncs).</li>
+</ul>
+
+<h3>Refactor / tech-debt / bloat <span class="tag b">net simpler</span></h3>
+<ul>
+  <li>Removed the <strong>server-laptop testing block</strong> (it misfired and confused operators) → replaced with an <strong>operator-name prompt when an MCM is opened</strong>, so results attribute to a person on any device.</li>
+  <li>Deleted dead code (a ~400-line unused in-memory queue + more); consolidated the drift-prone duplicated pieces (outbox drains, tripled status reader, pull-guard block, and the two full-pull implementations into one <code>pull-core.ts</code>).</li>
+  <li>Split the <code>auto-sync.ts</code> god-file (2208 → 1195 lines) into focused modules; conservatively trimmed the IO grid and commissioning page (pure helpers only — stateful cores left intact to avoid UI regressions).</li>
+  <li>Corrected stale docs/comments.</li>
+</ul>
+
+<h2>Behavior changes you will actually notice (intended)</h2>
+<ul>
+  <li><strong>No more server-laptop testing block</strong> — any device can author results.</li>
+  <li><strong>Opening an MCM prompts for the operator's name</strong> — so work is attributed to a person (no user logins / passwords; you asked to keep that off).</li>
+  <li>Everything else is the same features and the same UI — nothing was removed functionally.</li>
+</ul>
+
+<h2>The 10 commits</h2>
+<table>
+  <tr><th>#</th><th>Commit</th><th>Area</th></tr>
+  <tr><td>1</td><td>Remove server-laptop block + name-on-MCM-open, sync data-safety fixes, batch-1 reliability+security hardening</td><td>Safety / Security</td></tr>
+  <tr><td>2</td><td>Batch-2 cleanup — close <code>/api/plc/status</code> key leak, delete dead code, fix stale docs</td><td>Security / Bloat</td></tr>
+  <tr><td>3</td><td>Batch-3 consolidations + sticky-<code>failedTags</code> fix</td><td>Reliability / Refactor</td></tr>
+  <tr><td>4</td><td>Consolidate simple outbox drains into one hardened helper</td><td>Refactor</td></tr>
+  <tr><td>5</td><td>Clear dependency advisories (18 → 2, no breaking bumps)</td><td>Security</td></tr>
+  <tr><td>6</td><td>Remaining safety/sync/reliability + optimization fixes</td><td>Safety / Sync</td></tr>
+  <tr><td>7</td><td>Unify the two full-pull impls into <code>pull-core.ts</code></td><td>Refactor</td></tr>
+  <tr><td>8</td><td>Drop <code>xlsx</code> (last HIGH advisory) → <code>write-excel-file</code></td><td>Security</td></tr>
+  <tr><td>9</td><td>Split <code>auto-sync.ts</code> god-file (2208 → 1195 lines)</td><td>Refactor</td></tr>
+  <tr><td>10</td><td>Conservative trim of grid + commissioning-page god-files</td><td>Refactor</td></tr>
+</table>
+
+<h2>Deliberately out of scope (per your direction)</h2>
+<ul>
+  <li><strong>Keystone</strong> (single remote-only runtime, delete the mode toggle) — a <em>deployment</em> change (every install would run two processes); you said not deployment. Left for a dedicated, soak-verified effort.</li>
+  <li><strong>User logins / auth</strong> — you said not yet. <code>AUTH_REQUIRED</code> stays off; the LAN-unauthenticated exposure is your accepted risk for now.</li>
+  <li><strong>TLS, cloud-side hardening</strong> (raw-SQL import, plaintext sync-key at rest) — deployment/ops or a separate repo.</li>
+  <li><strong>Stateful UI cores</strong> (grid/page internals) — deliberately not blindly split: real regression risk, no component-test net, zero functional gain.</li>
+</ul>
+
+<h2>Verification &amp; how to check</h2>
+<ul>
+  <li><strong>Automated:</strong> <code>npm run build:server</code> ✓ · <code>npm run build</code> ✓ · <code>npx vitest run</code> → 735 passed. Test coverage grew from ~503 to 735 (new tests added with the fixes).</li>
+  <li><strong>Runtime:</strong> browser smoke of the commissioning page, IO grid, and guided mode — all render, zero non-PLC console errors. Guided mode's task pool assembles for MCM02.</li>
+  <li><strong>Recommended before field use:</strong> a run against a live PLC/sim, and the 15-MCM battle soak — the one gate not clearable without hardware.</li>
+  <li><strong>Safety net:</strong> all local on a branch, not pushed; 10 isolated commits; any change revertible.</li>
+</ul>
+
+<p class="foot">Report generated from the session's committed work on <code>feat/network-ring-commissioning</code>. "Verified" = build + unit tests + browser render; it is not a substitute for on-hardware + battle-soak validation before deployment.</p>
+</body>
+</html>

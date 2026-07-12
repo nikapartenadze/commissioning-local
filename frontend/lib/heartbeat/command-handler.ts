@@ -18,18 +18,8 @@
  *     and the heartbeat loop is replaced wholesale by the new build.
  */
 
-import { spawn } from 'child_process'
 import { getMachineId } from './machine-id'
-import {
-  fetchReleaseManifest,
-  resolveUpdateScriptPath,
-  compareVersions,
-  getCurrentAppVersion,
-  readLocalUpdateState,
-  writeLocalUpdateState,
-  isUpdateInProgress,
-} from '@/lib/update/update-utils'
-import { resolveUpdateStatePath } from '@/lib/storage-paths'
+import { launchUpdateInstall } from '@/lib/update/install-launcher'
 
 export interface IncomingCommand {
   id: number
@@ -125,118 +115,24 @@ export async function executeCommand(cmd: IncomingCommand): Promise<CommandResul
  * heartbeat carrying the new `version` field.
  */
 async function handleUpdateCommand(cmd: IncomingCommand): Promise<CommandResult> {
-  if (process.platform !== 'win32') {
-    return {
-      id: cmd.id,
-      status: 'failed',
-      result: 'host-managed update is Windows-only',
-    }
-  }
-
-  const scriptPath = resolveUpdateScriptPath()
-  if (!scriptPath) {
-    return {
-      id: cmd.id,
-      status: 'failed',
-      result: 'updater script not packaged on this host (portable build?)',
-    }
-  }
-
-  // Refuse to stack updates — if one is GENUINELY in flight, this command
-  // waits for the next heartbeat after restart rather than fighting the
-  // running ps1 over the service control manager. isUpdateInProgress()
-  // ignores a STALE non-terminal state (a dead/interrupted prior run), so a
-  // poisoned status file no longer permanently blocks fresh cloud retries.
-  if (isUpdateInProgress()) {
-    const live = readLocalUpdateState()
-    return {
-      id: cmd.id,
-      status: 'failed',
-      result: `update already in progress (status=${live?.status ?? 'unknown'})`,
-    }
-  }
-
   const payload = (cmd.payload ?? {}) as { version?: unknown; installerUrl?: unknown }
-  let installerUrl = typeof payload.installerUrl === 'string' ? payload.installerUrl.trim() : ''
-  let expectedVersion = typeof payload.version === 'string' ? payload.version.trim() : ''
-
-  // If the cloud didn't pin a specific build, ask the manifest. This is
-  // the common path — the cloud admin just clicks "Push update" without
-  // specifying anything and we install whatever the manifest says is
-  // latest.
-  if (!installerUrl || !expectedVersion) {
-    const { manifest, error } = await fetchReleaseManifest()
-    if (!manifest) {
-      return {
-        id: cmd.id,
-        status: 'failed',
-        result: clampResult(error || 'manifest fetch returned no version'),
-      }
-    }
-    if (!installerUrl) installerUrl = manifest.installerUrl
-    if (!expectedVersion) expectedVersion = manifest.version
-  }
-
-  if (!/^https?:\/\//i.test(installerUrl)) {
-    return {
-      id: cmd.id,
-      status: 'failed',
-      result: `installerUrl must be http(s): got "${installerUrl.slice(0, 80)}"`,
-    }
-  }
-
-  const currentVersion = getCurrentAppVersion()
-  if (compareVersions(expectedVersion, currentVersion) <= 0) {
-    // Cloud pushed a version we're already on (or older). Don't downgrade,
-    // don't reinstall — just acknowledge so the command queue clears.
-    return {
-      id: cmd.id,
-      status: 'done',
-      result: `already on ${currentVersion} (>= requested ${expectedVersion})`,
-    }
-  }
-
-  // Stamp a fresh "checking" BEFORE spawning so the very next heartbeat
-  // reflects this run rather than a previous update's success/error. The
-  // ps1 overwrites this within a second via its own Write-State calls.
-  writeLocalUpdateState({
-    status: 'checking',
-    message: 'update command received from cloud',
-    version: expectedVersion,
-    startedAt: new Date().toISOString(),
-    installerUrl,
+  // The pipeline itself (platform/script/in-flight checks, manifest fallback,
+  // no-downgrade gate, state stamp, detached spawn) lives in
+  // lib/update/install-launcher.ts — shared with the version-lock "Update now"
+  // route so the two triggers can never drift apart.
+  const outcome = await launchUpdateInstall({
+    installerUrl: typeof payload.installerUrl === 'string' ? payload.installerUrl : undefined,
+    version: typeof payload.version === 'string' ? payload.version : undefined,
+    trigger: 'cloud update command',
   })
-
-  try {
-    const child = spawn(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', scriptPath,
-        '-InstallerUrl', installerUrl,
-        '-ExpectedVersion', expectedVersion,
-        '-StatePath', resolveUpdateStatePath(),
-      ],
-      { detached: true, stdio: 'ignore' },
-    )
-    child.unref()
-    console.log(`[Command] update started: ${currentVersion} → ${expectedVersion} (${installerUrl})`)
-    // NOTE: 'done' here is a LAUNCH ACK, not update success. The installer
-    // runs detached and this process is replaced when the service restarts.
-    // The cloud must judge real success from the heartbeat-reported
-    // `version` + `updateStatus` (see spec 2026-05-24-cloud-controlled-update-feedback).
-    return {
-      id: cmd.id,
-      status: 'done',
-      result: clampResult(`install launched ${currentVersion} -> ${expectedVersion}; track via heartbeat updateStatus`),
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return {
-      id: cmd.id,
-      status: 'failed',
-      result: clampResult(`failed to spawn installer: ${msg}`),
-    }
+  // NOTE: 'done' is a LAUNCH ACK (or a clean already-up-to-date no-op), not
+  // update success. The installer runs detached and this process is replaced
+  // when the service restarts. The cloud must judge real success from the
+  // heartbeat-reported `version` + `updateStatus`
+  // (see spec 2026-05-24-cloud-controlled-update-feedback).
+  return {
+    id: cmd.id,
+    status: outcome.ok ? 'done' : 'failed',
+    result: clampResult(outcome.message),
   }
 }

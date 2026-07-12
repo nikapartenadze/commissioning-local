@@ -205,6 +205,15 @@ export interface AppUpdateStatusResponse {
   } | null
   supported: boolean
   error?: string
+  /** Version lockout (F7): present so the client overlay can poll lock state
+   *  over the allowlisted /api/update prefix even while locked. */
+  versionLock?: {
+    locked: boolean
+    currentVersion: string
+    minVersion: string | null
+    lockMessage: string | null
+    policySource: 'live' | 'persisted' | 'none'
+  }
 }
 
 // =============================================================================

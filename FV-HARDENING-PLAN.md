@@ -1,8 +1,10 @@
 # FV Hardening Plan — fail-loud saves, version lockout, fleet alerts
 
-Status: **in progress** (2026-07-12). Implementation is underway in the working
-tree of this repo and `commissioning-cloud/` (uncommitted). This doc is the
-plan of record so work can resume at any point.
+Status: **implemented, awaiting review** (2026-07-12). All work packages
+(F1–F8, C1–C7) are implemented in the working trees of this repo and
+`commissioning-cloud/` on the main dev machine — uncommitted until review.
+Field suite: 780 tests green (was 735). Cloud suite: 375 green. This doc is
+the plan of record so work can resume at any point.
 
 ## Why (the 2026-07-11 MCM04/MCM11 incident, condensed)
 
@@ -92,10 +94,30 @@ Full implementation spec with file:line targets lives in the session scratchpad
 - Open review item: MCM04 `PS8_11_EPC1` Estop/Red Beacon values swapped local vs
   cloud (dian, 07-10) — needs human confirmation which side is truth.
 
+## Implementation notes (2026-07-12, this machine)
+
+- Field: `lib/update/version-lock.ts` (policy+guard), `lib/update/install-launcher.ts`
+  (pipeline shared by the cloud `update` command and the lock overlay's
+  "Update now" — `/api/update/install` is enabled ONLY while locked),
+  `components/version-locked-overlay.tsx` (polls `/api/update/status`, which now
+  carries `versionLock`; WS HeartbeatAck relays it as a `version-lock-changed`
+  window event). New audit types: `l2.cell.fail`, `l2.outbox.evict`
+  (+ `POST /api/l2/outbox-evicted`), `l2.pull.blocked`. Outbox replay eviction
+  now counts ONLY permanent 4xx strikes — 503/network never evict.
+- Cloud: `lib/heartbeat-sanitize.ts` replaces the strict heartbeat Zod schema
+  (slice/coerce, never 400 on content; networkDevices cap 64→256 sliced);
+  heartbeat never NULLs a stored version and returns `versionPolicy`; alerts
+  `tool_started` (startedAt in title → per-boot alert) and `tool_outdated`
+  (push only when freshly created, not on dedup). Policy editor panel lives in
+  `tool-instances-viewer.tsx` above the grid.
+- schema.prisma.sha256 re-blessed for the ToolVersionPolicy model.
+
 ## Resume pointers
 
 - Uncommitted implementation: `git status` in this repo and in
   `commissioning-cloud/` (both trees intentionally left dirty until review).
+  ⚠️ The 2026-07-12 forensics box's uncommitted tree was LOST — that is why the
+  implementation was redone on the dev machine. Review + commit promptly.
 - Forensic artifacts: `mcm04/` (box dump), session scratchpad
   `mcm11_restore_manifest.json`, `wipe-manifest-sid47.json`,
   `restore-mcm11-fv-cloud.js` (dry-run-by-default cloud restore, not needed —

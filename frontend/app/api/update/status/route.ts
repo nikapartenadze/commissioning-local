@@ -7,6 +7,7 @@ import {
   getEffectiveUpdateState,
   resolveUpdateScriptPath,
 } from '@/lib/update/update-utils'
+import { getVersionLockState } from '@/lib/update/version-lock'
 
 export async function GET(req: Request, res: Response) {
   try {
@@ -30,6 +31,7 @@ export async function GET(req: Request, res: Response) {
       installState,
       supported: process.platform === 'win32' && !!resolveUpdateScriptPath(),
       error,
+      versionLock: getVersionLockState(),
     } satisfies AppUpdateStatusResponse)
   } catch (error) {
     return res.status(500).json({
@@ -39,6 +41,7 @@ export async function GET(req: Request, res: Response) {
       installState: getEffectiveUpdateState(),
       supported: process.platform === 'win32' && !!resolveUpdateScriptPath(),
       error: error instanceof Error ? error.message : 'Failed to load update status',
+      versionLock: getVersionLockState(),
     } satisfies AppUpdateStatusResponse)
   }
 }

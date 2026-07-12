@@ -107,6 +107,7 @@ import * as syncHealth from '@/app/api/sync/health/route'
 import * as syncSubsystem from '@/app/api/sync/subsystem/[subsystemId]/route'
 import * as l2 from '@/app/api/l2/route'
 import * as l2Cell from '@/app/api/l2/cell/route'
+import * as l2OutboxEvicted from '@/app/api/l2/outbox-evicted/route'
 import * as l2Overview from '@/app/api/l2/overview/route'
 import * as punchlists from '@/app/api/punchlists/route'
 import * as projectIos from '@/app/api/project/[id]/ios/route'
@@ -353,6 +354,7 @@ export function createApiRouter(): Router {
   router.get('/api/l2', asyncHandler(l2.GET))
   router.get('/api/l2/overview', asyncHandler(l2Overview.GET))
   router.post('/api/l2/cell', asyncHandler(l2Cell.POST))
+  router.post('/api/l2/outbox-evicted', asyncHandler(l2OutboxEvicted.POST))
 
   // ── Punchlists ─────────────────────────────────────────────────
   router.get('/api/punchlists', asyncHandler(punchlists.GET))

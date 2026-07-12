@@ -181,18 +181,22 @@ export async function saveL2Cell(edit: L2Edit, deps: OutboxDeps): Promise<SaveRe
  * Replay every queued edit — call on page load and on reconnect. Clears the ones
  * the server now accepts; keeps the rest so they are never lost.
  */
-export async function replayL2Outbox(deps: OutboxDeps): Promise<{ replayed: number; failed: number; evicted: number; remaining: number }> {
+export async function replayL2Outbox(deps: OutboxDeps): Promise<{ replayed: number; failed: number; evicted: number; remaining: number; evictedEdits: L2Edit[] }> {
   const entries = Object.values(loadOutbox(deps.storage))
   let replayed = 0
   let failed = 0
-  let evicted = 0
+  const evictedEdits: L2Edit[] = []
   for (const edit of entries) {
     const r = await postWithRetry(edit, deps)
     if (r.ok) { clearIfUnchanged(deps.storage, edit); replayed++; continue }
     failed++
-    // Bump the replay-failure count; evict once it can no longer plausibly
-    // succeed (permanent 4xx, or a local id invalidated by a pull) so it does
-    // not loop on every load. Evicting is loud — never silent.
+    // Bump the replay-failure count ONLY for permanent rejections (4xx that
+    // won't fix itself — e.g. a local id invalidated by a pull); evict once it
+    // can no longer plausibly succeed so it does not loop on every load.
+    // Transient failures (network down, 5xx, 503 version-lock) never count:
+    // evicting an edit that would succeed after reconnect/update IS data loss.
+    // Evicting is loud — never silent.
+    if (!(typeof r.status === 'number' && isPermanentClientError(r.status))) continue
     const map = loadOutbox(deps.storage)
     const k = cellKey(edit.deviceId, edit.columnId)
     const cur = map[k]
@@ -200,7 +204,7 @@ export async function replayL2Outbox(deps: OutboxDeps): Promise<{ replayed: numb
       const attempts = (cur.attempts ?? 0) + 1
       if (attempts >= MAX_REPLAY_ATTEMPTS) {
         delete map[k]
-        evicted++
+        evictedEdits.push({ ...cur, attempts })
         console.error(`[l2-outbox] EVICTING FV edit after ${attempts} failed replays — it never reached the server. Last error: ${r.error ?? r.status}`, { deviceId: edit.deviceId, columnId: edit.columnId, value: edit.value })
       } else {
         map[k] = { ...cur, attempts }
@@ -208,5 +212,17 @@ export async function replayL2Outbox(deps: OutboxDeps): Promise<{ replayed: numb
       persist(deps.storage, map)
     }
   }
-  return { replayed, failed, evicted, remaining: pendingCount(deps.storage) }
+  // Report evictions into the SERVER-side recovery log — the browser console is
+  // gone after a refresh, which is exactly when evictions happen. Best-effort:
+  // the eviction itself already succeeded locally (return value drives the UI).
+  if (evictedEdits.length > 0) {
+    try {
+      await deps.fetchFn('/api/l2/outbox-evicted', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ edits: evictedEdits }),
+      })
+    } catch { /* server unreachable — console.error above is all we have */ }
+  }
+  return { replayed, failed, evicted: evictedEdits.length, remaining: pendingCount(deps.storage), evictedEdits }
 }

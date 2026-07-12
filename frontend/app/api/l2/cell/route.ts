@@ -37,6 +37,15 @@ export async function POST(req: Request, res: Response) {
     const { deviceId, columnId, value, updatedBy } = req.body
 
     if (!deviceId || !columnId) {
+      // Failure audits mirror the success-path l2.cell entry: the 2026-07-11
+      // MCM04 loss was 114 rejected saves that left NO durable trace — the
+      // rejected VALUE goes into detail so it is recoverable from this log.
+      auditLog({
+        type: 'l2.cell.fail',
+        user: updatedBy ?? null,
+        reason: '400 deviceId and columnId required',
+        detail: { deviceId: deviceId ?? null, columnId: columnId ?? null, value: value ?? null },
+      })
       return res.status(400).json({ error: 'deviceId and columnId required' })
     }
 
@@ -48,6 +57,12 @@ export async function POST(req: Request, res: Response) {
     const deviceRow = stmts.getDeviceSubsystem.get(deviceId) as { SubsystemId: number | null } | undefined
     const columnRow = stmts.getColumnExists.get(columnId) as { id: number } | undefined
     if (!deviceRow || !columnRow) {
+      auditLog({
+        type: 'l2.cell.fail',
+        user: updatedBy ?? null,
+        reason: '404 stale local id — L2 device/column not found, cell not written',
+        detail: { deviceId, columnId, value: value ?? null, deviceFound: !!deviceRow, columnFound: !!columnRow },
+      })
       return res.status(404).json({ success: false, error: 'L2 device/column not found (stale local id?) — cell not written' })
     }
     // Resolve the subsystem BEFORE the commit so the audit is accurate even if a
@@ -205,6 +220,13 @@ export async function POST(req: Request, res: Response) {
     return res.json({ success: true, cellId: result.cellId, version: result.version, completedChecks: result.completedChecks })
   } catch (error) {
     console.error('[L2 Cell] Error:', error)
+    const body = (req.body ?? {}) as Record<string, unknown>
+    auditLog({
+      type: 'l2.cell.fail',
+      user: (body.updatedBy as string | undefined) ?? null,
+      reason: `500 ${error instanceof Error ? error.message : 'unknown error'}`,
+      detail: { deviceId: body.deviceId ?? null, columnId: body.columnId ?? null, value: body.value ?? null },
+    })
     return res.status(500).json({ error: 'Failed to save cell' })
   }
 }

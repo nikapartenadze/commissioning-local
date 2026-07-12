@@ -48,6 +48,8 @@ config.json
 database.db
 database.db-wal
 database.db-shm
+update-status.json
+version-lock.json
 
 # Build outputs
 dist/

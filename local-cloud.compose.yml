@@ -1,0 +1,67 @@
+# Local commissioning-cloud for TESTING (never prod).
+#
+# Stands up the cloud app (built from the local commissioning-cloud working tree
+# → image `battle/cloud:local`) + a throwaway Postgres, with dev auth bypass so
+# you don't need Azure AD. Use it to test the field tool against a LOCAL cloud
+# instead of production — including the force-overwrite branch.
+#
+# Build the image first (from the repo root, on whatever branch you want to test):
+#   docker build -t battle/cloud:local ./commissioning-cloud
+# Then:
+#   docker compose -f local-cloud.compose.yml up -d
+#   # cloud UI/API → http://localhost:13001   (Postgres → localhost:5433)
+# Point the field tool's Cloud URL at http://localhost:13001 (API key: any — dev
+# bypass is on). Tear down with: docker compose -f local-cloud.compose.yml down -v
+
+name: commissioning-local-cloud
+
+services:
+  cloud-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: local
+      POSTGRES_DB: commissioning
+    # No host port — the cloud reaches Postgres on the internal network. (Add a
+    # mapping like "5434:5432" only if you want to psql from the host.)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U local -d commissioning"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  cloud-schema:
+    image: battle/cloud:local
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql://local:local@cloud-db:5432/commissioning
+    # Cloud uses `prisma db push` (no migrations dir). One-shot; exits.
+    command: ["node_modules/.bin/prisma", "db", "push", "--skip-generate", "--accept-data-loss"]
+    depends_on:
+      cloud-db:
+        condition: service_healthy
+    restart: "no"
+
+  cloud:
+    image: battle/cloud:local
+    environment:
+      DATABASE_URL: postgresql://local:local@cloud-db:5432/commissioning
+      # development + DEV_BYPASS_AUTH gives an admin session without Azure AD,
+      # so the local UI + admin APIs are usable for testing.
+      NODE_ENV: development
+      # Must be the exact string "true" (lib/auth.ts) — enables the one-click
+      # "Dev Admin (local only)" sign-in provider. NEXT_PUBLIC_* only controls
+      # the custom sign-in button (baked at build); use /api/auth/signin if the
+      # button isn't shown — the dev-admin provider is listed there at runtime.
+      DEV_BYPASS_AUTH: "true"
+      NEXT_PUBLIC_DEV_BYPASS_AUTH: "true"
+      NEXTAUTH_SECRET: local-not-prod-secret
+      NEXTAUTH_URL: http://localhost:13001
+      NEXT_TELEMETRY_DISABLED: "1"
+      SENTRY_DSN: ""
+    ports:
+      - "13001:3000"
+    depends_on:
+      cloud-schema:
+        condition: service_completed_successfully
+    restart: unless-stopped

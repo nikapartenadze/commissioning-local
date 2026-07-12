@@ -45,8 +45,11 @@ export type AuditEventType =
   // local record (only success-only push COUNTS in the verbose app log), so a
   // wiped/un-synced cell vanished without a trace. These mirror io.test/io.reset:
   | 'l2.cell'        // an FV cell value was written locally (the durable record of the work)
+  | 'l2.cell.fail'   // an FV cell write was REJECTED (400/404 stale-id/500) — the 2026-07-11 MCM04 loss was 114 of these, invisible
   | 'l2.push.drop'   // an FV cell can NEVER sync (device/column has no cloud mapping) — recovery-critical
   | 'l2.push.park'   // an FV cell push hit the retry cap → PARKED (kept for attention, not deleted)
+  | 'l2.outbox.evict' // the client outbox gave up on an FV edit after repeated replay failures — the value is in detail, recoverable from here
+  | 'l2.pull.blocked' // a background FV pull was refused by the pending-guard (409) — work is safe but cloud→field FV is stale until it drains
   | 'l2.reconcile.enqueue' // an orphaned local FV cell (cloud-missing) was re-enqueued
   | 'sync.pull'
   | 'plc.connect'

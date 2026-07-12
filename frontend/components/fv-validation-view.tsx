@@ -13,6 +13,7 @@ import { useUser } from '@/lib/user-context'
 import { useSignalR, FVCellUpdate } from '@/lib/signalr-client'
 import { doesFVColumnCountForProgress, normalizeFVInputType } from '@/lib/fv-utils'
 import { saveL2Cell, replayL2Outbox, pendingCount, type OutboxDeps } from '@/lib/l2-outbox'
+import { toast } from '@/hooks/use-toast'
 
 interface FVSheet {
   id: number
@@ -346,6 +347,20 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
         if (!cancelled) {
           const remaining = pendingCount(l2SaveDeps.storage)
           if (remaining > 0) console.warn(`[FV] ${remaining} FV cell edit(s) still pending after replay`)
+          // Eviction = the outbox GAVE UP on an edit; the value never reached the
+          // server. It is recorded server-side (l2.outbox.evict) when reachable,
+          // but the tech must re-enter it — say so, loudly and persistently.
+          if (res.evictedEdits.length > 0) {
+            const detail = res.evictedEdits
+              .map(e => `device ${e.deviceId} col ${e.columnId} = "${e.value ?? ''}"`)
+              .join('; ')
+            toast({
+              variant: 'destructive',
+              duration: Infinity,
+              title: `${res.evictedEdits.length} FV edit(s) could NOT be saved`,
+              description: `These entries never reached the server and retrying stopped: ${detail}. Re-enter them. They are also recorded in the recovery log on this machine.`,
+            })
+          }
         }
       } catch { /* best-effort */ }
     })()
@@ -447,8 +462,21 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     })
     if (!result.ok) {
       console.error('[FV] Cell save not confirmed — kept in outbox for retry:', { deviceId, columnId, ...result })
+      // Mandate (FV-HARDENING-PLAN.md): a failed save must be LOUD — never a
+      // green checkmark. The 2026-07-11 loss was 114 silent 500s painted green.
+      const deviceName = data?.devices.find(d => d.id === deviceId)?.DeviceName ?? `device ${deviceId}`
+      const columnName = data?.columns.find(c => c.id === columnId)?.Name ?? `column ${columnId}`
+      const permanent = !result.queued
+      toast({
+        variant: 'destructive',
+        duration: Infinity,
+        title: permanent ? 'FV save FAILED — not recoverable by reload' : 'FV save not confirmed',
+        description: permanent
+          ? `${deviceName} / ${columnName}: the save failed AND could not be queued for retry. Write this value down and re-enter it. (${result.error ?? `HTTP ${result.status ?? '?'}`})`
+          : `${deviceName} / ${columnName}: the server did not confirm this save. It is queued and will retry automatically — do NOT assume it is saved until this warning stops appearing. (${result.error ?? `HTTP ${result.status ?? '?'}`})`,
+      })
     }
-  }, [currentUser]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentUser, data]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleExport = useCallback(async () => {
     if (!data || data.sheets.length === 0) return

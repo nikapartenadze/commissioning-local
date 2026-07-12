@@ -19,6 +19,10 @@ export interface ReleaseManifest {
   installerUrl: string
   publishedAt?: string
   notes?: string
+  /** Version-lock policy (FV-HARDENING-PLAN.md F7/C3): tools below minVersion
+   *  lock out with an update screen. Absent/null on clouds without a policy. */
+  minVersion?: string | null
+  lockMessage?: string | null
 }
 
 export interface LocalUpdateState {

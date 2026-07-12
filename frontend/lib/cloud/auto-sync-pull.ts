@@ -21,6 +21,7 @@ import { setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
 import { mcmTag } from '@/lib/logging/mcm-tag'
+import { auditLog } from '@/lib/logging/recovery-log'
 
 /**
  * Per-instance pull run state. Owned by AutoSyncService and passed by
@@ -269,12 +270,29 @@ export async function scopedFullPull(state: PullState, subsystemId: number): Pro
 export async function pullL2Scoped(subsystemId: number, remoteUrl: string, apiPassword?: string): Promise<void> {
   const port = process.env.PORT || '3000'
   try {
-    await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
+    const r = await fetch(`http://127.0.0.1:${port}/api/cloud/pull-l2`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ remoteUrl, apiPassword, subsystemId }),
       signal: AbortSignal.timeout(60_000),
     })
+    if (r.status === 409) {
+      // Pending-guard refusal: local FV work hasn't pushed yet, so the pull was
+      // (correctly) refused. Used to be swallowed entirely — cloud→field FV then
+      // went silently stale for as long as the queue stayed stuck (F5).
+      const body = (await r.json().catch(() => ({}))) as { error?: string; pendingCount?: number }
+      console.warn(`[AutoSync] pull-l2 for ${subsystemId} BLOCKED by pending-guard (409): ${body?.error ?? 'unsynced local L2 work'}`)
+      auditLog({
+        type: 'l2.pull.blocked',
+        subsystemId,
+        reason: body?.error ?? '409 pending-guard: unsynced local L2 work',
+        detail: { pendingCount: body?.pendingCount ?? null, trigger: 'background-scoped' },
+      })
+      return
+    }
+    if (!r.ok) {
+      console.warn(`[AutoSync] pull-l2 for ${subsystemId} returned HTTP ${r.status}`)
+    }
   } catch (e) {
     console.warn(`[AutoSync] pull-l2 for ${subsystemId} failed: ${e instanceof Error ? e.message : 'fetch'}`)
   }

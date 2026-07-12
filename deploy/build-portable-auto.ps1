@@ -143,14 +143,24 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  Native modules verified"
 
-# Create .env
+# Create .env — APP_VERSION comes from the env (CI) or frontend/package.json,
+# never a hardcode: the running server and the fleet heartbeat both report it.
+$appVersion = $env:APP_VERSION
+if (-not $appVersion) {
+    $appVersion = (Get-Content (Join-Path $frontendDir "package.json") -Raw | ConvertFrom-Json).version
+}
+if (-not $appVersion) {
+    Write-Error "Could not resolve APP_VERSION from frontend/package.json"
+    exit 1
+}
+Write-Host "  App version: $appVersion"
 $envContent = @"
 DATABASE_URL=file:../database.db
 JWT_SECRET_KEY=commissioning-tool-$(Get-Random)$(Get-Random)$(Get-Random)
 PORT=3000
 HOSTNAME=0.0.0.0
 NODE_ENV=production
-APP_VERSION=1.0.0
+APP_VERSION=$appVersion
 UPDATE_MANIFEST_URL=
 "@
 $envContent | Set-Content -Path (Join-Path $dsDir ".env") -Encoding UTF8

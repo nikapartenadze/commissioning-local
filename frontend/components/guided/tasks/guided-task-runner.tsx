@@ -25,6 +25,7 @@ import {
 } from '@/lib/guided/swap-watch'
 import { saveL2Cell } from '@/lib/l2-outbox'
 import { authFetch } from '@/lib/api-config'
+import { toast as appToast } from '@/hooks/use-toast'
 import { TaskViewer } from './task-viewer'
 import './guided-tasks.css'
 
@@ -343,9 +344,22 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
       const step = currentStep
       if (!step) return
       const user = currentUser?.fullName
+      // Fail-loud (FV-HARDENING-PLAN.md F6): a verdict the server did not accept
+      // must never look recorded. The UI still advances (the operator saw the
+      // acknowledgment), but a persistent destructive toast says re-entry is
+      // needed — no silent catch, no unchecked res.ok.
+      const failLoud = (what: string, detail: string) => {
+        console.error(`[Guided] ${what} NOT saved:`, detail)
+        appToast({
+          variant: 'destructive',
+          duration: Infinity,
+          title: `${what} was NOT saved`,
+          description: `${detail} — the step advanced on screen, but the result is not recorded. Re-record it once the tool is healthy.`,
+        })
+      }
       try {
         if (step.estopCheckTag) {
-          await fetch('/api/estop/check', {
+          const res = await fetch('/api/estop/check', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -360,6 +374,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               testedBy: user,
             }),
           })
+          if (!res.ok) failLoud(`E-stop ${result} for ${step.estopZone ?? step.estopCheckTag}`, `HTTP ${res.status}`)
         } else if (step.l2ColumnId && step.l2DeviceId) {
           // functional check cell — durable save (outbox + retry) so a guided
           // verdict is never silently lost if the POST fails or the tablet is
@@ -377,9 +392,19 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               fetchFn: (i, init) => authFetch(i, init) as any,
             },
           )
-          if (!r.ok) console.error('[Guided] FV cell save not confirmed — queued in outbox for retry:', r)
+          if (!r.ok) {
+            console.error('[Guided] FV cell save not confirmed — queued in outbox for retry:', r)
+            appToast({
+              variant: 'destructive',
+              duration: Infinity,
+              title: 'Functional check not confirmed',
+              description: r.queued
+                ? `The server did not confirm this check (${r.error ?? `HTTP ${r.status ?? '?'}`}). It is queued and will retry — do NOT assume it is saved until this warning stops appearing.`
+                : `The check failed to save AND could not be queued (${r.error ?? `HTTP ${r.status ?? '?'}`}). Re-record it.`,
+            })
+          }
         } else if (step.ioId) {
-          await fetch('/api/guided/test', {
+          const res = await fetch('/api/guided/test', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -390,9 +415,11 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               comments: opts?.comments,
             }),
           })
+          if (!res.ok) failLoud(`IO ${result}`, `HTTP ${res.status}`)
         }
-      } catch {
-        /* best-effort; UI still advances on acknowledgment */
+      } catch (e) {
+        // UI still advances on acknowledgment, but never silently.
+        failLoud(`${result} verdict`, e instanceof Error ? e.message : 'network error')
       }
     },
     [currentStep, currentUser, subsystemId],

@@ -14,6 +14,7 @@ import {
   Signal, Fingerprint, Gauge, ArrowRight, Settings2, Lock, Repeat, Ban,
 } from 'lucide-react'
 import { VfdBumpFailDialog } from '@/components/vfd-bump-fail-dialog'
+import { toast } from '@/hooks/use-toast'
 import { type VfdBlockerParty } from '@/lib/blockers'
 import { formatBumpBlockerCell, parseBumpBlockerCell } from '@/lib/vfd-bump-blocker'
 
@@ -105,15 +106,34 @@ async function writeL2Cells(
   updatedBy: string | undefined,
   cells: { columnName: string; value: string | null }[],
 ) {
+  // Fail-loud (FV-HARDENING-PLAN.md F6): an L2 stamp the server rejected must
+  // never look written. Every failure path toasts persistently — callers also
+  // get the { success:false } result, but no caller may silently drop it again.
+  const failLoud = (detail: string) => {
+    console.error(`[VFD] L2 write for ${deviceName} NOT saved:`, detail, cells)
+    toast({
+      variant: 'destructive',
+      duration: Infinity,
+      title: `VFD L2 write for ${deviceName} was NOT saved`,
+      description: `${cells.map(c => c.columnName).join(', ')}: ${detail}. The spreadsheet stamp is missing — redo this step once the tool is healthy.`,
+    })
+  }
   try {
     const res = await fetch('/api/vfd-commissioning/write-l2-cells', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceName, sheetName, updatedBy, cells }),
     })
-    return res.json()
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || body?.success === false) {
+      failLoud(body?.error ?? `HTTP ${res.status}`)
+      return { success: false, error: body?.error ?? `HTTP ${res.status}`, ...body }
+    }
+    return body
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+    const msg = err instanceof Error ? err.message : String(err)
+    failLoud(msg)
+    return { success: false, error: msg }
   }
 }
 
