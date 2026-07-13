@@ -3,7 +3,6 @@ import { lazy, Suspense } from 'react'
 
 const CommissioningRedirect = lazy(() => import('../app/commissioning/page'))
 const CommissioningPage = lazy(() => import('../app/commissioning/[id]/page'))
-const SetupPage = lazy(() => import('../app/setup/page'))
 const GuidePage = lazy(() => import('../app/guide/page'))
 const GuideScreenshots = lazy(() => import('../app/guide/screenshots/page'))
 const DiagramPage = lazy(() => import('../app/diagram/page'))
@@ -37,7 +36,6 @@ export const router = createBrowserRouter([
   { path: '/commissioning', element: <LazyPage Component={CommissioningRedirect} /> },
   { path: '/commissioning/:id/guided', element: <LazyPage Component={GuidedPage} /> },
   { path: '/commissioning/:id', element: <LazyPage Component={CommissioningPage} /> },
-  { path: '/setup', element: <LazyPage Component={SetupPage} /> },
   { path: '/guide', element: <LazyPage Component={GuidePage} /> },
   { path: '/guide/screenshots', element: <LazyPage Component={GuideScreenshots} /> },
   { path: '/diagram', element: <LazyPage Component={DiagramPage} /> },
