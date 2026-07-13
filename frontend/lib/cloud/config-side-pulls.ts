@@ -46,6 +46,104 @@ export interface SidePullResult {
   estopPulled: number
   safetyPulled: number
   punchlistsPulled: number
+  guidedTaskStatesPulled: number
+}
+
+/**
+ * Parse a stored timestamp into epoch ms for LWW comparison. Local SQLite
+ * writes `datetime('now')` ('YYYY-MM-DD HH:MM:SS', UTC, no marker) while the
+ * cloud serves ISO-8601 with 'Z' — treat a marker-less string as UTC so the
+ * two are comparable.
+ */
+function parseUtcMs(s: string | null | undefined): number {
+  if (!s) return 0
+  const iso = /[zZ]|[+-]\d{2}:?\d{2}$/.test(s) ? s : `${s.replace(' ', 'T')}Z`
+  const t = Date.parse(iso)
+  return Number.isFinite(t) ? t : 0
+}
+
+interface CloudGuidedTaskState {
+  taskId?: string
+  status?: string
+  reason?: string | null
+  actorName?: string | null
+  updatedAt?: string | null
+}
+
+/**
+ * Pull guided-mode task-state OVERRIDES (skip-with-reason / manual mark-done /
+ * cleared) back from the cloud for one subsystem. Closes the down-flow gap:
+ * these rows pushed UP since 2026-06-09 but a fresh install or peer laptop
+ * never got them back, so skipped tasks reappeared as available.
+ *
+ * Merge rules mirror the e-stop check down-flow (never-clobber):
+ *  - SKIP any task with an un-pushed local edit (GuidedTaskStatePendingSyncs
+ *    row = local truth, including dead-lettered rows).
+ *  - INSERT when local has no row (unless the cloud state is 'cleared').
+ *  - Apply only when the cloud UpdatedAt is STRICTLY newer than local
+ *    (ties keep local — the field is the authoring side).
+ *  - 'cleared' is an undo tombstone → DELETE the local row.
+ *
+ * Best-effort: never throws, returns the number of applied states.
+ */
+export async function pullGuidedTaskStates(
+  subsystemId: number,
+  remoteUrl: string,
+  apiPassword: string,
+  deps: SidePullDeps,
+): Promise<number> {
+  const db = deps.db
+  const doFetch: FetchLike = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
+  const base = remoteUrl.replace(/\/$/, '')
+  const headers = { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' }
+  let applied = 0
+  try {
+    const res = await doFetch(`${base}/api/sync/guided-task-state?subsystemId=${subsystemId}`, {
+      headers,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!res.ok) return 0
+    const data = (await res.json()) as { success?: boolean; states?: CloudGuidedTaskState[] }
+    if (!data.success || !Array.isArray(data.states) || data.states.length === 0) return 0
+
+    const hasPending = db.prepare('SELECT COUNT(*) c FROM GuidedTaskStatePendingSyncs WHERE SubsystemId = ? AND TaskId = ?')
+    const getLocal = db.prepare('SELECT id, UpdatedAt FROM GuidedTaskState WHERE SubsystemId = ? AND TaskId = ?')
+    const ins = db.prepare(`INSERT INTO GuidedTaskState (SubsystemId, TaskId, Status, Reason, ActorName, UpdatedAt)
+                            VALUES (?, ?, ?, ?, ?, ?)`)
+    const upd = db.prepare('UPDATE GuidedTaskState SET Status=?, Reason=?, ActorName=?, UpdatedAt=? WHERE id=?')
+    const del = db.prepare('DELETE FROM GuidedTaskState WHERE id=?')
+
+    for (const s of data.states) {
+      if (!s?.taskId || typeof s.taskId !== 'string') continue
+      const status = typeof s.status === 'string' ? s.status : ''
+      // Only the statuses this contract defines; anything else is ignored.
+      if (status !== 'skipped' && status !== 'completed' && status !== 'cleared') continue
+      if ((hasPending.get(subsystemId, s.taskId) as { c: number }).c > 0) continue
+
+      const cloudTs = parseUtcMs(s.updatedAt)
+      const local = getLocal.get(subsystemId, s.taskId) as { id: number; UpdatedAt: string | null } | undefined
+
+      if (!local) {
+        if (status === 'cleared') continue // nothing to undo locally
+        ins.run(subsystemId, s.taskId, status, s.reason ?? null, s.actorName ?? null, s.updatedAt ?? new Date().toISOString())
+        applied++
+        continue
+      }
+
+      if (cloudTs <= parseUtcMs(local.UpdatedAt)) continue // local same-or-newer wins
+
+      if (status === 'cleared') {
+        del.run(local.id)
+      } else {
+        upd.run(status, s.reason ?? null, s.actorName ?? null, s.updatedAt ?? new Date().toISOString(), local.id)
+      }
+      applied++
+    }
+    if (applied > 0) console.log(`[SidePull ${subsystemId}] guided task states applied from cloud: ${applied}`)
+  } catch (e) {
+    console.warn(`[SidePull ${subsystemId}] guided task-state failed:`, e instanceof Error ? e.message : e)
+  }
+  return applied
 }
 
 const TIMEOUT_MS = 15_000
@@ -60,7 +158,7 @@ export async function runConfigSidePulls(
   const doFetch: FetchLike = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
   const base = remoteUrl.replace(/\/$/, '')
   const headers = { 'Content-Type': 'application/json', 'X-API-Key': apiPassword || '' }
-  const result: SidePullResult = { networkPulled: 0, estopPulled: 0, safetyPulled: 0, punchlistsPulled: 0 }
+  const result: SidePullResult = { networkPulled: 0, estopPulled: 0, safetyPulled: 0, punchlistsPulled: 0, guidedTaskStatesPulled: 0 }
 
   // ── Network topology ────────────────────────────────────────────────────
   try {
@@ -241,6 +339,11 @@ export async function runConfigSidePulls(
   } catch (e) {
     console.warn(`[SidePull ${subsystemId}] punchlist failed:`, e instanceof Error ? e.message : e)
   }
+
+  // ── Guided-mode task-state overrides (skip / mark-done / cleared) ─────────
+  // Down-flow so a fresh install or peer laptop restores skips + manual
+  // completes. Never-clobber merge — see pullGuidedTaskStates.
+  result.guidedTaskStatesPulled = await pullGuidedTaskStates(subsystemId, remoteUrl, apiPassword, deps)
 
   return result
 }

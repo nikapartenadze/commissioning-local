@@ -76,7 +76,7 @@ function makeDeps(overrides: Partial<RunFullPullDeps> = {}): RunFullPullDeps {
     createBackup: vi.fn(async () => ({ filename: 'test-backup.db' })),
     extractDeviceName: vi.fn(() => null),
     pullL2: vi.fn(async () => ({ l2Pulled: 0, l2CellsPulled: 0, l2Error: null })),
-    runConfigSidePulls: vi.fn(async () => ({ networkPulled: 0, estopPulled: 0, safetyPulled: 0, punchlistsPulled: 0 })),
+    runConfigSidePulls: vi.fn(async () => ({ networkPulled: 0, estopPulled: 0, safetyPulled: 0, punchlistsPulled: 0, guidedTaskStatesPulled: 0 })),
     ...overrides,
   }
 }

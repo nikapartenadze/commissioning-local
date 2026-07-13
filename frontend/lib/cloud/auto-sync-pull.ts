@@ -19,7 +19,7 @@ import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 import { fetchAndApplyDelta } from '@/lib/cloud/delta-sync'
 import { setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
-import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls'
+import { runConfigSidePulls, pullGuidedTaskStates } from '@/lib/cloud/config-side-pulls'
 import { mcmTag } from '@/lib/logging/mcm-tag'
 import { isActiveMcm } from '@/lib/cloud/active-mcms'
 import { auditLog } from '@/lib/logging/recovery-log'
@@ -156,13 +156,17 @@ export async function pullSubsystemOnHint(state: PullState, subsystemId: number)
     // handoff + VFD blocker) and L2 have granular local routes; network/estop/
     // safety and the rarer punchlist/change-request/roadmap have no granular
     // pull, so a scoped full pull refreshes them (gated; skips if local work
-    // pending). guided_task is field-authored — nothing to pull back.
+    // pending). guided_task has a granular never-clobber pull (down-flow for
+    // skip / mark-done overrides so peers + fresh installs converge).
     const s = result.sections
     if (s.vfdBlocker) {
       await pullVfdAddressed(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
     }
     if (s.l2) {
       await pullL2Scoped(subsystemId, cfg.remoteUrl, cfg.apiPassword)
+    }
+    if (s.guidedTask) {
+      await pullGuidedTaskStates(subsystemId, cfg.remoteUrl, cfg.apiPassword || '', { db })
     }
     if (s.network || s.estop || s.safety || s.punchlist || s.changeRequest || s.roadmap) {
       await scopedFullPull(state, subsystemId)
