@@ -4,8 +4,6 @@ import { lazy, Suspense } from 'react'
 const CommissioningRedirect = lazy(() => import('../app/commissioning/page'))
 const CommissioningPage = lazy(() => import('../app/commissioning/[id]/page'))
 const GuidePage = lazy(() => import('../app/guide/page'))
-const GuideScreenshots = lazy(() => import('../app/guide/screenshots/page'))
-const DiagramPage = lazy(() => import('../app/diagram/page'))
 const GuidedPage = lazy(() => import('../app/commissioning/[id]/guided/page'))
 // central-tool: multi-MCM landing + settings
 const McmLandingPage = lazy(() => import('../app/mcm/page'))
@@ -37,8 +35,6 @@ export const router = createBrowserRouter([
   { path: '/commissioning/:id/guided', element: <LazyPage Component={GuidedPage} /> },
   { path: '/commissioning/:id', element: <LazyPage Component={CommissioningPage} /> },
   { path: '/guide', element: <LazyPage Component={GuidePage} /> },
-  { path: '/guide/screenshots', element: <LazyPage Component={GuideScreenshots} /> },
-  { path: '/diagram', element: <LazyPage Component={DiagramPage} /> },
   // central-tool: multi-MCM landing + settings
   { path: '/mcm', element: <LazyPage Component={McmLandingPage} /> },
   { path: '/firmware', element: <LazyPage Component={FirmwarePage} /> },
