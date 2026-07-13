@@ -870,3 +870,25 @@ I7 inconclusive-safe (queue never drained under continuous chaos — pull
 correctly deferred). I2/I20 inconclusive by design (<120min window — nightly's
 job). The new heartbeat queueStats/auditCounters fields flowed through the
 tolerant cloud heartbeat without issue.
+
+## 2026-07-13 — restart/power-cut survival (s3 flap + toolkill): FULL PASS + harness fix
+The FV-loss hypothesis was "restart or reconnect-to-cloud clears local work
+because cloud has no connection to sync to." Tested directly.
+
+HARNESS FIX (chaos_api.py do_toolkill): a SIGKILL via the Docker API does NOT
+trigger the compose restart policy — the first attempt (25min run) left the
+tool DOWN for the rest of the soak (server_starts=1, i.e. never came back), so
+"power cut" was silently a "dead box" test. do_toolkill now SIGKILLs, waits 5s
+(the dark window), then explicitly POSTs /start — a true power-CYCLE.
+
+15-min s3 (link down 2 of every 6 min, FV-heavy, 6 bots) + one power-cycle at
+~6.5min WITH unsynced work queued and the cloud link flapping (forces the
+restart→reconnect→pull-from-a-cloud-that's-missing-my-work path):
+verdict pass=true, server_starts=2 (kill+start both docker 204),
+I4 266 writes / 0 wipes / 0 silent drops, I8_FV 248 FV writes / 219 judged /
+0 missing local / 0 divergent, I18 0 mismatches, I3 2 restores seen.
+Conclusion: a hard power-cycle followed by reconnect to a behind cloud does
+NOT clear local FV/IO work. The earlier 25-min dead-box run also showed 0
+wipes (work survived on disk while the tool stayed down). The full triad is
+now proven: nonstop reconnects, hard power-off, and power-cycle-with-unsynced
+-work — none clear local work.

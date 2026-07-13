@@ -161,8 +161,17 @@ def do_delay(ms: int) -> tuple[int, str]:
 
 
 def do_toolkill() -> tuple[int, str]:
+    """Power-CYCLE the tool: SIGKILL (no graceful shutdown — the laptop power
+    cut), then explicitly start it again after a few seconds. The explicit
+    start is REQUIRED: Docker's restart policy does NOT fire after an API
+    kill (discovered 2026-07-13 — the tool stayed down for the rest of the
+    soak, silently turning a power-cycle test into a dead-box test)."""
     status, body = docker("POST", f"/containers/{TOOL}/kill?signal=SIGKILL")
-    journal({"type": "toolkill", "docker_status": status})
+    start_status = None
+    if status < 300:
+        time.sleep(5)  # the "power was out" window
+        start_status, _ = docker("POST", f"/containers/{TOOL}/start")
+    journal({"type": "toolkill", "docker_status": status, "start_status": start_status})
     return status, body
 
 
