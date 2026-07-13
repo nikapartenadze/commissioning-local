@@ -1,26 +1,33 @@
-import { useParams, useSearchParams } from 'react-router-dom'
-import { GuidedModePage } from '@/components/guided/guided-mode-page'
+import { Link, useParams } from 'react-router-dom'
 import { GuidedTaskRunner } from '@/components/guided/tasks/guided-task-runner'
 
 /**
- * Guided Mode. By default this is the Task-Pool flow rendered on the live SVG
- * map (the Guided Mode spec). `?classic=1` falls back to the original
- * device-walk guided view, and "Exit" always returns to the full
- * commissioning tool — so no existing functionality is lost.
+ * Guided Mode — the Task-Pool flow rendered on the live SVG map. This is the
+ * single guided view (the old `?classic=1` device-walk fallback was removed
+ * 2026-07-13; its dark cockpit canvas now lives in the runner itself).
  */
 export default function Page() {
   const params = useParams()
-  const [search] = useSearchParams()
   const raw = (params.id as string) ?? ''
   const subsystemId = raw === '_' ? 0 : parseInt(raw, 10)
 
-  if (search.get('classic') === '1') {
-    return <GuidedModePage />
-  }
   if (!subsystemId || Number.isNaN(subsystemId)) {
-    // No subsystem to drive a task pool — fall back to the classic view,
-    // which renders its own "invalid subsystem" handling.
-    return <GuidedModePage />
+    return (
+      <div
+        style={{
+          height: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 12,
+          fontFamily: 'system-ui, sans-serif',
+        }}
+      >
+        <div>Guided mode needs a subsystem — open it from a commissioning page.</div>
+        <Link to="/">Back to the tool</Link>
+      </div>
+    )
   }
   return <GuidedTaskRunner subsystemId={subsystemId} />
 }

@@ -813,9 +813,6 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
             </div>
             <span className="gt-progress-label">{s ? `${s.completed}/${s.total} done` : ''}</span>
           </div>
-          <Link className="gt-btn gt-btn-ghost gt-chip" to={`/commissioning/${subsystemId}/guided?classic=1`}>
-            Classic view
-          </Link>
           <button className="gt-btn gt-btn-ghost gt-chip" onClick={() => setViewerOpen(true)}>
             Task Viewer
           </button>
