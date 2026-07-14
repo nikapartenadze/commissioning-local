@@ -1,5 +1,22 @@
 export type FVInputType = 'pass_fail' | 'number' | 'text' | 'readonly'
 
+/**
+ * Per-MCM column applicability (2026-07-14). A column applies to an FV page
+ * when its `ApplicableMcms` is empty/null (applies to ALL MCMs) or lists an MCM
+ * shown on that page. Case-insensitive; comma-separated. Presentation-only —
+ * cell values are never touched, so hiding a column loses no data and is
+ * reversible by clearing the field. Shared by the field FV grid and any test.
+ */
+export function fvColumnAppliesToMcms(applicable: string | null | undefined, pageMcms: Iterable<string>): boolean {
+  if (!applicable || !applicable.trim()) return true
+  const set = new Set<string>()
+  for (const m of pageMcms) { const t = (m || '').trim().toLowerCase(); if (t) set.add(t) }
+  for (const m of applicable.split(',')) {
+    if (set.has(m.trim().toLowerCase())) return true
+  }
+  return false
+}
+
 export function normalizeFVInputType(columnType?: string | null, inputType?: string | null): FVInputType {
   const value = (inputType || columnType || '').trim().toLowerCase()
   if (value === 'pass_fail' || value === 'check') return 'pass_fail'

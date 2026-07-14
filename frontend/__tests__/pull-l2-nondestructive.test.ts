@@ -45,7 +45,8 @@ const { memDb } = vi.hoisted(() => {
       IsEditable INTEGER DEFAULT 1,
       IncludeInProgress INTEGER DEFAULT 0,
       IsRequired INTEGER DEFAULT 0,
-      Description TEXT
+      Description TEXT,
+      ApplicableMcms TEXT
     );
     CREATE TABLE IF NOT EXISTS L2Devices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

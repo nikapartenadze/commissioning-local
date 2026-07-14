@@ -62,6 +62,10 @@ try {
     'ALTER TABLE L2Columns ADD COLUMN IsSystem INTEGER DEFAULT 0',
     'ALTER TABLE L2Columns ADD COLUMN IsEditable INTEGER DEFAULT 1',
     'ALTER TABLE L2Columns ADD COLUMN IncludeInProgress INTEGER DEFAULT 0',
+    // Per-MCM column applicability (2026-07-14): comma-separated MCM labels this
+    // column applies to; NULL/empty = all MCMs. The FV grid hides it on MCMs
+    // not listed. Presentation-only — cell values are untouched.
+    'ALTER TABLE L2Columns ADD COLUMN ApplicableMcms TEXT',
     // Per-MCM scoping for FV/L2 devices. L2 was modeled as one global dataset
     // (sheets/columns are project templates, shared), but DEVICES + their cell
     // values belong to a specific MCM. On a central server hosting many MCMs the
@@ -713,7 +717,8 @@ export function initializeSchema() {
       IsEditable INTEGER DEFAULT 1,
       IncludeInProgress INTEGER DEFAULT 0,
       IsRequired INTEGER DEFAULT 0,
-      Description TEXT
+      Description TEXT,
+      ApplicableMcms TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_l2columns_sheetid ON L2Columns(SheetId);
 

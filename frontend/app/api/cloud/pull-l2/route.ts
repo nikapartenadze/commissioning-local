@@ -164,8 +164,8 @@ export async function POST(req: Request, res: Response) {
       const insertSheet = db.prepare('INSERT INTO L2Sheets (CloudId, Name, DisplayName, DisplayOrder, Discipline, DeviceCount) VALUES (?, ?, ?, ?, ?, ?)')
       const updateSheet = db.prepare('UPDATE L2Sheets SET Name=?, DisplayName=?, DisplayOrder=?, Discipline=?, DeviceCount=? WHERE id=?')
       const findCol = db.prepare('SELECT id FROM L2Columns WHERE CloudId = ?')
-      const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, InputType, DisplayOrder, IsSystem, IsEditable, IncludeInProgress, IsRequired, Description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      const updateCol = db.prepare('UPDATE L2Columns SET SheetId=?, Name=?, ColumnType=?, InputType=?, DisplayOrder=?, IsSystem=?, IsEditable=?, IncludeInProgress=?, IsRequired=?, Description=? WHERE id=?')
+      const insertCol = db.prepare('INSERT INTO L2Columns (CloudId, SheetId, Name, ColumnType, InputType, DisplayOrder, IsSystem, IsEditable, IncludeInProgress, IsRequired, Description, ApplicableMcms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      const updateCol = db.prepare('UPDATE L2Columns SET SheetId=?, Name=?, ColumnType=?, InputType=?, DisplayOrder=?, IsSystem=?, IsEditable=?, IncludeInProgress=?, IsRequired=?, Description=?, ApplicableMcms=? WHERE id=?')
       // NON-DESTRUCTIVE upsert stmts (2026-07-08 FV-loss fix): devices matched
       // by CloudId and UPDATED in place (no delete); cells merged last-write-wins
       // by (DeviceId, ColumnId) — never deleted, never blanked.
@@ -194,7 +194,7 @@ export async function POST(req: Request, res: Response) {
           const colArgs = [
             localSheetId, col.name, col.columnType, col.inputType || col.columnType, col.displayOrder,
             col.isSystem ? 1 : 0, col.isEditable === false ? 0 : 1, col.includeInProgress ? 1 : 0,
-            col.isRequired ? 1 : 0, col.description || null,
+            col.isRequired ? 1 : 0, col.description || null, col.applicableMcms ?? null,
           ]
           const ec = findCol.get(col.id) as { id: number } | undefined
           let localColId: number

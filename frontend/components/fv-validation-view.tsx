@@ -11,7 +11,7 @@ import { VfdWizardModal } from './vfd-wizard-modal'
 import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
 import { useSignalR, FVCellUpdate } from '@/lib/signalr-client'
-import { doesFVColumnCountForProgress, normalizeFVInputType } from '@/lib/fv-utils'
+import { doesFVColumnCountForProgress, normalizeFVInputType, fvColumnAppliesToMcms } from '@/lib/fv-utils'
 import { saveL2Cell, replayL2Outbox, pendingCount, type OutboxDeps } from '@/lib/l2-outbox'
 import { toast } from '@/hooks/use-toast'
 
@@ -30,6 +30,9 @@ interface FVColumn {
   DisplayOrder: number
   IncludeInProgress?: number
   Description?: string | null
+  /** Per-MCM applicability (2026-07-14): comma-separated MCM labels; empty/null
+   *  = applies to all MCMs. The grid hides the column on MCMs not listed. */
+  ApplicableMcms?: string | null
 }
 
 interface FVDevice {
@@ -710,16 +713,23 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     if (/note|comment|blocker|responsible|party|description/.test(n)) return 900
     return 500
   }
+  const activeDevices = data.devices
+    .filter(d => d.SheetId === activeSheetData.id)
+    .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
+  // MCM(s) shown on this sheet — drives per-MCM column applicability. On a
+  // per-MCM tool this is usually one MCM; a column scoped to other MCMs is
+  // hidden here. Cell values are untouched (presentation-only).
+  const activeSheetMcms = new Set(
+    activeDevices.map(d => (d.Mcm || '').trim().toLowerCase()).filter(Boolean),
+  )
   const activeColumns = (() => {
     const cols = data.columns
       .filter(c => c.SheetId === activeSheetData.id)
+      .filter(c => fvColumnAppliesToMcms(c.ApplicableMcms, activeSheetMcms))
       .sort((a, b) => a.DisplayOrder - b.DisplayOrder)
     if (!vfdMode) return cols
     return [...cols].sort((a, b) => vfdColRank(a.Name) - vfdColRank(b.Name) || a.DisplayOrder - b.DisplayOrder)
   })()
-  const activeDevices = data.devices
-    .filter(d => d.SheetId === activeSheetData.id)
-    .sort((a, b) => a.DeviceName.localeCompare(b.DeviceName))
   const activeStats = sheetStats[safeActiveSheet]
 
   // VFD row tone: a device with an open blocker paints the whole row RED; a
