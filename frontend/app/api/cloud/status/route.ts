@@ -9,15 +9,36 @@ import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
 export async function GET(req: Request, res: Response) {
   try {
+    // ── ONE definition of pending vs parked ────────────────────────────
+    // These counts MUST match lib/sync/queue-inspector.ts (the source the Sync
+    // Center page + nav badge read via /api/sync/queue). The split is fixed:
+    //   pending / active = DeadLettered = 0  (auto-sync will keep retrying)
+    //   parked / attention = DeadLettered = 1 (stopped retrying — needs a human)
+    // Both queries below apply the SAME DeadLettered filter so the toolbar pill
+    // and the cloud-sync-dialog can never disagree with the nav badge.
+    //
+    // safeCount tolerates a missing table on an older DB (mirrors the per-table
+    // try/catch in queue-inspector) so a fresh install never 500s this route.
+    const safeCount = (sql: string): number => {
+      try { return (db.prepare(sql).get() as { cnt: number }).cnt } catch { return 0 }
+    }
+
     // Active queue = retryable work still owed to cloud (DeadLettered = 0).
-    const pendingIoSyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 0').get() as { cnt: number }).cnt
-    const pendingL2SyncCount = (db.prepare('SELECT COUNT(*) as cnt FROM L2PendingSyncs').get() as { cnt: number }).cnt
-    const pendingChangeRequestCount = (db.prepare("SELECT COUNT(*) as cnt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL").get() as { cnt: number }).cnt
+    const pendingIoSyncCount = safeCount('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 0')
+    const pendingL2SyncCount = safeCount('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE DeadLettered = 0')
+    const pendingChangeRequestCount = safeCount("SELECT COUNT(*) as cnt FROM ChangeRequests WHERE Status = 'pending' AND CloudId IS NULL")
     const totalPendingCount = pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount
     // Parked rows: results the cloud REJECTED or that exhausted retries — they
     // left the active queue but are NOT on cloud. Surfaced so the indicator
     // never reads "all synced" while field work is actually stuck (B3/B5).
-    const attentionCount = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
+    // Parked = DeadLettered = 1 across ALL THREE outbound queue tables — the
+    // SAME set + filter as queue-inspector's summary.parked. Counting IO-only
+    // here (the old bug) let a parked L2/blocker row light the red nav badge
+    // while this route reported 0 attention → toolbar stayed green.
+    const attentionCount =
+      safeCount('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1')
+      + safeCount('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE DeadLettered = 1')
+      + safeCount('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1')
 
     // ── Per-MCM (per-subsystem) breakdown ──────────────────────────────
     // On a CENTRAL server one tool owns many MCMs, so the global totals above
@@ -76,10 +97,13 @@ export async function GET(req: Request, res: Response) {
     for (const r of ioFailedRows) bucket(r.sid).failedIoSyncCount = r.cnt
 
     // L2 pending: resolve subsystem through the device row's Subsystem name.
-    // No DeadLettered filter — matches the global pendingL2SyncCount above.
+    // Active only (DeadLettered = 0) — matches the global pendingL2SyncCount
+    // above (both now exclude parked rows) so per-MCM pullBlocked agrees with
+    // the global total.
     const l2PendingRows = db.prepare(`
       SELECT d.Subsystem AS sub, COUNT(*) AS cnt
       FROM L2PendingSyncs lp LEFT JOIN L2Devices d ON d.CloudId = lp.CloudDeviceId
+      WHERE lp.DeadLettered = 0
       GROUP BY d.Subsystem
     `).all() as { sub: string | null; cnt: number }[]
     for (const r of l2PendingRows) bucket(r.sub).pendingL2SyncCount = r.cnt

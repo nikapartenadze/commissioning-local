@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { CheckCircle2, XCircle, Loader2, Cloud, Upload, RefreshCw, ChevronDown, ChevronRight, Trash2, X } from "lucide-react"
+import { CheckCircle2, XCircle, Loader2, Cloud, Upload, RefreshCw, ChevronDown, ChevronRight, ExternalLink, X } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import type { CloudSyncStatusResponse } from "@/lib/cloud/types"
 
@@ -120,29 +120,6 @@ export function CloudSyncDialog({
     }
   }
 
-  const handleClearAll = async () => {
-    const count = pendingItems?.length ?? 0
-    if (count === 0) return
-    const ok = await askConfirm(
-      `Force-clear ALL ${count} pending FV sync row(s)?`,
-      `This removes the retry queue entries only. Local cell values stay put. ` +
-      `For any cell where local and cloud values differ, cloud's value becomes ` +
-      `authoritative from this point on. Use when you need to move on (switch ` +
-      `subsystem, unblock cloud pull) and don't need local's queued edits to ` +
-      `land on cloud.`
-    )
-    if (!ok) return
-    try {
-      setItemsLoading(true)
-      const resp = await authFetch(API_ENDPOINTS.cloudSyncL2Items, { method: 'DELETE' })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-      await Promise.all([loadPendingItems(), loadStatus()])
-    } catch (error) {
-      setItemsError(error instanceof Error ? error.message : 'Failed to clear pending rows')
-      setItemsLoading(false)
-    }
-  }
-
   useEffect(() => {
     if (!open) return
     setOperationalStatus(initialStatus)
@@ -226,6 +203,10 @@ export function CloudSyncDialog({
   const pendingL2 = operationalStatus?.pendingL2SyncCount ?? 0
   const pendingChangeRequests = operationalStatus?.pendingChangeRequestCount ?? 0
   const totalPending = operationalStatus?.totalPendingCount ?? (pendingIo + pendingL2 + pendingChangeRequests)
+  // Parked = rows the cloud rejected / that exhausted retries (DeadLettered=1),
+  // across all outbound queues. Same definition as the nav badge + Sync Center.
+  // NEVER folded into "pending" — parked work will not upload on its own.
+  const parked = operationalStatus?.attentionCount ?? 0
   const lastPush = operationalStatus?.lastPushAt ? new Date(operationalStatus.lastPushAt).toLocaleString() : 'Never'
   const lastPull = operationalStatus?.lastPullAt ? new Date(operationalStatus.lastPullAt).toLocaleString() : 'Never'
 
@@ -278,14 +259,44 @@ export function CloudSyncDialog({
             </div>
           </div>
 
-          <div className={`rounded-lg border p-3 ${totalPending > 0 ? 'border-amber-300 bg-amber-50 dark:border-amber-800/50 dark:bg-amber-950/30' : 'bg-muted/20'}`}>
-            <div className="text-sm font-medium">
-              {totalPending > 0 ? 'Safe mode active' : 'Queues are clean'}
+          <div className={`rounded-lg border p-3 ${
+            parked > 0
+              ? 'border-red-300 bg-red-50 dark:border-red-800/50 dark:bg-red-950/30'
+              : totalPending > 0
+                ? 'border-amber-300 bg-amber-50 dark:border-amber-800/50 dark:bg-amber-950/30'
+                : 'bg-muted/20'
+          }`}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">
+                {parked > 0
+                  ? `${parked} stuck — needs attention`
+                  : totalPending > 0 ? 'Waiting to sync' : 'Queues are clean'}
+              </div>
+              {parked > 0 && (
+                <a
+                  href="/sync"
+                  className="inline-flex items-center gap-1 px-2 h-7 rounded-md text-xs font-medium border border-red-400/40 text-red-700 dark:text-red-300 hover:bg-red-500/10"
+                >
+                  Open Sync Center
+                </a>
+              )}
             </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {totalPending > 0
-                ? `Local unsynced data exists (${totalPending} total pending). Cloud pull stays blocked until these rows are acknowledged.`
-                : 'No local queues are blocking cloud pull.'}
+            <div className="text-xs text-muted-foreground mt-1 space-y-1">
+              {totalPending > 0 && (
+                <div>
+                  {totalPending} row{totalPending === 1 ? '' : 's'} waiting to sync — uploads
+                  automatically in the background. Cloud pull stays blocked until this active
+                  work uploads.
+                </div>
+              )}
+              {parked > 0 && (
+                <div className="text-red-700 dark:text-red-300">
+                  {parked} row{parked === 1 ? '' : 's'} stopped retrying (rejected by cloud or out
+                  of retries). These will NOT upload on their own — open the Sync Center to retry
+                  or discard them. Your local data stays saved on this device either way.
+                </div>
+              )}
+              {totalPending === 0 && parked === 0 && <div>No local queues are blocking cloud pull.</div>}
             </div>
             {operationalStatus?.error && (
               <div className="text-xs text-amber-700 dark:text-amber-300 mt-2">
@@ -308,17 +319,16 @@ export function CloudSyncDialog({
               {itemsExpanded && (
                 <span className="flex items-center gap-1">
                   {pendingItems && pendingItems.length > 0 && (
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      onClick={(e) => { e.stopPropagation(); void handleClearAll() }}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); void handleClearAll() } }}
-                      className="inline-flex items-center gap-1 px-2 h-7 rounded-md text-xs text-destructive border border-destructive/30 hover:bg-destructive/10 cursor-pointer"
-                      aria-label="Force clear all pending rows"
+                    <a
+                      href="/sync"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 px-2 h-7 rounded-md text-xs border border-border hover:bg-muted/60 cursor-pointer"
+                      aria-label="Open Sync Center to triage stuck rows"
+                      title="Open the Sync Center to retry or discard stuck rows (discards only parked rows, never your local data)"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      Force clear all
-                    </span>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      Open Sync Center
+                    </a>
                   )}
                   <span
                     role="button"
@@ -409,8 +419,10 @@ export function CloudSyncDialog({
                 )}
                 <div className="px-3 py-2 text-[11px] text-muted-foreground border-t">
                   Rebased rows clear on the next push attempt. Rows highlighted in amber have retried ≥3 times.
-                  Use the <X className="inline h-3 w-3" /> on a row (or Force clear all) to drop pending entries
-                  and let cloud&apos;s value win — useful when switching subsystems and the queue is blocking the pull.
+                  Use the <X className="inline h-3 w-3" /> on a row to drop a single pending entry and let
+                  cloud&apos;s value win — useful when switching subsystems and the queue is blocking the pull.
+                  For stuck (parked) rows, use <span className="font-medium">Open Sync Center</span> to retry or
+                  discard them; discarding only removes the queue copy and never deletes your local data.
                 </div>
               </div>
             )}

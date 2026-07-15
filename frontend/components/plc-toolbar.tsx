@@ -130,7 +130,7 @@ export function PlcToolbar({
   const passedPercent = totalIos > 0 ? (passedIos / totalIos) * 100 : 0
   const totalPendingSyncs = pendingIoSyncCount + pendingL2SyncCount + pendingChangeRequestCount
   const cloudTitle = attentionCount > 0
-    ? `⚠ ${attentionCount} result${attentionCount === 1 ? '' : 's'} the cloud REJECTED or could not sync after repeated tries — open Cloud Sync to review. These are NOT on cloud. ` +
+    ? `⚠ ${attentionCount} row${attentionCount === 1 ? '' : 's'} the cloud REJECTED or could not sync after repeated tries (IO, FV, or blocker) — open Cloud Sync to review. These are NOT on cloud. ` +
       (totalPendingSyncs > 0 ? `Plus ${totalPendingSyncs} still queued.` : '')
     : statusUnknown
       ? 'Sync status unknown — could not read local sync state.'
