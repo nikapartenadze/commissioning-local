@@ -72,6 +72,13 @@ export interface ApplyDeltaResult {
   applied: number
   deleted: number
   skippedDeletes: number[]
+  /** PendingSyncs rows ORPHANED (Orphaned=1) because a cloud IO delete arrived
+   *  while they held un-pushed local work. The Ios row is KEPT; the queue row
+   *  stops retrying but auto-requeues if the IO reappears. */
+  orphanedPendingSyncs?: number
+  /** Orphaned PendingSyncs rows AUTO-REQUEUED (Orphaned→0) because their IO
+   *  reappeared in this delta's upserts. */
+  requeuedOrphans?: number
   /** Set when the mass-delete circuit breaker fired: number of deletes blocked. */
   massDeleteBlocked?: number
   sections: {
@@ -255,9 +262,23 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
 
   const pendingStmt = db.prepare('SELECT COUNT(*) as c FROM PendingSyncs WHERE IoId = ?')
   const deleteStmt = db.prepare('DELETE FROM Ios WHERE id = ?')
+  // Orphan the queue rows for an IO the cloud just deleted (confirmed removal via
+  // delete-tombstone). QUEUE-ROW FLAG ONLY — the Ios row is kept below.
+  const orphanPendingStmt = db.prepare(
+    "UPDATE PendingSyncs SET DeadLettered = 1, Orphaned = 1, RetryCount = 0, " +
+    "LastError = 'HTTP 410 — IO removed on cloud (delete tombstone); orphaned, auto-restores if it reappears' " +
+    "WHERE IoId = ? AND Orphaned = 0",
+  )
+  // Auto-requeue: an orphaned IO reappeared in this delta's upserts → flip its
+  // queue row back to Active so it drains again, value intact.
+  const requeueOrphanStmt = db.prepare(
+    'UPDATE PendingSyncs SET Orphaned = 0, DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE IoId = ? AND Orphaned = 1',
+  )
   const upsert = upsertStmt()
   const upsertKeepClear = upsertKeepClearStmt()
   let protectedClears = 0
+  let orphanedPendingSyncs = 0
+  let requeuedOrphans = 0
 
   // One transaction: either the whole delta lands or none of it (so the cursor,
   // advanced only after, can't skip a partially-applied window).
@@ -273,14 +294,20 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
       } else {
         upsert.run(ioToParams(io, subsystemId))
       }
+      // Reappearance: if this IO had orphaned queue rows (cloud had deleted it,
+      // now it's back), auto-requeue them so the held local value drains.
+      requeuedOrphans += requeueOrphanStmt.run(io.id).changes
       applied++
     }
     for (const id of deletes) {
       const pending = (pendingStmt.get(id) as { c: number }).c
       if (pending > 0) {
-        // Field tested this IO and the result hasn't synced yet — keep the row
-        // (and its pending result) rather than dropping local work to honor a
-        // cloud delete. Surfaced for attention.
+        // Field tested this IO and the result hasn't synced yet — the cloud
+        // deleting it is a CONFIRMED removal, so ORPHAN the queue row(s) rather
+        // than leaving them Active to 404 forever: they stop retrying, drop off
+        // the amber attention badge, and AUTO-REQUEUE if the IO reappears. The
+        // Ios row + its local result are KEPT (never dropped to honor a delete).
+        orphanedPendingSyncs += orphanPendingStmt.run(id).changes
         skippedDeletes.push(id)
         continue
       }
@@ -295,7 +322,10 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   }
 
   if (skippedDeletes.length > 0) {
-    console.warn(`${mcmTag(subsystemId)}[Delta] Subsystem ${subsystemId}: kept ${skippedDeletes.length} cloud-deleted IO(s) with un-pushed local results: ${skippedDeletes.join(', ')}`)
+    console.warn(`${mcmTag(subsystemId)}[Delta] Subsystem ${subsystemId}: kept ${skippedDeletes.length} cloud-deleted IO(s) with un-pushed local results (orphaned ${orphanedPendingSyncs} queue row(s) — value kept, auto-restores if the IO reappears): ${skippedDeletes.join(', ')}`)
+  }
+  if (requeuedOrphans > 0) {
+    console.warn(`${mcmTag(subsystemId)}[Delta] Subsystem ${subsystemId}: auto-requeued ${requeuedOrphans} orphaned queue row(s) whose IO reappeared on cloud.`)
   }
   if (protectedClears > 0) {
     console.warn(`${mcmTag(subsystemId)}[Delta] Subsystem ${subsystemId}: preserved ${protectedClears} deliberate local clear(s) the cloud would have reverted (stale higher-versioned result held back).`)
@@ -306,6 +336,8 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
     applied,
     deleted,
     skippedDeletes,
+    ...(orphanedPendingSyncs > 0 ? { orphanedPendingSyncs } : {}),
+    ...(requeuedOrphans > 0 ? { requeuedOrphans } : {}),
     ...(massDeleteBlocked > 0 ? { massDeleteBlocked } : {}),
     sections,
     toSeq: payload.toSeq ?? getSyncCursor(subsystemId),

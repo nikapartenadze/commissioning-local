@@ -9,13 +9,16 @@ import type { CloudSyncStatusResponse } from '@/lib/cloud/types'
 
 export async function GET(req: Request, res: Response) {
   try {
-    // ── ONE definition of pending vs parked ────────────────────────────
+    // ── ONE definition of the THREE outbound-sync states ────────────────
     // These counts MUST match lib/sync/queue-inspector.ts (the source the Sync
     // Center page + nav badge read via /api/sync/queue). The split is fixed:
-    //   pending / active = DeadLettered = 0  (auto-sync will keep retrying)
-    //   parked / attention = DeadLettered = 1 (stopped retrying — needs a human)
-    // Both queries below apply the SAME DeadLettered filter so the toolbar pill
-    // and the cloud-sync-dialog can never disagree with the nav badge.
+    //   pending / active   = DeadLettered = 0                  (auto-sync keeps retrying)
+    //   parked / attention = DeadLettered = 1 AND Orphaned = 0 (stopped — needs a human)
+    //   orphaned           = Orphaned = 1                      (cloud target removed; auto-restores)
+    // The invariant Orphaned=1 ⇒ DeadLettered=1 means the active (DeadLettered=0)
+    // query auto-excludes orphans. The RED attention badge must exclude orphans
+    // too (they're an informational "removed on cloud" surface, not a to-do), so
+    // every attention count below carries AND Orphaned = 0.
     //
     // safeCount tolerates a missing table on an older DB (mirrors the per-table
     // try/catch in queue-inspector) so a fresh install never 500s this route.
@@ -36,9 +39,15 @@ export async function GET(req: Request, res: Response) {
     // here (the old bug) let a parked L2/blocker row light the red nav badge
     // while this route reported 0 attention → toolbar stayed green.
     const attentionCount =
-      safeCount('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1')
-      + safeCount('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE DeadLettered = 1')
-      + safeCount('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1')
+      safeCount('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1 AND Orphaned = 0')
+      + safeCount('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE DeadLettered = 1 AND Orphaned = 0')
+      + safeCount('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 AND Orphaned = 0')
+    // Orphaned = cloud target removed. Informational surface ("removed on cloud"),
+    // NOT part of the red attention badge. Auto-restores if the target reappears.
+    const orphanedCount =
+      safeCount('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE Orphaned = 1')
+      + safeCount('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE Orphaned = 1')
+      + safeCount('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE Orphaned = 1')
 
     // ── Per-MCM (per-subsystem) breakdown ──────────────────────────────
     // On a CENTRAL server one tool owns many MCMs, so the global totals above
@@ -78,11 +87,12 @@ export async function GET(req: Request, res: Response) {
     `).all() as { sid: number | null; cnt: number }[]
     for (const r of ioPendingRows) bucket(r.sid).pendingIoSyncCount = r.cnt
 
-    // IO parked (DeadLettered=1) → attention, per subsystem.
+    // IO parked (DeadLettered=1, non-orphaned) → attention, per subsystem.
+    // Orphaned rows are excluded so the per-MCM red badge matches the global one.
     const ioAttentionRows = db.prepare(`
       SELECT i.SubsystemId AS sid, COUNT(*) AS cnt
       FROM PendingSyncs p LEFT JOIN Ios i ON i.id = p.IoId
-      WHERE p.DeadLettered = 1
+      WHERE p.DeadLettered = 1 AND p.Orphaned = 0
       GROUP BY i.SubsystemId
     `).all() as { sid: number | null; cnt: number }[]
     for (const r of ioAttentionRows) bucket(r.sid).attentionCount = r.cnt
@@ -162,6 +172,7 @@ export async function GET(req: Request, res: Response) {
       pendingChangeRequestCount,
       totalPendingCount,
       attentionCount,
+      orphanedCount,
       perSubsystem,
       failedIoSyncCount,
       failedL2SyncCount,

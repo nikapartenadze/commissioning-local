@@ -565,7 +565,17 @@ class AutoSyncService {
             const parkReason = removedStatus != null
               ? permanentRejectionReason(removedStatus)
               : (r.reason ?? 'cloud permanently rejected')
-            pendingSyncRepository.deadLetter(pending.id, parkReason)
+            // CONFIRMED removal (403/404/410) → ORPHAN (Orphaned=1, a subset of
+            // dead-letter): the IO was deleted on cloud, so this row would 404
+            // forever. Orphaning drops it off the amber attention badge and lets
+            // it AUTO-REQUEUE if the IO reappears via a delta upsert. Any OTHER
+            // permanent reject (e.g. SPARE cannot be Passed) stays a plain park —
+            // it's a genuine "needs a human" case, not a removal.
+            if (removedStatus != null) {
+              pendingSyncRepository.orphan(pending.id, parkReason)
+            } else {
+              pendingSyncRepository.deadLetter(pending.id, parkReason)
+            }
             // Durable 2-week audit trail for the rejected result (was console
             // only) — so "why did this IO never reach cloud" is answerable later.
             const parkedSubsystemId = this.ioSubsystemId(pending.IoId)
@@ -906,7 +916,11 @@ class AutoSyncService {
             const parkReason = permanentRejectionReason(l2Resp.status)
             for (const p of dedupedPending) {
               try {
-                db.prepare('UPDATE L2PendingSyncs SET DeadLettered = 1, LastError = ? WHERE id = ?').run(parkReason, p.id)
+                // CONFIRMED removal (403/404/410): the L2 device/column/subsystem
+                // was deleted on cloud → ORPHAN (Orphaned=1, a subset of the park)
+                // so the row drops off the amber attention badge and AUTO-REQUEUES
+                // when the device reappears via pull-l2 — with its value intact.
+                db.prepare('UPDATE L2PendingSyncs SET DeadLettered = 1, Orphaned = 1, RetryCount = 0, LastError = ? WHERE id = ?').run(parkReason, p.id)
                 const l2Subsystem = this.l2SubsystemLabel(p.CloudDeviceId)
                 auditLog({
                   type: 'l2.push.park',

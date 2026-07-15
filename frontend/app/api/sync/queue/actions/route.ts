@@ -27,6 +27,7 @@ export async function POST(req: Request, res: Response) {
       ids?: { kind: QueueKind; id: number }[]
       classification?: Classification
       allParked?: boolean
+      allOrphaned?: boolean
     }
 
     const action = body.action
@@ -48,12 +49,12 @@ export async function POST(req: Request, res: Response) {
     }
 
     const hasSelector =
-      (Array.isArray(body.ids) && body.ids.length > 0) || !!body.classification || body.allParked === true
+      (Array.isArray(body.ids) && body.ids.length > 0) || !!body.classification || body.allParked === true || body.allOrphaned === true
     if (!hasSelector) {
-      return res.status(400).json({ error: 'No rows selected — provide ids, classification, or allParked.' })
+      return res.status(400).json({ error: 'No rows selected — provide ids, classification, allParked, or allOrphaned.' })
     }
 
-    const refs = selectRefs({ ids: body.ids, classification: body.classification, allParked: body.allParked })
+    const refs = selectRefs({ ids: body.ids, classification: body.classification, allParked: body.allParked, allOrphaned: body.allOrphaned })
 
     if (action === 'retry') {
       const { affected } = retry(refs)
@@ -67,7 +68,7 @@ export async function POST(req: Request, res: Response) {
     // snapshot per row would be pure overhead. mirrors selectRefs' precedence:
     // when ids are provided they win, so that path is never "bulk".
     const explicitIds = Array.isArray(body.ids) && body.ids.length > 0
-    const isBulkDiscard = !explicitIds && (body.allParked === true || !!body.classification)
+    const isBulkDiscard = !explicitIds && (body.allParked === true || body.allOrphaned === true || !!body.classification)
     let backupFilename: string | undefined
     if (isBulkDiscard) {
       try {

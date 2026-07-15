@@ -19,7 +19,7 @@ import { toast } from '@/hooks/use-toast'
 
 // ── Contract types (must match the backend /api/sync/queue contract) ──────────
 type Kind = 'io' | 'l2' | 'blocker'
-type QueueStatus = 'pending' | 'parked'
+type QueueStatus = 'pending' | 'parked' | 'orphaned'
 type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'unknown'
 
 interface QueueItem {
@@ -40,6 +40,7 @@ interface QueueItem {
 interface QueueSummary {
   pending: number
   parked: number
+  orphaned: number
   byClassification: Record<Classification, number>
 }
 
@@ -53,6 +54,7 @@ type ActionBody = {
   ids?: { kind: Kind; id: number }[]
   classification?: Classification
   allParked?: boolean
+  allOrphaned?: boolean
 }
 
 const POLL_MS = 15000
@@ -111,7 +113,7 @@ function formatAge(mins: number | null): string {
   return `${Math.round(h / 24)}d`
 }
 
-type Tab = 'parked' | 'pending' | 'all'
+type Tab = 'parked' | 'orphaned' | 'pending' | 'all'
 
 // ── Confirm dialog state ──────────────────────────────────────────────────────
 interface ConfirmState {
@@ -163,9 +165,23 @@ export default function SyncPage() {
 
   const visible = useMemo(() => {
     if (tab === 'parked') return items.filter((i) => i.status === 'parked')
+    if (tab === 'orphaned') return items.filter((i) => i.status === 'orphaned')
     if (tab === 'pending') return items.filter((i) => i.status === 'pending')
     return items
   }, [items, tab])
+
+  // Orphaned rows grouped by device (title = "DeviceName · Mcm" for L2, IO name
+  // otherwise) — the "Removed on cloud" surface.
+  const orphanedGroups = useMemo(() => {
+    const groups = new Map<string, QueueItem[]>()
+    for (const it of items) {
+      if (it.status !== 'orphaned') continue
+      const arr = groups.get(it.title) ?? []
+      arr.push(it)
+      groups.set(it.title, arr)
+    }
+    return Array.from(groups.entries())
+  }, [items])
 
   // ── Action runner ───────────────────────────────────────────────────────────
   const postAction = useCallback(async (body: ActionBody): Promise<{ affected: number; message?: string; backup?: string }> => {
@@ -258,6 +274,16 @@ export default function SyncPage() {
       run: () => bulkAction('discard-all-parked', { action: 'discard', allParked: true }),
     })
   }
+  const askDiscardAllOrphaned = () => {
+    const n = summary?.orphaned ?? 0
+    setConfirm({
+      title: `Discard ${n} "removed on cloud" row${n === 1 ? '' : 's'}?`,
+      body: 'These devices/records were removed on the cloud. Each row auto-restores if the device comes back — discarding just clears them from the queue now. Your entries stay saved on this device; nothing is deleted.',
+      confirmLabel: 'Discard removed-on-cloud',
+      destructive: true,
+      run: () => bulkAction('discard-all-orphaned', { action: 'discard', allOrphaned: true }),
+    })
+  }
 
   const runConfirm = async () => {
     if (!confirm) return
@@ -272,6 +298,7 @@ export default function SyncPage() {
 
   const parked = summary?.parked ?? 0
   const pending = summary?.pending ?? 0
+  const orphaned = summary?.orphaned ?? 0
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans">
@@ -423,12 +450,83 @@ export default function SyncPage() {
             {/* ───────── Tabs ───────── */}
             <div className="flex items-center gap-1 border-b border-border">
               <TabButton active={tab === 'parked'} onClick={() => setTab('parked')} label="Needs Attention" count={parked} tone="attention" />
+              <TabButton active={tab === 'orphaned'} onClick={() => setTab('orphaned')} label="Removed on cloud" count={orphaned} tone="removed" />
               <TabButton active={tab === 'pending'} onClick={() => setTab('pending')} label="Pending" count={pending} tone="pending" />
               <TabButton active={tab === 'all'} onClick={() => setTab('all')} label="All" count={items.length} tone="neutral" />
             </div>
 
-            {/* ───────── Table ───────── */}
-            {visible.length === 0 ? (
+            {/* ───────── Removed-on-cloud (orphaned) section ───────── */}
+            {tab === 'orphaned' ? (
+              orphaned === 0 ? (
+                <div className="grid place-items-center py-16 text-center">
+                  <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-3" />
+                  <p className="font-semibold">Nothing removed on cloud</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    No queued work is waiting on a device that was deleted from the cloud.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-start gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
+                    <CloudOff className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+                    <div className="text-sm min-w-0 flex-1">
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300">Removed on cloud</p>
+                      <p className="text-muted-foreground mt-0.5">
+                        These devices/records were removed on the cloud — auto-restores if the device comes back;
+                        discard to clear. Your entries stay saved on this device; nothing here is deleted.
+                      </p>
+                    </div>
+                    <Button
+                      size="sm" variant="outline"
+                      className="gap-1.5 border-emerald-500/40 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
+                      disabled={!!bulkBusy}
+                      onClick={askDiscardAllOrphaned}
+                    >
+                      {bulkBusy === 'discard-all-orphaned' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                      Discard all ({orphaned})
+                    </Button>
+                  </div>
+
+                  {orphanedGroups.map(([title, rows]) => (
+                    <div key={title} className="overflow-hidden rounded-lg border border-emerald-500/25">
+                      <div className="flex items-center gap-2 bg-emerald-500/5 px-3 py-2 border-b border-emerald-500/20">
+                        <CloudOff className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span className="font-semibold text-sm truncate">{title}</span>
+                        <span className="text-[11px] text-muted-foreground">{rows.length} queued {rows.length === 1 ? 'value' : 'values'}</span>
+                      </div>
+                      <div className="divide-y divide-border">
+                        {rows.map((item) => {
+                          const key = rowKey(item)
+                          const busy = busyKeys.has(key)
+                          return (
+                            <div key={key} className={cn('flex items-center gap-3 px-3 py-2.5', busy && 'opacity-60')}>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[11px] text-muted-foreground uppercase tracking-wide">{KIND_LABEL[item.kind]}</div>
+                                <div className="text-sm truncate">
+                                  {item.subtitle && <span className="text-muted-foreground">{item.subtitle}: </span>}
+                                  {item.value ? <span className="font-mono">{item.value}</span> : <span className="text-muted-foreground">—</span>}
+                                </div>
+                              </div>
+                              <span className="hidden sm:inline text-[11px] text-muted-foreground whitespace-nowrap">{formatAge(item.ageMinutes)}</span>
+                              <Button
+                                size="sm" variant="ghost"
+                                className="gap-1 h-8 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                disabled={busy}
+                                onClick={() => askDiscardRow(item)}
+                                title="Stop tracking this removed record (your data stays on this device)"
+                              >
+                                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                                <span className="hidden sm:inline">Discard</span>
+                              </Button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            ) : visible.length === 0 ? (
               <div className="grid place-items-center py-16 text-center">
                 <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-3" />
                 <p className="font-semibold">
@@ -594,6 +692,13 @@ function FragmentRow({ children }: { children: React.ReactNode }) {
 }
 
 function StatusBadge({ status }: { status: QueueStatus }) {
+  if (status === 'orphaned') {
+    return (
+      <Badge variant="outline" className="gap-1 border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+        <CloudOff className="h-3 w-3" />Removed on cloud
+      </Badge>
+    )
+  }
   if (status === 'parked') {
     return (
       <Badge variant="outline" className="gap-1 border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400">
@@ -652,13 +757,13 @@ function TabButton({
   onClick: () => void
   label: string
   count: number
-  tone: 'attention' | 'pending' | 'neutral'
+  tone: 'attention' | 'removed' | 'pending' | 'neutral'
 }) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        'relative px-3 sm:px-4 py-2.5 text-sm font-medium transition-colors -mb-px border-b-2',
+        'relative px-3 sm:px-4 py-2.5 text-sm font-medium transition-colors -mb-px border-b-2 whitespace-nowrap',
         active ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
       )}
     >
@@ -667,6 +772,7 @@ function TabButton({
         <span className={cn(
           'ml-2 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-bold tabular-nums',
           tone === 'attention' ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+            : tone === 'removed' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
             : tone === 'pending' ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
             : 'bg-muted text-muted-foreground',
         )}>

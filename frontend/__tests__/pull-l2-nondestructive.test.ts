@@ -81,7 +81,8 @@ const { memDb } = vi.hoisted(() => {
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT,
-      DeadLettered INTEGER NOT NULL DEFAULT 0
+      DeadLettered INTEGER NOT NULL DEFAULT 0,
+      Orphaned INTEGER NOT NULL DEFAULT 0
     );
   `)
   return { memDb: d }

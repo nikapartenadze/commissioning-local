@@ -4,6 +4,20 @@ import { getCloudSyncService } from '@/lib/cloud/cloud-sync-service'
 import type { IoUpdateDto } from '@/lib/cloud/types'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { mcmTag } from '@/lib/logging/mcm-tag'
+import { isPermanentRejectionStatus, permanentRejectionReason } from '@/lib/cloud/sync-failure-classification'
+
+/**
+ * A permanent-reject reason of the form `HTTP <status>` is a CONFIRMED removal
+ * when the status is 403/404/410 (the cloud IO was deleted). Mirrors auto-sync's
+ * parsePermanentRemovalStatus so the instant-sync path ORPHANS such rows (not a
+ * plain park) — keeping the delete-then-restore invariant across both drains.
+ */
+function removalStatusFromReason(reason: string): number | null {
+  const m = /^HTTP (\d{3})$/.exec(reason)
+  if (!m) return null
+  const status = Number(m[1])
+  return isPermanentRejectionStatus(status) ? status : null
+}
 
 export function mapPendingSyncToIoUpdate(pending: PendingSync): IoUpdateDto {
   return {
@@ -111,7 +125,14 @@ export async function drainPendingSyncsForIo(
           timestamp: pending.Timestamp,
         },
       })
-      pendingSyncRepository.deadLetter(pending.id, `permanent reject (instant path): ${reasonStr}`)
+      // CONFIRMED removal (403/404/410) → ORPHAN (auto-restores if the IO comes
+      // back); any other permanent reject stays a plain human-attention park.
+      const removedStatus = removalStatusFromReason(reasonStr)
+      if (removedStatus != null) {
+        pendingSyncRepository.orphan(pending.id, permanentRejectionReason(removedStatus))
+      } else {
+        pendingSyncRepository.deadLetter(pending.id, `permanent reject (instant path): ${reasonStr}`)
+      }
       console.warn(
         `${tag}[${logPrefix}] PARKED-PERMANENT pendingId=${pending.id} ioId=${ioId} ` +
         `reason=${JSON.stringify(result.reason ?? 'unknown')} ` +

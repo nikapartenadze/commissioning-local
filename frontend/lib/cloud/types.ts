@@ -160,8 +160,13 @@ export interface CloudSyncStatusResponse {
   pendingChangeRequestCount?: number
   totalPendingCount?: number
   /** Rows the cloud REJECTED or that exhausted retries — left the active queue
-   *  but are NOT on cloud. The "needs attention" surface (B3/B5). */
+   *  but are NOT on cloud. The "needs attention" surface (B3/B5).
+   *  EXCLUDES orphaned rows (Orphaned=1). */
   attentionCount?: number
+  /** Rows whose cloud target was CONFIRMED removed (Orphaned=1) — a "removed on
+   *  cloud" informational surface, NOT part of the red attention badge. The row
+   *  + local value are kept and auto-restore if the target reappears. */
+  orphanedCount?: number
   /** True when the status read itself failed — the counts are not reliable and
    *  the UI must NOT render "all synced" (B8). */
   statusUnknown?: boolean

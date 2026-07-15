@@ -136,6 +136,23 @@ try {
     // permanently-rejected blocker re-POSTed every 10s forever and never
     // surfaced anywhere. Park it like every other queue.
     'ALTER TABLE DeviceBlockerPendingSyncs ADD COLUMN DeadLettered INTEGER NOT NULL DEFAULT 0',
+    // Orphaned flag — a THIRD outbound-sync state layered ON TOP of DeadLettered
+    // (2026-07-15). INVARIANT: Orphaned=1 ⇒ DeadLettered=1. The three states are:
+    //   Active            = DeadLettered=0
+    //   Parked/attention  = DeadLettered=1 AND Orphaned=0  (needs a human)
+    //   Orphaned          = Orphaned=1                     (cloud target removed)
+    // Set ONLY on a CONFIRMED removal — a 403/404/410 write rejection or the IO
+    // delete-tombstone from the delta — NEVER on network/transient/version-
+    // conflict/retry-cap. It marks a row whose cloud target (IO / L2 device /
+    // column) was deleted: the row stops retrying (it would 404 forever) but is
+    // KEPT so that if the target REAPPEARS on cloud the row auto-requeues
+    // (Orphaned→0, DeadLettered→0) with its local value fully intact. Because
+    // Orphaned⇒DeadLettered, every existing `WHERE DeadLettered=0` active query
+    // auto-excludes orphans unchanged. It is a QUEUE-row flag only — orphaning
+    // NEVER deletes/modifies Ios/L2CellValues/L2Devices values.
+    'ALTER TABLE PendingSyncs ADD COLUMN Orphaned INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE L2PendingSyncs ADD COLUMN Orphaned INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE DeviceBlockerPendingSyncs ADD COLUMN Orphaned INTEGER NOT NULL DEFAULT 0',
     // First-run hardening: the seeded default admin (Admin/111111) is flagged
     // MustChangePin=1 so the UI forces a new PIN on first admin login under
     // enforced auth. Additive + backward-safe: existing users default to 0.
@@ -395,7 +412,11 @@ export function initializeSchema() {
       -- Parked-sync flag (also added by ALTER for pre-existing DBs). Declared
       -- here so a FRESH DB has it immediately and the coalesce trigger/index
       -- below can reference it. See the dead-letter design in auto-sync.ts.
-      DeadLettered INTEGER NOT NULL DEFAULT 0
+      DeadLettered INTEGER NOT NULL DEFAULT 0,
+      -- Orphaned flag (third state) — INVARIANT: Orphaned=1 ⇒ DeadLettered=1.
+      -- Set only on a CONFIRMED cloud removal (403/404/410 or IO delete-tombstone);
+      -- auto-requeues if the target reappears. See the migrations block above.
+      Orphaned INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_ioid ON PendingSyncs(IoId);
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_createdat ON PendingSyncs(CreatedAt);
@@ -758,7 +779,11 @@ export function initializeSchema() {
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT,
-      DeadLettered INTEGER NOT NULL DEFAULT 0
+      DeadLettered INTEGER NOT NULL DEFAULT 0,
+      -- Orphaned flag (third state) — INVARIANT: Orphaned=1 ⇒ DeadLettered=1.
+      -- Set on a CONFIRMED cloud removal (403/404/410 on the L2 batch); auto-
+      -- requeues when the device reappears via pull-l2. See migrations above.
+      Orphaned INTEGER NOT NULL DEFAULT 0
     );
 
     -- Device-level blocker sync queue (VFD bump-test failures).
@@ -782,7 +807,12 @@ export function initializeSchema() {
       Timestamp TEXT,
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
-      LastError TEXT
+      LastError TEXT,
+      -- Orphaned flag (third state) — INVARIANT: Orphaned=1 ⇒ DeadLettered=1.
+      -- (DeadLettered itself is added by ALTER for this table.) The blocker push
+      -- path has no confirmed-removal branch, so this stays 0 today; declared for
+      -- schema parity so queue-inspector can SELECT it uniformly.
+      Orphaned INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
 

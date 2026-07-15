@@ -25,7 +25,11 @@ export interface QueueItem {
   title: string
   subtitle: string | null
   value: string | null
-  status: 'pending' | 'parked'
+  // Three outbound-sync states (Orphaned layered on DeadLettered):
+  //   pending  = DeadLettered=0                (auto-sync keeps retrying)
+  //   parked   = DeadLettered=1 AND Orphaned=0 (stopped — needs a human)
+  //   orphaned = Orphaned=1                    (cloud target removed; auto-restores)
+  status: 'pending' | 'parked' | 'orphaned'
   classification: Classification
   reason: string
   lastError: string | null
@@ -100,7 +104,10 @@ function ageMinutesOf(createdAt: string | null | undefined): number | null {
   return mins < 0 ? 0 : mins
 }
 
-function statusOf(deadLettered: unknown): 'pending' | 'parked' {
+function statusOf(deadLettered: unknown, orphaned: unknown): 'pending' | 'parked' | 'orphaned' {
+  // Orphaned wins (it's a subset of DeadLettered — the invariant guarantees
+  // DeadLettered=1 here too), then parked, then pending.
+  if (Number(orphaned) === 1) return 'orphaned'
   return Number(deadLettered) === 1 ? 'parked' : 'pending'
 }
 
@@ -114,6 +121,7 @@ function buildItem(
   lastError: string | null,
   retryCount: unknown,
   createdAt: string | null,
+  orphaned: unknown,
 ): QueueItem {
   const { classification, reason } = classify(lastError)
   return {
@@ -122,7 +130,7 @@ function buildItem(
     title,
     subtitle,
     value,
-    status: statusOf(deadLettered),
+    status: statusOf(deadLettered, orphaned),
     classification,
     reason,
     lastError: lastError ?? null,
@@ -137,7 +145,7 @@ function readIoRows(): QueueItem[] {
   const rows = db
     .prepare(
       `SELECT ps.id AS id, ps.IoId AS IoId, ps.TestResult AS TestResult,
-              ps.DeadLettered AS DeadLettered, ps.LastError AS LastError,
+              ps.DeadLettered AS DeadLettered, ps.Orphaned AS Orphaned, ps.LastError AS LastError,
               ps.RetryCount AS RetryCount, ps.CreatedAt AS CreatedAt,
               i.Name AS IoName, i.Description AS IoDescription
          FROM PendingSyncs ps
@@ -148,7 +156,7 @@ function readIoRows(): QueueItem[] {
   return rows.map((r) => {
     const title = (r.IoName && String(r.IoName)) || `IO #${r.IoId}`
     const subtitle = r.IoDescription != null ? String(r.IoDescription) : null
-    return buildItem('io', r.id, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null)
+    return buildItem('io', r.id, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
   })
 }
 
@@ -157,7 +165,7 @@ function readL2Rows(): QueueItem[] {
   const rows = db
     .prepare(
       `SELECT lp.id AS id, lp.CloudDeviceId AS CloudDeviceId, lp.CloudColumnId AS CloudColumnId,
-              lp.Value AS Value, lp.DeadLettered AS DeadLettered, lp.LastError AS LastError,
+              lp.Value AS Value, lp.DeadLettered AS DeadLettered, lp.Orphaned AS Orphaned, lp.LastError AS LastError,
               lp.RetryCount AS RetryCount, lp.CreatedAt AS CreatedAt,
               d.DeviceName AS DeviceName, d.Mcm AS Mcm, c.Name AS ColumnName
          FROM L2PendingSyncs lp
@@ -170,7 +178,7 @@ function readL2Rows(): QueueItem[] {
     const name = r.DeviceName ? String(r.DeviceName) : `Device #${r.CloudDeviceId}`
     const title = r.Mcm ? `${name} · ${r.Mcm}` : name
     const subtitle = r.ColumnName != null ? String(r.ColumnName) : `Column #${r.CloudColumnId}`
-    return buildItem('l2', r.id, title, subtitle, r.Value ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null)
+    return buildItem('l2', r.id, title, subtitle, r.Value ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
   })
 }
 
@@ -179,7 +187,7 @@ function readBlockerRows(): QueueItem[] {
   const rows = db
     .prepare(
       `SELECT id, DeviceName, Op, BlockerResponsibleParty, BlockerDescription,
-              DeadLettered, LastError, RetryCount, CreatedAt
+              DeadLettered, Orphaned, LastError, RetryCount, CreatedAt
          FROM DeviceBlockerPendingSyncs
         ORDER BY CreatedAt ASC, id ASC`,
     )
@@ -189,12 +197,12 @@ function readBlockerRows(): QueueItem[] {
     const party = r.BlockerResponsibleParty ? String(r.BlockerResponsibleParty) : null
     const op = r.Op ? String(r.Op) : ''
     const subtitle = [op, party].filter(Boolean).join(' · ') || null
-    return buildItem('blocker', r.id, title, subtitle, r.BlockerDescription ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null)
+    return buildItem('blocker', r.id, title, subtitle, r.BlockerDescription ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
   })
 }
 
-export function listQueue(opts?: { status?: 'all' | 'pending' | 'parked' }): {
-  summary: { pending: number; parked: number; byClassification: Record<Classification, number> }
+export function listQueue(opts?: { status?: 'all' | 'pending' | 'parked' | 'orphaned' }): {
+  summary: { pending: number; parked: number; orphaned: number; byClassification: Record<Classification, number> }
   items: QueueItem[]
 } {
   const wantStatus = opts?.status ?? 'all'
@@ -212,19 +220,23 @@ export function listQueue(opts?: { status?: 'all' | 'pending' | 'parked' }): {
   const summary = {
     pending: 0,
     parked: 0,
+    orphaned: 0,
     byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, unknown: 0 } as Record<Classification, number>,
   }
   for (const it of items) {
-    if (it.status === 'parked') summary.parked++
+    if (it.status === 'orphaned') summary.orphaned++
+    else if (it.status === 'parked') summary.parked++
     else summary.pending++
     summary.byClassification[it.classification]++
   }
 
   const filtered = wantStatus === 'all' ? items : items.filter((i) => i.status === wantStatus)
 
-  // Parked (needs attention) first, then oldest first within each group.
+  // Order: parked (needs a human) first, then orphaned (removed on cloud), then
+  // pending; oldest first within each group.
+  const rank = (s: QueueItem['status']) => (s === 'parked' ? 0 : s === 'orphaned' ? 1 : 2)
   filtered.sort((a, b) => {
-    if (a.status !== b.status) return a.status === 'parked' ? -1 : 1
+    if (a.status !== b.status) return rank(a.status) - rank(b.status)
     return (b.ageMinutes ?? -1) - (a.ageMinutes ?? -1)
   })
 
@@ -242,7 +254,7 @@ export function retry(refs: { kind: QueueKind; id: number }[]): { affected: numb
     if (!table || !Number.isInteger(ref.id)) continue
     try {
       const info = db
-        .prepare(`UPDATE ${table} SET DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE id = ?`)
+        .prepare(`UPDATE ${table} SET DeadLettered = 0, Orphaned = 0, RetryCount = 0, LastError = NULL WHERE id = ?`)
         .run(ref.id)
       affected += info.changes
     } catch (e) {
@@ -276,18 +288,24 @@ export function discard(refs: { kind: QueueKind; id: number }[]): { affected: nu
  *  - `ids`: passed straight through (explicit selection).
  *  - `classification`: every PARKED row of that classification.
  *  - `allParked`: every parked row regardless of classification.
- * Classification/allParked scan parked rows via listQueue so the resolution and
- * the displayed list can never diverge.
+ *  - `allOrphaned`: every orphaned row (removed-on-cloud).
+ * Classification/allParked/allOrphaned scan the matching status via listQueue so
+ * the resolution and the displayed list can never diverge.
  */
 export function selectRefs(sel: {
   ids?: { kind: QueueKind; id: number }[]
   classification?: Classification
   allParked?: boolean
+  allOrphaned?: boolean
 }): { kind: QueueKind; id: number }[] {
   if (sel.ids && sel.ids.length) {
     return sel.ids
       .filter((r) => r && (r.kind === 'io' || r.kind === 'l2' || r.kind === 'blocker') && Number.isInteger(r.id))
       .map((r) => ({ kind: r.kind, id: r.id }))
+  }
+
+  if (sel.allOrphaned) {
+    return listQueue({ status: 'orphaned' }).items.map((i) => ({ kind: i.kind, id: i.id }))
   }
 
   if (sel.classification || sel.allParked) {

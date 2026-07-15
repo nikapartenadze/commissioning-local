@@ -40,10 +40,16 @@ export async function POST(req: Request, res: Response) {
     // unsynced L2PendingSyncs row (active OR parked) is local FV truth that
     // has not reached the cloud — wiping it here loses it. Mirrors the IO
     // pull's pending-queue block; drain/resolve the queue first.
+    //
+    // ORPHANED rows (Orphaned=1) are EXCLUDED from the block: they exist
+    // precisely because the cloud DELETED their device, and THIS pull is what
+    // restores it — blocking on them would deadlock the very recovery that
+    // auto-requeues them. Only active + parked-non-orphaned genuine unsynced
+    // work blocks the pull.
     const l2QueueCounts = db.prepare(
       `SELECT
          SUM(CASE WHEN DeadLettered = 0 THEN 1 ELSE 0 END) as active,
-         SUM(CASE WHEN DeadLettered = 1 THEN 1 ELSE 0 END) as parked
+         SUM(CASE WHEN DeadLettered = 1 AND Orphaned = 0 THEN 1 ELSE 0 END) as parked
        FROM L2PendingSyncs
        WHERE CloudDeviceId IN (SELECT CloudId FROM L2Devices WHERE SubsystemId = ? OR SubsystemId IS NULL)`,
     ).get(Number(subsystemId)) as { active: number | null; parked: number | null }
@@ -172,6 +178,12 @@ export async function POST(req: Request, res: Response) {
       const findDev = db.prepare('SELECT id FROM L2Devices WHERE CloudId = ?')
       const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SubsystemId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       const updateDev = db.prepare('UPDATE L2Devices SET SubsystemId=?, SheetId=?, DeviceName=?, Mcm=?, Subsystem=?, DisplayOrder=?, CompletedChecks=?, TotalChecks=? WHERE id=?')
+      // Auto-requeue: a device that reappears on cloud un-orphans its queue
+      // rows (Orphaned→0, back to Active) so held local FV values drain again,
+      // values intact. Keyed by CloudDeviceId (= the cloud device id).
+      const requeueOrphanedL2 = db.prepare(
+        'UPDATE L2PendingSyncs SET Orphaned = 0, DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE CloudDeviceId = ? AND Orphaned = 1',
+      )
       const getCell = db.prepare('SELECT id, Value, UpdatedAt FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
       const insertCell = db.prepare('INSERT INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
       const fillCell = db.prepare('UPDATE L2CellValues SET CloudCellId=?, Value=?, UpdatedBy=?, UpdatedAt=?, Version=? WHERE id=?')
@@ -232,6 +244,9 @@ export async function POST(req: Request, res: Response) {
         } else {
           localDevId = insertDev.run(dev.id, sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0).lastInsertRowid as number
         }
+        // This device is present on cloud → un-orphan any queue rows that were
+        // orphaned when it had been deleted (delete-then-restore recovery).
+        requeueOrphanedL2.run(dev.id)
         deviceIdMap.set(dev.id, localDevId)
         l2Pulled++
       }

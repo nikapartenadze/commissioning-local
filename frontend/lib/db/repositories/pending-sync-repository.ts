@@ -80,6 +80,25 @@ export const pendingSyncRepository = {
     db.prepare('UPDATE PendingSyncs SET DeadLettered = 1, LastError = ? WHERE id = ?').run(reason, id)
   },
 
+  /**
+   * ORPHAN a row: the cloud target (IO) was CONFIRMED removed — a 403/404/410
+   * write rejection or an IO delete-tombstone from the delta. This is a strict
+   * SUBSET of deadLetter (Orphaned=1 ⇒ DeadLettered=1) that additionally marks
+   * the row as "removed on cloud" so it (a) drops out of the amber attention
+   * badge and (b) auto-requeues (Orphaned→0, DeadLettered→0) if the IO ever
+   * reappears via a delta upsert — with its local value fully intact.
+   *
+   * RetryCount is reset to 0 so a later reappearance+requeue starts clean.
+   * NEVER call this on a network/transient failure, a version conflict
+   * (updatedCount=0), or a retry-cap park — those keep plain deadLetter/retry
+   * behaviour. QUEUE-ROW FLAG ONLY — never touches the Ios value.
+   */
+  orphan(id: number, reason: string): void {
+    db.prepare(
+      'UPDATE PendingSyncs SET DeadLettered = 1, Orphaned = 1, LastError = ?, RetryCount = 0 WHERE id = ?',
+    ).run(reason, id)
+  },
+
   /** Count of rows parked for attention (cloud-rejected / cap-exhausted). */
   countDeadLettered(): number {
     return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 1').get() as any).count
