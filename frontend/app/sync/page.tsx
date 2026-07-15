@@ -168,7 +168,7 @@ export default function SyncPage() {
   }, [items, tab])
 
   // ── Action runner ───────────────────────────────────────────────────────────
-  const postAction = useCallback(async (body: ActionBody): Promise<{ affected: number; message?: string }> => {
+  const postAction = useCallback(async (body: ActionBody): Promise<{ affected: number; message?: string; backup?: string }> => {
     const r = await authFetch('/api/sync/queue/actions', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -178,7 +178,7 @@ export default function SyncPage() {
       try { const j = await r.json(); if (j?.error) msg = j.error } catch { /* ignore */ }
       throw new Error(msg)
     }
-    return (await r.json()) as { affected: number; message?: string }
+    return (await r.json()) as { affected: number; message?: string; backup?: string }
   }, [])
 
   const rowAction = useCallback(async (item: QueueItem, action: 'retry' | 'discard') => {
@@ -208,9 +208,13 @@ export default function SyncPage() {
     setBulkBusy(label)
     try {
       const res = await postAction(body)
+      const base = res.message ?? `${res.affected} row${res.affected === 1 ? '' : 's'} ${body.action === 'retry' ? 'queued for retry' : 'discarded'}.`
       toast({
         title: 'Done',
-        description: res.message ?? `${res.affected} row${res.affected === 1 ? '' : 's'} ${body.action === 'retry' ? 'queued for retry' : 'discarded'}.`,
+        // A bulk discard snapshots the DB first; surface the recovery point.
+        description: res.backup
+          ? `${base} Backup saved: ${res.backup} — restorable if this was a mistake.`
+          : base,
       })
       await load()
     } catch (e) {

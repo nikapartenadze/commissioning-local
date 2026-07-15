@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { retry, discard, selectRefs, type QueueKind, type Classification } from '@/lib/sync/queue-inspector'
+import { createBackup } from '@/lib/db/backup'
 
 const VALID_KINDS: QueueKind[] = ['io', 'l2', 'blocker']
 const VALID_CLASSIFICATIONS: Classification[] = ['gone_on_cloud', 'version_conflict', 'transient', 'unknown']
@@ -59,10 +60,30 @@ export async function POST(req: Request, res: Response) {
       return res.json({ action, affected, message: `Re-queued ${affected} row(s) for sync.` })
     }
 
+    // Safety net: a BULK discard (allParked / by-classification — a mass delete)
+    // takes a full DB snapshot first, so a mis-click is recoverable. A single
+    // explicit-`ids` discard is NOT backed up: it removes one outbound queue row
+    // and is non-destructive to the underlying data value, so a heavy full-DB
+    // snapshot per row would be pure overhead. mirrors selectRefs' precedence:
+    // when ids are provided they win, so that path is never "bulk".
+    const explicitIds = Array.isArray(body.ids) && body.ids.length > 0
+    const isBulkDiscard = !explicitIds && (body.allParked === true || !!body.classification)
+    let backupFilename: string | undefined
+    if (isBulkDiscard) {
+      try {
+        const backup = await createBackup('before-sync-queue-clear')
+        backupFilename = backup.filename
+      } catch (backupErr) {
+        // Never block the user on a backup failure — log and proceed.
+        console.warn('[SyncCenter] pre-bulk-discard backup failed (proceeding anyway):', backupErr)
+      }
+    }
+
     const { affected } = discard(refs)
     return res.json({
       action,
       affected,
+      ...(backupFilename ? { backup: backupFilename } : {}),
       message: `Discarded ${affected} stuck queue row(s). Your local data was NOT changed — only the pending-to-cloud copy was removed.`,
     })
   } catch (error) {
