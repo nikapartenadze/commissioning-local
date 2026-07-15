@@ -22,7 +22,11 @@ import { reconcileConfiguredSubsystems } from '@/lib/cloud/result-reconciler'
 import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { mcmTag } from '@/lib/logging/mcm-tag'
-import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
+import {
+  isNetworkLevelFailure,
+  isPermanentRejectionStatus,
+  permanentRejectionReason,
+} from '@/lib/cloud/sync-failure-classification'
 import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
 import { runJournalUpload } from '@/lib/cloud/journal-uploader'
 import {
@@ -64,6 +68,23 @@ function resolveDeltaSweepMs(): number {
   const s = parseInt(process.env.CLOUD_DELTA_SWEEP_SECONDS || '', 10)
   const seconds = Number.isFinite(s) && s > 0 ? s : DEFAULT_DELTA_SWEEP_SECONDS
   return seconds * 1000
+}
+
+/**
+ * Extract a definitively-permanent HTTP removal status (403/404/410) from a
+ * SyncIoResult.reason string of the form `HTTP <status>`. The IO push path only
+ * receives the classified result (permanent/network/reason), not the raw status,
+ * so this lets it reuse the SAME shared rule as the L2 path — which has the raw
+ * status directly — without threading the status through the sync-service shape.
+ * Returns null for any non-removal reason (e.g. a SPARE validation rejection),
+ * which keeps its own message.
+ */
+function parsePermanentRemovalStatus(reason: string | undefined): number | null {
+  if (!reason) return null
+  const m = /^HTTP (\d{3})$/.exec(reason)
+  if (!m) return null
+  const status = Number(m[1])
+  return isPermanentRejectionStatus(status) ? status : null
 }
 
 export interface AutoSyncStatus {
@@ -534,7 +555,17 @@ class AutoSyncService {
             // result + reason survive and the tester is told "cloud rejected
             // N results" instead of the result silently vanishing while the
             // queue count drops to 0 and the UI reads "synced" (B3/B5).
-            pendingSyncRepository.deadLetter(pending.id, r.reason ?? 'cloud permanently rejected')
+            // 403/404/410 = the cloud target (IO) was REMOVED — every retry
+            // would 403/404 forever. The sync-service already flags these
+            // permanent so they park on THIS first response (no retry-cap
+            // churn); give the parked row a human-readable LastError instead of
+            // the bare `HTTP 404` so the Sync Center shows an honest reason.
+            // Other permanent rejects (e.g. SPARE cannot be Passed) keep theirs.
+            const removedStatus = parsePermanentRemovalStatus(r.reason)
+            const parkReason = removedStatus != null
+              ? permanentRejectionReason(removedStatus)
+              : (r.reason ?? 'cloud permanently rejected')
+            pendingSyncRepository.deadLetter(pending.id, parkReason)
             // Durable 2-week audit trail for the rejected result (was console
             // only) — so "why did this IO never reach cloud" is answerable later.
             const parkedSubsystemId = this.ioSubsystemId(pending.IoId)
@@ -863,6 +894,34 @@ class AutoSyncService {
             // alive, no retry-cap strikes (TPA8/MCM08 2026-06-04 lesson).
             for (const p of dedupedPending) {
               try { db.prepare('UPDATE L2PendingSyncs SET LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status} (network-level, no strike)`, p.id) } catch (e) { console.warn('[AutoSync] Failed to update L2 last error:', e) }
+            }
+          } else if (isPermanentRejectionStatus(l2Resp.status)) {
+            // DEFINITIVELY-PERMANENT (403/404/410): the L2 target (device /
+            // column / subsystem) was REMOVED on the cloud, so this batch will
+            // 403/404 forever. PARK every row in it on THIS first response
+            // (DeadLettered=1) rather than burning the retry cap over minutes on
+            // each doomed row — the rest of the queue keeps flowing and the Sync
+            // Center shows an honest reason. Row + value KEPT, never deleted
+            // (mirrors the IO permanent path above).
+            const parkReason = permanentRejectionReason(l2Resp.status)
+            for (const p of dedupedPending) {
+              try {
+                db.prepare('UPDATE L2PendingSyncs SET DeadLettered = 1, LastError = ? WHERE id = ?').run(parkReason, p.id)
+                const l2Subsystem = this.l2SubsystemLabel(p.CloudDeviceId)
+                auditLog({
+                  type: 'l2.push.park',
+                  subsystemId: l2Subsystem,
+                  version: p.Version,
+                  user: p.UpdatedBy,
+                  reason: `cloud permanent reject: HTTP ${l2Resp.status} (target removed) — parked without further retries`,
+                  detail: { kind: 'l2cell', pendingId: p.id, cloudDeviceId: p.CloudDeviceId, cloudColumnId: p.CloudColumnId, value: p.Value },
+                })
+                console.warn(
+                  `[AutoSync] PARKED-PERMANENT L2 pendingId=${p.id} ` +
+                  `cloudDeviceId=${p.CloudDeviceId} cloudColumnId=${p.CloudColumnId} ` +
+                  `reason=${JSON.stringify(`HTTP ${l2Resp.status}`)} value=${JSON.stringify(p.Value)}`,
+                )
+              } catch (e) { console.warn('[AutoSync] Failed to park L2 pending on permanent reject:', e) }
             }
           } else {
             for (const p of dedupedPending) {

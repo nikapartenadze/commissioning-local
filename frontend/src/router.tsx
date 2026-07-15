@@ -10,6 +10,7 @@ const McmLandingPage = lazy(() => import('../app/mcm/page'))
 const FirmwarePage = lazy(() => import('../app/firmware/page'))
 const McmSettingsPage = lazy(() => import('../app/settings/mcms/page'))
 const UsersSettingsPage = lazy(() => import('../app/settings/users/page'))
+const SyncPage = lazy(() => import('../app/sync/page'))
 
 function Loading() {
   return (
@@ -38,6 +39,7 @@ export const router = createBrowserRouter([
   // central-tool: multi-MCM landing + settings
   { path: '/mcm', element: <LazyPage Component={McmLandingPage} /> },
   { path: '/firmware', element: <LazyPage Component={FirmwarePage} /> },
+  { path: '/sync', element: <LazyPage Component={SyncPage} /> },
   { path: '/settings/mcms', element: <LazyPage Component={McmSettingsPage} /> },
   { path: '/settings/users', element: <LazyPage Component={UsersSettingsPage} /> },
 ])

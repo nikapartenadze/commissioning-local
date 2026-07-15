@@ -45,3 +45,31 @@ export function isNetworkLevelFailure(failure: SyncFailureShape): boolean {
   if (failure.httpStatus >= 500) return true
   return false
 }
+
+/**
+ * DEFINITIVELY-PERMANENT cloud rejection statuses: the target row was REMOVED
+ * on the cloud (deleted IO / device / column / subsystem), so every retry
+ * returns the same 403/404/410 forever. There is nothing to reconcile — the
+ * queue row must be PARKED (DeadLettered=1) on the FIRST such response instead
+ * of burning the whole retry cap over many minutes on a doomed row.
+ *
+ * Deliberately NARROW, and disjoint from both:
+ *  - the TRANSIENT set (401/429/5xx/thrown — isNetworkLevelFailure above), which
+ *    keeps its no-strike retry/backoff behaviour untouched; and
+ *  - the version-conflict / `updatedCount=0` case, which is usually an
+ *    at-least-once GHOST the B7 reconcile heals against cloud truth — parking it
+ *    on sight would risk losing genuinely-unsynced field work, so it is NOT
+ *    included here.
+ */
+export function isPermanentRejectionStatus(httpStatus: number | undefined): boolean {
+  return httpStatus === 403 || httpStatus === 404 || httpStatus === 410
+}
+
+/**
+ * Human-readable LastError for a row parked because its cloud target was
+ * removed (see isPermanentRejectionStatus). Written verbatim into the queue
+ * row's LastError so the Sync Center shows an honest, self-explanatory reason.
+ */
+export function permanentRejectionReason(httpStatus: number): string {
+  return `HTTP ${httpStatus} — target no longer exists on cloud (removed); parked without further retries`
+}

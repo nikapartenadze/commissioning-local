@@ -105,6 +105,8 @@ import * as safetyFire from '@/app/api/safety/fire/route'
 import * as safetyOutputs from '@/app/api/safety/outputs/route'
 import * as syncHealth from '@/app/api/sync/health/route'
 import * as syncSubsystem from '@/app/api/sync/subsystem/[subsystemId]/route'
+import * as syncQueue from '@/app/api/sync/queue/route'
+import * as syncQueueActions from '@/app/api/sync/queue/actions/route'
 import * as l2 from '@/app/api/l2/route'
 import * as l2Cell from '@/app/api/l2/cell/route'
 import * as l2OutboxEvicted from '@/app/api/l2/outbox-evicted/route'
@@ -349,6 +351,9 @@ export function createApiRouter(): Router {
   // nothing called it, and it let anyone on the LAN rewrite Ios.Result with no
   // version bump, no TestHistories row, and no recovery-journal entry.
   router.get('/api/sync/subsystem/:subsystemId', asyncHandler(syncSubsystem.GET))
+  // ── Sync Center (in-app queue triage: see/retry/discard stuck outbound rows) ─
+  router.get('/api/sync/queue', asyncHandler(syncQueue.GET))
+  router.post('/api/sync/queue/actions', asyncHandler(syncQueueActions.POST))
 
   // ── L2 Functional Validation ───────────────────────────────────
   router.get('/api/l2', asyncHandler(l2.GET))

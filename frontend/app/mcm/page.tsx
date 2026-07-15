@@ -4,6 +4,7 @@ import {
   Cpu, Wifi, WifiOff, PlugZap, Plug, Power, Download, Settings, Users,
   DownloadCloud, Search, Loader2, Network, Hash, Tag, ArrowUpRight,
   Save, CheckCircle2, XCircle, AlertTriangle, UploadCloud, ShieldCheck,
+  RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
@@ -131,6 +132,7 @@ export default function McmLandingPage() {
             </div>
           )}
           <div className="flex items-center gap-0.5 border-l border-border pl-2 ml-1">
+            <SyncNavButton />
             <Button asChild size="icon" variant="ghost" title="Firmware compliance"><a href="/firmware"><ShieldCheck className="h-4 w-4" /></a></Button>
             {canConfigure && (
               <>
@@ -333,6 +335,39 @@ function ConfigForm({ mcm, onSaved }: { mcm: McmRow; onSaved: () => void }) {
         </Button>
       </div>
     </div>
+  )
+}
+
+// ── Sync Center nav button ───────────────────────────────────────────────────
+// Self-contained: polls the sync queue summary and shows the parked count as a
+// red badge so field users see stuck rows at a glance and can open the fixer.
+function SyncNavButton() {
+  const [parked, setParked] = useState(0)
+  useEffect(() => {
+    let alive = true
+    const poll = async () => {
+      try {
+        const r = await authFetch('/api/sync/queue?status=parked')
+        if (!r.ok) return
+        const d = await r.json()
+        if (alive && typeof d?.summary?.parked === 'number') setParked(d.summary.parked)
+      } catch { /* ignore — nav badge is best-effort */ }
+    }
+    poll()
+    const t = setInterval(poll, 15000)
+    return () => { alive = false; clearInterval(t) }
+  }, [])
+  return (
+    <Button asChild size="icon" variant="ghost" className="relative" title={parked > 0 ? `Sync Center — ${parked} row(s) need attention` : 'Sync Center'}>
+      <a href="/sync">
+        <RefreshCw className="h-4 w-4" />
+        {parked > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-[10px] leading-4 font-bold text-white text-center">
+            {parked > 99 ? '99+' : parked}
+          </span>
+        )}
+      </a>
+    </Button>
   )
 }
 

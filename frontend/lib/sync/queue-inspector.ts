@@ -1,0 +1,302 @@
+import { db } from '@/lib/db-sqlite'
+
+/**
+ * Sync Center — read/triage layer over the three OUTBOUND sync queue tables.
+ *
+ * DATA-SAFETY CONTRACT (this is the field tool):
+ *  - This module ONLY ever reads/updates/deletes rows in the three *PendingSyncs
+ *    QUEUE tables (PendingSyncs, L2PendingSyncs, DeviceBlockerPendingSyncs).
+ *  - It NEVER touches Ios, L2CellValues, L2Devices, L2Columns, TestHistories, or
+ *    any other data table (the LEFT JOINs below are read-only lookups for display
+ *    labels; they never write). The real values live in those data tables — a
+ *    queue row is just an OUTBOUND COPY waiting to be pushed to the cloud.
+ *  - discard() removes ONLY the queue row (stops re-sending); the underlying
+ *    value in the data table is untouched.
+ *  - `kind` is resolved through a fixed whitelist map, never string-interpolated
+ *    into SQL, so it can never be used to build an arbitrary table name.
+ */
+
+export type QueueKind = 'io' | 'l2' | 'blocker'
+export type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'unknown'
+
+export interface QueueItem {
+  kind: QueueKind
+  id: number
+  title: string
+  subtitle: string | null
+  value: string | null
+  status: 'pending' | 'parked'
+  classification: Classification
+  reason: string
+  lastError: string | null
+  retryCount: number
+  createdAt: string | null
+  ageMinutes: number | null
+}
+
+// Whitelist: `kind` NEVER reaches SQL as text — it only ever indexes this map.
+const TABLE_BY_KIND: Record<QueueKind, string> = {
+  io: 'PendingSyncs',
+  l2: 'L2PendingSyncs',
+  blocker: 'DeviceBlockerPendingSyncs',
+}
+
+const REASONS: Record<Classification, string> = {
+  gone_on_cloud:
+    'This device/IO no longer exists on the cloud (it was removed). Nothing to sync to — safe to discard.',
+  version_conflict:
+    'A newer value already exists on the cloud for this item. Retrying will re-base on the cloud value.',
+  transient:
+    'Temporary network/cloud problem. Should clear on its own; Retry to force it now.',
+  unknown: 'Unknown sync error.',
+}
+
+/**
+ * Map a raw LastError string to a plain-English classification + reason.
+ * Order matters: 'gone' and 'conflict' are checked before the broad transient
+ * network bucket so a 404/409 is never mislabelled as a network blip.
+ */
+export function classify(lastError: string | null): { classification: Classification; reason: string } {
+  const e = (lastError || '').toLowerCase()
+  if (!e) return { classification: 'unknown', reason: REASONS.unknown }
+
+  // Only a true HTTP removal (403/404/410) is "gone — safe to discard".
+  // NOTE: updatedCount=0 is intentionally NOT here — it's an ambiguous
+  // version-mismatch ghost the B7 reconcile heals, so it must read as a
+  // version conflict (retry/auto-heals), never "safe to discard".
+  if (/\b40[34]\b|410|not found|no longer exists|does not exist/.test(e)) {
+    return { classification: 'gone_on_cloud', reason: REASONS.gone_on_cloud }
+  }
+  if (/version|rebased|409|conflict|updatedcount=0/.test(e)) {
+    return { classification: 'version_conflict', reason: REASONS.version_conflict }
+  }
+  if (/timeout|econn|network|fetch failed|5\d\d|socket/.test(e)) {
+    return { classification: 'transient', reason: REASONS.transient }
+  }
+  // Unknown: surface the raw error so the tech sees exactly what the cloud said.
+  return { classification: 'unknown', reason: lastError || REASONS.unknown }
+}
+
+/**
+ * Age in whole minutes from a CreatedAt timestamp. Guards nulls and both
+ * accepted shapes: ISO ('2026-07-14T10:00:00Z') and SQLite datetime('now')
+ * ('2026-07-14 10:00:00', which is UTC). Returns null if unparseable.
+ */
+function ageMinutesOf(createdAt: string | null | undefined): number | null {
+  if (!createdAt) return null
+  let s = String(createdAt).trim()
+  if (!s) return null
+  // Normalise the SQLite 'YYYY-MM-DD HH:MM:SS' (UTC, no zone marker) form so
+  // JS doesn't parse it as local time.
+  if (!s.includes('T') && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) {
+    s = s.replace(' ', 'T')
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    s = s + 'Z'
+  }
+  const t = Date.parse(s)
+  if (Number.isNaN(t)) return null
+  const mins = Math.floor((Date.now() - t) / 60000)
+  return mins < 0 ? 0 : mins
+}
+
+function statusOf(deadLettered: unknown): 'pending' | 'parked' {
+  return Number(deadLettered) === 1 ? 'parked' : 'pending'
+}
+
+function buildItem(
+  kind: QueueKind,
+  id: number,
+  title: string,
+  subtitle: string | null,
+  value: string | null,
+  deadLettered: unknown,
+  lastError: string | null,
+  retryCount: unknown,
+  createdAt: string | null,
+): QueueItem {
+  const { classification, reason } = classify(lastError)
+  return {
+    kind,
+    id,
+    title,
+    subtitle,
+    value,
+    status: statusOf(deadLettered),
+    classification,
+    reason,
+    lastError: lastError ?? null,
+    retryCount: Number(retryCount) || 0,
+    createdAt: createdAt ?? null,
+    ageMinutes: ageMinutesOf(createdAt),
+  }
+}
+
+/** IO queue rows (PendingSyncs) → titled by the joined Ios row. */
+function readIoRows(): QueueItem[] {
+  const rows = db
+    .prepare(
+      `SELECT ps.id AS id, ps.IoId AS IoId, ps.TestResult AS TestResult,
+              ps.DeadLettered AS DeadLettered, ps.LastError AS LastError,
+              ps.RetryCount AS RetryCount, ps.CreatedAt AS CreatedAt,
+              i.Name AS IoName, i.Description AS IoDescription
+         FROM PendingSyncs ps
+         LEFT JOIN Ios i ON ps.IoId = i.id
+        ORDER BY ps.CreatedAt ASC, ps.id ASC`,
+    )
+    .all() as any[]
+  return rows.map((r) => {
+    const title = (r.IoName && String(r.IoName)) || `IO #${r.IoId}`
+    const subtitle = r.IoDescription != null ? String(r.IoDescription) : null
+    return buildItem('io', r.id, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null)
+  })
+}
+
+/** L2 (FV/VFD cell) queue rows → resolved via CloudId back-refs on device+column. */
+function readL2Rows(): QueueItem[] {
+  const rows = db
+    .prepare(
+      `SELECT lp.id AS id, lp.CloudDeviceId AS CloudDeviceId, lp.CloudColumnId AS CloudColumnId,
+              lp.Value AS Value, lp.DeadLettered AS DeadLettered, lp.LastError AS LastError,
+              lp.RetryCount AS RetryCount, lp.CreatedAt AS CreatedAt,
+              d.DeviceName AS DeviceName, d.Mcm AS Mcm, c.Name AS ColumnName
+         FROM L2PendingSyncs lp
+         LEFT JOIN L2Devices d ON d.CloudId = lp.CloudDeviceId
+         LEFT JOIN L2Columns c ON c.CloudId = lp.CloudColumnId
+        ORDER BY lp.CreatedAt ASC, lp.id ASC`,
+    )
+    .all() as any[]
+  return rows.map((r) => {
+    const name = r.DeviceName ? String(r.DeviceName) : `Device #${r.CloudDeviceId}`
+    const title = r.Mcm ? `${name} · ${r.Mcm}` : name
+    const subtitle = r.ColumnName != null ? String(r.ColumnName) : `Column #${r.CloudColumnId}`
+    return buildItem('l2', r.id, title, subtitle, r.Value ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null)
+  })
+}
+
+/** Device-blocker queue rows (VFD bump-test blockers). */
+function readBlockerRows(): QueueItem[] {
+  const rows = db
+    .prepare(
+      `SELECT id, DeviceName, Op, BlockerResponsibleParty, BlockerDescription,
+              DeadLettered, LastError, RetryCount, CreatedAt
+         FROM DeviceBlockerPendingSyncs
+        ORDER BY CreatedAt ASC, id ASC`,
+    )
+    .all() as any[]
+  return rows.map((r) => {
+    const title = r.DeviceName ? String(r.DeviceName) : `Blocker #${r.id}`
+    const party = r.BlockerResponsibleParty ? String(r.BlockerResponsibleParty) : null
+    const op = r.Op ? String(r.Op) : ''
+    const subtitle = [op, party].filter(Boolean).join(' · ') || null
+    return buildItem('blocker', r.id, title, subtitle, r.BlockerDescription ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null)
+  })
+}
+
+export function listQueue(opts?: { status?: 'all' | 'pending' | 'parked' }): {
+  summary: { pending: number; parked: number; byClassification: Record<Classification, number> }
+  items: QueueItem[]
+} {
+  const wantStatus = opts?.status ?? 'all'
+
+  // Each table read is isolated so a missing table/column never 500s the list.
+  let items: QueueItem[] = []
+  for (const read of [readIoRows, readL2Rows, readBlockerRows]) {
+    try {
+      items = items.concat(read())
+    } catch (e) {
+      console.warn(`[SyncCenter] queue read failed for ${read.name}:`, (e as Error)?.message || e)
+    }
+  }
+
+  const summary = {
+    pending: 0,
+    parked: 0,
+    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, unknown: 0 } as Record<Classification, number>,
+  }
+  for (const it of items) {
+    if (it.status === 'parked') summary.parked++
+    else summary.pending++
+    summary.byClassification[it.classification]++
+  }
+
+  const filtered = wantStatus === 'all' ? items : items.filter((i) => i.status === wantStatus)
+
+  // Parked (needs attention) first, then oldest first within each group.
+  filtered.sort((a, b) => {
+    if (a.status !== b.status) return a.status === 'parked' ? -1 : 1
+    return (b.ageMinutes ?? -1) - (a.ageMinutes ?? -1)
+  })
+
+  return { summary, items: filtered }
+}
+
+/**
+ * Re-queue rows for the normal drain: clear the parked flag + reset the retry
+ * counter/error so auto-sync picks them up again. QUEUE TABLE ONLY.
+ */
+export function retry(refs: { kind: QueueKind; id: number }[]): { affected: number } {
+  let affected = 0
+  for (const ref of refs) {
+    const table = TABLE_BY_KIND[ref.kind]
+    if (!table || !Number.isInteger(ref.id)) continue
+    try {
+      const info = db
+        .prepare(`UPDATE ${table} SET DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE id = ?`)
+        .run(ref.id)
+      affected += info.changes
+    } catch (e) {
+      console.warn(`[SyncCenter] retry failed for ${ref.kind}#${ref.id}:`, (e as Error)?.message || e)
+    }
+  }
+  return { affected }
+}
+
+/**
+ * Delete ONLY the outbound queue row (stops re-sending). The underlying value
+ * in Ios / L2CellValues / Devices is NOT touched — this can never delete data.
+ */
+export function discard(refs: { kind: QueueKind; id: number }[]): { affected: number } {
+  let affected = 0
+  for (const ref of refs) {
+    const table = TABLE_BY_KIND[ref.kind]
+    if (!table || !Number.isInteger(ref.id)) continue
+    try {
+      const info = db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(ref.id)
+      affected += info.changes
+    } catch (e) {
+      console.warn(`[SyncCenter] discard failed for ${ref.kind}#${ref.id}:`, (e as Error)?.message || e)
+    }
+  }
+  return { affected }
+}
+
+/**
+ * Resolve a bulk selector down to concrete { kind, id } refs.
+ *  - `ids`: passed straight through (explicit selection).
+ *  - `classification`: every PARKED row of that classification.
+ *  - `allParked`: every parked row regardless of classification.
+ * Classification/allParked scan parked rows via listQueue so the resolution and
+ * the displayed list can never diverge.
+ */
+export function selectRefs(sel: {
+  ids?: { kind: QueueKind; id: number }[]
+  classification?: Classification
+  allParked?: boolean
+}): { kind: QueueKind; id: number }[] {
+  if (sel.ids && sel.ids.length) {
+    return sel.ids
+      .filter((r) => r && (r.kind === 'io' || r.kind === 'l2' || r.kind === 'blocker') && Number.isInteger(r.id))
+      .map((r) => ({ kind: r.kind, id: r.id }))
+  }
+
+  if (sel.classification || sel.allParked) {
+    const parked = listQueue({ status: 'parked' }).items
+    const matched = sel.classification
+      ? parked.filter((i) => i.classification === sel.classification)
+      : parked
+    return matched.map((i) => ({ kind: i.kind, id: i.id }))
+  }
+
+  return []
+}
