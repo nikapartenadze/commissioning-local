@@ -1173,7 +1173,7 @@ function Step3Content({ sts, loading, deviceName, subsystemId, plcConnected, she
 }
 
 
-function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onComplete, isComplete }: {
+function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcConnected, sheetName, userName, onComplete, isComplete, initialFaultBlocker, onFaultBlockerChange }: {
   sts: StsState
   stsErrors: StsErrors
   loading: boolean
@@ -1184,6 +1184,16 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   userName?: string
   onComplete: () => void
   isComplete: boolean
+  /**
+   * Active device blocker restored from the shared `Bump Blocker` L2 cell on
+   * wizard open (parent-hydrated, same source Step3 uses). null = not blocked.
+   * Carries the party+description needed to form a CONDITIONAL clear when the
+   * Test Run finally passes — including a blocker that was set on a PRIOR
+   * session / another laptop, which local-only state would miss.
+   */
+  initialFaultBlocker: BumpBlocker | null
+  /** Notify the parent so the at-a-glance blocker state stays consistent. */
+  onFaultBlockerChange: (blocker: BumpBlocker | null) => void
 }) {
   const [sending, setSending] = useState(false)
   const [writeError, setWriteError] = useState<string | null>(null)
@@ -1192,7 +1202,13 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   // Bump Test, so a pre-track electrical/controls fault is routed to the
   // responsible vendor exactly like a bump failure.
   const [faultDialogOpen, setFaultDialogOpen] = useState(false)
-  const [faultBlocker, setFaultBlocker] = useState<BumpBlocker | null>(null)
+  // Seeded from the parent-hydrated blocker so a fault recorded in a previous
+  // session (or on another laptop) is visible AND clearable here — not just an
+  // in-session fault. Mirrors Step3Content's initialBumpBlocker wiring.
+  const [faultBlocker, setFaultBlocker] = useState<BumpBlocker | null>(initialFaultBlocker)
+
+  // Keep the banner in sync if the parent re-seeds it after an async L2 restore.
+  useEffect(() => { setFaultBlocker(initialFaultBlocker) }, [initialFaultBlocker])
 
   // Record a Test Run fault blocker. Mirrors Step3Content.handleBumpFailSubmit:
   // durable "Bump Blocker" L2 cell (graceful skip if absent) + the device-level
@@ -1223,7 +1239,11 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       blockerDescription: description,
       updatedBy: userName,
     })
-    setFaultBlocker({ party, description })
+    const next: BumpBlocker = { party, description }
+    setFaultBlocker(next)
+    // Keep the parent-hydrated blocker in sync so the same blocker surfaces on
+    // Step 3 and can be cleared from either step.
+    onFaultBlockerChange(next)
   }
 
   // Confirm the drive runs without an immediate fault → READY FOR TRACKING.
@@ -1268,6 +1288,40 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
     } finally {
       setSending(false)
     }
+
+    // Auto-clear an active device blocker now that the Test Run passed. A pass
+    // proves the drive actually STARTS and RUNS without an immediate fault — so
+    // it resolves the electrical/controls fault THIS step raised. The clear is
+    // CONDITIONAL: it carries the recorded party+description as expectedParty/
+    // expectedDescription, and the cloud only nulls the shared Devices.Blocker*
+    // pair when its current values still match. That guard is what makes a pass
+    // safe: a blocker re-triaged to a different party/cause (e.g. reassigned to
+    // Mechanical) no longer matches and is NOT wiped. If there is no hydrated
+    // blocker we emit nothing. Best-effort, non-fatal — never blocks readiness.
+    const active = faultBlocker
+    if (active) {
+      setFaultBlocker(null)
+      onFaultBlockerChange(null)
+      // Empty the durable "Bump Blocker" L2 cell (same tolerant write path;
+      // graceful skip when the column is absent on this sheet).
+      try {
+        await writeL2Cells(deviceName, sheetName, userName, [
+          { columnName: 'Bump Blocker', value: '' },
+        ])
+      } catch (err) {
+        console.warn('[Step4/TestRun] clearing "Bump Blocker" L2 cell failed:', err instanceof Error ? err.message : err)
+      }
+      // Conditional clear of the shared Devices pair (fire-and-forget).
+      void postBumpBlockerOp({
+        subsystemId,
+        deviceName,
+        op: 'clear',
+        expectedParty: active.party,
+        expectedDescription: active.description,
+        updatedBy: userName,
+      })
+    }
+
     // Always flip local state + persist the local SQLite flag, even if the L2
     // write degraded — readiness must NEVER be blocked by a sync hiccup.
     onComplete()
@@ -2369,7 +2423,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
                   else console.log('[VFD Controls] Saved for', device.deviceName)
                 })
                 .catch(err => console.error('[VFD Controls] POST error:', err))
-            }} isComplete={check4Complete} />}
+            }} isComplete={check4Complete} initialFaultBlocker={bumpBlocker} onFaultBlockerChange={setBumpBlocker} />}
             {activeStep === 4 && (beltTrackedDone ? (
               <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} initialBumpBlocker={bumpBlocker} onBumpBlockerChange={setBumpBlocker} />
             ) : (
