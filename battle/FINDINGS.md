@@ -892,3 +892,20 @@ NOT clear local FV/IO work. The earlier 25-min dead-box run also showed 0
 wipes (work survived on disk while the tool stayed down). The full triad is
 now proven: nonstop reconnects, hard power-off, and power-cycle-with-unsynced
 -work — none clear local work.
+
+## Sync Center + blocker-clear validation soak (2026-07-15)
+
+Rebuilt `battle/tool:local` from working tree (Sync Center `772b80f` + blocker
+clear-on-progress `0ceecd4`), ran `all` / 20 min on the dev box (throwaway
+prod-copy cloud, prod never touched). **Verdict PASS.**
+- I4 no-data-loss ✅ 492 writes, 0 true_wipes, **0 suspect_silent_drops**, 0
+  pending at end — the new Sync Center queue ops + fast-park (403/404) engine
+  change introduce no loss under chaos.
+- I24 blocker-survival ✅ 53 blocker writes, 0 pending active/parked (not
+  vacuous) — set/clear path drains; I26 VFD-wizard ✅ 131 writes/0 mismatch.
+- I18/I8 FV ✅ (464/597, 0 mismatch/missing); I1 ✅ (p95 19ms — better than the
+  v2.42.11 baseline that FAILED I1).
+- Report-only misses (non-gating, untouched paths): I7 cloud→field pull
+  (15 cloud adds not pulled — mutate precondition, not the sync fixes) and I25
+  deps (4 mismatches). Both pre-existing, unrelated to this work — flagged for
+  a separate look.
