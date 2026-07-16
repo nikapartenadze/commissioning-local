@@ -216,6 +216,28 @@ const WRITE_CONCURRENCY = (() => {
 const knownMissingTags = new Set<string>()
 
 /**
+ * A createTag status that is a DEFINITIVE "this tag path is not usable in this
+ * program" verdict (vs. a transient CIP/timeout/busy failure that should be
+ * retried). Such tags are cached in knownMissingTags and skipped until the next
+ * (re)connect clears the cache.
+ *
+ * Includes BAD_PARAM and UNSUPPORTED alongside NOT_FOUND: a belt-tracking CMD
+ * member like `CBT_<drive>_VFD.CTRL.CMD.Tracking_Finished` that isn't in the
+ * downloaded AOI answers BAD_PARAM, not NOT_FOUND, so it escaped the cache and
+ * was re-created on EVERY validation pass — thousands of doomed createTag calls
+ * per day at the controller's CIP queue (MCM04 forensics 2026-07-16). These
+ * statuses are construction-time verdicts, permanent for that path until the
+ * program changes (a program download drops the connection → cache cleared).
+ */
+export function isDefinitiveMissingTagStatus(status: number): boolean {
+  return (
+    status === PlcTagStatus.PLCTAG_ERR_NOT_FOUND ||
+    status === PlcTagStatus.PLCTAG_ERR_BAD_PARAM ||
+    status === PlcTagStatus.PLCTAG_ERR_UNSUPPORTED
+  )
+}
+
+/**
  * Forget every cached "tag not in program" verdict. MUST be called whenever
  * the PLC client (re)initializes: program downloads drop the connection, and
  * a download can add tags that were previously absent — or have answered
@@ -554,13 +576,14 @@ export async function batchWriteFlags(
       if (status !== PlcTagStatus.PLCTAG_STATUS_OK) {
         fail++
         consecutiveCreateFailures++
-        // Cache ONLY definitive "not in the program" results. Transient
-        // failures (timeout/busy/connection) must NOT be cached — the tag
-        // may exist and should be retried once the PLC is responsive again.
-        if (status === PlcTagStatus.PLCTAG_ERR_NOT_FOUND) {
+        // Cache ONLY definitive "not in the program" results (NOT_FOUND /
+        // BAD_PARAM / UNSUPPORTED). Transient failures (timeout/busy/connection)
+        // must NOT be cached — the tag may exist and should be retried once the
+        // PLC is responsive again.
+        if (isDefinitiveMissingTagStatus(status)) {
           knownMissingTags.add(job.cacheKey)
-          // PLCTAG_ERR_NOT_FOUND is a definitive answer from the
-          // controller — don't count it as a "CIP queue is sick" signal.
+          // A definitive verdict from the controller — don't count it as a
+          // "CIP queue is sick" signal.
           consecutiveCreateFailures = 0
         }
         if (fail <= 3) {
@@ -693,8 +716,11 @@ async function runRemoteTargetPass(
     const r = readBatch.results[i]
     if (!r || !r.success) {
       // Cache ONLY definitive "not in the program" verdicts — transient
-      // failures must retry (same rule as the embedded pass).
-      if (r?.error && /not.?found/i.test(r.error)) {
+      // failures must retry (same rule as the embedded pass). Match not-found
+      // AND bad-parameter/unsupported: a CMD member absent from the AOI (e.g.
+      // Tracking_Finished) answers "bad parameter", not "not found", and must
+      // be cached too or it re-spams createTag every pass (MCM04 2026-07-16).
+      if (r?.error && /not.?found|bad.?param|unsupported/i.test(r.error)) {
         knownMissingTags.add(jobs[i].cacheKey)
         skipped++
       } else {
