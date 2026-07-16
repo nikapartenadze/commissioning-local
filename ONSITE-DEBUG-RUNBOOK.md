@@ -111,6 +111,23 @@ Via the `commissioning-db` MCP (`mcp__commissioning-db__execute_sql`) — this i
 
 ---
 
+## 6b. Migrations & schema changes (READ before changing schema)
+
+Two SEPARATE systems — never conflate:
+
+| | LOCAL SQLite (field tool) | CLOUD data provisioning |
+|---|---|---|
+| Where | `frontend/lib/db-sqlite.ts` | `commissioning-cloud/scripts/add-*-column.ts`, `lib/l2-synthetic-columns.ts` |
+| Runs | **Auto, every startup** (install applies it) | **Manual** — must be run on prod explicitly |
+| Adds | Table columns/tables (`ALTER TABLE ADD COLUMN`, `CREATE TABLE IF NOT EXISTS`) | DATA rows (e.g. the "Run Verified" L2 column) |
+| Field gets it via | Installing the new build | Cloud provision **+ a field PULL** (redeploy does NOT add data rows) |
+
+- **Adding a local table column?** Idempotent `ALTER TABLE ... ADD COLUMN` in db-sqlite.ts. Ships with the build.
+- **Adding a spreadsheet/L2 column (or other cloud data)?** Run the cloud script on prod, THEN pull on the field. A redeploy alone will NOT add it — this is exactly why "Run Verified" 422s (`write-l2-cells/route.ts` drops an unmapped column).
+- **DATA SAFETY:** local startup migrations run on EVERY boot — a `DELETE`/rewrite there wipes operator data repeatedly (real incident: Belt Tracked migration, fixed in `5a5bf16`). **Never** put destructive SQL in the startup path; verify a backup first.
+- A missing L2 column **drops** the write (422, no queue row) — it is NOT a queue-stuck/park condition.
+- A PostToolUse hook (`.claude/hooks/migration-reminder.sh`) injects this checklist whenever a schema/migration file is edited.
+
 ## 7. Maintenance
 
 When you finish an onsite debug: add the new symptom→location row to §2, any new grep pattern, any new gotcha to §0/§4, and bump the "Last major update" line. Cross-link the detailed writeup in `.claude/.../memory/`.
