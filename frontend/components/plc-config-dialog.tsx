@@ -214,6 +214,48 @@ export function PlcConfigDialog({
     return () => { cancelled = true; clearInterval(id) }
   }, [open, activeTab, isConnecting, isPulling, isDisconnecting])
 
+  // Keep the connection badge/buttons HONEST. liveStatus was previously captured
+  // once by loadActualConfig() on open and then only mutated optimistically by
+  // connect/disconnect/pull — so if the PLC dropped (or reconnected) while the
+  // dialog sat open, the badge kept showing the stale open-time state and lied,
+  // e.g. green "Connected to …" while the top breadcrumb (which polls the same
+  // scoped truth every 5 s) had already gone red. Re-read the scoped status
+  // endpoint on the same cadence so this modal agrees with the breadcrumb and the
+  // toolbar. Paused during an in-dialog connect/pull/disconnect, which own the
+  // state transition and set liveStatus themselves.
+  useEffect(() => {
+    if (!open || isConnecting || isPulling || isDisconnecting) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const res = await authFetch(statusEndpoint)
+        if (!res.ok || cancelled) return
+        const status = await res.json()
+        if (cancelled) return
+        const nowConnected = readConnected(status)
+        setLiveStatus({
+          plcConnected: nowConnected,
+          tagCount: status.tagCount || 0,
+          plcIp: status.plcIp || "",
+        })
+        // Keep the secondary status line consistent with the badge. It's set to a
+        // "Connected to …" success on open; without this a drop left that green
+        // line contradicting the "Not connected" badge right above it. Refresh it
+        // when connected; clear only a stale success when dropped (leave an
+        // error message from a failed connect attempt alone).
+        setPlcStatus(prev => {
+          if (nowConnected) {
+            return { type: 'success', message: `Connected to ${status.plcIp || ''} (${status.tagCount || 0} tags)` }
+          }
+          return prev.type === 'success' ? { type: null, message: '' } : prev
+        })
+      } catch { /* best-effort — status polling must never throw */ }
+    }
+    void tick()
+    const id = setInterval(tick, 2500)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [open, isConnecting, isPulling, isDisconnecting, statusEndpoint])
+
   const loadActualConfig = async () => {
     if (isLoadingConfig) return
     try {
