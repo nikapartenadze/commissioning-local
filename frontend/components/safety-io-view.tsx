@@ -175,14 +175,20 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
       await authFetch("/api/safety/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bssTag: activeBypassRef.current.bssTag, action: "stop" }),
+        // subsystemId is REQUIRED: the server keys the 500ms bypass keep-alive by
+        // `${subsystemId}:${bssTag}` and resolves the release write to that MCM's
+        // controller. Omitting it (the old bug) meant STOP BYPASS never cleared
+        // the keep-alive (STO bypass bit stayed asserted TRUE) and wrote the
+        // release to the legacy singleton, not this MCM — a safety misroute on a
+        // multi-MCM box. Must match handleStartBypass / the unmount cleanup.
+        body: JSON.stringify({ bssTag: activeBypassRef.current.bssTag, action: "stop", subsystemId }),
       })
     } catch {
       // ignore
     } finally {
       setActiveBypass(null)
     }
-  }, [])
+  }, [subsystemId])
 
   return (
     <div className="space-y-6 py-4">
