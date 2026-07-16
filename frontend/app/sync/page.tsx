@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { AutstandLogo } from '@/components/autstand-logo'
+import { SyncCompare } from '@/components/sync-compare'
 import { authFetch } from '@/lib/api-config'
 import { toast } from '@/hooks/use-toast'
 
@@ -135,7 +136,7 @@ function formatAge(mins: number | null): string {
   return `${Math.round(h / 24)}d`
 }
 
-type Tab = 'parked' | 'orphaned' | 'pending' | 'all'
+type Tab = 'parked' | 'orphaned' | 'pending' | 'all' | 'compare'
 
 // ── Confirm dialog state ──────────────────────────────────────────────────────
 interface ConfirmState {
@@ -561,10 +562,14 @@ export default function SyncPage() {
               <TabButton active={tab === 'orphaned'} onClick={() => setTab('orphaned')} label="Removed on cloud" count={orphaned} tone="removed" />
               <TabButton active={tab === 'pending'} onClick={() => setTab('pending')} label="Pending" count={pending} tone="pending" />
               <TabButton active={tab === 'all'} onClick={() => setTab('all')} label="All" count={items.length} tone="neutral" />
+              <TabButton active={tab === 'compare'} onClick={() => setTab('compare')} label="Compare with cloud" count={undefined} tone="neutral" />
             </div>
 
-            {/* ───────── Removed-on-cloud (orphaned) section ───────── */}
-            {tab === 'orphaned' ? (
+            {/* ───────── Compare with cloud (version-aware diff) ───────── */}
+            {tab === 'compare' ? (
+              <SyncCompare subsystemId={mcmFilter === MCM_ALL ? 'all' : mcmFilter} />
+            ) : /* ───────── Removed-on-cloud (orphaned) section ───────── */
+            tab === 'orphaned' ? (
               orphaned === 0 ? (
                 <div className="grid place-items-center py-16 text-center">
                   <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-3" />
@@ -866,7 +871,7 @@ function TabButton({
   active: boolean
   onClick: () => void
   label: string
-  count: number
+  count?: number
   tone: 'attention' | 'removed' | 'pending' | 'neutral'
 }) {
   return (
@@ -878,7 +883,7 @@ function TabButton({
       )}
     >
       {label}
-      {count > 0 && (
+      {count != null && count > 0 && (
         <span className={cn(
           'ml-2 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-bold tabular-nums',
           tone === 'attention' ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
