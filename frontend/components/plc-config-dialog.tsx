@@ -906,12 +906,18 @@ export function PlcConfigDialog({
 
   const busy = isPulling || isConnecting || isDisconnecting
 
-  // Coherent connection phase, shared in spirit with the toolbar. Prefer the
-  // parent's live status (WebSocket + 20s reconcile) over the snapshot we
-  // fetched on open, so the modal can never disagree with the toolbar.
-  const isConnected = connectionState?.isConnected ?? !!liveStatus?.plcConnected
-  const isReconnecting = connectionState?.isReconnecting ?? false
-  const hasEverConnected = connectionState?.hasEverConnected ?? false
+  // Coherent connection phase. On a per-MCM page the dialog is `scoped`, and its
+  // own liveStatus fetch (/api/mcm/:id/plc/status) is the ONLY per-MCM truth.
+  // The parent's `connectionState` is a GLOBAL aggregate (anyConnected across
+  // ALL MCMs) — on a multi-MCM box it reports "connected" whenever ANY sibling
+  // MCM is up, so trusting it here made the badge + buttons lie ("Connected /
+  // Disconnect" while THIS MCM is down). When scoped, trust liveStatus; only
+  // fall back to the global prop in the unscoped single-connection view.
+  const isConnected = scoped
+    ? !!liveStatus?.plcConnected
+    : (connectionState?.isConnected ?? !!liveStatus?.plcConnected)
+  const isReconnecting = scoped ? false : (connectionState?.isReconnecting ?? false)
+  const hasEverConnected = scoped ? !!liveStatus?.plcConnected : (connectionState?.hasEverConnected ?? false)
   const connPhase: 'connected' | 'reconnecting' | 'unreachable' | 'disconnected' =
     isConnected
       ? 'connected'
