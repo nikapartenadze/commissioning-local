@@ -31,12 +31,13 @@ const { memDb } = vi.hoisted(() => {
   const d = new Database(':memory:')
   d.exec(`
     -- ── Data tables (the real values live here; queue rows are outbound copies) ──
-    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Description TEXT, Result TEXT);
-    CREATE TABLE L2Devices (id INTEGER PRIMARY KEY AUTOINCREMENT, CloudId INTEGER, DeviceName TEXT, Mcm TEXT);
+    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Description TEXT, Result TEXT, SubsystemId INTEGER);
+    CREATE TABLE L2Devices (id INTEGER PRIMARY KEY AUTOINCREMENT, CloudId INTEGER, DeviceName TEXT, Mcm TEXT, SubsystemId INTEGER);
     CREATE TABLE L2Columns (id INTEGER PRIMARY KEY AUTOINCREMENT, CloudId INTEGER, Name TEXT);
     CREATE TABLE L2CellValues (id INTEGER PRIMARY KEY AUTOINCREMENT, DeviceId INTEGER, ColumnId INTEGER, Value TEXT);
     CREATE TABLE Devices (id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT,
       BlockerResponsibleParty TEXT, BlockerDescription TEXT);
+    CREATE TABLE Subsystems (id INTEGER PRIMARY KEY, Name TEXT);
 
     -- ── The three OUTBOUND queue tables the Sync Center triages ──
     CREATE TABLE PendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, TestResult TEXT,
@@ -65,8 +66,9 @@ const IO_ID = 1
 
 /** Idempotently (re)create the underlying DATA rows a queue row points at. */
 function seedData() {
-  memDb.prepare("INSERT OR IGNORE INTO Ios (id, Name, Description, Result) VALUES (?, 'DI_START_PB', 'Start pushbutton', 'Passed')").run(IO_ID)
-  memDb.prepare('INSERT OR IGNORE INTO L2Devices (id, CloudId, DeviceName, Mcm) VALUES (1, ?, ?, ?)').run(CLOUD_DEV, 'M-101', 'MCM11')
+  memDb.prepare("INSERT OR IGNORE INTO Subsystems (id, Name) VALUES (40, 'MCM04'), (47, 'MCM11')").run()
+  memDb.prepare("INSERT OR IGNORE INTO Ios (id, Name, Description, Result, SubsystemId) VALUES (?, 'DI_START_PB', 'Start pushbutton', 'Passed', 47)").run(IO_ID)
+  memDb.prepare('INSERT OR IGNORE INTO L2Devices (id, CloudId, DeviceName, Mcm, SubsystemId) VALUES (1, ?, ?, ?, 47)').run(CLOUD_DEV, 'M-101', 'MCM11')
   memDb.prepare('INSERT OR IGNORE INTO L2Columns (id, CloudId, Name) VALUES (1, ?, ?)').run(CLOUD_COL, 'Run Verified')
   memDb.prepare('INSERT OR IGNORE INTO L2CellValues (id, DeviceId, ColumnId, Value) VALUES (1, 1, 1, ?)').run('true')
   memDb.prepare("INSERT OR IGNORE INTO Devices (id, Name, BlockerResponsibleParty, BlockerDescription) VALUES (1, 'VFD-7', 'Electrical', 'awaiting power')").run()
@@ -112,7 +114,7 @@ function underlyingDataRow(kind: QueueKind): any {
 const DATA_LABEL: Record<QueueKind, string> = { io: 'IO value', l2: 'L2 cell value', blocker: 'device blocker value' }
 
 beforeEach(() => {
-  for (const t of ['PendingSyncs', 'L2PendingSyncs', 'DeviceBlockerPendingSyncs', 'Ios', 'L2Devices', 'L2Columns', 'L2CellValues', 'Devices']) {
+  for (const t of ['PendingSyncs', 'L2PendingSyncs', 'DeviceBlockerPendingSyncs', 'Ios', 'L2Devices', 'L2Columns', 'L2CellValues', 'Devices', 'Subsystems']) {
     memDb.exec(`DELETE FROM ${t}`)
   }
 })
@@ -232,5 +234,55 @@ describe('Sync Center bulk selectors resolve to the right rows and never touch a
     expect(summary.pending).toBe(1)
     expect(summary.byClassification.gone_on_cloud).toBe(1)
     expect(summary.byClassification.version_conflict).toBe(1)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// PER-MCM SCOPING — an operator on MCM05 must never touch MCM01's queue.
+// This is the data-safety guarantee behind the per-MCM Sync Center.
+// ─────────────────────────────────────────────────────────────────────────
+/** Seed a parked IO queue row for a specific subsystem/MCM. Returns the queue-row id. */
+function seedParkedIoOnSubsystem(subsystemId: number, ioId: number, lastError: string | null): number {
+  memDb.prepare('INSERT OR IGNORE INTO Subsystems (id, Name) VALUES (?, ?)').run(subsystemId, `MCM-${subsystemId}`)
+  memDb.prepare("INSERT OR IGNORE INTO Ios (id, Name, Description, Result, SubsystemId) VALUES (?, ?, 'x', 'Passed', ?)").run(ioId, `IO_${ioId}`, subsystemId)
+  const info = memDb.prepare('INSERT INTO PendingSyncs (IoId, TestResult, RetryCount, LastError, DeadLettered) VALUES (?, ?, 5, ?, 1)').run(ioId, 'Passed', lastError)
+  return Number(info.lastInsertRowid)
+}
+
+describe('Sync Center PER-MCM scoping — one MCM never touches another', () => {
+  it('listQueue({subsystemId}) surfaces + attributes ONLY that MCM, and the summary is scoped too', () => {
+    const mcm11Io = seedParkedIoOnSubsystem(47, 11, 'HTTP 409')
+    const mcm04Io = seedParkedIoOnSubsystem(40, 40, 'HTTP 409')
+
+    const scoped = listQueue({ subsystemId: 47 })
+    expect(scoped.items.every((i) => i.subsystemId === 47)).toBe(true)
+    expect(scoped.items.every((i) => i.mcm === 'MCM-47')).toBe(true) // attribution present
+    expect(scoped.items.some((i) => i.kind === 'io' && i.id === mcm11Io)).toBe(true)
+    expect(scoped.items.some((i) => i.id === mcm04Io)).toBe(false)   // MCM04 invisible
+    expect(scoped.summary.parked).toBe(1)                            // summary scoped to MCM11
+  })
+
+  it('THE HAZARD FIX: bulk discard scoped to MCM04 leaves MCM11’s stuck row completely intact', () => {
+    const mcm11Io = seedParkedIoOnSubsystem(47, 11, 'HTTP 404')
+    const mcm04Io = seedParkedIoOnSubsystem(40, 40, 'HTTP 404')
+    const mcm04Blk = seedParked('blocker', 'HTTP 404') // seedParked seeds the blocker on SubsystemId 40
+
+    const refs04 = selectRefs({ allParked: true, subsystemId: 40 })
+    expect(refs04).toContainEqual({ kind: 'io', id: mcm04Io })
+    expect(refs04).toContainEqual({ kind: 'blocker', id: mcm04Blk })
+    expect(refs04.some((r) => r.kind === 'io' && r.id === mcm11Io)).toBe(false) // MCM11 excluded
+
+    discard(refs04)
+    expect(queueRow('io', mcm04Io)).toBeUndefined()   // MCM04 cleared
+    expect(queueRow('blocker', mcm04Blk)).toBeUndefined()
+    expect(queueRow('io', mcm11Io)).toBeTruthy()       // ← MCM11 UNTOUCHED (the guarantee)
+  })
+
+  it('global bulk (no subsystemId) still resolves EVERY MCM — the all-MCM path is unchanged', () => {
+    const mcm11Io = seedParkedIoOnSubsystem(47, 11, 'timeout')
+    const mcm04Io = seedParkedIoOnSubsystem(40, 40, 'timeout')
+    const refs = selectRefs({ allParked: true })
+    expect(refs).toContainEqual({ kind: 'io', id: mcm11Io })
+    expect(refs).toContainEqual({ kind: 'io', id: mcm04Io })
   })
 })

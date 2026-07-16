@@ -25,6 +25,8 @@ type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'unkn
 interface QueueItem {
   kind: Kind
   id: number
+  subsystemId: number | null
+  mcm: string | null
   title: string
   subtitle: string | null
   value: string | null
@@ -55,6 +57,26 @@ type ActionBody = {
   classification?: Classification
   allParked?: boolean
   allOrphaned?: boolean
+  // Scopes bulk selectors to one MCM so a mass action can't touch another MCM.
+  subsystemId?: number
+}
+
+const MCM_ALL = 'all' as const
+
+// Recompute the summary from a (possibly MCM-scoped) item set so the counts,
+// chips, and bulk-button labels always match exactly what's shown.
+function summarize(items: QueueItem[]): QueueSummary {
+  const s: QueueSummary = {
+    pending: 0, parked: 0, orphaned: 0,
+    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, unknown: 0 },
+  }
+  for (const it of items) {
+    if (it.status === 'orphaned') s.orphaned++
+    else if (it.status === 'parked') s.parked++
+    else s.pending++
+    s.byClassification[it.classification]++
+  }
+  return s
 }
 
 const POLL_MS = 15000
@@ -130,6 +152,7 @@ export default function SyncPage() {
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [tab, setTab] = useState<Tab>('parked')
+  const [mcmFilter, setMcmFilter] = useState<number | typeof MCM_ALL>(MCM_ALL)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState<string | null>(null)
@@ -160,8 +183,35 @@ export default function SyncPage() {
     return () => clearInterval(t)
   }, [load])
 
-  const summary = data?.summary
-  const items = data?.items ?? []
+  const allItems = data?.items ?? []
+
+  // Distinct MCMs present in the queue, for the per-MCM filter dropdown.
+  const mcmOptions = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const it of allItems) {
+      if (it.subsystemId != null) map.set(it.subsystemId, it.mcm || `MCM ${it.subsystemId}`)
+    }
+    return Array.from(map.entries())
+      .map(([subsystemId, label]) => ({ subsystemId, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }))
+  }, [allItems])
+
+  // If the selected MCM drains to empty and disappears, fall back to All.
+  useEffect(() => {
+    if (mcmFilter !== MCM_ALL && !mcmOptions.some((o) => o.subsystemId === mcmFilter)) {
+      setMcmFilter(MCM_ALL)
+    }
+  }, [mcmOptions, mcmFilter])
+
+  // The MCM-scoped view: everything below (summary, tabs, bulk actions) operates
+  // on this set, so an operator filtered to one MCM sees + acts on ONLY that MCM.
+  const items = useMemo(
+    () => (mcmFilter === MCM_ALL ? allItems : allItems.filter((i) => i.subsystemId === mcmFilter)),
+    [allItems, mcmFilter],
+  )
+  const summary = useMemo(() => summarize(items), [items])
+  // subsystemId sent with bulk actions so they resolve server-side to this MCM only.
+  const scopeId = mcmFilter === MCM_ALL ? undefined : mcmFilter
 
   const visible = useMemo(() => {
     if (tab === 'parked') return items.filter((i) => i.status === 'parked')
@@ -261,7 +311,7 @@ export default function SyncPage() {
       body: 'These records no longer exist on the cloud, so they can never upload. Discarding clears them from the queue only — nothing on this device is deleted.',
       confirmLabel: 'Discard them',
       destructive: true,
-      run: () => bulkAction('discard-gone', { action: 'discard', classification: 'gone_on_cloud' }),
+      run: () => bulkAction('discard-gone', { action: 'discard', classification: 'gone_on_cloud', subsystemId: scopeId }),
     })
   }
   const askDiscardAllParked = () => {
@@ -271,7 +321,7 @@ export default function SyncPage() {
       body: 'This clears every stuck row from the cloud upload queue. Your entries remain saved on this device and shown in the grid — this never deletes your data.',
       confirmLabel: 'Discard all parked',
       destructive: true,
-      run: () => bulkAction('discard-all-parked', { action: 'discard', allParked: true }),
+      run: () => bulkAction('discard-all-parked', { action: 'discard', allParked: true, subsystemId: scopeId }),
     })
   }
   const askDiscardAllOrphaned = () => {
@@ -281,7 +331,7 @@ export default function SyncPage() {
       body: 'These devices/records were removed on the cloud. Each row auto-restores if the device comes back — discarding just clears them from the queue now. Your entries stay saved on this device; nothing is deleted.',
       confirmLabel: 'Discard removed-on-cloud',
       destructive: true,
-      run: () => bulkAction('discard-all-orphaned', { action: 'discard', allOrphaned: true }),
+      run: () => bulkAction('discard-all-orphaned', { action: 'discard', allOrphaned: true, subsystemId: scopeId }),
     })
   }
 
@@ -322,6 +372,19 @@ export default function SyncPage() {
             </p>
           </div>
           <div className="flex-1" />
+          {mcmOptions.length > 0 && (
+            <select
+              value={mcmFilter === MCM_ALL ? 'all' : String(mcmFilter)}
+              onChange={(e) => setMcmFilter(e.target.value === 'all' ? MCM_ALL : Number(e.target.value))}
+              title="Show and act on only one MCM's queue"
+              className="h-9 rounded-md border border-border bg-background px-2 text-sm max-w-[150px] font-medium"
+            >
+              <option value="all">All MCMs</option>
+              {mcmOptions.map((o) => (
+                <option key={o.subsystemId} value={o.subsystemId}>{o.label}</option>
+              ))}
+            </select>
+          )}
           <Button onClick={() => load(true)} disabled={refreshing} size="sm" variant="outline" className="gap-1.5">
             <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
             <span className="hidden sm:inline">Refresh</span>
@@ -414,11 +477,14 @@ export default function SyncPage() {
               <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
                 <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mr-1">
                   Bulk fixes
+                  {scopeId != null
+                    ? <span className="ml-1 normal-case text-primary">· {mcmOptions.find((o) => o.subsystemId === scopeId)?.label ?? `MCM ${scopeId}`} only</span>
+                    : mcmOptions.length > 1 && <span className="ml-1 normal-case text-amber-600 dark:text-amber-400">· all MCMs</span>}
                 </span>
                 <Button
                   size="sm" variant="outline" className="gap-1.5"
                   disabled={!!bulkBusy}
-                  onClick={() => bulkAction('retry-all-parked', { action: 'retry', allParked: true })}
+                  onClick={() => bulkAction('retry-all-parked', { action: 'retry', allParked: true, subsystemId: scopeId })}
                 >
                   {bulkBusy === 'retry-all-parked' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
                   Retry all parked
@@ -575,7 +641,9 @@ export default function SyncPage() {
                               <div className="font-medium leading-tight">{item.title}</div>
                               <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
                                 <span className="uppercase tracking-wide">{KIND_LABEL[item.kind]}</span>
-                                {item.subtitle && <><span className="opacity-40">•</span><span className="truncate max-w-[220px]">{item.subtitle}</span></>}
+                                <span className="opacity-40">•</span>
+                                <span className="font-semibold text-foreground/70">{item.mcm ?? 'Unassigned'}</span>
+                                {item.subtitle && <><span className="opacity-40">•</span><span className="truncate max-w-[200px]">{item.subtitle}</span></>}
                               </div>
                             </td>
                             <td className="px-3 py-3 hidden md:table-cell">

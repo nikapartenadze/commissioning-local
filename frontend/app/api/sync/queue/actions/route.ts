@@ -28,7 +28,12 @@ export async function POST(req: Request, res: Response) {
       classification?: Classification
       allParked?: boolean
       allOrphaned?: boolean
+      // Scopes every bulk selector to ONE MCM so a mass retry/discard from the
+      // per-MCM view can never touch another MCM's queue. Ignored for explicit ids.
+      subsystemId?: number
     }
+    const sid = body.subsystemId
+    const subsystemId = sid != null && Number.isFinite(Number(sid)) ? Number(sid) : undefined
 
     const action = body.action
     if (action !== 'retry' && action !== 'discard') {
@@ -54,7 +59,7 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'No rows selected — provide ids, classification, allParked, or allOrphaned.' })
     }
 
-    const refs = selectRefs({ ids: body.ids, classification: body.classification, allParked: body.allParked, allOrphaned: body.allOrphaned })
+    const refs = selectRefs({ ids: body.ids, classification: body.classification, allParked: body.allParked, allOrphaned: body.allOrphaned, subsystemId })
 
     if (action === 'retry') {
       const { affected } = retry(refs)

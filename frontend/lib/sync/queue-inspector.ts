@@ -22,6 +22,11 @@ export type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' 
 export interface QueueItem {
   kind: QueueKind
   id: number
+  // Owning MCM/subsystem so the Sync Center can attribute + filter + scope bulk
+  // actions per MCM. NULL only for legacy single-MCM rows (e.g. an L2 device
+  // that predates per-MCM scoping) — those show as "Unassigned".
+  subsystemId: number | null
+  mcm: string | null
   title: string
   subtitle: string | null
   value: string | null
@@ -114,6 +119,8 @@ function statusOf(deadLettered: unknown, orphaned: unknown): 'pending' | 'parked
 function buildItem(
   kind: QueueKind,
   id: number,
+  subsystemId: unknown,
+  mcm: string | null,
   title: string,
   subtitle: string | null,
   value: string | null,
@@ -124,9 +131,12 @@ function buildItem(
   orphaned: unknown,
 ): QueueItem {
   const { classification, reason } = classify(lastError)
+  const sid = subsystemId == null ? null : Number(subsystemId)
   return {
     kind,
     id,
+    subsystemId: sid != null && Number.isFinite(sid) ? sid : null,
+    mcm: mcm ?? null,
     title,
     subtitle,
     value,
@@ -147,16 +157,18 @@ function readIoRows(): QueueItem[] {
       `SELECT ps.id AS id, ps.IoId AS IoId, ps.TestResult AS TestResult,
               ps.DeadLettered AS DeadLettered, ps.Orphaned AS Orphaned, ps.LastError AS LastError,
               ps.RetryCount AS RetryCount, ps.CreatedAt AS CreatedAt,
-              i.Name AS IoName, i.Description AS IoDescription
+              i.Name AS IoName, i.Description AS IoDescription,
+              i.SubsystemId AS SubsystemId, s.Name AS Mcm
          FROM PendingSyncs ps
          LEFT JOIN Ios i ON ps.IoId = i.id
+         LEFT JOIN Subsystems s ON s.id = i.SubsystemId
         ORDER BY ps.CreatedAt ASC, ps.id ASC`,
     )
     .all() as any[]
   return rows.map((r) => {
     const title = (r.IoName && String(r.IoName)) || `IO #${r.IoId}`
     const subtitle = r.IoDescription != null ? String(r.IoDescription) : null
-    return buildItem('io', r.id, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
+    return buildItem('io', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
   })
 }
 
@@ -167,9 +179,11 @@ function readL2Rows(): QueueItem[] {
       `SELECT lp.id AS id, lp.CloudDeviceId AS CloudDeviceId, lp.CloudColumnId AS CloudColumnId,
               lp.Value AS Value, lp.DeadLettered AS DeadLettered, lp.Orphaned AS Orphaned, lp.LastError AS LastError,
               lp.RetryCount AS RetryCount, lp.CreatedAt AS CreatedAt,
-              d.DeviceName AS DeviceName, d.Mcm AS Mcm, c.Name AS ColumnName
+              d.DeviceName AS DeviceName, d.Mcm AS Mcm, d.SubsystemId AS SubsystemId,
+              COALESCE(s.Name, d.Mcm) AS McmName, c.Name AS ColumnName
          FROM L2PendingSyncs lp
          LEFT JOIN L2Devices d ON d.CloudId = lp.CloudDeviceId
+         LEFT JOIN Subsystems s ON s.id = d.SubsystemId
          LEFT JOIN L2Columns c ON c.CloudId = lp.CloudColumnId
         ORDER BY lp.CreatedAt ASC, lp.id ASC`,
     )
@@ -178,7 +192,7 @@ function readL2Rows(): QueueItem[] {
     const name = r.DeviceName ? String(r.DeviceName) : `Device #${r.CloudDeviceId}`
     const title = r.Mcm ? `${name} · ${r.Mcm}` : name
     const subtitle = r.ColumnName != null ? String(r.ColumnName) : `Column #${r.CloudColumnId}`
-    return buildItem('l2', r.id, title, subtitle, r.Value ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
+    return buildItem('l2', r.id, r.SubsystemId, r.McmName ?? null, title, subtitle, r.Value ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
   })
 }
 
@@ -186,10 +200,14 @@ function readL2Rows(): QueueItem[] {
 function readBlockerRows(): QueueItem[] {
   const rows = db
     .prepare(
-      `SELECT id, DeviceName, Op, BlockerResponsibleParty, BlockerDescription,
-              DeadLettered, Orphaned, LastError, RetryCount, CreatedAt
-         FROM DeviceBlockerPendingSyncs
-        ORDER BY CreatedAt ASC, id ASC`,
+      `SELECT bp.id AS id, bp.DeviceName AS DeviceName, bp.Op AS Op,
+              bp.BlockerResponsibleParty AS BlockerResponsibleParty, bp.BlockerDescription AS BlockerDescription,
+              bp.DeadLettered AS DeadLettered, bp.Orphaned AS Orphaned, bp.LastError AS LastError,
+              bp.RetryCount AS RetryCount, bp.CreatedAt AS CreatedAt,
+              bp.SubsystemId AS SubsystemId, s.Name AS Mcm
+         FROM DeviceBlockerPendingSyncs bp
+         LEFT JOIN Subsystems s ON s.id = bp.SubsystemId
+        ORDER BY bp.CreatedAt ASC, bp.id ASC`,
     )
     .all() as any[]
   return rows.map((r) => {
@@ -197,15 +215,25 @@ function readBlockerRows(): QueueItem[] {
     const party = r.BlockerResponsibleParty ? String(r.BlockerResponsibleParty) : null
     const op = r.Op ? String(r.Op) : ''
     const subtitle = [op, party].filter(Boolean).join(' · ') || null
-    return buildItem('blocker', r.id, title, subtitle, r.BlockerDescription ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
+    return buildItem('blocker', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.BlockerDescription ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
   })
 }
 
-export function listQueue(opts?: { status?: 'all' | 'pending' | 'parked' | 'orphaned' }): {
+export function listQueue(opts?: {
+  status?: 'all' | 'pending' | 'parked' | 'orphaned'
+  /**
+   * Restrict to ONE MCM. This is the per-MCM scoping that makes bulk actions
+   * safe: an operator filtered to MCM05 sees + retries + discards ONLY MCM05's
+   * rows and can never touch MCM01's. Omit for the global (all-MCM) view.
+   */
+  subsystemId?: number
+}): {
   summary: { pending: number; parked: number; orphaned: number; byClassification: Record<Classification, number> }
   items: QueueItem[]
 } {
   const wantStatus = opts?.status ?? 'all'
+  const wantSubsystem =
+    opts?.subsystemId != null && Number.isFinite(opts.subsystemId) ? Number(opts.subsystemId) : null
 
   // Each table read is isolated so a missing table/column never 500s the list.
   let items: QueueItem[] = []
@@ -215,6 +243,12 @@ export function listQueue(opts?: { status?: 'all' | 'pending' | 'parked' | 'orph
     } catch (e) {
       console.warn(`[SyncCenter] queue read failed for ${read.name}:`, (e as Error)?.message || e)
     }
+  }
+
+  // Per-MCM scope FIRST, so both the summary counts and the returned rows
+  // reflect only the selected MCM.
+  if (wantSubsystem != null) {
+    items = items.filter((i) => i.subsystemId === wantSubsystem)
   }
 
   const summary = {
@@ -297,6 +331,13 @@ export function selectRefs(sel: {
   classification?: Classification
   allParked?: boolean
   allOrphaned?: boolean
+  /**
+   * When set, every bulk selector (allParked/allOrphaned/classification) resolves
+   * ONLY rows of that MCM — so "Discard all parked" on the MCM05-filtered view
+   * can never touch MCM01's queue. Explicit `ids` are still honored as-is (the
+   * caller already chose exact rows). Omit for a deliberate all-MCM bulk action.
+   */
+  subsystemId?: number
 }): { kind: QueueKind; id: number }[] {
   if (sel.ids && sel.ids.length) {
     return sel.ids
@@ -304,12 +345,14 @@ export function selectRefs(sel: {
       .map((r) => ({ kind: r.kind, id: r.id }))
   }
 
+  const scope = sel.subsystemId != null ? { subsystemId: sel.subsystemId } : {}
+
   if (sel.allOrphaned) {
-    return listQueue({ status: 'orphaned' }).items.map((i) => ({ kind: i.kind, id: i.id }))
+    return listQueue({ status: 'orphaned', ...scope }).items.map((i) => ({ kind: i.kind, id: i.id }))
   }
 
   if (sel.classification || sel.allParked) {
-    const parked = listQueue({ status: 'parked' }).items
+    const parked = listQueue({ status: 'parked', ...scope }).items
     const matched = sel.classification
       ? parked.filter((i) => i.classification === sel.classification)
       : parked
