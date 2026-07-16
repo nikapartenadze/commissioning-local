@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { CloudDownload, Terminal, Cpu, Wifi, WifiOff, Copy, Check, Zap, Loader2, AlertTriangle } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
+import { resolvePlcConnectionView } from "@/lib/plc-connection-view"
 import { EMBEDDED_REMOTE_URL, type PlcProfile } from "@/lib/config/types"
 
 interface PlcConfig {
@@ -906,26 +907,13 @@ export function PlcConfigDialog({
 
   const busy = isPulling || isConnecting || isDisconnecting
 
-  // Coherent connection phase. On a per-MCM page the dialog is `scoped`, and its
-  // own liveStatus fetch (/api/mcm/:id/plc/status) is the ONLY per-MCM truth.
-  // The parent's `connectionState` is a GLOBAL aggregate (anyConnected across
-  // ALL MCMs) — on a multi-MCM box it reports "connected" whenever ANY sibling
-  // MCM is up, so trusting it here made the badge + buttons lie ("Connected /
-  // Disconnect" while THIS MCM is down). When scoped, trust liveStatus; only
-  // fall back to the global prop in the unscoped single-connection view.
-  const isConnected = scoped
-    ? !!liveStatus?.plcConnected
-    : (connectionState?.isConnected ?? !!liveStatus?.plcConnected)
-  const isReconnecting = scoped ? false : (connectionState?.isReconnecting ?? false)
-  const hasEverConnected = scoped ? !!liveStatus?.plcConnected : (connectionState?.hasEverConnected ?? false)
-  const connPhase: 'connected' | 'reconnecting' | 'unreachable' | 'disconnected' =
-    isConnected
-      ? 'connected'
-      : isReconnecting && hasEverConnected
-        ? 'reconnecting'
-        : isReconnecting
-          ? 'unreachable'
-          : 'disconnected'
+  // Connection indicator. On a per-MCM page the dialog is `scoped` and its own
+  // liveStatus fetch is the ONLY per-MCM truth; the parent's `connectionState`
+  // is a GLOBAL aggregate (anyConnected across ALL MCMs) that made the badge +
+  // buttons lie on a multi-MCM box. resolvePlcConnectionView encodes that rule
+  // as a pure, unit-tested function (see lib/plc-connection-view + its test).
+  const { isConnected, isReconnecting, hasEverConnected, phase: connPhase } =
+    resolvePlcConnectionView({ scoped, liveStatus, connectionState })
 
   return (
     <>
