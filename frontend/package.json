@@ -1,6 +1,6 @@
 {
   "name": "commissioning-tool",
-  "version": "2.43.3",
+  "version": "2.43.4",
   "private": true,
   "scripts": {
     "dev": "cross-env PORT=3020 PLC_WS_PORT=3022 WS_BROADCAST_URL=http://localhost:3122/broadcast concurrently \"vite --port 5173 --host 0.0.0.0\" \"tsx watch server-express.ts\"",
