@@ -114,6 +114,11 @@ export async function POST(req: Request, res: Response) {
       value: string | null; version: number
       cloudDeviceId: number | null; cloudColumnId: number | null
     }> = []
+    // Columns that don't exist on this sheet at all (e.g. an un-provisioned
+    // synthetic column like "Run Verified" on a legacy template). Collected here
+    // and journalled AFTER commit so the drop lands in the durable audit-*.jsonl
+    // recovery trail — not just server stdout (closes the G1 audit gap).
+    const droppedColumns: Array<{ column: string; value: string | null }> = []
 
     db.transaction(() => {
       for (const cell of cells) {
@@ -131,6 +136,7 @@ export async function POST(req: Request, res: Response) {
             `in sheet "${target.sheetName}" (device ${deviceName}, value ${JSON.stringify(cell.value)}). ` +
             `Pull the latest L2 data from cloud to receive missing columns.`,
           )
+          droppedColumns.push({ column: cell.columnName, value: cell.value ?? null })
           written.push({ columnName: cell.columnName, ok: false, error: `Column not found in sheet "${target.sheetName}"` })
           continue
         }
@@ -216,6 +222,20 @@ export async function POST(req: Request, res: Response) {
           detail: { deviceId: target.deviceId, columnId: entry.columnId, deviceName, column: entry.column, value: entry.value, via: 'vfd-wizard' },
         })
       }
+    }
+
+    // Journal columns that don't exist on this sheet (e.g. an un-provisioned
+    // "Run Verified" on a legacy template). Previously this drop was visible only
+    // on server stdout + the 422 response; now it lands in the durable
+    // audit-*.jsonl trail like every other drop class (closes G1).
+    for (const d of droppedColumns) {
+      auditLog({
+        type: 'l2.push.drop',
+        subsystemId: target.subsystemId ?? null,
+        user: updatedBy ?? null,
+        reason: `column "${d.column}" not on sheet "${target.sheetName}" — cell dropped (pull latest L2, or the template does not track this column)`,
+        detail: { deviceId: target.deviceId, deviceName, sheet: target.sheetName, column: d.column, value: d.value, via: 'vfd-wizard' },
+      })
     }
 
     // Broadcast each successfully-written cell to the local WS so the open

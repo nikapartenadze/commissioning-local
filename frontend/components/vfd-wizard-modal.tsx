@@ -16,7 +16,7 @@ import {
 import { VfdBumpFailDialog } from '@/components/vfd-bump-fail-dialog'
 import { toast } from '@/hooks/use-toast'
 import { type VfdBlockerParty } from '@/lib/blockers'
-import { formatBumpBlockerCell, parseBumpBlockerCell, shouldClearBlockerOnTestRunPass } from '@/lib/vfd-bump-blocker'
+import { formatBumpBlockerCell, parseBumpBlockerCell, shouldClearBlockerOnTestRunPass, isMissingColumnDrop } from '@/lib/vfd-bump-blocker'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -125,6 +125,19 @@ async function writeL2Cells(
       body: JSON.stringify({ deviceName, sheetName, updatedBy, cells }),
     })
     const body = await res.json().catch(() => ({}))
+    // A 422 from this route ONLY means one or more columns don't exist on this
+    // sheet — the route 422s exclusively for the column-not-found drop; genuine
+    // write failures are 500 or a thrown fetch error. On a legacy template that
+    // intentionally omits a column (e.g. "Run Verified"), that is BENIGN: the
+    // operator's OTHER cells still saved, nothing needs redoing, and the drop is
+    // journalled server-side. So do NOT fire the destructive "NOT saved — redo
+    // this step" toast; return a distinct flag the caller can treat as a skip.
+    if (isMissingColumnDrop(res.status, body)) {
+      const droppedList = Array.isArray(body?.dropped) ? body.dropped : []
+      const cols = droppedList.map((d: any) => d.columnName).join(', ')
+      console.info(`[VFD] "${cols}" not tracked on this template for ${deviceName} — skipped (not an error; drop is journalled).`)
+      return { success: false, missingColumnOnly: true, droppedColumns: droppedList.map((d: any) => d.columnName), ...body }
+    }
     if (!res.ok || body?.success === false) {
       failLoud(body?.error ?? `HTTP ${res.status}`)
       return { success: false, error: body?.error ?? `HTTP ${res.status}`, ...body }
@@ -1272,22 +1285,31 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       const l2 = await writeL2Cells(deviceName, sheetName, userName, [
         { columnName: 'Run Verified', value: stamp },
       ])
-      const failed = (l2?.written || []).filter((w: any) => !w.ok)
-      if (failed.length > 0) {
-        // Column may not be deployed to this sheet yet. Warn (not fatal) — the
-        // local SQLite flag still records readiness; only the cloud Ready gate
-        // misses it until the column is pulled from cloud.
-        console.warn(
-          `[Step3/TestRun] "Run Verified" L2 cell not saved ` +
-          `(${failed.map((w: any) => w.error || 'write failed').join(', ')}). ` +
-          `The conveyor is still marked ready locally; the cloud Ready gate will ` +
-          `not see it until the "Run Verified" column is pulled from cloud.`,
+      if (l2?.missingColumnOnly) {
+        // This template intentionally does NOT track "Run Verified" (legacy
+        // sheet). That is expected, not an error: readiness is still recorded
+        // locally (onComplete → VfdControlsVerified) and the cloud derives
+        // readiness from identity + HP. Nothing to redo — so NO error banner.
+        console.info(
+          `[Step4/TestRun] "Run Verified" not tracked on this sheet — controls-verified ` +
+          `recorded locally; cloud readiness derives from identity + HP.`,
         )
-        setWriteError(
-          'Marked ready locally, but the "Run Verified" record did not sync to cloud ' +
-          '(column missing on this sheet). Pull the latest L2 data from cloud so the ' +
-          'cloud Ready gate picks it up.',
-        )
+      } else {
+        const failed = (l2?.written || []).filter((w: any) => !w.ok)
+        if (failed.length > 0) {
+          // A GENUINE sync failure (not a missing column) — the local SQLite flag
+          // still records readiness; surface it so the tech knows cloud is behind.
+          console.warn(
+            `[Step4/TestRun] "Run Verified" L2 cell not saved ` +
+            `(${failed.map((w: any) => w.error || 'write failed').join(', ')}). ` +
+            `The conveyor is still marked ready locally; the cloud Ready gate will ` +
+            `not see it until it re-syncs.`,
+          )
+          setWriteError(
+            'Marked ready locally, but the "Run Verified" record did not sync to cloud. ' +
+            'It will retry automatically; no need to redo this step.',
+          )
+        }
       }
     } catch (err) {
       console.warn('[Step3/TestRun] "Run Verified" L2 write error:', err instanceof Error ? err.message : err)

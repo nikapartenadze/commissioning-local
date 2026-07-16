@@ -56,6 +56,29 @@ export function parseBumpBlockerCell(
  * The proper long-term fix is separate blocker slots per step; until then this
  * provenance check is the data-safe boundary.
  */
+/**
+ * True when a POST /api/vfd-commissioning/write-l2-cells response is a BENIGN
+ * "column not on this sheet" drop — HTTP 422 where EVERY failure is a
+ * column-not-found. That route 422s ONLY for the column-not-found branch
+ * (genuine write failures are 500 or a thrown fetch error), so a 422 here means
+ * the template simply doesn't have that column (e.g. an un-provisioned synthetic
+ * "Run Verified" on a legacy sheet). The operator's other cells still saved and
+ * the drop is journalled server-side, so the wizard should skip quietly rather
+ * than fire a destructive "NOT saved — redo this step" toast. Returns false for
+ * a genuine failure (500 / network / mixed errors) so those still surface loud.
+ */
+export function isMissingColumnDrop(
+  status: number,
+  body: { written?: Array<{ ok?: boolean; error?: string }>; dropped?: unknown[] } | null | undefined,
+): boolean {
+  if (status !== 422 || !body) return false
+  const dropped = Array.isArray(body.dropped) ? body.dropped : []
+  if (dropped.length === 0) return false
+  const written = Array.isArray(body.written) ? body.written : []
+  // Every non-ok entry must be a column-not-found; any other error → not benign.
+  return written.every((w) => !!w?.ok || /not found in sheet/i.test(String(w?.error || '')))
+}
+
 export function shouldClearBlockerOnTestRunPass(args: {
   /** True only when the Test Run step raised the current blocker this session. */
   raisedThisSession: boolean
