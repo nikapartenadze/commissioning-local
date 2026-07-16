@@ -471,6 +471,15 @@ export default function CommissioningPage() {
   const wsSubscribeTo = !isUnconfigured ? [String(projectId)] : undefined
   const signalR = useSignalR(getSignalRHubUrl(), wsSubscribeTo)
 
+  // PLC connection status endpoint. On a per-MCM page read THIS MCM's scoped
+  // status; the global /api/plc/status ORs `anyConnected` across every MCM, so
+  // the banner used to show "connected" (and flap on the 20 s reconcile)
+  // whenever ANY sibling MCM on the box was up. Mirrors plc-config-dialog's
+  // scoped fetch. Unconfigured landing keeps the legacy global endpoint.
+  const plcStatusEndpoint = !isUnconfigured
+    ? `/api/mcm/${projectId}/plc/status`
+    : API_ENDPOINTS.status
+
   // Load PLC config function (defined before useEffect that uses it)
   const loadPlcConfig = useCallback(async (updateTestingState: boolean = true) => {
     try {
@@ -497,10 +506,14 @@ export default function CommissioningPage() {
           return newConfig
         })
         
-        // Update PLC status - only update testing state if explicitly requested
+        // Update PLC status - only update testing state if explicitly requested.
+        // NOTE: isConnected is intentionally NOT set here. This reads the global
+        // /api/plc/status aggregate (for config fields); its `plcConnected` is
+        // anyConnected-across-all-MCMs and would relight a per-MCM banner for a
+        // sibling MCM. Per-MCM connection state is owned by the WebSocket
+        // handlers (subscribed to this MCM) + the scoped reconcile poller.
         setPlcStatus(prev => ({
           ...prev,
-          isConnected: status.plcConnected || false,
           isTesting: updateTestingState
             ? (status.isTestingUsers && currentUserRef.current?.fullName
               ? (status.isTestingUsers as string[]).includes(currentUserRef.current.fullName)
@@ -840,15 +853,19 @@ export default function CommissioningPage() {
     let cancelled = false
     const reconcile = async () => {
       try {
-        const res = await authFetch(API_ENDPOINTS.status, { signal: AbortSignal.timeout(8000) })
+        const res = await authFetch(plcStatusEndpoint, { signal: AbortSignal.timeout(8000) })
         if (!res.ok || cancelled) return
-        const body = await res.json() as { connected?: boolean; isReconnecting?: boolean; everConnected?: boolean }
+        // Scoped /api/mcm/:id/plc/status reports per-MCM `connected` + `status`
+        // ('connected'|'connecting'|'disconnected'|'error'); the legacy global
+        // endpoint carries isReconnecting/everConnected. Derive reconnecting
+        // from `status` when present so the scoped path still self-heals.
+        const body = await res.json() as { connected?: boolean; status?: string; isReconnecting?: boolean; everConnected?: boolean }
         if (cancelled) return
         setPlcStatus(prev => {
           // Only update when the canonical view differs from local state,
           // to avoid pointless re-renders during steady state.
           const nextConnected = !!body.connected
-          const nextReconnecting = !!body.isReconnecting
+          const nextReconnecting = body.isReconnecting ?? (body.status === 'connecting' || body.status === 'error')
           // hasEverConnected only ever flips false → true. Server is the
           // source of truth (the flag lives on PlcClient itself), but we
           // OR with the local prev value so a server-side reset followed
@@ -884,7 +901,7 @@ export default function CommissioningPage() {
       cancelled = true
       clearInterval(id)
     }
-  }, [])
+  }, [plcStatusEndpoint])
 
   // Handle device fault changes instantly via WebSocket
   useEffect(() => {
