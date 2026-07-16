@@ -62,6 +62,27 @@ const TAG_LIST_BUFFER_BYTES = 256 * 1024;
 const SYMBOL_TYPE_STRUCTURE_BIT = 0x2000;
 /** Force-re-log a per-device error every N cycles even if the message didn't change. Keeps a stuck device visible without spamming. At 60 s/cycle = once every 5 min. */
 const ERROR_HEARTBEAT_CYCLES = 5;
+
+/**
+ * De-spam bucket for a per-device error message.
+ *
+ * The heartbeat de-spam keys on this, NOT the raw message. A device under CIP
+ * queue saturation flip-flops between "Read failed: Timeout" and "Read failed:
+ * Busy" (and occasionally "Bulk copy failed: …") from one 60 s cycle to the
+ * next. Keyed on the raw message that alternation reads as a NEW error every
+ * cycle and defeated de-spam entirely — the single biggest source of field
+ * log volume (~94–98% of all lines on a saturated multi-MCM controller). All
+ * transient read/copy failures collapse to one bucket so a device that is
+ * simply "not responding" logs once per streak + the 5-cycle heartbeat,
+ * regardless of which transient status it returns each cycle. The raw message
+ * is still what gets logged; only the de-spam key is normalized.
+ */
+export function networkErrorDeSpamKey(message: string): string {
+  if (/\b(Read failed|Bulk copy failed|Timeout|Busy|Not found|No data|Partial)\b/i.test(message)) {
+    return 'transient-read-failure';
+  }
+  return message;
+}
 /** Drop cached snapshots older than this so heartbeat doesn't ship stale data. Set to 3× the default poll interval so a single missed cycle doesn't drop a still-recent snapshot; operators tightening pollIntervalMs below 60 s pick up correspondingly fresher staleness anyway. */
 const STALE_SNAPSHOT_MS = 180_000;
 /** When the DLR ring reads UNKNOWN (no supervisor reply — absent module times
@@ -437,13 +458,17 @@ export class NetworkPoller extends EventEmitter {
    */
   private reportDeviceError(deviceName: string, message: string): void {
     this.emit('deviceError', deviceName, message);
+    // De-spam on the normalized bucket, not the raw message, so a device that
+    // flip-flops Timeout/Busy each cycle no longer logs every 60 s. The raw
+    // message is still what we print — only the key is normalized.
+    const key = networkErrorDeSpamKey(message);
     const prev = this.errorState.get(deviceName);
-    const isNew = !prev || prev.lastMessage !== message;
+    const isNew = !prev || prev.lastMessage !== key;
     const isHeartbeat =
-      prev && prev.lastMessage === message && this.cycleIndex - prev.lastLoggedAtCycle >= ERROR_HEARTBEAT_CYCLES;
+      prev && prev.lastMessage === key && this.cycleIndex - prev.lastLoggedAtCycle >= ERROR_HEARTBEAT_CYCLES;
     if (isNew || isHeartbeat) {
       console.warn(`[NetworkPoller] ${deviceName}: ${message}`);
-      this.errorState.set(deviceName, { lastMessage: message, lastLoggedAtCycle: this.cycleIndex });
+      this.errorState.set(deviceName, { lastMessage: key, lastLoggedAtCycle: this.cycleIndex });
     }
   }
 
