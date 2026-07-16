@@ -16,7 +16,7 @@ import {
 import { VfdBumpFailDialog } from '@/components/vfd-bump-fail-dialog'
 import { toast } from '@/hooks/use-toast'
 import { type VfdBlockerParty } from '@/lib/blockers'
-import { formatBumpBlockerCell, parseBumpBlockerCell } from '@/lib/vfd-bump-blocker'
+import { formatBumpBlockerCell, parseBumpBlockerCell, shouldClearBlockerOnTestRunPass } from '@/lib/vfd-bump-blocker'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -1207,6 +1207,13 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   // in-session fault. Mirrors Step3Content's initialBumpBlocker wiring.
   const [faultBlocker, setFaultBlocker] = useState<BumpBlocker | null>(initialFaultBlocker)
 
+  // Provenance: true only once THIS step raises a fault in THIS session. A blocker
+  // that merely arrived via hydration (initialFaultBlocker — possibly a Step 3
+  // bump/polarity fault from a prior session or another laptop) leaves this false,
+  // so a Test Run pass never auto-clears a blocker it did not raise. See
+  // shouldClearBlockerOnTestRunPass — the data-safety guard for 0ceecd4.
+  const raisedThisSessionRef = useRef(false)
+
   // Keep the banner in sync if the parent re-seeds it after an async L2 restore.
   useEffect(() => { setFaultBlocker(initialFaultBlocker) }, [initialFaultBlocker])
 
@@ -1241,6 +1248,9 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
     })
     const next: BumpBlocker = { party, description }
     setFaultBlocker(next)
+    // Mark that THIS step raised the current blocker — only then may a later Test
+    // Run pass auto-clear it.
+    raisedThisSessionRef.current = true
     // Keep the parent-hydrated blocker in sync so the same blocker surfaces on
     // Step 3 and can be cleared from either step.
     onFaultBlockerChange(next)
@@ -1289,18 +1299,26 @@ function Step4Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
       setSending(false)
     }
 
-    // Auto-clear an active device blocker now that the Test Run passed. A pass
-    // proves the drive actually STARTS and RUNS without an immediate fault — so
-    // it resolves the electrical/controls fault THIS step raised. The clear is
-    // CONDITIONAL: it carries the recorded party+description as expectedParty/
-    // expectedDescription, and the cloud only nulls the shared Devices.Blocker*
-    // pair when its current values still match. That guard is what makes a pass
-    // safe: a blocker re-triaged to a different party/cause (e.g. reassigned to
-    // Mechanical) no longer matches and is NOT wiped. If there is no hydrated
-    // blocker we emit nothing. Best-effort, non-fatal — never blocks readiness.
-    const active = faultBlocker
+    // Auto-clear a device blocker now that the Test Run passed — but ONLY one
+    // that THIS step raised in THIS session. A pass proves the drive STARTS and
+    // RUNS without an immediate electrical/controls fault, so it resolves the
+    // fault Test Run itself raised. It does NOT prove a belt-tracking/polarity
+    // fault was fixed — and Test Run shares one blocker slot with Bump Test, so a
+    // hydrated blocker could be an unresolved Step 3 fault from a prior session or
+    // another laptop. shouldClearBlockerOnTestRunPass enforces that provenance
+    // boundary (regression guard for 0ceecd4, which wiped foreign blockers).
+    //
+    // The cloud clear stays CONDITIONAL on top of that: it carries the recorded
+    // party+description as expectedParty/expectedDescription, so a blocker
+    // re-triaged to a different party/cause no longer matches and is not wiped.
+    // Best-effort, non-fatal — never blocks readiness.
+    const active = shouldClearBlockerOnTestRunPass({
+      raisedThisSession: raisedThisSessionRef.current,
+      blocker: faultBlocker,
+    }) ? faultBlocker : null
     if (active) {
       setFaultBlocker(null)
+      raisedThisSessionRef.current = false
       onFaultBlockerChange(null)
       // Empty the durable "Bump Blocker" L2 cell (same tolerant write path;
       // graceful skip when the column is absent on this sheet).

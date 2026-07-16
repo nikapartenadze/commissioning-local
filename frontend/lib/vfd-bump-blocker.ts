@@ -36,3 +36,31 @@ export function parseBumpBlockerCell(
   if (!party || !description) return null
   return { party, description }
 }
+
+/**
+ * Whether a Test Run (Step 4) PASS may auto-clear the device blocker.
+ *
+ * Test Run and Bump Test (Step 3) share ONE blocker slot — the single
+ * `Bump Blocker` L2 cell plus the shared `Devices.Blocker*` pair. On wizard
+ * open the parent hydrates that one cell and hands the SAME value to both steps.
+ * A hydrated blocker is therefore of UNKNOWN provenance: it may be a
+ * bump/polarity fault raised at Step 3 in a prior session or on another laptop.
+ *
+ * Passing Test Run proves only that the drive STARTS and RUNS without an
+ * immediate electrical/controls fault. It does NOT prove a belt-tracking /
+ * polarity fault was fixed. So a Test Run pass may only auto-resolve a blocker
+ * the Test Run step itself raised in THIS session; a hydrated/foreign blocker is
+ * never wiped. Regression guard for the eager cross-step clear introduced in
+ * 0ceecd4, which silently deleted unresolved bump-test blockers.
+ *
+ * The proper long-term fix is separate blocker slots per step; until then this
+ * provenance check is the data-safe boundary.
+ */
+export function shouldClearBlockerOnTestRunPass(args: {
+  /** True only when the Test Run step raised the current blocker this session. */
+  raisedThisSession: boolean
+  /** The blocker in the shared slot at confirm time (null = not blocked). */
+  blocker: { party: string; description: string } | null
+}): boolean {
+  return args.raisedThisSession && args.blocker != null
+}
