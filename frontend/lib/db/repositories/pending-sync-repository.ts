@@ -97,6 +97,17 @@ export const pendingSyncRepository = {
     db.prepare(
       'UPDATE PendingSyncs SET DeadLettered = 1, Orphaned = 1, LastError = ?, RetryCount = 0 WHERE id = ?',
     ).run(reason, id)
+    // Tombstone the underlying IO (CloudRemoved=1). A cloud-removed result must
+    // (a) stop tripping the pull-guard "would erase" diff, which reads Ios
+    // directly and warned forever, and (b) stop being re-queued by the orphan
+    // reconciler after the operator discards its queue row — the
+    // discard→reconcile→404→orphan loop. Cleared back to 0 by delta-sync when the
+    // IO reappears via a cloud upsert (device restored), mirroring the Orphaned
+    // flag's auto-requeue. This is a SYNC-STATE flag only — the test
+    // Result/Comments VALUE is never touched (preserved for a later reappearance).
+    db.prepare(
+      'UPDATE Ios SET CloudRemoved = 1 WHERE id = (SELECT IoId FROM PendingSyncs WHERE id = ?)',
+    ).run(id)
   },
 
   /** Count of rows parked for attention (cloud-rejected / cap-exhausted). */

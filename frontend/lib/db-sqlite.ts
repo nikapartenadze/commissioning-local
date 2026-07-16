@@ -110,6 +110,14 @@ try {
     'ALTER TABLE PendingSyncs ADD COLUMN ClarificationNote TEXT',
     'ALTER TABLE Ios ADD COLUMN BlockerDescription TEXT',
     'ALTER TABLE TestHistories ADD COLUMN BlockerDescription TEXT',
+    // Result-level sync tombstone: set to 1 when the cloud PERMANENTLY rejected
+    // this IO's push (403/404/410 — device removed on cloud) or the operator
+    // explicitly accepted it as unsyncable. A tombstoned IO is EXCLUDED from the
+    // pull-guard "would erase" diff and from the orphan reconciler, so a
+    // deleted-device result stops warning at pull time and stops being endlessly
+    // re-queued (the discard→reconcile→404→orphan loop). Cleared back to 0 when
+    // the IO reappears in a cloud delta (device restored). NULL/0 = live.
+    'ALTER TABLE Ios ADD COLUMN CloudRemoved INTEGER DEFAULT 0',
     // Dead-letter flag: a pending row that the cloud permanently rejected, or
     // that exhausted the retry cap, is PARKED (DeadLettered=1) instead of
     // DELETEd. Deleting it left zero trace — the queue count hit 0 and the UI

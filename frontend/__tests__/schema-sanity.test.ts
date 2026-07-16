@@ -21,7 +21,7 @@ function createFullSchema() {
   memDb.exec(`
     CREATE TABLE Projects (id INTEGER PRIMARY KEY, Name TEXT);
     CREATE TABLE Subsystems (id INTEGER PRIMARY KEY, ProjectId INTEGER, Name TEXT);
-    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Result TEXT, Version INTEGER, SubsystemId INTEGER, Comments TEXT);
+    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Result TEXT, Version INTEGER, SubsystemId INTEGER, Comments TEXT, CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE TestHistories (id INTEGER PRIMARY KEY, IoId INTEGER NOT NULL, Result TEXT, Timestamp TEXT NOT NULL);
     CREATE TABLE PendingSyncs (id INTEGER PRIMARY KEY, IoId INTEGER, TestResult TEXT, Version INTEGER, DeadLettered INTEGER);
     CREATE TABLE L2Sheets (id INTEGER PRIMARY KEY, CloudId INTEGER);

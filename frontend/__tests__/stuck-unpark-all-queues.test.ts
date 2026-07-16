@@ -14,7 +14,7 @@ const { memDb } = vi.hoisted(() => {
   const Database = require('better-sqlite3')
   const d = new Database(':memory:')
   d.exec(`
-    CREATE TABLE Ios (id INTEGER PRIMARY KEY, SubsystemId INTEGER, Name TEXT, Result TEXT);
+    CREATE TABLE Ios (id INTEGER PRIMARY KEY, SubsystemId INTEGER, Name TEXT, Result TEXT, CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE PendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, InspectorName TEXT,
       TestResult TEXT, Comments TEXT, State TEXT, Version INTEGER, CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0);

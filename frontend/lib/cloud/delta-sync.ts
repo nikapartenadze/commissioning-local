@@ -271,6 +271,12 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   )
   // Auto-requeue: an orphaned IO reappeared in this delta's upserts → flip its
   // queue row back to Active so it drains again, value intact.
+  // Reappearance also lifts the IO's sync tombstone (CloudRemoved→0), the mirror
+  // of the Orphaned→0 requeue below: the cloud has the IO again, so it's syncable
+  // and must re-enter the pull-guard/reconciler diffs.
+  const clearTombstoneStmt = db.prepare(
+    'UPDATE Ios SET CloudRemoved = 0 WHERE id = ? AND COALESCE(CloudRemoved,0) = 1',
+  )
   const requeueOrphanStmt = db.prepare(
     'UPDATE PendingSyncs SET Orphaned = 0, DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE IoId = ? AND Orphaned = 1',
   )
@@ -295,7 +301,9 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
         upsert.run(ioToParams(io, subsystemId))
       }
       // Reappearance: if this IO had orphaned queue rows (cloud had deleted it,
-      // now it's back), auto-requeue them so the held local value drains.
+      // now it's back), auto-requeue them so the held local value drains, and
+      // lift its sync tombstone so it's diffable/syncable again.
+      clearTombstoneStmt.run(io.id)
       requeuedOrphans += requeueOrphanStmt.run(io.id).changes
       applied++
     }

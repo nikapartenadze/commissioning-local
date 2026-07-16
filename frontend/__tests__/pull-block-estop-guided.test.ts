@@ -22,7 +22,7 @@ db.exec(`
     id INTEGER PRIMARY KEY,
     Name TEXT,
     SubsystemId INTEGER
-  );
+  , CloudRemoved INTEGER DEFAULT 0);
   CREATE TABLE PendingSyncs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     IoId INTEGER NOT NULL,

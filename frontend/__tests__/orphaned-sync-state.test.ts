@@ -198,7 +198,7 @@ describe('anti-footgun: orphan only on a confirmed removal', () => {
 describe('IO delete-tombstone orphans pending rows and KEEPS the Ios row', () => {
   beforeEach(() => {
     makePendingSyncs()
-    db.exec(`CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Result TEXT)`)
+    db.exec(`CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Result TEXT, CloudRemoved INTEGER DEFAULT 0)`)
   })
 
   it('a cloud IO delete with un-pushed local work → row Orphaned=1, Ios kept', () => {
@@ -232,7 +232,7 @@ describe('IO delete-tombstone orphans pending rows and KEEPS the Ios row', () =>
 describe('DELETE-THEN-RESTORE proof', () => {
   it('IO: orphaned → reappears via delta upsert → row flips to Active, value intact', () => {
     makePendingSyncs()
-    db.exec(`CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Result TEXT)`)
+    db.exec(`CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Result TEXT, CloudRemoved INTEGER DEFAULT 0)`)
 
     // 1) IO exists, local result queued
     db.prepare('INSERT INTO Ios (id, Name, Result) VALUES (?,?,?)').run(77, 'VLV-77', 'Failed')
@@ -343,7 +343,7 @@ describe('queue-inspector + status-route surfacing', () => {
   })
 
   it('discard removes ONLY the queue row (an orphan) — underlying value untouched', () => {
-    db.exec(`CREATE TABLE Ios (id INTEGER PRIMARY KEY, Result TEXT)`)
+    db.exec(`CREATE TABLE Ios (id INTEGER PRIMARY KEY, Result TEXT, CloudRemoved INTEGER DEFAULT 0)`)
     db.prepare('INSERT INTO Ios (id, Result) VALUES (9, ?)').run('Passed')
     const id = seedIo(9, 'Passed', 0, 1, 1) // orphaned
     db.prepare(SQL.discard).run(id)

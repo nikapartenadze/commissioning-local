@@ -310,13 +310,17 @@ export function computePullRiskOrRefuse(
   const { db, subsystemId, logPrefix } = scope
   const scoped = subsystemId !== null
 
+  // COALESCE(CloudRemoved,0)=0 excludes tombstoned IOs — ones the cloud
+  // permanently removed (403/404/410) or the operator accepted as unsyncable.
+  // A destructive pull can't lose anything meaningful for a cloud-deleted IO, so
+  // it must NOT count toward "would erase" (that's what warned forever).
   const localWithResults = (
     scoped
       ? db.prepare(
-          `SELECT id, Name, Result, Timestamp FROM Ios WHERE SubsystemId = ? AND Result IS NOT NULL AND Result != ''`,
+          `SELECT id, Name, Result, Timestamp FROM Ios WHERE SubsystemId = ? AND Result IS NOT NULL AND Result != '' AND COALESCE(CloudRemoved,0) = 0`,
         ).all(subsystemId)
       : db.prepare(
-          `SELECT id, Name, Result, Timestamp FROM Ios WHERE Result IS NOT NULL AND Result != ''`,
+          `SELECT id, Name, Result, Timestamp FROM Ios WHERE Result IS NOT NULL AND Result != '' AND COALESCE(CloudRemoved,0) = 0`,
         ).all()
   ) as Array<{ id: number; Name: string; Result: string; Timestamp: string | null }>
   const atRisk = computeAtRiskResults(localWithResults, cloudIos)
@@ -324,10 +328,10 @@ export function computePullRiskOrRefuse(
   const localWithComments = (
     scoped
       ? db.prepare(
-          `SELECT id, Name, Comments FROM Ios WHERE SubsystemId = ? AND Comments IS NOT NULL AND TRIM(Comments) != ''`,
+          `SELECT id, Name, Comments FROM Ios WHERE SubsystemId = ? AND Comments IS NOT NULL AND TRIM(Comments) != '' AND COALESCE(CloudRemoved,0) = 0`,
         ).all(subsystemId)
       : db.prepare(
-          `SELECT id, Name, Comments FROM Ios WHERE Comments IS NOT NULL AND TRIM(Comments) != ''`,
+          `SELECT id, Name, Comments FROM Ios WHERE Comments IS NOT NULL AND TRIM(Comments) != '' AND COALESCE(CloudRemoved,0) = 0`,
         ).all()
   ) as Array<{ id: number; Name: string; Comments: string }>
   const atRiskComments = computeAtRiskComments(localWithComments, cloudIos)

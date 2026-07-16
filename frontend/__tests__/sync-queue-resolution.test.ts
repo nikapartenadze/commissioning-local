@@ -31,7 +31,7 @@ const { memDb } = vi.hoisted(() => {
   const d = new Database(':memory:')
   d.exec(`
     -- ── Data tables (the real values live here; queue rows are outbound copies) ──
-    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Description TEXT, Result TEXT, SubsystemId INTEGER);
+    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Description TEXT, Result TEXT, SubsystemId INTEGER, CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE L2Devices (id INTEGER PRIMARY KEY AUTOINCREMENT, CloudId INTEGER, DeviceName TEXT, Mcm TEXT, SubsystemId INTEGER);
     CREATE TABLE L2Columns (id INTEGER PRIMARY KEY AUTOINCREMENT, CloudId INTEGER, Name TEXT);
     CREATE TABLE L2CellValues (id INTEGER PRIMARY KEY AUTOINCREMENT, DeviceId INTEGER, ColumnId INTEGER, Value TEXT);

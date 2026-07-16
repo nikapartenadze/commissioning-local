@@ -41,7 +41,7 @@ function makeDb(): DB {
       InstallationStatus TEXT, InstallationPercent INTEGER, PoweredUp INTEGER,
       TagType TEXT, Version INTEGER, Trade TEXT, ClarificationNote TEXT,
       NetworkDeviceName TEXT, PunchlistStatus TEXT, CloudSyncedAt TEXT, "Order" INTEGER
-    );
+    , CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE TestHistories (
       id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, Result TEXT, TestedBy TEXT,
       Comments TEXT, FailureMode TEXT, State TEXT, Timestamp TEXT, Source TEXT

@@ -158,6 +158,7 @@ export default function SyncPage() {
   const [bulkBusy, setBulkBusy] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
+  const [reconciling, setReconciling] = useState(false)
 
   const rowKey = (i: { kind: Kind; id: number }) => `${i.kind}:${i.id}`
 
@@ -181,6 +182,33 @@ export default function SyncPage() {
     load()
     const t = setInterval(() => load(), POLL_MS)
     return () => clearInterval(t)
+  }, [load])
+
+  // "Sync now": on-demand orphan reconcile. Re-queues local results/comments the
+  // cloud is missing but that have no queue row — the exact case the pull guard
+  // warns about ("N results the cloud does not have") but that the Sync Center
+  // otherwise can't act on (it only shows queue rows). Best-effort, never
+  // destructive. Results the cloud permanently rejected get tombstoned by the
+  // push loop and stop warning; the rest get pushed.
+  const handleReconcile = useCallback(async () => {
+    setReconciling(true)
+    try {
+      const r = await authFetch('/api/cloud/reconcile', { method: 'POST' })
+      const json = (await r.json().catch(() => ({}))) as { success?: boolean; enqueued?: number; warning?: string; error?: string }
+      if (!r.ok || json.success === false) throw new Error(json.error || `HTTP ${r.status}`)
+      const n = json.enqueued ?? 0
+      toast({
+        title: n > 0 ? `Re-queued ${n} unsynced item(s) for upload` : 'Nothing to re-sync',
+        description: n > 0
+          ? 'Local work the cloud was missing is now uploading. Items the cloud has permanently removed are marked so they stop warning.'
+          : json.warning || 'Everything on this device is already on the cloud (or queued).',
+      })
+      await load(true)
+    } catch (e) {
+      toast({ variant: 'destructive', title: 'Sync now failed', description: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setReconciling(false)
+    }
   }, [load])
 
   const allItems = data?.items ?? []
@@ -389,6 +417,16 @@ export default function SyncPage() {
               ))}
             </select>
           )}
+          <Button
+            onClick={handleReconcile}
+            disabled={reconciling}
+            size="sm"
+            className="gap-1.5"
+            title="Push any local results/comments the cloud is missing — including ones with no queue row (what the pull warns about)"
+          >
+            <CloudUpload className={cn('h-4 w-4', reconciling && 'animate-pulse')} />
+            <span className="hidden sm:inline">{reconciling ? 'Syncing…' : 'Sync now'}</span>
+          </Button>
           <Button onClick={() => load(true)} disabled={refreshing} size="sm" variant="outline" className="gap-1.5">
             <RefreshCw className={cn('h-4 w-4', refreshing && 'animate-spin')} />
             <span className="hidden sm:inline">Refresh</span>

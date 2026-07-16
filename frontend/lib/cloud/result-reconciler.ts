@@ -183,7 +183,8 @@ export async function reconcileOrphanedResults(subsystemId: number): Promise<Rec
     `SELECT id, Result, Comments, TestedBy, Timestamp, Version, Trade, FailureMode
        FROM Ios
       WHERE SubsystemId = ?
-        AND ((Result IS NOT NULL AND Result != '') OR (Comments IS NOT NULL AND TRIM(Comments) != ''))`,
+        AND ((Result IS NOT NULL AND Result != '') OR (Comments IS NOT NULL AND TRIM(Comments) != ''))
+        AND COALESCE(CloudRemoved,0) = 0`,
   ).all(subsystemId) as LocalResultRow[]
 
   // Skip IOs that already carry ANY PendingSync row (active or parked) — don't

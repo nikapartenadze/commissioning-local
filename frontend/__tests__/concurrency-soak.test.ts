@@ -30,7 +30,7 @@ beforeAll(() => {
   db.pragma('busy_timeout = 5000')
   db.pragma('synchronous = FULL')
   db.exec(`
-    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Result TEXT, Version INTEGER DEFAULT 0, SubsystemId INTEGER);
+    CREATE TABLE Ios (id INTEGER PRIMARY KEY, Name TEXT, Result TEXT, Version INTEGER DEFAULT 0, SubsystemId INTEGER, CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE TestHistories (id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, Result TEXT, Version INTEGER, TestedBy TEXT);
     CREATE TABLE PendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, TestResult TEXT, Version INTEGER, InspectorName TEXT);
   `)
