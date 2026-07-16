@@ -60,6 +60,8 @@ interface ReaderTagState {
 
 interface WizardReader {
   deviceName: string
+  /** Owning MCM/subsystem — stamped onto every broadcast so clients can scope. */
+  subsystemId?: number
   gateway: string
   path: string
   tags: Map<string, ReaderTagState>  // ALL tag defs, even failed ones
@@ -286,6 +288,7 @@ async function pollLoop(reader: WizardReader): Promise<void> {
     broadcast({
       type: 'VfdTagUpdate',
       deviceName: reader.deviceName,
+      subsystemId: reader.subsystemId,
       sts: snapshot,
       errors: Object.keys(errors).length > 0 ? errors : undefined,
       ts: Date.now(),
@@ -308,6 +311,7 @@ export async function openWizardReader(
   deviceName: string,
   gateway: string,
   path: string,
+  subsystemId?: number,
 ): Promise<{ ok: boolean; tagCount: number; failedTags?: string[]; error?: string }> {
   const key = `${gateway}|${path}|${deviceName}`
   const existing = readers.get(key)
@@ -329,6 +333,7 @@ export async function openWizardReader(
   // Even if zero tags created, start the reader — it will retry in the background
   const reader: WizardReader = {
     deviceName,
+    subsystemId,
     gateway,
     path,
     tags,

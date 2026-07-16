@@ -86,6 +86,8 @@ export interface FVCellUpdate {
  */
 export interface VfdTagUpdate {
   deviceName: string
+  /** Owning MCM/subsystem. Subscribers MUST filter on this AND deviceName (see below). */
+  subsystemId?: number
   sts: Record<string, number | boolean | null>
   errors?: Record<string, string>
   ts: number
@@ -562,6 +564,7 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
           const vfdMsg = message as VfdTagUpdateMessage
           const update: VfdTagUpdate = {
             deviceName: vfdMsg.deviceName,
+            subsystemId: vfdMsg.subsystemId,
             sts: vfdMsg.sts,
             errors: vfdMsg.errors,
             ts: vfdMsg.ts,

@@ -1899,6 +1899,13 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
 
     const handleVfdTagUpdate = (msg: VfdTagUpdatePayload) => {
       if (cancelled || msg.deviceName !== device.deviceName) return
+      // Central multi-MCM: this broadcast reaches EVERY client and device names
+      // collide across MCMs, so require the update came from THIS MCM's reader —
+      // otherwise a sibling drive's identically-named live bits would overwrite
+      // sts (which GATES real writes: polarity/direction/Run-Verified decisions).
+      // Only enforced when both sides carry a subsystemId; legacy single-PLC
+      // tablets leave it unset and fall back to deviceName-only (no collisions).
+      if (subsystemId && msg.subsystemId != null && msg.subsystemId !== subsystemId) return
       const s = msg.sts || {}
       const errs = (msg.errors || {}) as StsErrors
 

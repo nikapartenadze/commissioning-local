@@ -454,6 +454,14 @@ export interface NetworkDeviceSnapshotMessage {
 export interface VfdTagUpdateMessage {
   type: 'VfdTagUpdate'
   deviceName: string
+  /**
+   * Owning MCM/subsystem. This broadcast reaches EVERY connected client, and
+   * device names collide across MCMs, so a wizard MUST match subsystemId AND
+   * deviceName — a deviceName-only match lets a sibling MCM's identically-named
+   * drive overwrite the wizard's live state (which gates real writes). Optional
+   * for backward-compat with legacy single-PLC tablets (unset → deviceName-only).
+   */
+  subsystemId?: number
   /** Field values keyed by name. boolean for BOOLs, number for REAL/INT, null when the tag handle is missing. */
   sts: Record<string, number | boolean | null>
   /** Per-field PLC read errors. Omitted when all reads succeeded. */

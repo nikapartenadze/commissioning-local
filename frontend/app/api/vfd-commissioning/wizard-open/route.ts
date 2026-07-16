@@ -38,7 +38,7 @@ export async function POST(req: Request, res: Response) {
       if (!mcm) {
         return res.status(503).json({ error: `PLC for MCM ${subsystemId} not connected` })
       }
-      const result = await openWizardReader(deviceName, mcm.ip, mcm.path)
+      const result = await openWizardReader(deviceName, mcm.ip, mcm.path, Number(subsystemId))
       if (!result.ok) {
         return res.status(500).json({ error: result.error || 'Failed to open reader' })
       }
