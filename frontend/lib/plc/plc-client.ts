@@ -135,6 +135,14 @@ export interface PlcClientConfig extends Partial<TagReaderConfig> {
   timeout?: number;
 }
 
+// Reconnect floor for a reachable PLC that persistently matches 0/N tags after a
+// prior successful session — almost always a program change that will not
+// self-heal on its own. We keep retrying (it recovers the moment the correct IOs
+// are pulled), but at 5-min intervals instead of the 60s cap so recreating N
+// tags each attempt stops saturating the shared CIP queue and starving sibling
+// MCMs. Tuning value — validate on hardware before relying on it in the field.
+const TRANSIENT_ZERO_RECONNECT_FLOOR_MS = 300_000;
+
 // Default client configuration
 const DEFAULT_CLIENT_CONFIG: PlcClientConfig = {
   pollIntervalMs: 75,
@@ -353,10 +361,16 @@ export class PlcClient extends EventEmitter {
                   : `PLC connected but none of the ${totalFailed.length} tags exist on the PLC. Tag names may not match the PLC program.`)
               : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
             this.emit('error', new Error(errorMsg));
-            // Reschedule on genuine unreachability OR on transient 0/N after
-            // a previously-successful session (see isTransientZero above).
-            if (!plcReachable || isTransientZero) {
+            // Reschedule on genuine unreachability (fast, 60s cap) OR on
+            // transient 0/N after a previously-successful session. The latter is
+            // usually a real program change that won't self-heal, so retry
+            // forever but back off to a 5-min floor — recreating N tags every
+            // 60s pointlessly saturates the shared CIP queue and starves sibling
+            // MCMs (MCM04 forensics 2026-07-16).
+            if (!plcReachable) {
               this.scheduleReconnect();
+            } else if (isTransientZero) {
+              this.scheduleReconnect(TRANSIENT_ZERO_RECONNECT_FLOOR_MS);
             }
             return {
               success: false,
@@ -417,8 +431,13 @@ export class PlcClient extends EventEmitter {
                 : `PLC connected but none of the ${result.failed.length} tags exist on the PLC. Tag names may not match the PLC program.`)
             : `Cannot reach PLC at ${config.ip}. Check IP address, network connection, and PLC status.`;
           this.emit('error', new Error(errorMsg));
-          if (!result.plcReachable || isTransientZero) {
+          // See dual-reader branch: fast retry when unreachable; 5-min floor for
+          // a persistent 0/N-match (likely program change) so it stops flooding
+          // the shared CIP queue while still recovering when the right IOs land.
+          if (!result.plcReachable) {
             this.scheduleReconnect();
+          } else if (isTransientZero) {
+            this.scheduleReconnect(TRANSIENT_ZERO_RECONNECT_FLOOR_MS);
           }
           return {
             success: false,
@@ -1214,7 +1233,7 @@ export class PlcClient extends EventEmitter {
    * attempts in the field log at ~10 s spacing — that's CIP-queue pressure
    * we don't need; the controller heals just as fast on slower retries.
    */
-  private scheduleReconnect(): void {
+  private scheduleReconnect(floorMs: number = 0): void {
     if (this.reconnectTimer || !this.config.autoReconnect || this.isDisposed) {
       return;
     }
@@ -1225,7 +1244,13 @@ export class PlcClient extends EventEmitter {
     const CAP_MS = 60_000;
     const capped = Math.min(uncapped, CAP_MS);
     const jitter = capped * 0.2 * (Math.random() * 2 - 1); // ±20%
-    const delayMs = Math.max(1000, Math.round(capped + jitter));
+    // floorMs raises the minimum interval for a KNOWN-slow situation (a program
+    // that persistently matches 0/N tags after a prior success — see the
+    // isTransientZero call sites). It still retries forever (recovers when the
+    // right IOs are pulled) but recreating N tags every 60s pointlessly loads
+    // the shared CIP queue and starves sibling MCMs. Genuine unreachability
+    // keeps the fast 60s cap.
+    const delayMs = Math.max(1000, floorMs, Math.round(capped + jitter));
     this.consecutiveReconnectFailures += 1;
 
     this.reconnectTimer = setTimeout(async () => {
