@@ -30,7 +30,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { UserMenu } from "@/components/user-menu"
-import { Download, Settings, BarChart3, History, VolumeX, ArrowLeft } from "lucide-react"
+import { Download, Settings, BarChart3, History, ArrowLeft } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import {
   PlcConfig,
@@ -2191,23 +2191,9 @@ export default function CommissioningPage() {
         />
       </div>
 
-      {/* Muted IOs indicator */}
-      {mutedIos.size > 0 && (
-        <div className="flex-shrink-0 px-4 py-1.5 bg-orange-50 dark:bg-orange-950/30 border-b border-orange-200 dark:border-orange-800/40 flex items-center gap-2">
-          <VolumeX className="h-4 w-4 text-orange-500" />
-          <span className="text-sm text-orange-700 dark:text-orange-300 font-medium">
-            {mutedIos.size} muted IO{mutedIos.size !== 1 ? 's' : ''}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs text-orange-600 dark:text-orange-400 hover:text-orange-800 hover:bg-orange-100 dark:hover:bg-orange-900/40"
-            onClick={() => setMutedIos(new Set())}
-          >
-            Unmute all
-          </Button>
-        </div>
-      )}
+      {/* Muted-IO indicator moved INTO the grid's search row (compact pill +
+          filter). The old full-width banner here shifted the grid down on every
+          mute/unmute — jerking the UI — so it was removed. */}
 
       {/* Data Grid - Takes all remaining space */}
       <div className="flex-1 min-h-0 overflow-hidden">
@@ -2239,6 +2225,7 @@ export default function CommissioningPage() {
             deviceStatuses={deviceStatuses}
             mutedIos={mutedIos}
             onToggleMute={toggleMuteIo}
+            onUnmuteAll={() => setMutedIos(new Set())}
             requireInstalledForTesting={requireInstalledForTesting}
           />
       </div>

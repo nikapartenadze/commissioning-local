@@ -41,6 +41,7 @@ interface EnhancedIoDataGridProps {
   deviceStatuses?: Map<string, 'green' | 'red' | 'gray'>
   mutedIos?: Set<number>
   onToggleMute?: (ioId: number) => void
+  onUnmuteAll?: () => void
   /**
    * When true (driven by config.requireInstalledForTesting on the server),
    * Mark Pass/Fail are disabled for any non-SPARE IO whose installationStatus
@@ -155,6 +156,7 @@ export function EnhancedIoDataGrid({
   deviceStatuses = new Map(),
   mutedIos = new Set(),
   onToggleMute,
+  onUnmuteAll,
 }: EnhancedIoDataGridProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterTags, setFilterTags] = useState<string[]>([])
@@ -203,6 +205,13 @@ export function EnhancedIoDataGrid({
   useEffect(() => {
     try { window.localStorage.setItem('io-grid-group-by-lane', String(groupByLane)) } catch { /* ignore */ }
   }, [groupByLane])
+  // Muted-only view: click the "Muted (n)" pill in the search row to see just the
+  // muted IOs. Auto-clears itself when nothing is muted so the filter can't strand
+  // the grid on an empty set after the last unmute.
+  const [mutedOnly, setMutedOnly] = useState(false)
+  useEffect(() => {
+    if (mutedOnly && mutedIos.size === 0) setMutedOnly(false)
+  }, [mutedOnly, mutedIos])
   const [showDiagnosticDialog, setShowDiagnosticDialog] = useState(false)
   const [diagnosticIo, setDiagnosticIo] = useState<IoItem | null>(null)
   const [moduleHealth, setModuleHealth] = useState<Record<string, 'ok' | 'warning' | 'error'>>({})
@@ -494,6 +503,9 @@ export function EnhancedIoDataGrid({
       // Punchlist filter — if active, only show IOs in this punchlist
       if (punchlistIoSet && !punchlistIoSet.has(io.id)) return false
 
+      // Muted-only view — show just the muted IOs when the pill is toggled on
+      if (mutedOnly && !mutedIos.has(io.id)) return false
+
       // Resolver-state predicates. An ADDRESSED item (electrician fixed it) or a
       // CLARIFICATION item (parked for engineering) leaves the electrician's
       // "Failed" queue and enters its own bucket — that's the whole feedback loop.
@@ -616,7 +628,7 @@ export function EnhancedIoDataGrid({
 
     // Array.sort is stable since ES2019 — natural order is preserved within each bucket.
     return sorted.sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
-  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, sortColumn, sortDir, punchlistIoSet])
+  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, sortColumn, sortDir, punchlistIoSet, mutedOnly, mutedIos])
 
   useEffect(() => {
     if (onFilteredDataChange) {
@@ -856,6 +868,37 @@ export function EnhancedIoDataGrid({
           <span className="font-bold">{filteredIos.length}</span>
           <span className="text-muted-foreground ml-1">/ {ios.length}</span>
         </div>
+
+        {/* Muted pill — replaces the old full-width banner that jerked the layout.
+            Lives in this always-present row so muting never shifts the grid down.
+            Click to filter to muted-only; the × unmutes all. */}
+        {mutedIos.size > 0 && (
+          <div className="flex items-center h-[44px] rounded border border-orange-300 dark:border-orange-800/60 overflow-hidden shrink-0">
+            <button
+              onClick={() => setMutedOnly(v => !v)}
+              className={cn(
+                "h-full px-3 flex items-center gap-1.5 text-sm font-medium whitespace-nowrap transition-colors",
+                mutedOnly
+                  ? "bg-orange-500 text-white"
+                  : "bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-900/40"
+              )}
+              title={mutedOnly ? "Showing muted only — click to show all IOs" : "Show only muted IOs"}
+            >
+              <VolumeX className="h-4 w-4" />
+              <span className="tabular-nums">{mutedIos.size}</span>
+              <span className="hidden sm:inline">muted</span>
+            </button>
+            {onUnmuteAll && (
+              <button
+                onClick={onUnmuteAll}
+                className="h-full px-2 flex items-center border-l border-orange-300 dark:border-orange-800/60 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40"
+                title="Unmute all"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Group by Lane toggle */}
         <button
