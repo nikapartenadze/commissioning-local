@@ -9,6 +9,8 @@ import { auditLog } from '@/lib/logging/recovery-log';
 import { mcmTag } from '@/lib/logging/mcm-tag';
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls';
 import { runFullPull } from '@/lib/cloud/pull-core';
+import { selectRefs, snapshotRefs, discard } from '@/lib/sync/queue-inspector';
+import { writeDiscardLog } from '@/lib/sync/discard-log';
 
 /**
  * L2/FV self-call — kept out of runConfigSidePulls so that helper has no
@@ -150,21 +152,58 @@ export async function POST(req: Request, res: Response) {
     const pendingGuidedTask = (db
       .prepare('SELECT COUNT(*) as cnt FROM GuidedTaskStatePendingSyncs WHERE SubsystemId = ?')
       .get(subsystemId) as { cnt: number }).cnt;
-    if (pendingActive + pendingParked + pendingEStopCheck + pendingGuidedTask > 0) {
+    // BLOCK only on rows that can STILL reach the cloud — those represent real
+    // pending work a destructive pull would lose. Parked/orphaned rows
+    // (DeadLettered=1) are handled below, NOT here.
+    if (pendingActive + pendingEStopCheck + pendingGuidedTask > 0) {
       const parts: string[] = [];
       if (pendingActive > 0) parts.push(`sync ${pendingActive} IO test change(s) first`);
-      if (pendingParked > 0) {
-        parts.push(
-          `resolve ${pendingParked} flagged row(s) the cloud rejected ` +
-          '(re-pass/fail/clear or accept in the grid — these cannot be synced)',
-        );
-      }
       if (pendingEStopCheck > 0) parts.push(`sync ${pendingEStopCheck} E-stop check result(s) first`);
       if (pendingGuidedTask > 0) parts.push(`sync ${pendingGuidedTask} guided-task update(s) first`);
       return res.status(409).json({
         success: false,
         error: `Pull blocked to protect unsynced local data for subsystem ${subsystemId}: ${parts.join('; ')}.`,
       });
+    }
+
+    // Rows the cloud PERMANENTLY rejected (DeadLettered=1 — "parked" needs-a-human
+    // + "orphaned" removed-on-cloud) can NEVER sync. The old guard blocked the
+    // pull on them too, which WEDGED it forever after a cloud-side device
+    // deletion (MCM11) and disagreed with the Sync Center, which triages orphaned
+    // rows as soft/"auto-restoring" — so "Sync Center clean" and "pull blocked by
+    // N flagged rows" contradicted each other. A destructive pull supersedes them
+    // anyway (it rewrites this subsystem's IO table below, under a fresh backup),
+    // so CLEAR them here — queue-row-only (never touches Ios/L2/TestHistories),
+    // logged to backups/ — instead of blocking. This guarantees the invariant
+    // "Sync Center clean ⟺ pull runs". Reuses the same data-safe Sync Center
+    // functions the operator's manual Discard uses.
+    if (pendingParked > 0) {
+      try {
+        const deadRefs = [
+          ...selectRefs({ allParked: true, subsystemId }),
+          ...selectRefs({ allOrphaned: true, subsystemId }),
+        ];
+        if (deadRefs.length) {
+          const snap = snapshotRefs(deadRefs);
+          try {
+            writeDiscardLog(snap, {
+              action: 'auto-clear before pull (cloud-rejected / removed-on-cloud — can never sync)',
+              scope: `MCM ${subsystemId}`,
+            });
+          } catch (logErr) {
+            console.warn(`${mcmTag(subsystemIdStr)}[MCM ${subsystemId} Pull] discard-log write failed (proceeding):`, logErr instanceof Error ? logErr.message : logErr);
+          }
+          const { affected } = discard(deadRefs);
+          console.warn(
+            `${mcmTag(subsystemIdStr)}[MCM ${subsystemId} Pull] auto-cleared ${affected} cloud-rejected/orphaned queue row(s) ` +
+            'that can never sync — they no longer block the pull (queue-only; local data untouched).',
+          );
+        }
+      } catch (clearErr) {
+        // Never let queue cleanup abort the pull — the pull's own backup is the
+        // safety net, and a leftover dead row is harmless to the pull itself.
+        console.warn(`${mcmTag(subsystemIdStr)}[MCM ${subsystemId} Pull] auto-clear of dead queue rows failed (non-fatal):`, clearErr instanceof Error ? clearErr.message : clearErr);
+      }
     }
 
     const cloudUrl = `${remoteUrl}/api/sync/subsystem/${subsystemId}`;
