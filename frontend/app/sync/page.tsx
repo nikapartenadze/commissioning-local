@@ -234,7 +234,7 @@ export default function SyncPage() {
   }, [items])
 
   // ── Action runner ───────────────────────────────────────────────────────────
-  const postAction = useCallback(async (body: ActionBody): Promise<{ affected: number; message?: string; backup?: string }> => {
+  const postAction = useCallback(async (body: ActionBody): Promise<{ affected: number; message?: string; backup?: string; discardLog?: string }> => {
     const r = await authFetch('/api/sync/queue/actions', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -244,7 +244,7 @@ export default function SyncPage() {
       try { const j = await r.json(); if (j?.error) msg = j.error } catch { /* ignore */ }
       throw new Error(msg)
     }
-    return (await r.json()) as { affected: number; message?: string; backup?: string }
+    return (await r.json()) as { affected: number; message?: string; backup?: string; discardLog?: string }
   }, [])
 
   const rowAction = useCallback(async (item: QueueItem, action: 'retry' | 'discard') => {
@@ -252,11 +252,12 @@ export default function SyncPage() {
     setBusyKeys((s) => new Set(s).add(key))
     try {
       const res = await postAction({ action, ids: [{ kind: item.kind, id: item.id }] })
+      const discardNote = res.discardLog ? ` A record was saved to backups/${res.discardLog}.` : ''
       toast({
         title: action === 'retry' ? 'Retry queued' : 'Row discarded',
-        description: res.message ?? (action === 'retry'
+        description: (res.message ?? (action === 'retry'
           ? 'The tool will try to upload this row again.'
-          : 'Stopped uploading this row. Your data is still saved on this device.'),
+          : 'Stopped uploading this row. Your data is still saved on this device.')) + (action === 'discard' ? discardNote : ''),
       })
       await load()
     } catch (e) {
@@ -275,12 +276,15 @@ export default function SyncPage() {
     try {
       const res = await postAction(body)
       const base = res.message ?? `${res.affected} row${res.affected === 1 ? '' : 's'} ${body.action === 'retry' ? 'queued for retry' : 'discarded'}.`
+      // Surface both artifacts: the .db backup (full restore point) and the
+      // readable .txt record of exactly which rows were cleared.
+      const artifacts = [
+        res.backup ? `DB backup: ${res.backup}` : null,
+        res.discardLog ? `record: backups/${res.discardLog}` : null,
+      ].filter(Boolean).join(' · ')
       toast({
         title: 'Done',
-        // A bulk discard snapshots the DB first; surface the recovery point.
-        description: res.backup
-          ? `${base} Backup saved: ${res.backup} — restorable if this was a mistake.`
-          : base,
+        description: artifacts ? `${base} (${artifacts})` : base,
       })
       await load()
     } catch (e) {

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
-import { retry, discard, selectRefs, type QueueKind, type Classification } from '@/lib/sync/queue-inspector'
+import { retry, discard, selectRefs, snapshotRefs, type QueueKind, type Classification } from '@/lib/sync/queue-inspector'
 import { createBackup } from '@/lib/db/backup'
+import { writeDiscardLog } from '@/lib/sync/discard-log'
 
 const VALID_KINDS: QueueKind[] = ['io', 'l2', 'blocker']
 const VALID_CLASSIFICATIONS: Classification[] = ['gone_on_cloud', 'version_conflict', 'transient', 'unknown']
@@ -85,11 +86,23 @@ export async function POST(req: Request, res: Response) {
       }
     }
 
+    // Human-readable record of EXACTLY what is about to be discarded (per-row AND
+    // bulk) — captured BEFORE the delete, written to backups/ as a .txt you can
+    // open. The .db backup above is the recovery artifact; this is the "let me
+    // look at what got cleared" artifact. Best-effort, never blocks the discard.
+    const snapshot = snapshotRefs(refs)
+    const scopeLabel = subsystemId != null ? `MCM ${subsystemId}` : 'all MCMs'
+    const discardLog = writeDiscardLog(snapshot, {
+      action: explicitIds ? 'discard (selected rows)' : `discard (${body.allOrphaned ? 'all removed-on-cloud' : body.classification ? body.classification : 'all parked'})`,
+      scope: scopeLabel,
+    })
+
     const { affected } = discard(refs)
     return res.json({
       action,
       affected,
       ...(backupFilename ? { backup: backupFilename } : {}),
+      ...(discardLog ? { discardLog: discardLog.filename } : {}),
       message: `Discarded ${affected} stuck queue row(s). Your local data was NOT changed — only the pending-to-cloud copy was removed.`,
     })
   } catch (error) {

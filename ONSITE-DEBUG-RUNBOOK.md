@@ -1,0 +1,116 @@
+# Onsite Debug Runbook
+
+**A living reference for diagnosing the field commissioning tool from a real box's logs + database.**
+Update this every time we debug an onsite incident — add new symptoms, grep patterns, and gotchas as we learn them. The goal: next time, look for the right things fast instead of re-deriving.
+
+> Last major update: 2026-07-16 (MCM04 CDW5 forensics — see `.claude/.../memory/project_mcm04_log_forensics_2026_07_16.md`).
+
+---
+
+## 0. Golden rules (hard-won)
+
+1. **VERIFY, don't assume.** Correlation ≠ causation. This session an agent "confirmed" a crash-loop from restart-file counts + a log line; the code disproved every premise. Read the code before certifying a diagnosis or a fix.
+2. **Huge logs: NEVER `cat`/read whole.** App/error logs are 5–20 MB (100k–200k lines/day). Use `grep`/`awk`/`wc` with counts + tiny samples. For a multi-artifact dump, dispatch one agent per artifact class (app / errors / service+gateway / db+audit) in parallel — tell each to summarize, never dump.
+3. **A logged error is not always fatal.** `[PlcClient] Unhandled error event: …` is emitted by a **defensive listener** (since commit 5a5bf16) — it does NOT crash the process. A real crash shows a JS stack trace / `uncaughtException` / `FATAL`. If those are absent across 500k+ lines, it did not crash.
+4. **Restarts are often operational, not crashes.** NSSM restarts on any exit. Sources: cloud-commanded fleet restart (`process.exit(0)` in `lib/heartbeat/command-handler.ts`), installer upgrades (`install-history.log`), operator manually restarting. Rule out these before hunting a code crash.
+
+---
+
+## 1. Where the logs live (installer mode)
+
+`C:\ProgramData\CommissioningTool\` (portable mode: beside the app folder). Resolved by `frontend/lib/storage-paths.ts`.
+
+| File | What it is | Read for |
+|---|---|---|
+| `logs/app-YYYY-MM-DD.log` | Main application log (INFO+). Huge. | PLC connect/disconnect lifecycle, VFD writer passes, boot/auto-connect, health |
+| `logs/errors-YYYY-MM-DD.log` | WARN+ERROR only. Huge (much is WARN). | Error histograms, NetworkPoller timeouts, connection errors |
+| `logs/tag-events-*.log` | PLC tag change telemetry | Tag-level read behavior |
+| `logs/audit-YYYY-MM-DD.jsonl` | Structured audit journal | `sync.pull`, `l2.cell`, `io.test`, `plc.connect/disconnect`, `vfd.blocker` ops |
+| `service-*.log` / `service-error-*.log` | NSSM stdout/stderr, **one pair per (re)start** | Restart timeline (count the files!), crash-time last lines |
+| `gateway.log` / `gateway-error.log` | Split-gateway process (only if `PLC_MODE=remote` era) | Whether gateway was healthy vs the app-side 503s |
+| `install-history.log` | Version upgrade timeline | Correlate behavior changes to a version bump |
+| `journal-upload-state.json` | Audit-journal upload cursor | Which audit lines reached cloud |
+| `config.json` | Runtime config (see §4) | The MCM list, IPs, paths, cloud URL/key |
+| `database.db` (+ `-wal`, `-shm`) | The field SQLite DB (WAL mode) | Queue state, results, per-MCM data |
+| `backups/` | Pre-pull + pre-bulk-discard `.db` snapshots, and `sync-discard-*.txt` records | Recovery + "what did a discard clear" |
+
+**Getting a box's data:** operator copies `logs/ config.json database.db*` into a folder (e.g. repo-root `mcm04/`). Then analyze there.
+
+---
+
+## 2. Fast triage by symptom
+
+| Symptom | Look here first |
+|---|---|
+| "PLC keeps disconnecting/reconnecting" | Is it real per-MCM churn or the UI aggregate? `grep 'Cannot reach PLC'`, `grep 'MCM .* (re)connected'` per MCM. The **banner** was a global-aggregate bug (fixed 2026-07-16). |
+| "Config window says connected but it's not" | Fixed 2026-07-16 (`resolvePlcConnectionView`). If pre-v2.43.4, it's the global `anyConnected` aggregate. |
+| Log firehose / disk filling | `[NetworkPoller] … Read failed: Timeout/Busy` = 94–98% of volume. De-spam fix f3bf348 collapses Timeout/Busy. Pre-fix: alternating status defeated de-spam. |
+| "VFD wizard messed up / blockers vanish" | `vfd.blocker {op:'clear'}` in `audit-*.jsonl` right after a `Run Verified` write = the 0ceecd4 wipe (guarded by 44bc318). |
+| VFD `Tracking_Finished: Bad parameter` spam | Tag absent from AOI; retried every pass. Fixed a887a0d (cache BAD_PARAM/UNSUPPORTED). |
+| Service restart loop | Count `service-*.log` files. Then: any JS stack trace / `uncaughtException` / `FATAL`? If none → operational (see Golden Rule 4), not a code crash. |
+| Sync stuck / parked rows | See §3 (DB queue tables) + the in-app Sync Center (per-MCM as of e14b4cd). |
+| "0 success, N failed, PLC reachable" spinning | Program changed → 0/N tags match. `isTransientZero` retries forever; 6b61cd3 backs it off to 5 min. |
+
+### Useful grep patterns
+```bash
+# connection lifecycle per MCM
+grep -E "Cannot reach PLC|(re)connected|Boot AutoConnect|PLC_MODE" logs/app-*.log
+# error histogram (normalize then count)
+grep -oE "\[(WARN|ERROR)\].*" logs/errors-*.log | sed -E 's/[0-9.]+//g' | sort | uniq -c | sort -rn | head
+# real crashes only
+grep -E "uncaughtException|unhandledRejection|FATAL|^\s+at " logs/service-error-*.log
+# VFD blocker clears (the wipe)
+grep -i "blocker" logs/audit-*.jsonl
+```
+
+---
+
+## 3. The field database (read-only)
+
+**Never write/checkpoint/VACUUM a field DB you're investigating.** Open read-only:
+```bash
+node -e "const D=require('./frontend/node_modules/better-sqlite3'); const db=new D('database.db',{readonly:true}); console.log(db.prepare('SELECT name FROM sqlite_master WHERE type=\"table\"').all())"
+```
+
+Key tables:
+- **Data (the real values):** `Ios` (per-IO results, `SubsystemId`), `L2CellValues` / `L2Devices` (FV/VFD, `SubsystemId` nullable-legacy), `TestHistories` (audit trail — must survive a pull), `Subsystems` (id ↔ Name/MCM).
+- **Outbound queue (cloud-sync copies):** `PendingSyncs` (IO, via `Ios.SubsystemId`), `L2PendingSyncs` (via `L2Devices.SubsystemId`), `DeviceBlockerPendingSyncs` (`SubsystemId`), `EStopCheckPendingSyncs`, `GuidedTaskStatePendingSyncs`. States: `DeadLettered=0` pending, `=1` parked, `Orphaned=1` removed-on-cloud.
+- Queue rows are OUTBOUND COPIES — discarding one never deletes the underlying value.
+
+Per-MCM: everything above is attributable by `SubsystemId`. The Sync Center (`lib/sync/queue-inspector.ts`) and scoped pull (`/api/mcm/:id/pull`) operate per-MCM; a stuck MCM never head-of-line-blocks another.
+
+### Cloud DB (production)
+Via the `commissioning-db` MCP (`mcp__commissioning-db__execute_sql`) — this is **live prod** (verify with max timestamps). Notes:
+- `VfdCommissioningBlocker` = current-state only, **hard delete, NO history/audit** — a wiped blocker's content is unrecoverable; only the *removal event* shows in `subsystem_change_log` (`entity_type='vfd_blocker'`, op='update', no before-image).
+- `audit_logs` does NOT cover blockers.
+- Real prod DB host: `commissioning-db` on dockerhost (see `reference_commissioning_db_mcp` memory); Azure is stale.
+
+---
+
+## 4. config.json gotchas (multi-MCM / CDW5)
+
+- `mcms[]` lists every MCM with `subsystemId`, `name`, `ip`, `path`, `enabled`.
+- **A blank `ip` with `enabled:true` is INERT** — the tool skips it, zero errors. (Do NOT chase a "blank-IP connection storm" — it doesn't exist.)
+- **Routed paths** like `1,0,18,10.49.56.27` route THROUGH one controller (Ethernet-out port 18). Several MCMs sharing one physical controller IP (e.g. `11.200.1.1`) fan all their reads at ONE CIP queue → saturation → poll timeouts + the `isTransientZero` race. Scoping the config to reachable MCMs relieves it.
+- Top-level `ip`/`subsystemId` empty is normal for the central multi-MCM build.
+
+---
+
+## 5. Split gateway vs embedded
+
+- **Embedded (v2.43.3+, default):** one process owns all per-MCM PLC connections. Correct topology.
+- **Split (`PLC_MODE=remote`):** separate `CommissioningGateway` on :3200. The gateway process itself was healthy in the field; what broke was the **functional layer** — `wizard-open → 503` (app owns no PLC handle in remote mode), silent write failures through the hop, and unset `GATEWAY_SECRET`/`BROADCAST_SECRET`. Prefer embedded.
+
+---
+
+## 6. Releases
+
+- Fixes on `main` are NOT in any installer until a **new build** is cut. The EXE version is baked at build time (`install-history.log` shows what a box runs).
+- PLC-adjacent changes (`lib/plc/**`, network poller, reconnect, VFD writer) are **high-risk — validate on hardware/battle before shipping** (`CLAUDE.md`).
+- Always commit + push `commissioning-local` to **both** remotes (origin=github, gitlab) — uncommitted work has been lost before.
+
+---
+
+## 7. Maintenance
+
+When you finish an onsite debug: add the new symptom→location row to §2, any new grep pattern, any new gotcha to §0/§4, and bump the "Last major update" line. Cross-link the detailed writeup in `.claude/.../memory/`.

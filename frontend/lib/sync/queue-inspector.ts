@@ -299,6 +299,16 @@ export function retry(refs: { kind: QueueKind; id: number }[]): { affected: numb
 }
 
 /**
+ * Full display details of the given refs, BEFORE they are discarded — so the
+ * caller can write a human-readable record of exactly what was cleared.
+ */
+export function snapshotRefs(refs: { kind: QueueKind; id: number }[]): QueueItem[] {
+  if (!refs?.length) return []
+  const wanted = new Set(refs.map((r) => `${r.kind}:${r.id}`))
+  return listQueue().items.filter((i) => wanted.has(`${i.kind}:${i.id}`))
+}
+
+/**
  * Delete ONLY the outbound queue row (stops re-sending). The underlying value
  * in Ios / L2CellValues / Devices is NOT touched — this can never delete data.
  */
