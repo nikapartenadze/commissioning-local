@@ -1,6 +1,6 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
-import { parseBumpBlockerCell } from '@/lib/vfd-bump-blocker'
+import { parseBumpBlockerCell, resolveDeviceBlocked } from '@/lib/vfd-bump-blocker'
 import { listVfdAddressedStates } from '@/lib/db/repositories/vfd-addressed-sync-repository'
 import { listVfdBlockerStates } from '@/lib/db/repositories/vfd-blocker-mirror-repository'
 
@@ -169,11 +169,24 @@ export async function GET(_req: Request, res: Response) {
     // (subsystemId, deviceName). A blocker raised on ANOTHER box lives here, not
     // in this box's Bump Blocker cell — so without this merge a belt blocked
     // elsewhere reads as "ready" locally (the MCM15 divergence). The local cell
-    // still wins when present (a blocker raised/cleared on THIS box, including
-    // in-flight — the pull skips pending devices so the mirror can't override it).
+    // wins when present; and a device with an IN-FLIGHT local op (below) is
+    // local-authoritative even when its cell is now empty (a just-cleared
+    // blocker), so the mirror can't resurrect it in the window before the next
+    // pull prunes the stale row (resolveDeviceBlocked).
     const blockerStates = listVfdBlockerStates()
     const blockerMap = new Map(
       blockerStates.map(b => [`${b.subsystemId}::${b.deviceName}`, b]),
+    )
+
+    // In-flight local blocker ops (a set/clear the tech just made on THIS box,
+    // still queued in DeviceBlockerPendingSyncs — parked rows included, unresolved
+    // intent). For these devices the LOCAL cell is authoritative: the cloud
+    // mirror must not override a just-cleared blocker until the next pull prunes
+    // it (the stale-mirror window). Keyed subsystemId::deviceName (lower-cased),
+    // matching the mirror's pending-guard.
+    const pendingBlockerKeys = new Set(
+      (db.prepare('SELECT SubsystemId, DeviceName FROM DeviceBlockerPendingSyncs').all() as Array<{ SubsystemId: number; DeviceName: string }>)
+        .map(r => `${r.SubsystemId}::${String(r.DeviceName).trim().toLowerCase()}`),
     )
 
     // Pivot rows → one record per (deviceName, sheetName) with a CellSet + meta
@@ -222,11 +235,10 @@ export async function GET(_req: Request, res: Response) {
       // otherwise fall back to the cloud mirror (a blocker raised on another box).
       const cellBlocker = parseBumpBlockerCell(acc.cells.bumpBlocker)
       const mirrored = blockerMap.get(annotationKey)
-      const blocker =
-        cellBlocker ??
-        (mirrored && (mirrored.party || mirrored.description)
-          ? { party: mirrored.party ?? '', description: mirrored.description ?? '' }
-          : null)
+      const hasPendingBlockerOp = pendingBlockerKeys.has(
+        `${acc.subsystemId}::${acc.deviceName.trim().toLowerCase()}`,
+      )
+      const blocker = resolveDeviceBlocked(cellBlocker, mirrored, hasPendingBlockerOp)
       const blocked = blocker !== null
       const local = addressedMap.get(annotationKey)
       return {

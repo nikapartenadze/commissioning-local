@@ -87,3 +87,36 @@ export function shouldClearBlockerOnTestRunPass(args: {
 }): boolean {
   return args.raisedThisSession && args.blocker != null
 }
+
+/**
+ * Resolve whether a VFD device is BLOCKED, merging this box's local Bump Blocker
+ * cell with the cloud-authoritative VfdBlocker mirror (a blocker raised on
+ * ANOTHER box). Precedence, most-authoritative first:
+ *
+ *   1. The local Bump Blocker CELL, when non-empty — a blocker this box raised.
+ *   2. If the local cell is EMPTY but there's an IN-FLIGHT local blocker op for
+ *      this device (a set/clear the tech just made on THIS box, still queued in
+ *      DeviceBlockerPendingSyncs), the LOCAL state is authoritative → NOT blocked
+ *      from the mirror. This is the fix for the stale-mirror window: after a
+ *      local CLEAR, the cell is blank but the mirror still holds the pre-clear
+ *      row (the mirror is only pruned during a pull), so without this guard the
+ *      belt wrongly reads blocked on the very box that just cleared it until the
+ *      next pull. Mirrors the pending-guard in vfd-blocker-mirror-repository.
+ *   3. Otherwise the cloud mirror decides (a blocker from another box).
+ *
+ * Returns the active blocker { party, description } or null when not blocked.
+ */
+export function resolveDeviceBlocked(
+  cellBlocker: { party: string; description: string } | null,
+  mirrored: { party: string | null; description: string | null } | null | undefined,
+  hasPendingLocalOp: boolean,
+): { party: string; description: string } | null {
+  if (cellBlocker) return cellBlocker
+  // Local cell empty. An in-flight local op means the tech just changed this on
+  // THIS box — the cell (now empty = cleared) wins; the mirror must not override.
+  if (hasPendingLocalOp) return null
+  if (mirrored && (mirrored.party || mirrored.description)) {
+    return { party: mirrored.party ?? '', description: mirrored.description ?? '' }
+  }
+  return null
+}
