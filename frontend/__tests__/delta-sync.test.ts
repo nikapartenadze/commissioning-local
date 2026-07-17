@@ -27,7 +27,7 @@ vi.mock('@/lib/db-sqlite', () => ({ db: memDb, extractDeviceName: () => null }))
 const auditLogSpy = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/logging/recovery-log', () => ({ auditLog: auditLogSpy }))
 
-import { applyDelta } from '@/lib/cloud/delta-sync'
+import { applyDelta, readBroadcastUpdates } from '@/lib/cloud/delta-sync'
 import { getSyncCursor } from '@/lib/cloud/sync-cursor'
 
 const getIo = (id: number) => memDb.prepare('SELECT * FROM Ios WHERE id = ?').get(id) as any
@@ -54,6 +54,36 @@ describe('applyDelta', () => {
     memDb.prepare('INSERT INTO TestHistories (IoId, Result, Timestamp) VALUES (?, ?, ?)').run(200, 'Cleared', '2026-07-04T10:00:00.000Z')
     applyDelta(40, { toSeq: 21, ios: { upserts: [{ id: 200, name: 'IO-Z', result: 'Passed', timestamp: '2026-07-07T10:00:00.000Z' }] } })
     expect(getIo(200).Result).toBe('Passed') // real later cloud edit wins
+  })
+
+  it('BUG D FIX: broadcast carries the DB-FINAL value, not the raw cloud payload', () => {
+    // Protected-clear: local cleared (NULL); cloud still holds a stale, higher-
+    // versioned Passed → applyDelta KEEPS the clear.
+    memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId, Result, Timestamp) VALUES (?, ?, ?, NULL, NULL)').run(300, 'IO-CLR', 40)
+    memDb.prepare('INSERT INTO TestHistories (IoId, Result, Timestamp) VALUES (?, ?, ?)').run(300, 'Cleared', '2026-07-07 18:00:00')
+    // A normally-applied IO (cloud result lands).
+    memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId, Result) VALUES (?, ?, ?, NULL)').run(301, 'IO-OK', 40)
+    applyDelta(40, { toSeq: 30, ios: { upserts: [
+      { id: 300, name: 'IO-CLR', result: 'Passed', timestamp: '2026-07-04T20:45:00.000Z', version: 19 }, // stale → clear kept
+      { id: 301, name: 'IO-OK', result: 'Failed', timestamp: '2026-07-07T10:00:00.000Z' },               // applied
+    ] } })
+    // DB truth after apply.
+    expect(getIo(300).Result).toBeNull()
+    expect(getIo(301).Result).toBe('Failed')
+    // The broadcast MUST reflect the DB, not the payload: the protected-clear
+    // broadcasts 'Not Tested' (NOT the cloud's 'Passed' — that was the live-grid
+    // lie), and the applied one broadcasts its real 'Failed'.
+    const byId = new Map(readBroadcastUpdates([300, 301]).map(u => [u.id, u]))
+    expect(byId.get(300)!.result).toBe('Not Tested') // NOT 'Passed'
+    expect(byId.get(301)!.result).toBe('Failed')
+  })
+
+  it('readBroadcastUpdates skips ids not in Ios and chunks large id sets (>500)', () => {
+    memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId, Result) VALUES (?, ?, ?, ?)').run(400, 'IO-A', 40, 'Passed')
+    const many = Array.from({ length: 1200 }, (_, i) => 10_000 + i) // none exist
+    const updates = readBroadcastUpdates([400, ...many])
+    expect(updates).toHaveLength(1)
+    expect(updates[0]).toMatchObject({ id: 400, result: 'Passed' })
   })
 
   // ── Resolver-field (punchlist) propagation ─────────────────────────────────

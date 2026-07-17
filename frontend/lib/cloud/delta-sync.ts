@@ -353,6 +353,40 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
 }
 
 /**
+ * Read the DB-FINAL values for a set of just-applied IO ids, shaped for the WS
+ * `BatchUpdateIO` broadcast. This MUST source from the DB, not the cloud delta
+ * payload: applyDelta may KEEP a local value that differs from the payload — a
+ * protected-clear keeps the local NULL (upsertKeepClear), and the CASE-preserve
+ * upsert can keep a local result — so broadcasting the raw payload value would
+ * make the live grid show a result the DB does not actually hold (e.g. "Passed"
+ * for a row that is cleared). Chunked to stay under SQLite's bound-param limit
+ * on a large resync. Only ids that exist in Ios are returned.
+ */
+export function readBroadcastUpdates(
+  ids: number[],
+): Array<{ id: number; result: string; state: string; timestamp: string; comments: string }> {
+  const updates: Array<{ id: number; result: string; state: string; timestamp: string; comments: string }> = []
+  const CHUNK = 500
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK)
+    if (chunk.length === 0) continue
+    const rows = db
+      .prepare(`SELECT id, Result, Timestamp, Comments FROM Ios WHERE id IN (${chunk.map(() => '?').join(',')})`)
+      .all(...chunk) as Array<{ id: number; Result: string | null; Timestamp: string | null; Comments: string | null }>
+    for (const r of rows) {
+      updates.push({
+        id: r.id,
+        result: r.Result || 'Not Tested',
+        state: '',
+        timestamp: r.Timestamp ?? '',
+        comments: r.Comments ?? '',
+      })
+    }
+  }
+  return updates
+}
+
+/**
  * Fetch the delta for a subsystem and apply it. Returns the apply result;
  * `resync: true` tells the caller to fall back to the full pull. Broadcasts
  * upserted IOs to browser tabs so the grid updates live.
@@ -381,20 +415,21 @@ export async function fetchAndApplyDelta(
   // TagSnapshot / cloud SSE batch_ios_updated shape). Best-effort.
   const upserts = payload.ios?.upserts ?? []
   if (upserts.length > 0) {
-    fetch(WS_BROADCAST_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'BatchUpdateIO',
-        updates: upserts.map((io) => ({
-          id: io.id,
-          result: io.result || 'Not Tested',
-          state: '',
-          timestamp: io.timestamp ?? '',
-          comments: io.comments ?? '',
-        })),
-      }),
-    }).catch(() => { /* WS broadcast best-effort */ })
+    // Broadcast the DB-FINAL values, NOT the raw cloud payload — see
+    // readBroadcastUpdates: applyDelta may keep a local value (protected-clear /
+    // CASE-preserve) that differs from the payload, and sending the payload
+    // value would make the live grid lie about what the DB holds.
+    const ids = upserts
+      .map((io) => io.id)
+      .filter((id): id is number => typeof id === 'number' && id > 0)
+    const updates = readBroadcastUpdates(ids)
+    if (updates.length > 0) {
+      fetch(WS_BROADCAST_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'BatchUpdateIO', updates }),
+      }).catch(() => { /* WS broadcast best-effort */ })
+    }
   }
 
   return result
