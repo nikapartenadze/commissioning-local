@@ -42,6 +42,12 @@ export async function GET(req: Request, res: Response) {
       safeCount('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1 AND Orphaned = 0')
       + safeCount('SELECT COUNT(*) as cnt FROM L2PendingSyncs WHERE DeadLettered = 1 AND Orphaned = 0')
       + safeCount('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 AND Orphaned = 0')
+      // e-stop (SAFETY) + guided queues have DeadLettered but NO Orphaned column —
+      // a parked row here must light the badge too. Counting only the first three
+      // (the old behaviour) left a parked SAFETY e-stop check invisible on the
+      // toolbar while Sync Center (queue-inspector, all 5) already showed it.
+      + safeCount('SELECT COUNT(*) as cnt FROM EStopCheckPendingSyncs WHERE DeadLettered = 1')
+      + safeCount('SELECT COUNT(*) as cnt FROM GuidedTaskStatePendingSyncs WHERE DeadLettered = 1')
     // Orphaned = cloud target removed. Informational surface ("removed on cloud"),
     // NOT part of the red attention badge. Auto-restores if the target reappears.
     const orphanedCount =

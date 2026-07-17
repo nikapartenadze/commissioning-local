@@ -1,11 +1,17 @@
 import { db } from '@/lib/db-sqlite'
 
 /**
- * Sync Center — read/triage layer over the three OUTBOUND sync queue tables.
+ * Sync Center — read/triage layer over ALL FIVE OUTBOUND sync queue tables.
+ *
+ * This is the SINGLE SOURCE OF TRUTH for stuck/pending sync state. Every durable
+ * outbound queue is surfaced here so a parked row — including a SAFETY e-stop
+ * check or a guided-mode override, which previously had NO operator UI at all —
+ * is always visible and recoverable (retry/discard) from the Sync Center.
  *
  * DATA-SAFETY CONTRACT (this is the field tool):
- *  - This module ONLY ever reads/updates/deletes rows in the three *PendingSyncs
- *    QUEUE tables (PendingSyncs, L2PendingSyncs, DeviceBlockerPendingSyncs).
+ *  - This module ONLY ever reads/updates/deletes rows in the five *PendingSyncs
+ *    QUEUE tables (PendingSyncs, L2PendingSyncs, DeviceBlockerPendingSyncs,
+ *    EStopCheckPendingSyncs, GuidedTaskStatePendingSyncs).
  *  - It NEVER touches Ios, L2CellValues, L2Devices, L2Columns, TestHistories, or
  *    any other data table (the LEFT JOINs below are read-only lookups for display
  *    labels; they never write). The real values live in those data tables — a
@@ -16,7 +22,7 @@ import { db } from '@/lib/db-sqlite'
  *    into SQL, so it can never be used to build an arbitrary table name.
  */
 
-export type QueueKind = 'io' | 'l2' | 'blocker'
+export type QueueKind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
 export type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'unknown'
 
 export interface QueueItem {
@@ -48,7 +54,15 @@ const TABLE_BY_KIND: Record<QueueKind, string> = {
   io: 'PendingSyncs',
   l2: 'L2PendingSyncs',
   blocker: 'DeviceBlockerPendingSyncs',
+  estop: 'EStopCheckPendingSyncs',
+  guided: 'GuidedTaskStatePendingSyncs',
 }
+
+// IO/L2/blocker carry an Orphaned flag (confirmed cloud-removal, auto-requeues on
+// reappearance). The e-stop + guided tables have DeadLettered but NO Orphaned
+// column — retry() must not reference Orphaned for those, and they can only be
+// pending or parked (never orphaned).
+const KINDS_WITH_ORPHANED: ReadonlySet<QueueKind> = new Set<QueueKind>(['io', 'l2', 'blocker'])
 
 const REASONS: Record<Classification, string> = {
   gone_on_cloud:
@@ -219,6 +233,46 @@ function readBlockerRows(): QueueItem[] {
   })
 }
 
+/** E-stop safety-check queue rows (EStopCheckPendingSyncs — no Orphaned column). */
+function readEstopRows(): QueueItem[] {
+  const rows = db
+    .prepare(
+      `SELECT ep.id AS id, ep.SubsystemId AS SubsystemId, ep.ZoneName AS ZoneName, ep.CheckTag AS CheckTag,
+              ep.Result AS Result, ep.CheckType AS CheckType, ep.DeadLettered AS DeadLettered,
+              ep.LastError AS LastError, ep.RetryCount AS RetryCount, ep.CreatedAt AS CreatedAt,
+              s.Name AS Mcm
+         FROM EStopCheckPendingSyncs ep
+         LEFT JOIN Subsystems s ON s.id = ep.SubsystemId
+        ORDER BY ep.CreatedAt ASC, ep.id ASC`,
+    )
+    .all() as any[]
+  return rows.map((r) => {
+    const title = r.ZoneName ? String(r.ZoneName) : (r.CheckTag ? String(r.CheckTag) : `E-stop check #${r.id}`)
+    const subtitle = [r.CheckType ? String(r.CheckType) : null, r.CheckTag ? String(r.CheckTag) : null].filter(Boolean).join(' · ') || null
+    // No Orphaned column → pass 0 (never orphaned; only pending/parked).
+    return buildItem('estop', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.Result ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, 0)
+  })
+}
+
+/** Guided-mode task-state override queue rows (GuidedTaskStatePendingSyncs — no Orphaned column). */
+function readGuidedRows(): QueueItem[] {
+  const rows = db
+    .prepare(
+      `SELECT gp.id AS id, gp.SubsystemId AS SubsystemId, gp.TaskId AS TaskId, gp.Status AS Status,
+              gp.Reason AS Reason, gp.DeadLettered AS DeadLettered, gp.LastError AS LastError,
+              gp.RetryCount AS RetryCount, gp.CreatedAt AS CreatedAt, s.Name AS Mcm
+         FROM GuidedTaskStatePendingSyncs gp
+         LEFT JOIN Subsystems s ON s.id = gp.SubsystemId
+        ORDER BY gp.CreatedAt ASC, gp.id ASC`,
+    )
+    .all() as any[]
+  return rows.map((r) => {
+    const title = r.TaskId ? String(r.TaskId) : `Guided task #${r.id}`
+    const subtitle = r.Status ? String(r.Status) : null
+    return buildItem('guided', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.Reason ?? r.Status ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, 0)
+  })
+}
+
 export function listQueue(opts?: {
   status?: 'all' | 'pending' | 'parked' | 'orphaned'
   /**
@@ -237,7 +291,7 @@ export function listQueue(opts?: {
 
   // Each table read is isolated so a missing table/column never 500s the list.
   let items: QueueItem[] = []
-  for (const read of [readIoRows, readL2Rows, readBlockerRows]) {
+  for (const read of [readIoRows, readL2Rows, readBlockerRows, readEstopRows, readGuidedRows]) {
     try {
       items = items.concat(read())
     } catch (e) {
@@ -287,8 +341,10 @@ export function retry(refs: { kind: QueueKind; id: number }[]): { affected: numb
     const table = TABLE_BY_KIND[ref.kind]
     if (!table || !Number.isInteger(ref.id)) continue
     try {
+      // e-stop + guided have no Orphaned column — don't reference it there.
+      const orphanClause = KINDS_WITH_ORPHANED.has(ref.kind) ? ', Orphaned = 0' : ''
       const info = db
-        .prepare(`UPDATE ${table} SET DeadLettered = 0, Orphaned = 0, RetryCount = 0, LastError = NULL WHERE id = ?`)
+        .prepare(`UPDATE ${table} SET DeadLettered = 0${orphanClause}, RetryCount = 0, LastError = NULL WHERE id = ?`)
         .run(ref.id)
       affected += info.changes
     } catch (e) {
@@ -351,7 +407,7 @@ export function selectRefs(sel: {
 }): { kind: QueueKind; id: number }[] {
   if (sel.ids && sel.ids.length) {
     return sel.ids
-      .filter((r) => r && (r.kind === 'io' || r.kind === 'l2' || r.kind === 'blocker') && Number.isInteger(r.id))
+      .filter((r) => r && (r.kind as QueueKind) in TABLE_BY_KIND && Number.isInteger(r.id))
       .map((r) => ({ kind: r.kind, id: r.id }))
   }
 

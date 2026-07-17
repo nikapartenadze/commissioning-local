@@ -19,7 +19,7 @@ import { authFetch } from '@/lib/api-config'
 import { toast } from '@/hooks/use-toast'
 
 // ── Contract types (must match the backend /api/sync/queue contract) ──────────
-type Kind = 'io' | 'l2' | 'blocker'
+type Kind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
 type QueueStatus = 'pending' | 'parked' | 'orphaned'
 type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'unknown'
 
@@ -125,6 +125,8 @@ const KIND_LABEL: Record<Kind, string> = {
   io: 'I/O result',
   l2: 'Functional Validation',
   blocker: 'VFD blocker',
+  estop: 'E‑stop safety check',
+  guided: 'Guided task',
 }
 
 function formatAge(mins: number | null): string {

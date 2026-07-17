@@ -101,6 +101,7 @@ function seedActiveIo(): number {
 
 const TABLE: Record<QueueKind, string> = {
   io: 'PendingSyncs', l2: 'L2PendingSyncs', blocker: 'DeviceBlockerPendingSyncs',
+  estop: 'EStopCheckPendingSyncs', guided: 'GuidedTaskStatePendingSyncs',
 }
 const queueRow = (kind: QueueKind, id: number): any =>
   memDb.prepare(`SELECT * FROM ${TABLE[kind]} WHERE id = ?`).get(id)
@@ -111,7 +112,7 @@ function underlyingDataRow(kind: QueueKind): any {
   if (kind === 'l2') return memDb.prepare('SELECT * FROM L2CellValues WHERE DeviceId = 1 AND ColumnId = 1').get()
   return memDb.prepare("SELECT * FROM Devices WHERE Name = 'VFD-7'").get()
 }
-const DATA_LABEL: Record<QueueKind, string> = { io: 'IO value', l2: 'L2 cell value', blocker: 'device blocker value' }
+const DATA_LABEL: Record<QueueKind, string> = { io: 'IO value', l2: 'L2 cell value', blocker: 'device blocker value', estop: 'e-stop result', guided: 'guided override' }
 
 beforeEach(() => {
   for (const t of ['PendingSyncs', 'L2PendingSyncs', 'DeviceBlockerPendingSyncs', 'Ios', 'L2Devices', 'L2Columns', 'L2CellValues', 'Devices', 'Subsystems']) {

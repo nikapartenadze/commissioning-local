@@ -3,7 +3,7 @@ import { retry, discard, selectRefs, snapshotRefs, type QueueKind, type Classifi
 import { createBackup } from '@/lib/db/backup'
 import { writeDiscardLog } from '@/lib/sync/discard-log'
 
-const VALID_KINDS: QueueKind[] = ['io', 'l2', 'blocker']
+const VALID_KINDS: QueueKind[] = ['io', 'l2', 'blocker', 'estop', 'guided']
 const VALID_CLASSIFICATIONS: Classification[] = ['gone_on_cloud', 'version_conflict', 'transient', 'unknown']
 
 /**
