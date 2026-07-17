@@ -146,3 +146,6 @@ check this file.txt
 *.pfx
 *.p12
 *.key
+
+# autonomous loop durable state (not for merge)
+.loop-state.md
