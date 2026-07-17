@@ -28,6 +28,7 @@ import {
   permanentRejectionReason,
 } from '@/lib/cloud/sync-failure-classification'
 import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
+import { SubsystemNetworkDeferral } from '@/lib/cloud/subsystem-network-deferral'
 import { runJournalUpload } from '@/lib/cloud/journal-uploader'
 import {
   type TelemetryState,
@@ -521,15 +522,32 @@ class AutoSyncService {
         const syncService = getCloudSyncService()
         const blockedIoIds = new Set<number>()
         // F19 (2026-07-03 sync audit): tolerate a few isolated network-level
-        // failures before deferring the whole batch. A single blip used to
+        // failures before deferring further rows. A single blip used to
         // abandon all remaining rows to the next 10s cycle, serializing the
-        // drain painfully on flaky links; a truly-down cloud still stops the
-        // batch after this many timeouts.
+        // drain painfully on flaky links.
+        //
+        // The tolerance is now tracked PER SUBSYSTEM (not batch-wide) so a
+        // multi-MCM central server can't be starved by one misconfigured MCM.
+        // The queue is global (ORDER BY CreatedAt ASC), so a permanently-broken
+        // MCM (revoked key / mismatched-or-deleted subsystem — all classed
+        // network-level: 401/403/429/5xx) owns the OLDEST rows and would trip a
+        // batch-wide break BEFORE any healthy MCM's newer rows were reached,
+        // every cycle forever — silently withholding perfectly-syncable results
+        // from unrelated MCMs. Deferring only the offending subsystem lets the
+        // loop skip its remaining rows (no network call, so a truly-down
+        // single-MCM box still stops after `tolerance` timeouts) while still
+        // attempting every other MCM's rows.
         const NETWORK_FAILURE_BATCH_TOLERANCE = 3
-        let networkFailures = 0
+        const networkDeferral = new SubsystemNetworkDeferral(NETWORK_FAILURE_BATCH_TOLERANCE)
 
         for (const pending of pendingSyncs) {
           if (blockedIoIds.has(pending.IoId)) {
+            continue
+          }
+          // This IO's MCM already exhausted its network-failure tolerance this
+          // cycle — skip WITHOUT a network call (don't burn a 15s timeout on a
+          // subsystem we know is down), and don't let it block other MCMs.
+          if (networkDeferral.isDeferred(this.ioSubsystemId(pending.IoId))) {
             continue
           }
 
@@ -605,12 +623,13 @@ class AutoSyncService {
             // way, and each attempt costs up to a 15 s timeout.
             pendingSyncRepository.recordTransientFailure(pending.id, r.reason ?? 'network failure')
             failedIoCount++
-            networkFailures++
-            if (networkFailures >= NETWORK_FAILURE_BATCH_TOLERANCE) {
-              console.log(`[AutoSync] ${networkFailures} network-level push failures (${r.reason ?? 'unknown'}) — deferring remaining queued row(s) to next cycle, no retry strikes burned`)
-              break
+            const failedSubsystemId = this.ioSubsystemId(pending.IoId)
+            const nowDeferred = networkDeferral.recordNetworkFailure(failedSubsystemId)
+            if (nowDeferred) {
+              console.log(`${mcmTag(failedSubsystemId)}[AutoSync] ${NETWORK_FAILURE_BATCH_TOLERANCE} network-level push failures (${r.reason ?? 'unknown'}) — deferring this MCM's remaining queued row(s) to next cycle, no retry strikes burned (other MCMs still drain)`)
+            } else {
+              console.log(`${mcmTag(failedSubsystemId)}[AutoSync] Network-level push failure (${r.reason ?? 'unknown'}) — continuing batch, no retry strikes burned`)
             }
-            console.log(`[AutoSync] Network-level push failure ${networkFailures}/${NETWORK_FAILURE_BATCH_TOLERANCE} (${r.reason ?? 'unknown'}) — continuing batch, no retry strikes burned`)
           } else {
             blockedIoIds.add(pending.IoId)
             pendingSyncRepository.recordFailure(pending.id, r.reason ?? 'Background sync failed')
