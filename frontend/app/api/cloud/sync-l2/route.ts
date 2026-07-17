@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
+import { manualSyncFailureUpdate } from '@/lib/cloud/manual-sync-failure'
 
 /**
  * POST /api/cloud/sync-l2
@@ -22,8 +23,11 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
+    // Only ACTIVE rows (DeadLettered = 0). A parked row already exhausted its
+    // retries / was rejected — a manual "Sync now" must not silently re-attempt
+    // it (and re-strike it); parked rows are recovered explicitly via Sync Center.
     const l2Pending = db.prepare(
-      'SELECT * FROM L2PendingSyncs ORDER BY CreatedAt ASC LIMIT 200'
+      'SELECT * FROM L2PendingSyncs WHERE DeadLettered = 0 ORDER BY CreatedAt ASC LIMIT 200'
     ).all() as any[]
 
     if (l2Pending.length === 0) {
@@ -99,31 +103,42 @@ export async function POST(req: Request, res: Response) {
         })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
+        const { lastError } = manualSyncFailureUpdate({ thrown: true, message: msg })
         console.warn(`[L2 Sync] Network error on batch ${i / 50 + 1}:`, msg)
         errors.push(`Network error: ${msg}`)
         totalFailed += batch.length
+        // Network-level (the cloud never ruled on these rows) — NO strike.
         for (const u of batch) {
-          try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run(`network: ${msg}`, u.pendingId) } catch { /* ignore */ }
+          try { db.prepare('UPDATE L2PendingSyncs SET LastError = ? WHERE id = ?').run(lastError, u.pendingId) } catch { /* ignore */ }
         }
         continue
       }
 
       if (l2Resp.status === 401) {
+        const { lastError } = manualSyncFailureUpdate({ httpStatus: 401 })
         console.warn('[L2 Sync] Auth failure (401) — check API password in config')
         errors.push('Authentication failed (401) — check cloud API password')
         totalFailed += batch.length
+        // 401 is an auth/config problem on the tool, NOT a verdict on the rows —
+        // NO strike (the 2026-06-04 TPA8/MCM08 lesson).
         for (const u of batch) {
-          try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run('auth 401', u.pendingId) } catch { /* ignore */ }
+          try { db.prepare('UPDATE L2PendingSyncs SET LastError = ? WHERE id = ?').run(lastError, u.pendingId) } catch { /* ignore */ }
         }
         break // Don't bother sending more batches with bad auth
       }
 
       if (!l2Resp.ok) {
-        console.warn(`[L2 Sync] HTTP ${l2Resp.status} on batch ${i / 50 + 1}`)
+        const { strike, lastError } = manualSyncFailureUpdate({ httpStatus: l2Resp.status })
+        console.warn(`[L2 Sync] HTTP ${l2Resp.status} on batch ${i / 50 + 1}${strike ? '' : ' (network-level, no strike)'}`)
         errors.push(`Cloud returned HTTP ${l2Resp.status}`)
         totalFailed += batch.length
+        // Only a genuine cloud verdict (a non-network 4xx) burns a strike; 429 /
+        // 5xx are transient and must NOT march a healthy row toward the park cap.
+        const sql = strike
+          ? 'UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?'
+          : 'UPDATE L2PendingSyncs SET LastError = ? WHERE id = ?'
         for (const u of batch) {
-          try { db.prepare('UPDATE L2PendingSyncs SET RetryCount = RetryCount + 1, LastError = ? WHERE id = ?').run(`HTTP ${l2Resp.status}`, u.pendingId) } catch { /* ignore */ }
+          try { db.prepare(sql).run(lastError, u.pendingId) } catch { /* ignore */ }
         }
         continue
       }
