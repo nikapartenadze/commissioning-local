@@ -23,7 +23,7 @@ import { db } from '@/lib/db-sqlite'
  */
 
 export type QueueKind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
-export type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'unknown'
+export type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'cloud_rejected' | 'unknown'
 
 export interface QueueItem {
   kind: QueueKind
@@ -71,7 +71,9 @@ const REASONS: Record<Classification, string> = {
     'A newer value already exists on the cloud for this item. Retrying will re-base on the cloud value.',
   transient:
     'Temporary network/cloud problem. Should clear on its own; Retry to force it now.',
-  unknown: 'Unknown sync error.',
+  cloud_rejected:
+    'The cloud rejected this value — retrying will not change it (e.g. an invalid value, a SPARE that can’t pass, or repeated rejections that exhausted the retries). Check the value/target, or Discard if it’s no longer needed.',
+  unknown: 'Sync error with no reported reason — Retry, or Discard if it’s no longer needed.',
 }
 
 /**
@@ -93,11 +95,20 @@ export function classify(lastError: string | null): { classification: Classifica
   if (/version|rebased|409|conflict|updatedcount=0/.test(e)) {
     return { classification: 'version_conflict', reason: REASONS.version_conflict }
   }
-  if (/timeout|econn|network|fetch failed|5\d\d|socket/.test(e)) {
+  if (/timeout|econn|network|fetch failed|5\d\d|socket|offline/.test(e)) {
     return { classification: 'transient', reason: REASONS.transient }
   }
-  // Unknown: surface the raw error so the tech sees exactly what the cloud said.
-  return { classification: 'unknown', reason: lastError || REASONS.unknown }
+  // A definitive cloud rejection of the VALUE — a 4xx other than the gone/conflict
+  // cases already handled above (400/422 invalid, SPARE-can't-pass, permission),
+  // or a row that exhausted its retries against such a rejection. Retrying won't
+  // help. Append the raw cloud text so the operator sees exactly what it said.
+  if (/\b4\d\d\b|rejected|invalid|not allowed|spare|cap exhausted|retry cap|permanent/.test(e)) {
+    return { classification: 'cloud_rejected', reason: `${REASONS.cloud_rejected} (Cloud said: ${lastError})` }
+  }
+  // We don't specifically recognise this error, but there IS one — surface it
+  // verbatim so the operator sees exactly what the cloud said (never a bare
+  // "unknown" when a real message exists).
+  return { classification: 'unknown', reason: `Cloud said: ${lastError}` }
 }
 
 /**
@@ -309,7 +320,7 @@ export function listQueue(opts?: {
     pending: 0,
     parked: 0,
     orphaned: 0,
-    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, unknown: 0 } as Record<Classification, number>,
+    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, cloud_rejected: 0, unknown: 0 } as Record<Classification, number>,
   }
   for (const it of items) {
     if (it.status === 'orphaned') summary.orphaned++

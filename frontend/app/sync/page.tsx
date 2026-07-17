@@ -21,7 +21,7 @@ import { toast } from '@/hooks/use-toast'
 // ── Contract types (must match the backend /api/sync/queue contract) ──────────
 type Kind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
 type QueueStatus = 'pending' | 'parked' | 'orphaned'
-type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'unknown'
+type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'cloud_rejected' | 'unknown'
 
 interface QueueItem {
   kind: Kind
@@ -69,7 +69,7 @@ const MCM_ALL = 'all' as const
 function summarize(items: QueueItem[]): QueueSummary {
   const s: QueueSummary = {
     pending: 0, parked: 0, orphaned: 0,
-    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, unknown: 0 },
+    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, cloud_rejected: 0, unknown: 0 },
   }
   for (const it of items) {
     if (it.status === 'orphaned') s.orphaned++
@@ -110,6 +110,13 @@ const CLASS_META: Record<Classification, ClassMeta> = {
     hint: 'A network or server hiccup. This usually clears on its own — Retry to push it now.',
     chip: 'border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400',
     Icon: Wifi,
+    safeToDiscard: false,
+  },
+  cloud_rejected: {
+    label: 'Cloud rejected it',
+    hint: 'The cloud refused this value — an invalid value, a SPARE that can’t pass, or repeated rejections that used up the retries. Retrying won’t change it: check the value/target, or Discard if it’s no longer needed (your data stays on this device).',
+    chip: 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-400',
+    Icon: AlertTriangle,
     safeToDiscard: false,
   },
   unknown: {

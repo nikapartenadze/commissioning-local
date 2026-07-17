@@ -4,7 +4,7 @@ import { createBackup } from '@/lib/db/backup'
 import { writeDiscardLog } from '@/lib/sync/discard-log'
 
 const VALID_KINDS: QueueKind[] = ['io', 'l2', 'blocker', 'estop', 'guided']
-const VALID_CLASSIFICATIONS: Classification[] = ['gone_on_cloud', 'version_conflict', 'transient', 'unknown']
+const VALID_CLASSIFICATIONS: Classification[] = ['gone_on_cloud', 'version_conflict', 'transient', 'cloud_rejected', 'unknown']
 
 /**
  * Sync Center actions — RETRY or DISCARD outbound queue rows.
