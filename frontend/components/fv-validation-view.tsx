@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
 import { useSignalR, FVCellUpdate } from '@/lib/signalr-client'
 import { doesFVColumnCountForProgress, normalizeFVInputType, fvColumnAppliesToMcms } from '@/lib/fv-utils'
+import { vfdAnnotationKey } from '@/lib/vfd-annotation-key'
 import { saveL2Cell, replayL2Outbox, pendingCount, type OutboxDeps } from '@/lib/l2-outbox'
 import { toast } from '@/hooks/use-toast'
 
@@ -322,7 +323,9 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       const map = new Map<string, VfdAnnotation>()
       for (const row of (json.states || [])) {
         if (!row.deviceName) continue
-        map.set(row.deviceName, {
+        // MCM-scoped key: device names repeat across MCMs in this multi-MCM grid,
+        // so keying by name alone leaked one MCM's blocker onto another's belt.
+        map.set(vfdAnnotationKey(row.mcm, row.deviceName), {
           blocked: Boolean(row.blocked),
           blockerParty: row.blockerParty ?? null,
           blockerReason: row.blockerReason ?? null,
@@ -749,8 +752,8 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     ? activeColumns.filter(c => ((c.Name || '').trim().toLowerCase()) in VFD_COL_RANK).map(c => c.id)
     : []
   const rowTone = vfdMode
-    ? (device: { id: number; DeviceName: string }): 'blocked' | 'complete' | null => {
-        if (vfdAnnotations.get(device.DeviceName)?.blocked) return 'blocked'
+    ? (device: { id: number; DeviceName: string; Mcm: string }): 'blocked' | 'complete' | null => {
+        if (vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))?.blocked) return 'blocked'
         if (
           vfdCheckColIds.length > 0 &&
           vfdCheckColIds.every(cid => {
@@ -827,7 +830,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
         if (!allPassed) return false
       } else if (quickFilter === "addressed") {
         // VFD handoff: belts a mechanic marked addressed on the cloud (ready to re-run).
-        if (!vfdAnnotations.get(device.DeviceName)?.addressed) return false
+        if (!vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))?.addressed) return false
       }
     }
 
@@ -856,7 +859,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       label: 'Blocked',
       width: 240,
       render: (device) => {
-        const a = vfdAnnotations.get(device.DeviceName)
+        const a = vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))
         if (!a?.blocked) return <span className="text-muted-foreground/50">—</span>
         return (
           <span
@@ -877,7 +880,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       label: 'Addressed',
       width: 180,
       render: (device) => {
-        const a = vfdAnnotations.get(device.DeviceName)
+        const a = vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))
         if (!a?.blocked || !a.addressed) return <span className="text-muted-foreground/50">—</span>
         const stamp = (() => {
           const parts: string[] = []
