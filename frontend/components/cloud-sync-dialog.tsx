@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, XCircle, Loader2, Cloud, Upload, RefreshCw, ChevronDown, ChevronRight, ExternalLink, X } from "lucide-react"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import type { CloudSyncStatusResponse } from "@/lib/cloud/types"
+import { summarizeParked, PARKED_KIND_LABEL } from "@/lib/sync/parked-summary"
 
 interface CloudSyncDialogProps {
   open: boolean
@@ -17,6 +18,16 @@ interface CloudSyncDialogProps {
 
 type SyncTarget = 'io' | 'l2'
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error'
+
+/** One parked row from the unified /api/sync/queue (all 5 kinds). */
+interface ParkedItem {
+  kind: string
+  id: number
+  title: string
+  subtitle: string | null
+  mcm: string | null
+  reason: string
+}
 
 interface L2PendingItem {
   id: number
@@ -56,6 +67,9 @@ export function CloudSyncDialog({
   const [pendingItems, setPendingItems] = useState<L2PendingItem[] | null>(null)
   const [itemsLoading, setItemsLoading] = useState(false)
   const [itemsError, setItemsError] = useState<string | null>(null)
+  // Unified parked rows across ALL 5 queues (the same truth as Sync Center).
+  const [parkedItems, setParkedItems] = useState<ParkedItem[] | null>(null)
+  const [retryingAll, setRetryingAll] = useState(false)
   // In-app confirm modal (replaces window.confirm). askConfirm() shows it and
   // resolves with the user's choice.
   const [confirmModal, setConfirmModal] = useState<{ title: string; body: string; resolve: (ok: boolean) => void } | null>(null)
@@ -100,6 +114,34 @@ export function CloudSyncDialog({
     }
   }
 
+  // Unified stuck view — the SAME source Sync Center + the toolbar badge use, so
+  // the modal shows what the badge counts (all 5 kinds with real reasons), not
+  // just FV. Best-effort; a failure just shows no rows.
+  const loadParked = async () => {
+    try {
+      const response = await authFetch('/api/sync/queue?status=parked')
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data = await response.json() as { items?: ParkedItem[] }
+      setParkedItems(Array.isArray(data.items) ? data.items : [])
+    } catch {
+      setParkedItems([])
+    }
+  }
+
+  const retryAllParked = async () => {
+    try {
+      setRetryingAll(true)
+      await authFetch('/api/sync/queue/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'retry', allParked: true }),
+      })
+      await Promise.all([loadParked(), loadStatus()])
+    } catch { /* best-effort — auto-sync will keep retrying regardless */ } finally {
+      setRetryingAll(false)
+    }
+  }
+
   const handleDropOne = async (id: number, label: string) => {
     const ok = await askConfirm(
       `Drop pending sync for ${label}?`,
@@ -124,6 +166,7 @@ export function CloudSyncDialog({
     if (!open) return
     setOperationalStatus(initialStatus)
     loadStatus()
+    loadParked()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialStatus?.connected, initialStatus?.pendingSyncCount, initialStatus?.totalPendingCount, initialStatus?.lastPushAt, initialStatus?.lastPullAt])
 
@@ -272,14 +315,18 @@ export function CloudSyncDialog({
                   ? `${parked} stuck — needs attention`
                   : totalPending > 0 ? 'Waiting to sync' : 'Queues are clean'}
               </div>
-              {parked > 0 && (
-                <a
-                  href="/sync"
-                  className="inline-flex items-center gap-1 px-2 h-7 rounded-md text-xs font-medium border border-red-400/40 text-red-700 dark:text-red-300 hover:bg-red-500/10"
-                >
-                  Open Sync Center
-                </a>
-              )}
+              {/* Always reachable — Sync Center is the full source of truth. */}
+              <a
+                href="/sync"
+                className={`inline-flex items-center gap-1 px-2 h-7 rounded-md text-xs font-medium border ${
+                  parked > 0
+                    ? 'border-red-400/40 text-red-700 dark:text-red-300 hover:bg-red-500/10'
+                    : 'border-border hover:bg-muted/60'
+                }`}
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Open Sync Center
+              </a>
             </div>
             <div className="text-xs text-muted-foreground mt-1 space-y-1">
               {totalPending > 0 && (
@@ -304,6 +351,41 @@ export function CloudSyncDialog({
               </div>
             )}
           </div>
+
+          {/* Unified "needs attention" — the SAME parked rows Sync Center + the
+              red badge show (all 5 kinds with real reasons), so the modal matches
+              the badge instead of the old FV-only list. Full triage lives in
+              Sync Center; this is a concise summary + a one-click Retry-all. */}
+          {parkedItems && parkedItems.length > 0 && (
+            <div className="rounded-lg border border-red-300 dark:border-red-800/50">
+              <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-red-200/60 dark:border-red-900/40">
+                <div className="text-sm font-medium text-red-700 dark:text-red-300">
+                  Needs attention — {summarizeParked(parkedItems).summaryLine}
+                </div>
+                <Button size="sm" variant="outline" onClick={retryAllParked} disabled={retryingAll}>
+                  {retryingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  Retry all parked ({parkedItems.length})
+                </Button>
+              </div>
+              <ul className="divide-y max-h-56 overflow-auto text-sm">
+                {parkedItems.slice(0, 12).map((it) => (
+                  <li key={`${it.kind}:${it.id}`} className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary" className="shrink-0">{PARKED_KIND_LABEL[it.kind] ?? it.kind}</Badge>
+                      <span className="font-medium truncate">{it.title}</span>
+                      {it.mcm && <span className="text-xs text-muted-foreground shrink-0">{it.mcm}</span>}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">{it.reason}</div>
+                  </li>
+                ))}
+                {parkedItems.length > 12 && (
+                  <li className="px-3 py-2 text-xs text-muted-foreground">
+                    +{parkedItems.length - 12} more — <a href="/sync" className="underline">open Sync Center</a>
+                  </li>
+                )}
+              </ul>
+            </div>
+          )}
 
           <div className="rounded-lg border">
             <button
