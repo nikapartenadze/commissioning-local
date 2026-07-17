@@ -25,6 +25,7 @@ import {
 } from './types'
 import { configService } from '@/lib/config'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
+import { SubsystemNetworkDeferral } from '@/lib/cloud/subsystem-network-deferral'
 import {
   listDeviceBlockerSyncs,
   deleteDeviceBlockerSync,
@@ -516,8 +517,17 @@ export class CloudSyncService {
 
     log.info(`Pushing ${rows.length} device blocker sync row(s) to cloud...`)
 
+    // Per-subsystem network-failure deferral: this queue is global (oldest-first
+    // across all MCMs). A batch-wide `break` on a network failure let ONE
+    // misconfigured MCM (whose rows sort first) starve every other MCM's blocker
+    // pushes every cycle — the same multi-MCM starvation fixed for the IO/e-stop
+    // drains. Defer only the offending MCM (tolerance 1 = the old stop-on-first
+    // behaviour, now scoped per MCM); a single-MCM box still stops after one
+    // failed attempt, other MCMs keep draining.
+    const deferral = new SubsystemNetworkDeferral(1)
     let synced = 0
     for (const row of rows) {
+      if (deferral.isDeferred(row.subsystemId)) continue
       try {
         const headers = new Headers({ 'Content-Type': 'application/json' })
         await this.addApiKeyHeader(headers)
@@ -544,9 +554,10 @@ export class CloudSyncService {
         if (response.status === 401) {
           // Auth/config problem on the tool, not a verdict on the row — must
           // not burn the retry cap (TPA8/MCM08 2026-06-04 lesson). Stop here.
-          log.error('Device blocker push: HTTP 401 auth failed — deferring queue, no strikes burned')
+          log.error('Device blocker push: HTTP 401 auth failed — deferring this MCM, no strikes burned')
           recordDeviceBlockerSyncTransientFailure(row.id, 'HTTP 401 auth failed')
-          break
+          deferral.recordNetworkFailure(row.subsystemId)
+          continue
         }
 
         if (response.ok) {
@@ -586,9 +597,10 @@ export class CloudSyncService {
         // Non-2xx, non-401.
         if (isNetworkLevelFailure({ httpStatus: response.status })) {
           // 5xx — cloud/proxy down. Keep the row, no strike, stop the batch.
-          log.warn(`Device blocker push: HTTP ${response.status} (network-level) — deferring queue, no strikes burned`)
+          log.warn(`Device blocker push: HTTP ${response.status} (network-level) — deferring this MCM, no strikes burned`)
           recordDeviceBlockerSyncTransientFailure(row.id, `HTTP ${response.status} (network-level)`)
-          break
+          deferral.recordNetworkFailure(row.subsystemId)
+          continue
         }
 
         // 4xx (other than 401): malformed/validation — retrying won't help.
@@ -599,10 +611,11 @@ export class CloudSyncService {
         // fetch threw (DNS / connect timeout / aborted) — never reached the
         // cloud, so no strike. Stop the batch.
         const msg = error instanceof Error ? error.message : String(error)
-        log.debug(`Device blocker push failed for row ${row.id}: ${msg} — deferring queue, no strikes burned`)
+        log.debug(`Device blocker push failed for row ${row.id}: ${msg} — deferring this MCM, no strikes burned`)
         recordDeviceBlockerSyncTransientFailure(row.id, msg)
         this.setConnectionState('error', 'Device blocker sync failed')
-        break
+        deferral.recordNetworkFailure(row.subsystemId)
+        continue
       }
     }
 
