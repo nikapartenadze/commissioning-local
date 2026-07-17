@@ -29,6 +29,7 @@ import {
 } from '@/lib/cloud/sync-failure-classification'
 import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
 import { SubsystemNetworkDeferral } from '@/lib/cloud/subsystem-network-deferral'
+import { isSupersededBySameKind } from '@/lib/cloud/b7-supersede'
 import { runJournalUpload } from '@/lib/cloud/journal-uploader'
 import {
   type TelemetryState,
@@ -1221,8 +1222,12 @@ class AutoSyncService {
     const rebaseStmt = db.prepare(
       'UPDATE PendingSyncs SET Version = ?, RetryCount = 0, DeadLettered = 0, LastError = ? WHERE id = ?'
     )
-    const newerStmt = db.prepare(
-      'SELECT COUNT(*) AS cnt FROM PendingSyncs WHERE IoId = ? AND id > ? AND DeadLettered = 0'
+    // Newer active pending rows for the same IO, with their op kind — a stuck
+    // row is only SUPERSEDED by a newer row of the SAME kind (a comment-only op
+    // does not carry a stuck test result forward, and vice versa). See
+    // isSupersededBySameKind.
+    const newerOpsStmt = db.prepare(
+      'SELECT TestResult FROM PendingSyncs WHERE IoId = ? AND id > ? AND DeadLettered = 0'
     )
     for (const row of rows) {
       const cloud = cloudByIo.get(row.IoId)
@@ -1237,12 +1242,19 @@ class AutoSyncService {
         })
         delStmt.run(row.id)
         applied++
-      } else if ((newerStmt.get(row.IoId, row.id) as { cnt: number }).cnt > 0) {
-        // A newer local write supersedes this row — it carries the newer value.
+      } else if (isSupersededBySameKind(
+        row.TestResult,
+        (newerOpsStmt.all(row.IoId, row.id) as { TestResult: string | null }[]).map(r => r.TestResult),
+      )) {
+        // A newer SAME-KIND local write supersedes this row — it carries the
+        // newer value of the same field (result-for-result / comment-for-comment).
+        // A newer comment-only row does NOT supersede a stuck result (it would
+        // never carry the result to cloud) — that row falls through to the rebase
+        // branch below and is re-pushed if it's still the local truth.
         auditLog({
           type: 'sync.push.drop', ioId: row.IoId, subsystemId: row.SubsystemId, version: row.Version,
           result: row.TestResult, user: null,
-          reason: 'b7-reconcile: superseded by a newer pending row',
+          reason: 'b7-reconcile: superseded by a newer same-kind pending row',
           detail: { pendingId: row.id },
         })
         delStmt.run(row.id)
