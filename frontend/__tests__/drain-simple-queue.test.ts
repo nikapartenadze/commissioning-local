@@ -148,6 +148,47 @@ describe('drainSimpleQueue — retry-cap classification', () => {
     expect(rowById(r2.lastInsertRowid).RetryCount).toBe(0)
   })
 
+  it('MULTI-MCM: a network-failing MCM (oldest) does NOT starve a healthy MCM behind it', async () => {
+    // Regression for the multi-MCM starvation on SAFETY queues: the drain reads
+    // the queue globally (CreatedAt ASC) and used to STOP on the first
+    // network-level failure — so one misconfigured MCM whose rows sort first
+    // blocked every other MCM's rows (incl. e-stop safety results) every cycle.
+    // A network failure must now defer ONLY its own MCM; healthy MCMs still drain.
+    const a = seed({ SubsystemId: 79, EntityKey: 'A' }) // broken MCM, oldest
+    const b = seed({ SubsystemId: 38, EntityKey: 'B' }) // healthy MCM, newer
+    const attempted: string[] = []
+    stubFetch(async (_url, init) => {
+      const key = JSON.parse(init.body).key
+      attempted.push(key)
+      return key === 'A' ? { ok: false, status: 503 } : { ok: true, status: 200 }
+    })
+    await drainSimpleQueue(opts())
+    // The healthy MCM MUST be attempted despite the broken MCM sorting first.
+    expect(attempted).toContain('B')
+    // Broken MCM: network-level note, no strike, its row kept for next cycle.
+    expect(rowById(a.lastInsertRowid).RetryCount).toBe(0)
+    expect(rowById(a.lastInsertRowid).LastError).toBe('HTTP 503 (network-level, no strike)')
+    // Healthy MCM synced → its row deleted.
+    expect(rowById(b.lastInsertRowid)).toBeUndefined()
+  })
+
+  it('MULTI-MCM: a second row of the SAME broken MCM is skipped without a network call', async () => {
+    seed({ SubsystemId: 79, EntityKey: 'A' })
+    seed({ SubsystemId: 79, EntityKey: 'A2' }) // same MCM, would also fail
+    seed({ SubsystemId: 38, EntityKey: 'B' })  // healthy MCM
+    const attempted: string[] = []
+    stubFetch(async (_url, init) => {
+      const key = JSON.parse(init.body).key
+      attempted.push(key)
+      return key.startsWith('A') ? { ok: false, status: 503 } : { ok: true, status: 200 }
+    })
+    await drainSimpleQueue(opts())
+    // MCM 79 attempted ONCE (then deferred — A2 skipped, no wasted 15s timeout);
+    // MCM 38 still attempted.
+    expect(attempted.filter(k => k.startsWith('A'))).toEqual(['A'])
+    expect(attempted).toContain('B')
+  })
+
   it('a row at the cap is PARKED (DeadLettered=1), audited, and never POSTed', async () => {
     const r = seed({ EntityKey: 'A', RetryCount: 10 })
     const fetchMock = stubFetch(async () => ({ ok: true, status: 200 }))

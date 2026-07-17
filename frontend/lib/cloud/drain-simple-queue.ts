@@ -9,9 +9,11 @@
  * decision in a single place so it can never diverge again.
  *
  * The retry-cap contract (identical to the IO / L2 / device-blocker drains):
- *  - fetch threw (offline / DNS / timeout)  → keep row, NO strike, STOP batch
+ *  - fetch threw (offline / DNS / timeout)  → keep row, NO strike, defer THIS MCM
  *  - isNetworkLevelFailure(status) (429 / ≥500 / 401)
- *                                            → note error, NO strike, STOP batch
+ *                                            → note error, NO strike, defer THIS MCM
+ *    (per-subsystem: a broken MCM's rows are skipped for the rest of the cycle,
+ *     but other MCMs keep draining — see SubsystemNetworkDeferral)
  *  - genuine cloud verdict (permanent 4xx)   → burn ONE strike toward the cap
  *  - RetryCount >= cap                        → PARK (DeadLettered=1), audit,
  *                                               keep the row for recovery
@@ -23,6 +25,7 @@
 import type { Database } from 'better-sqlite3'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { isNetworkLevelFailure } from '@/lib/cloud/sync-failure-classification'
+import { SubsystemNetworkDeferral } from '@/lib/cloud/subsystem-network-deferral'
 
 /** Every simple queue row carries at least these columns. */
 export interface SimpleQueueRow {
@@ -106,6 +109,15 @@ export async function drainSimpleQueue<Row extends SimpleQueueRow>(
     `UPDATE ${tableName} SET LastError = ? WHERE id = ?`,
   )
 
+  // Per-subsystem network-failure deferral (tolerance 1 = the original "stop on
+  // the first network failure" behaviour, now scoped PER MCM). This queue is
+  // GLOBAL (ORDER BY CreatedAt ASC), so on a multi-MCM box one misconfigured MCM
+  // owns the oldest rows; a batch-wide `break` let it starve every healthy MCM's
+  // rows — including e-stop SAFETY results — every cycle, forever. Deferring only
+  // the offending MCM keeps other MCMs draining, while a single-MCM box still
+  // stops after one failed attempt (same timeout-saving behaviour as before).
+  const deferral = new SubsystemNetworkDeferral(1)
+
   for (const p of Array.from(byKey.values())) {
     if (p.RetryCount >= retryCap) {
       // PARK, don't DELETE — the queue's data survives (DeadLettered=1), out of
@@ -128,6 +140,11 @@ export async function drainSimpleQueue<Row extends SimpleQueueRow>(
       continue
     }
 
+    // This row's MCM already failed network-level this cycle → skip WITHOUT a
+    // network call (don't burn a 15s timeout on an MCM we know is down), and
+    // don't let it block other MCMs' rows.
+    if (deferral.isDeferred(p.SubsystemId)) continue
+
     let resp: globalThis.Response
     try {
       resp = await fetch(`${remoteUrl}${endpoint}`, {
@@ -137,18 +154,21 @@ export async function drainSimpleQueue<Row extends SimpleQueueRow>(
         signal: AbortSignal.timeout(15000),
       })
     } catch {
-      // Offline / timeout — keep the row, no strike (next cycle retries).
-      break
+      // Offline / timeout — keep the row, no strike (next cycle retries). Defer
+      // THIS MCM (skip its remaining rows) but keep attempting other MCMs.
+      deferral.recordNetworkFailure(p.SubsystemId)
+      continue
     }
     if (resp.ok) {
       try { opts.deleteRowsForIdentity(p) } catch { /* best-effort */ }
     } else if (isNetworkLevelFailure({ httpStatus: resp.status })) {
       // 429 / ≥500 / 401 — the cloud never ruled on this row. Do NOT burn a
       // retry-cap strike (the TPA8/MCM08 premature-park class): record the
-      // reason and stop the batch — every later row would fail the same way and
-      // each costs up to a 15 s timeout. Mirrors the IO / L2 / device-blocker drains.
+      // reason and defer THIS MCM (its later rows are skipped, each would cost a
+      // 15 s timeout) — but keep draining OTHER MCMs (multi-MCM starvation fix).
       try { noteError.run(`HTTP ${resp.status} (network-level, no strike)`, p.id) } catch { /* best-effort */ }
-      break
+      deferral.recordNetworkFailure(p.SubsystemId)
+      continue
     } else {
       // Genuine cloud verdict (permanent 4xx) — burn a strike toward the cap.
       try { bumpRetry.run(`HTTP ${resp.status}`, p.id) } catch { /* best-effort */ }
