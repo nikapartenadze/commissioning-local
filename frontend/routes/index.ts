@@ -128,6 +128,7 @@ import * as vfdTestWrite from '@/app/api/vfd-commissioning/test-write/route'
 import * as vfdControlsVerified from '@/app/api/vfd-commissioning/controls-verified/route'
 import * as vfdBumpBlocker from '@/app/api/vfd-commissioning/bump-blocker/route'
 import * as vfdRefreshAddressed from '@/app/api/vfd-commissioning/refresh-addressed/route'
+import * as vfdRefreshBlockers from '@/app/api/vfd-commissioning/refresh-blockers/route'
 import * as guidedMapById from '@/app/api/maps/subsystem/[id]/route'
 import * as guidedDevices from '@/app/api/guided/devices/route'
 import * as guidedTest from '@/app/api/guided/test/route'
@@ -387,6 +388,7 @@ export function createApiRouter(): Router {
   router.post('/api/vfd-commissioning/controls-verified', asyncHandler(vfdControlsVerified.POST))
   router.post('/api/vfd-commissioning/bump-blocker', asyncHandler(vfdBumpBlocker.POST))
   router.post('/api/vfd-commissioning/refresh-addressed', asyncHandler(vfdRefreshAddressed.POST))
+  router.post('/api/vfd-commissioning/refresh-blockers', asyncHandler(vfdRefreshBlockers.POST))
 
   // ── Guided Mode (SVG-driven) ──────────────────────────────────
   router.get('/api/maps/subsystem/:id', asyncHandler(guidedMapById.GET))

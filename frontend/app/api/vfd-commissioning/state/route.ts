@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { parseBumpBlockerCell } from '@/lib/vfd-bump-blocker'
 import { listVfdAddressedStates } from '@/lib/db/repositories/vfd-addressed-sync-repository'
+import { listVfdBlockerStates } from '@/lib/db/repositories/vfd-blocker-mirror-repository'
 
 /**
  * GET /api/vfd-commissioning/state
@@ -164,6 +165,17 @@ export async function GET(_req: Request, res: Response) {
       addressedStates.map(a => [`${a.subsystemId}::${a.deviceName}`, a]),
     )
 
+    // Cloud-authoritative BLOCKER mirror (read-only on the field tool), keyed by
+    // (subsystemId, deviceName). A blocker raised on ANOTHER box lives here, not
+    // in this box's Bump Blocker cell — so without this merge a belt blocked
+    // elsewhere reads as "ready" locally (the MCM15 divergence). The local cell
+    // still wins when present (a blocker raised/cleared on THIS box, including
+    // in-flight — the pull skips pending devices so the mirror can't override it).
+    const blockerStates = listVfdBlockerStates()
+    const blockerMap = new Map(
+      blockerStates.map(b => [`${b.subsystemId}::${b.deviceName}`, b]),
+    )
+
     // Pivot rows → one record per (deviceName, sheetName) with a CellSet + meta
     type Acc = {
       deviceId: number
@@ -205,9 +217,18 @@ export async function GET(_req: Request, res: Response) {
     // the VFD Commissioning view can render the BLOCKED + (read-only) ADDRESSED
     // columns and self-load its device list without a separate fetch.
     const states = Array.from(byKey.values()).map(acc => {
-      const blocker = parseBumpBlockerCell(acc.cells.bumpBlocker)
+      const annotationKey = `${acc.subsystemId}::${acc.deviceName}`
+      // Local Bump Blocker cell wins (a blocker raised/cleared on THIS box);
+      // otherwise fall back to the cloud mirror (a blocker raised on another box).
+      const cellBlocker = parseBumpBlockerCell(acc.cells.bumpBlocker)
+      const mirrored = blockerMap.get(annotationKey)
+      const blocker =
+        cellBlocker ??
+        (mirrored && (mirrored.party || mirrored.description)
+          ? { party: mirrored.party ?? '', description: mirrored.description ?? '' }
+          : null)
       const blocked = blocker !== null
-      const local = addressedMap.get(`${acc.subsystemId}::${acc.deviceName}`)
+      const local = addressedMap.get(annotationKey)
       return {
         deviceId: acc.deviceId,
         deviceName: acc.deviceName,

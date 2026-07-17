@@ -19,6 +19,7 @@ import { getCloudSseClient } from '@/lib/cloud/cloud-sse-client'
 import { fetchAndApplyDelta } from '@/lib/cloud/delta-sync'
 import { setSyncCursor } from '@/lib/cloud/sync-cursor'
 import { pullVfdAddressed } from '@/lib/cloud/vfd-addressed-pull'
+import { pullVfdBlockers } from '@/lib/cloud/vfd-blockers-pull'
 import { runConfigSidePulls, pullGuidedTaskStates } from '@/lib/cloud/config-side-pulls'
 import { mcmTag } from '@/lib/logging/mcm-tag'
 import { isActiveMcm } from '@/lib/cloud/active-mcms'
@@ -91,6 +92,9 @@ export async function pullVfdAddressedForConfigured(state: PullState, trigger: s
     let total = 0
     for (const sid of Array.from(ids)) {
       total += await pullVfdAddressed(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
+      // Blockers ride the SAME catch-up so a box that missed the SSE hint still
+      // converges its blocked/ready view to the cloud (the MCM15 divergence fix).
+      await pullVfdBlockers(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
     }
     if (total > 0) {
       console.log(`[AutoSync] ${trigger}: mirrored ${total} VFD ADDRESSED row(s) from cloud`)
@@ -161,6 +165,9 @@ export async function pullSubsystemOnHint(state: PullState, subsystemId: number)
     const s = result.sections
     if (s.vfdBlocker) {
       await pullVfdAddressed(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
+      // …and the blocker itself, so blocked/ready converges to the cloud on
+      // every box (not just the ADDRESSED handoff flag).
+      await pullVfdBlockers(subsystemId, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword })
     }
     if (s.l2) {
       await pullL2Scoped(subsystemId, cfg.remoteUrl, cfg.apiPassword)
@@ -388,6 +395,7 @@ export async function pullAllConfiguredMcms(state: PullState, trigger: string): 
           // (gated, destructive) full pull.
           if (s.vfdBlocker) {
             try { await pullVfdAddressed(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword }) } catch { /* best-effort */ }
+            try { await pullVfdBlockers(sid, { remoteUrl: cfg.remoteUrl, apiPassword: cfg.apiPassword }) } catch { /* best-effort */ }
           }
           if (s.network || s.estop || s.safety || s.punchlist || s.changeRequest || s.roadmap) {
             return `${sid}:delta(+${result.applied}/-${result.deleted})+sect->${await mcmFullPull(sid)}`

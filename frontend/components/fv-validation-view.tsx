@@ -386,11 +386,21 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     if (subsystemId && subsystemId > 0) {
       ;(async () => {
         try {
-          await authFetch('/api/vfd-commissioning/refresh-addressed', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ subsystemId }),
-          })
+          // Pull the cloud-authoritative ADDRESSED flag AND the BLOCKER itself
+          // (a belt blocked on another box), so this box's blocked/ready view
+          // matches the cloud. Both are best-effort and run in parallel.
+          await Promise.all([
+            authFetch('/api/vfd-commissioning/refresh-addressed', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ subsystemId }),
+            }),
+            authFetch('/api/vfd-commissioning/refresh-blockers', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ subsystemId }),
+            }),
+          ])
           if (!cancelled) await loadVfdAnnotations() // pick up fresh cloud marks
         } catch { /* best-effort — local badges already shown */ }
       })()

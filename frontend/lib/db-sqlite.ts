@@ -842,6 +842,31 @@ export function initializeSchema() {
       PRIMARY KEY (SubsystemId, DeviceName)
     );
 
+    -- Cloud-authoritative mirror of VFD commissioning BLOCKERS created on OTHER
+    -- field boxes. A blocker ("belt slipping / not moving — Mechanical") is
+    -- raised on ONE box and pushed UP to the cloud; before this table there was
+    -- no path to bring it back DOWN, so every other box was blind to it and
+    -- over-counted belts as "ready for tracking" (the 2026-07-16 MCM15 divergence:
+    -- cloud 62 ready / 11 blocked vs a local box's 73 ready / 0 blocked). The
+    -- field tool PULLS this down (SSE delta on the vfdBlocker section / VFD tab
+    -- open / periodic sweep) so the VFD Commissioning view shows blocked belts on
+    -- EVERY box. Read-only on the field: raising/clearing a blocker still flows
+    -- through the wizard + DeviceBlockerPendingSyncs outbox. A device with an
+    -- in-flight local blocker op is NEVER overwritten here (see
+    -- vfd-blocker-mirror-repository.applyVfdBlockersFromCloud). Keyed by
+    -- (SubsystemId, DeviceName) — the same key the cloud contract resolves on.
+    CREATE TABLE IF NOT EXISTS VfdBlocker (
+      SubsystemId INTEGER NOT NULL,
+      DeviceName  TEXT NOT NULL,
+      Party       TEXT,
+      Description TEXT,
+      UpdatedBy   TEXT,
+      UpdatedAt   TEXT,
+      AddressedBy TEXT,
+      AddressedAt TEXT,
+      PRIMARY KEY (SubsystemId, DeviceName)
+    );
+
     -- Cloud-curated approved-firmware baseline, pulled from the cloud and
     -- cached locally so firmware compliance evaluates OFFLINE. Keyed by
     -- (VendorId, ProductCode); MinRevMajor.MinRevMinor is the MINIMUM supported
