@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { ShieldAlert, Zap, ZapOff, AlertTriangle, Square } from "lucide-react"
 import { authFetch } from "@/lib/api-config"
 import { cn } from "@/lib/utils"
+import { safetySectionStatus } from "@/lib/safety-section-status"
 
 interface SafetyOutput {
   id: number
@@ -39,6 +40,9 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   const [zones, setZones] = useState<SafetyZone[]>([])
   const [loadingOutputs, setLoadingOutputs] = useState(true)
   const [loadingZones, setLoadingZones] = useState(true)
+  // A failed zones fetch must NOT look like "none configured" (safety honesty).
+  const [zonesError, setZonesError] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
   // Tag values from PLC
   const [tagValues, setTagValues] = useState<Record<string, boolean | null>>({})
@@ -101,12 +105,13 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   useEffect(() => {
     const params = new URLSearchParams()
     if (subsystemId) params.set("subsystemId", String(subsystemId))
+    setLoadingZones(true)
     authFetch(`/api/safety/zones?${params}`)
       .then(res => res.ok ? res.json() : Promise.reject())
-      .then(data => setZones(data.zones || []))
-      .catch(() => setZones([]))
+      .then(data => { setZones(data.zones || []); setZonesError(false) })
+      .catch(() => { setZones([]); setZonesError(true) })
       .finally(() => setLoadingZones(false))
-  }, [subsystemId])
+  }, [subsystemId, reloadKey])
 
   // Poll tag values every 3 seconds
   useEffect(() => {
@@ -222,6 +227,12 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
             {[1,2,3].map(i => (
               <div key={i} className="h-48 rounded-lg bg-muted animate-pulse" />
             ))}
+          </div>
+        ) : safetySectionStatus(loadingZones, zonesError, zones.length) === 'error' ? (
+          <div role="alert" className="flex items-center gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span className="flex-1">Failed to load STO bypass zones — this is NOT a confirmation that none exist. Retry before relying on it.</span>
+            <Button variant="outline" size="sm" onClick={() => setReloadKey(k => k + 1)}>Retry</Button>
           </div>
         ) : zones.length === 0 ? (
           <p className="text-muted-foreground text-sm">No STO bypass zones configured</p>
