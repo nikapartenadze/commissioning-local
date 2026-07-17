@@ -77,14 +77,18 @@ function applyL2BatchOutcome(status: number): void {
 
 const l2Row = (id: number) => db.prepare('SELECT * FROM L2PendingSyncs WHERE id = ?').get(id) as any
 
-describe('shared permanent-rejection rule (403/404/410)', () => {
+describe('shared permanent-rejection rule (404/410 — 403 EXCLUDED)', () => {
   it('classifies removal statuses as permanent, disjoint from the transient set', () => {
-    for (const s of [403, 404, 410]) {
+    // Only 404/410 are confirmed removals. 403 was here until 2026-07-17 but the
+    // cloud uses 403 for auth/project-key mismatch (not a removal), so treating
+    // it as removal tombstoned unsynced work — it is now TRANSIENT (see below).
+    for (const s of [404, 410]) {
       expect(isPermanentRejectionStatus(s)).toBe(true)
       expect(isNetworkLevelFailure({ httpStatus: s })).toBe(false) // never transient
     }
-    // transient / non-removal statuses are NOT permanent
-    for (const s of [401, 429, 500, 502, 503]) {
+    // auth/config + throttle + server statuses are TRANSIENT, not removals.
+    // 403 rides here with 401 (same auth/config category).
+    for (const s of [401, 403, 429, 500, 502, 503]) {
       expect(isPermanentRejectionStatus(s)).toBe(false)
       expect(isNetworkLevelFailure({ httpStatus: s })).toBe(true)
     }
@@ -98,8 +102,8 @@ describe('shared permanent-rejection rule (403/404/410)', () => {
     expect(permanentRejectionReason(404)).toBe(
       'HTTP 404 — target no longer exists on cloud (removed); parked without further retries'
     )
-    expect(permanentRejectionReason(403)).toContain('HTTP 403')
-    expect(permanentRejectionReason(403)).toContain('parked without further retries')
+    expect(permanentRejectionReason(410)).toContain('HTTP 410')
+    expect(permanentRejectionReason(410)).toContain('parked without further retries')
   })
 })
 
@@ -111,15 +115,17 @@ describe('L2 queue — permanent reject parks on the FIRST attempt', () => {
     return Number(r.lastInsertRowid)
   }
 
-  it('403 parks immediately (DeadLettered=1, RetryCount still 0, readable reason)', () => {
+  it('403 (auth/project mismatch) is TRANSIENT — never parks, never strikes, self-heals', () => {
     const id = seedL2(1, 1, 'true')
-    applyL2BatchOutcome(403)
+    // A whole misconfiguration window of 403s (wrong/mis-scoped key) must NOT
+    // park or strike — once the config is fixed the row drains. Parking (or
+    // worse, the old orphan/tombstone) would silently hide unsynced work.
+    for (let i = 0; i < 25; i++) applyL2BatchOutcome(403)
     const row = l2Row(id)
-    expect(row.DeadLettered).toBe(1)              // parked on first response
-    expect(row.RetryCount).toBe(0)                // NOT retried to the cap
+    expect(row.DeadLettered).toBe(0)              // NOT parked — self-heals on fix
+    expect(row.RetryCount).toBe(0)                // no strikes burned
     expect(row.Value).toBe('true')                // value preserved (never deleted)
-    expect(row.LastError).toContain('HTTP 403')
-    expect(row.LastError).toContain('target no longer exists')
+    expect(row.LastError).toContain('network-level')
   })
 
   it('404 parks immediately for every row in the doomed batch', () => {

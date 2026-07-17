@@ -134,7 +134,7 @@ describe('anti-footgun: orphan only on a confirmed removal', () => {
   beforeEach(() => { makePendingSyncs(); makeL2PendingSyncs() })
 
   it('IO write rejected 404 / 410 → Orphaned=1 (confirmed removal)', () => {
-    for (const status of [403, 404, 410]) {
+    for (const status of [404, 410]) {
       const id = seedIo(status, 'Passed')
       // auto-sync decision: reason "HTTP <status>" → parse → isPermanentRejectionStatus
       const removed = isPermanentRejectionStatus(status)
@@ -142,6 +142,21 @@ describe('anti-footgun: orphan only on a confirmed removal', () => {
       db.prepare(SQL.ioOrphan).run(permanentRejectionReason(status), id)
       expect(rowOf(id).Orphaned).toBe(1)
     }
+  })
+
+  it('IO write rejected 403 (auth/project mismatch) → NOT orphaned (transient, self-heals)', () => {
+    // Regression pin (2026-07-17): 403 used to orphan → Ios.CloudRemoved=1,
+    // silently tombstoning unsynced work on a project/key mismatch. 403 is the
+    // SAME category as 401 (auth/config), so it must stay a transient no-strike
+    // retry that self-heals when the config is fixed — never orphaned, never a
+    // removal.
+    const id = seedIo(1, 'Passed')
+    expect(isPermanentRejectionStatus(403)).toBe(false)     // not a removal
+    expect(isNetworkLevelFailure({ httpStatus: 403 })).toBe(true) // transient
+    // network path never touches DeadLettered/Orphaned — row stays active
+    expect(rowOf(id).Orphaned).toBe(0)
+    expect(rowOf(id).DeadLettered).toBe(0)
+    expect(statusOf(rowOf(id).DeadLettered, rowOf(id).Orphaned)).toBe('pending')
   })
 
   it('IO transient 500 → NOT orphaned (stays active, no strike)', () => {

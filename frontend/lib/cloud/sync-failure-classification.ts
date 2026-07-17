@@ -24,6 +24,15 @@ export interface SyncFailureShape {
  * is still good and must NOT have its RetryCount incremented:
  * - fetch threw, or no HTTP attempt was made (offline / no remote URL)
  * - HTTP 401: auth/config problem on the tool, not a verdict on the row
+ * - HTTP 403: auth/project-key MISMATCH — the tool's apiPassword doesn't match
+ *   the record's project (validateApiKeyForIo fail in the cloud's
+ *   /api/sync/update). Same category as 401 (a config problem on the tool), NOT
+ *   a verdict that the record was removed. It self-heals once the config/key is
+ *   fixed. Classing 403 as a permanent REMOVAL (as it was until 2026-07-17)
+ *   fired orphan() → Ios.CloudRemoved=1, silently tombstoning genuinely-unsynced
+ *   local work and DISARMING the pull-guard for it — a data-loss vector on the
+ *   exact project-mismatch incident this tool has hit before. Genuine record
+ *   removal on that route is a 200-body rejected:[{permanent:true}], not a 403.
  * - HTTP 429: rate limited — the cloud REFUSED to process the row (no verdict
  *   on its value), it just throttled. Retrying after the window succeeds.
  * - HTTP 5xx: cloud app or reverse proxy down/overloaded
@@ -41,6 +50,7 @@ export function isNetworkLevelFailure(failure: SyncFailureShape): boolean {
   if (failure.thrown) return true
   if (failure.httpStatus === undefined) return true
   if (failure.httpStatus === 401) return true
+  if (failure.httpStatus === 403) return true // auth/project-key mismatch, not a record verdict (see note above)
   if (failure.httpStatus === 429) return true
   if (failure.httpStatus >= 500) return true
   return false
@@ -49,12 +59,17 @@ export function isNetworkLevelFailure(failure: SyncFailureShape): boolean {
 /**
  * DEFINITIVELY-PERMANENT cloud rejection statuses: the target row was REMOVED
  * on the cloud (deleted IO / device / column / subsystem), so every retry
- * returns the same 403/404/410 forever. There is nothing to reconcile — the
+ * returns the same 404/410 forever. There is nothing to reconcile — the
  * queue row must be PARKED (DeadLettered=1) on the FIRST such response instead
  * of burning the whole retry cap over many minutes on a doomed row.
  *
+ * 403 is deliberately EXCLUDED (was here until 2026-07-17): the cloud returns
+ * 403 for an auth/project-key mismatch, NOT a confirmed removal — treating it as
+ * removal tombstoned unsynced work (see isNetworkLevelFailure note). 403 is
+ * transient (retry, self-heal on config fix).
+ *
  * Deliberately NARROW, and disjoint from both:
- *  - the TRANSIENT set (401/429/5xx/thrown — isNetworkLevelFailure above), which
+ *  - the TRANSIENT set (401/403/429/5xx/thrown — isNetworkLevelFailure above), which
  *    keeps its no-strike retry/backoff behaviour untouched; and
  *  - the version-conflict / `updatedCount=0` case, which is usually an
  *    at-least-once GHOST the B7 reconcile heals against cloud truth — parking it
@@ -62,7 +77,7 @@ export function isNetworkLevelFailure(failure: SyncFailureShape): boolean {
  *    included here.
  */
 export function isPermanentRejectionStatus(httpStatus: number | undefined): boolean {
-  return httpStatus === 403 || httpStatus === 404 || httpStatus === 410
+  return httpStatus === 404 || httpStatus === 410
 }
 
 /**
