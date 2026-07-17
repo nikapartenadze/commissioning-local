@@ -9,6 +9,7 @@ import { ShieldAlert, Zap, ZapOff, AlertTriangle, Square } from "lucide-react"
 import { authFetch } from "@/lib/api-config"
 import { cn } from "@/lib/utils"
 import { safetySectionStatus } from "@/lib/safety-section-status"
+import { bypassConfirmed } from "@/lib/bypass-response"
 
 interface SafetyOutput {
   id: number
@@ -43,6 +44,9 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   // A failed zones fetch must NOT look like "none configured" (safety honesty).
   const [zonesError, setZonesError] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  // Surfaced when a safety control (start/stop bypass, fire) did NOT confirm, so
+  // the operator is never left believing a state the controller didn't reach.
+  const [bypassError, setBypassError] = useState<string | null>(null)
 
   // Tag values from PLC
   const [tagValues, setTagValues] = useState<Record<string, boolean | null>>({})
@@ -145,14 +149,21 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
 
   const handleFire = async (tag: string) => {
     setFiringTag(tag)
+    setBypassError(null)
     try {
-      await authFetch("/api/safety/fire", {
+      const res = await authFetch("/api/safety/fire", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tag, action: "toggle", subsystemId }),
       })
+      // authFetch does NOT throw on a non-2xx — surface a failed fire instead of
+      // silently swallowing it (the operator must not assume the output changed).
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null
+        setBypassError(`Failed to fire ${tag}${body?.error ? ` — ${body.error}` : ''}. Verify the output before relying on it.`)
+      }
     } catch {
-      // ignore
+      setBypassError(`Could not reach the server to fire ${tag}. The output may not have changed.`)
     } finally {
       setFiringTag(null)
       setFireConfirmTag(null)
@@ -160,24 +171,39 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   }
 
   const handleStartBypass = async (zone: SafetyZone) => {
+    setBypassError(null)
+    setBypassConfirmZone(null)
+    let res: Response
     try {
-      await authFetch("/api/safety/bypass", {
+      res = await authFetch("/api/safety/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bssTag: zone.bssTag, action: "start", subsystemId }),
       })
-      setBypassConfirmZone(null)
+    } catch {
+      // Never claim the bypass is active if the request didn't even reach the server.
+      setBypassError(`Could not reach the server to start bypass on ${zone.name}. The STO bypass is NOT active.`)
+      return
+    }
+    // FAIL-SAFE: only show the "SAFETY BYPASSED" overlay when the server CONFIRMS
+    // the bit was written (2xx + success:true). A 503/500 (PLC not connected /
+    // write failed) must NOT paint the overlay for a bit that was never asserted.
+    const body = await res.json().catch(() => null) as { success?: unknown; error?: string } | null
+    if (bypassConfirmed(res.ok, body)) {
       setBypassLostNotice(false)
       setActiveBypass(zone)
-    } catch {
-      // ignore
+    } else {
+      setBypassError(`Failed to start bypass on ${zone.name}${body?.error ? ` — ${body.error}` : ''}. The STO bypass is NOT active.`)
     }
   }
 
   const handleStopBypass = useCallback(async () => {
     if (!activeBypassRef.current) return
+    const zoneName = activeBypassRef.current.name
+    setBypassError(null)
+    let res: Response
     try {
-      await authFetch("/api/safety/bypass", {
+      res = await authFetch("/api/safety/bypass", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // subsystemId is REQUIRED: the server keys the 500ms bypass keep-alive by
@@ -189,9 +215,19 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
         body: JSON.stringify({ bssTag: activeBypassRef.current.bssTag, action: "stop", subsystemId }),
       })
     } catch {
-      // ignore
-    } finally {
+      // FAIL-SAFE: don't tell the operator safety is restored if STOP wasn't
+      // confirmed. Keep the overlay up; the 2s active-bypass poll clears it once
+      // the server actually drops the tag.
+      setBypassError(`Bypass STOP for ${zoneName} was NOT confirmed (server unreachable). Verify the zone — the bypass may still be held.`)
+      return
+    }
+    const body = await res.json().catch(() => null) as { success?: unknown; error?: string } | null
+    if (bypassConfirmed(res.ok, body)) {
       setActiveBypass(null)
+    } else {
+      // Not confirmed → keep the overlay (fail-safe); the active-bypass poll
+      // reconciles it when the server drops the tag.
+      setBypassError(`Bypass STOP for ${zoneName} was NOT confirmed. Verify the zone — the bypass may still be held.`)
     }
   }, [subsystemId])
 
@@ -211,6 +247,20 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
             zone before relying on it.
           </div>
           <Button variant="ghost" size="sm" onClick={() => setBypassLostNotice(false)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+      {/* A safety control (start/stop bypass, fire) did NOT confirm — never let
+          the UI imply a state the controller didn't actually reach. */}
+      {bypassError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive"
+        >
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div className="flex-1">{bypassError}</div>
+          <Button variant="ghost" size="sm" onClick={() => setBypassError(null)}>
             Dismiss
           </Button>
         </div>
