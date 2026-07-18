@@ -3,6 +3,7 @@ import { db, extractDeviceName } from '@/lib/db-sqlite'
 import { getWsBroadcastUrl, getPlcClient } from '@/lib/plc-client-manager'
 import { createBackup } from '@/lib/db/backup'
 import { runFullPull } from '@/lib/cloud/pull-core'
+import { pullExtraSections } from '@/lib/cloud/pull-extra-sections'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { mcmTag } from '@/lib/logging/mcm-tag'
 import { configService } from '@/lib/config'
@@ -371,6 +372,9 @@ export async function POST(req: Request, res: Response) {
       historiesPulled, networkPulled, estopPulled, safetyPulled, punchlistsPulled,
       l2Pulled, l2CellsPulled, l2Error, pullWarning,
     } = pull
+    // Sections runConfigSidePulls / L2 don't cover (VFD blockers/addressed,
+    // roadmap, MCM diagram) — refresh them so one manual pull is complete.
+    const extra = await pullExtraSections(subsystemId, remoteUrl, apiPassword)
     console.log(`[CloudPull] Side-pulls done: network=${networkPulled}, estop=${estopPulled}, safety=${safetyPulled}, punchlists=${punchlistsPulled}`)
     if (l2Error) console.error(`[CloudPull] L2/FV pull failed: ${l2Error}`)
 
@@ -479,6 +483,7 @@ export async function POST(req: Request, res: Response) {
       l2Pulled,
       l2CellsPulled,
       historiesPulled,
+      ...extra,
       ...(l2Error ? { l2Error } : {}),
       ...(pullWarning ? { warning: pullWarning } : {}),
       debug: {

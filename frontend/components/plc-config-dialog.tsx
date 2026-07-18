@@ -41,6 +41,13 @@ interface PlcConfigDialogProps {
     hasEverConnected: boolean
   }
   onCloudPull: (config: PlcConfig) => void
+  /**
+   * Called after a per-type section pull (FV / network / estop / …) so the
+   * parent can refresh the grid WITHOUT closing this dialog. The modal stays
+   * open with its terminal log visible across every pull — the operator closes
+   * it manually. Distinct from onCloudPull, which carries the full-pull config.
+   */
+  onSectionPulled?: () => void
   onPlcConnect: (config: PlcConfig) => void
   onTestConnection: () => Promise<boolean>
   /**
@@ -54,12 +61,36 @@ interface PlcConfigDialogProps {
   scopedSubsystemId?: number
 }
 
+// Per-type cloud pulls. Each targets ONE data class through its own scoped,
+// non-destructive-to-other-sections endpoint, so pulling e.g. FV can never wipe
+// network / estop / punchlist work — the "separate pull so we don't clobber
+// other people's work" requirement. `count`/`unit` normalize each endpoint's
+// (heterogeneous) success payload into a single "N units" chip for the row.
+type CloudSection = {
+  key: string
+  label: string
+  endpoint: string
+  unit: string
+  count: (r: any) => number
+}
+const CLOUD_SECTIONS: CloudSection[] = [
+  { key: 'fv',         label: 'Functional Validation', endpoint: '/api/cloud/pull-l2',                       unit: 'devices',  count: r => r.l2Pulled ?? 0 },
+  { key: 'network',    label: 'Network Topology',      endpoint: '/api/cloud/pull-network',                  unit: 'rings',    count: r => r.rings ?? 0 },
+  { key: 'estop',      label: 'E-Stop',                endpoint: '/api/cloud/pull-estop',                    unit: 'zones',    count: r => r.zones ?? 0 },
+  { key: 'safety',     label: 'Safety',                endpoint: '/api/cloud/pull-safety',                   unit: 'zones',    count: r => r.zones ?? 0 },
+  { key: 'punchlists', label: 'Punchlists',            endpoint: '/api/cloud/pull-punchlists',               unit: 'lists',    count: r => r.punchlists ?? 0 },
+  { key: 'vfd',        label: 'VFD Blockers',          endpoint: '/api/vfd-commissioning/refresh-blockers',  unit: 'blockers', count: r => r.written ?? 0 },
+  { key: 'roadmap',    label: 'Roadmap',               endpoint: '/api/cloud/pull-roadmap',                  unit: 'roadmaps', count: r => r.count ?? 0 },
+  { key: 'diagram',    label: 'MCM Diagram',           endpoint: '/api/cloud/pull-mcm-diagram',              unit: 'diagram',  count: r => (r.updated ? 1 : 0) },
+]
+
 export function PlcConfigDialog({
   open,
   onOpenChange,
   config,
   connectionState,
   onCloudPull,
+  onSectionPulled,
   onPlcConnect,
   onTestConnection,
   scopedSubsystemId,
@@ -462,6 +493,55 @@ export function PlcConfigDialog({
     addPullLog(`Forced pull failed: ${msg}`)
     setPullStatus({ type: 'error', message: `Pull failed: ${msg}` })
     return false
+  }
+
+  // ── Per-type section pulls (FV / network / estop / …) ──
+  // Independent of the full "Pull Everything" flow: each refreshes ONE data
+  // class through its own scoped endpoint and NEVER closes the dialog, so the
+  // operator watches every pull's result stream into the terminal log.
+  const [sectionBusy, setSectionBusy] = useState<Record<string, boolean>>({})
+  const [sectionResult, setSectionResult] = useState<Record<string, { count: number | null; error: boolean }>>({})
+  const anySectionPulling = Object.values(sectionBusy).some(Boolean)
+
+  const handleSectionPull = async (section: CloudSection) => {
+    const sid = scoped ? scopedSubsystemId : parseInt(localConfig.subsystemId, 10)
+    if (!sid || !Number.isFinite(sid)) {
+      setPullStatus({ type: 'error', message: 'Enter a Subsystem ID first' })
+      return
+    }
+    setSectionBusy(prev => ({ ...prev, [section.key]: true }))
+    setPullStatus({ type: 'loading', message: `Pulling ${section.label}…` })
+    addPullLog(`── Pull ${section.label} (MCM ${sid}) ──`)
+    try {
+      const res = await authFetch(section.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subsystemId: Number(sid) }),
+      })
+      const data = await res.json().catch(() => ({} as any))
+      // Endpoints are heterogeneous: most return { success, <count> }; the VFD
+      // refresh returns { ok, written } (no `success`). Treat as OK unless the
+      // body explicitly says success:false or carries an error / non-2xx.
+      const ok = res.ok && data?.success !== false && data?.error == null
+      if (ok) {
+        const n = section.count(data)
+        setSectionResult(prev => ({ ...prev, [section.key]: { count: n, error: false } }))
+        addPullLog(`${section.label}: ${n} ${section.unit} pulled`)
+        setPullStatus({ type: 'success', message: `${section.label}: ${n} ${section.unit}` })
+        onSectionPulled?.()
+      } else {
+        const msg = data?.error || `HTTP ${res.status}`
+        setSectionResult(prev => ({ ...prev, [section.key]: { count: null, error: true } }))
+        addPullLog(`${section.label} ERROR: ${msg}`)
+        setPullStatus({ type: 'error', message: `${section.label}: ${msg}` })
+      }
+    } catch (e: any) {
+      setSectionResult(prev => ({ ...prev, [section.key]: { count: null, error: true } }))
+      addPullLog(`${section.label} ERROR: ${e.message}`)
+      setPullStatus({ type: 'error', message: `${section.label}: ${e.message}` })
+    } finally {
+      setSectionBusy(prev => ({ ...prev, [section.key]: false }))
+    }
   }
 
   // ── Pull IOs from Cloud ──
@@ -1063,12 +1143,46 @@ export function PlcConfigDialog({
 
                 <Button
                   onClick={handlePullIos}
-                  disabled={busy || (!scoped && !localConfig.subsystemId) || (!scoped && !!liveStatus?.plcConnected)}
+                  disabled={busy || anySectionPulling || (!scoped && !localConfig.subsystemId) || (!scoped && !!liveStatus?.plcConnected)}
                   className="w-full bg-primary hover:bg-primary/90 text-white h-10"
                 >
                   <CloudDownload className="w-4 h-4 mr-2" />
-                  {isPulling ? `Pulling... (${pullElapsed}s)` : "Pull IOs from Cloud"}
+                  {isPulling ? `Pulling... (${pullElapsed}s)` : "Pull Everything from Cloud"}
                 </Button>
+
+                {/* Per-type pulls — refresh ONE data class without the full
+                    destructive IO pull, so pulling e.g. FV never touches
+                    network / estop / punchlist work. Each streams into the same
+                    terminal below and leaves the dialog open. */}
+                <div className="rounded-md border divide-y overflow-hidden">
+                  <div className="px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted/40">
+                    Or pull one type at a time
+                  </div>
+                  {CLOUD_SECTIONS.map(section => {
+                    const r = sectionResult[section.key]
+                    const secBusy = !!sectionBusy[section.key]
+                    return (
+                      <div key={section.key} className="flex items-center justify-between gap-2 px-3 py-1.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm truncate">{section.label}</span>
+                          {r && !r.error && r.count != null && (
+                            <span className="text-[11px] text-green-600 dark:text-green-400 flex-shrink-0">✓ {r.count} {section.unit}</span>
+                          )}
+                          {r && r.error && <span className="text-[11px] text-red-500 flex-shrink-0">failed</span>}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-3 text-xs flex-shrink-0"
+                          disabled={busy || anySectionPulling || (!scoped && !localConfig.subsystemId)}
+                          onClick={() => handleSectionPull(section)}
+                        >
+                          {secBusy ? <div className="animate-spin h-3 w-3 border-2 border-current border-t-transparent rounded-full" /> : 'Pull'}
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
 
                 {/* Status */}
                 {pullStatus.type && (

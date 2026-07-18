@@ -55,6 +55,8 @@ import * as cloudUnpark from '@/app/api/cloud/unpark/route'
 import * as cloudPullL2 from '@/app/api/cloud/pull-l2/route'
 import * as cloudPullMcmDiagram from '@/app/api/cloud/pull-mcm-diagram/route'
 import * as cloudPullRoadmap from '@/app/api/cloud/pull-roadmap/route'
+import * as cloudPullSafety from '@/app/api/cloud/pull-safety/route'
+import * as cloudPullPunchlists from '@/app/api/cloud/pull-punchlists/route'
 import * as cloudReconcile from '@/app/api/cloud/reconcile/route'
 import * as guidedResetSubsystem from '@/app/api/guided/reset-subsystem/route'
 import * as mcmDiagram from '@/app/api/mcm-diagram/[mcm]/route'
@@ -262,6 +264,8 @@ export function createApiRouter(): Router {
   router.post('/api/cloud/pull-l2', asyncHandler(cloudPullL2.POST))
   router.post('/api/cloud/pull-mcm-diagram', asyncHandler(cloudPullMcmDiagram.POST))
   router.post('/api/cloud/pull-roadmap', asyncHandler(cloudPullRoadmap.POST))
+  router.post('/api/cloud/pull-safety', asyncHandler(cloudPullSafety.POST))
+  router.post('/api/cloud/pull-punchlists', asyncHandler(cloudPullPunchlists.POST))
   router.get('/api/mcm-diagram/:mcm', asyncHandler(mcmDiagram.GET))
 
   // ── MCM Registry (central-tool multi-MCM) ─────────────────────

@@ -26,14 +26,24 @@ const upsertStmt = db.prepare(`
     FetchedAt = excluded.FetchedAt
 `)
 
-export async function POST(_req: Request, res: Response) {
+export async function POST(req: Request, res: Response) {
   try {
     const config = await configService.getConfig()
     const remoteUrl = config.remoteUrl
     const apiPassword = config.apiPassword
-    const subsystemId = typeof config.subsystemId === 'string'
-      ? parseInt(config.subsystemId, 10)
-      : config.subsystemId
+    // Honor an explicit subsystemId from the caller (the manual per-MCM pull's
+    // pullExtraSections self-call passes it), falling back to the ambient config
+    // subsystem for the legacy client callers (the "Pull diagram" button) that
+    // send no body. Without this a central/multi-MCM tool would always pull the
+    // config subsystem's diagram, not the MCM actually being pulled.
+    const bodySid = (req.body as { subsystemId?: number | string } | undefined)?.subsystemId
+    const subsystemId = typeof bodySid === 'number'
+      ? bodySid
+      : typeof bodySid === 'string'
+        ? parseInt(bodySid, 10)
+        : typeof config.subsystemId === 'string'
+          ? parseInt(config.subsystemId, 10)
+          : config.subsystemId
 
     if (!remoteUrl) {
       return res.status(400).json({ success: false, error: 'Cloud URL not configured' })

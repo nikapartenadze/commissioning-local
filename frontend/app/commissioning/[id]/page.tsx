@@ -1743,7 +1743,9 @@ export default function CommissioningPage() {
   const handleCloudPull = async (newConfig: PlcConfig) => {
     logger.log('Cloud pull completed with config:', newConfig)
     setPlcConfig(newConfig)
-    setShowConfigDialog(false)
+    // Keep the config modal OPEN after a pull so the operator can read the full
+    // report in the terminal log (and run further per-type pulls). The grid
+    // refreshes live underneath; the operator closes the dialog manually.
 
     // Refetch IOs from backend (data should already be synced)
     await loadIos()
@@ -2256,6 +2258,9 @@ export default function CommissioningPage() {
             hasEverConnected: plcStatus.hasEverConnected ?? false,
           }}
           onCloudPull={handleCloudPull}
+          // Per-type pull finished — refresh the grid live WITHOUT closing the
+          // dialog, so the terminal report stays visible for the next pull.
+          onSectionPulled={() => { void loadIos() }}
           onPlcConnect={handlePlcConnect}
           onTestConnection={handleTestConnection}
           // Central-tool: scope connect/disconnect/pull/IP to THIS MCM (URL id)

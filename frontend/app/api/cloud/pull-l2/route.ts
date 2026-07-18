@@ -184,7 +184,7 @@ export async function POST(req: Request, res: Response) {
       const requeueOrphanedL2 = db.prepare(
         'UPDATE L2PendingSyncs SET Orphaned = 0, DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE CloudDeviceId = ? AND Orphaned = 1',
       )
-      const getCell = db.prepare('SELECT id, Value, UpdatedAt FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
+      const getCell = db.prepare('SELECT id, Value, UpdatedAt, Version FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
       const insertCell = db.prepare('INSERT INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
       const fillCell = db.prepare('UPDATE L2CellValues SET CloudCellId=?, Value=?, UpdatedBy=?, UpdatedAt=?, Version=? WHERE id=?')
 
@@ -232,7 +232,7 @@ export async function POST(req: Request, res: Response) {
       // and (c) NEVER overwrites or blanks a FILLED local cell (operator test data
       // flows UP only). This replaced the OLD delete-all+reinsert that wiped 116
       // real cells on MCM02/14/18 (all safe on cloud). See FV-IO-Sync-Architecture.
-      let cellsInserted = 0, keptLocalExisting = 0
+      let cellsInserted = 0, keptLocalExisting = 0, cellsOverwritten = 0
       for (const dev of (data.devices || [])) {
         const localSheetId = sheetIdMap.get(dev.sheetId)
         if (!localSheetId) continue
@@ -258,7 +258,7 @@ export async function POST(req: Request, res: Response) {
         if (!ld || !lc) continue
         const cloudFilled = cell.value != null && String(cell.value).trim() !== ''
         const ver = Number(cell.version) || 0
-        const ex = getCell.get(ld, lc) as { id: number; Value: string | null; UpdatedAt: string | null } | undefined
+        const ex = getCell.get(ld, lc) as { id: number; Value: string | null; UpdatedAt: string | null; Version: number | null } | undefined
         if (!ex) {
           // Local is MISSING this cell → INSERT it (first-load / restore of a
           // wiped tool; also how a cloud-authored value first lands).
@@ -268,8 +268,33 @@ export async function POST(req: Request, res: Response) {
         }
         const localFilled = ex.Value != null && String(ex.Value).trim() !== ''
         if (localFilled) {
-          // FILLED local cell → KEEP LOCAL, always. Operator test data is
-          // field-authored and flows UP only; a pull never overwrites it.
+          // FILLED local cell. The field still owns VALUES, but a cloud-authored
+          // CORRECTION must be able to reach a tablet that already has a value —
+          // otherwise an admin fix (or a peer's newer edit) can NEVER land here
+          // (the "Pull doesn't pull latest FV" gap). Overwrite ONLY when ALL hold:
+          //   - the cell has NO un-pushed local edit (queuedKeys; the whole pull
+          //     is also 409'd upstream when the subsystem has any active/parked
+          //     pending L2 sync, so this is defense-in-depth for orphaned rows),
+          //   - the cloud carries a non-empty value that DIFFERS from local, and
+          //   - the cloud is STRICTLY newer — higher Version, or equal Version
+          //     with a strictly newer UpdatedAt (version primary, timestamp
+          //     tiebreak). A local edit bumps Version AND queues a pending row, so
+          //     a non-pending filled cell reflects a previously-synced state; a
+          //     strictly-newer cloud value is therefore a genuine later edit, not
+          //     unsynced field work. Otherwise the field's value stands.
+          const hasPendingEdit = queuedKeys.has(`${cell.deviceId}-${cell.columnId}`)
+          const localVer = Number(ex.Version) || 0
+          let cloudNewer = ver > localVer
+          if (!cloudNewer && ver === localVer) {
+            const cloudTs = parseDbTimestamp(cell.updatedAt)
+            const localTs = parseDbTimestamp(ex.UpdatedAt)
+            cloudNewer = Number.isFinite(cloudTs) && Number.isFinite(localTs) && cloudTs > localTs
+          }
+          if (!hasPendingEdit && cloudFilled && String(cell.value) !== String(ex.Value) && cloudNewer) {
+            fillCell.run(cell.id, cell.value, cell.updatedBy, cell.updatedAt, ver, ex.id)
+            cellsOverwritten++; l2CellsPulled++
+            continue
+          }
           keptLocalExisting++
           continue
         }
@@ -325,13 +350,14 @@ export async function POST(req: Request, res: Response) {
         }
       }
 
-      return { sheetsCount: data.sheets.length, l2Pulled, l2CellsPulled, cellsInserted, cellsFilled, keptLocalExisting, devicesPruned }
+      return { sheetsCount: data.sheets.length, l2Pulled, l2CellsPulled, cellsInserted, cellsFilled, cellsOverwritten, keptLocalExisting, devicesPruned }
     })()
 
     console.log(
-      `[L2Pull] SUCCESS (structure + values-down-into-empty-only): ${result.sheetsCount} sheets, ` +
+      `[L2Pull] SUCCESS (structure + values-down-into-empty + newer-cloud-corrections): ${result.sheetsCount} sheets, ` +
       `${result.l2Pulled} devices, ${result.cellsInserted} missing cell(s) inserted, ` +
       `${result.cellsFilled} empty local cell(s) filled from cloud (e.g. belt-tracked), ` +
+      `${result.cellsOverwritten} filled local cell(s) updated from a strictly-newer cloud value, ` +
       `${result.keptLocalExisting} filled local cell(s) kept (field owns values), ` +
       `${result.devicesPruned} empty orphan device(s) pruned`,
     )
@@ -353,6 +379,7 @@ export async function POST(req: Request, res: Response) {
         l2CellsPulled: result.l2CellsPulled,
         cellsInserted: result.cellsInserted,
         cellsFilled: result.cellsFilled,
+        cellsOverwritten: result.cellsOverwritten,
         keptLocalExisting: result.keptLocalExisting,
         devicesPruned: result.devicesPruned,
         authoritativeComplete: data.authoritativeComplete === true,

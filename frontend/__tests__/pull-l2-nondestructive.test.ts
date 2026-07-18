@@ -123,8 +123,8 @@ const devPayload = (cloudDevId: number, cloudSheetId: number, name = 'DEV') => (
   id: cloudDevId, sheetId: cloudSheetId, deviceName: name, mcm: 'MCM01', subsystem: 'SUB',
   displayOrder: 1, completedChecks: 0, totalChecks: 1,
 })
-const cellPayload = (cloudCellId: number, cloudDevId: number, cloudColId: number, value: string | null, updatedAt: string) => ({
-  id: cloudCellId, deviceId: cloudDevId, columnId: cloudColId, value, updatedBy: 'cloud', updatedAt, version: 1,
+const cellPayload = (cloudCellId: number, cloudDevId: number, cloudColId: number, value: string | null, updatedAt: string, version = 1) => ({
+  id: cloudCellId, deviceId: cloudDevId, columnId: cloudColId, value, updatedBy: 'cloud', updatedAt, version,
 })
 
 // ── local seed helpers ──────────────────────────────────────────────────────
@@ -143,10 +143,10 @@ function seedDevice(cloudDevId: number, localSheetId: number, opts: { subsystemI
     'INSERT INTO L2Devices (CloudId,SubsystemId,SheetId,DeviceName,Mcm,Subsystem,DisplayOrder,CompletedChecks,TotalChecks) VALUES (?,?,?,?,?,?,?,?,?)',
   ).run(cloudDevId, opts.subsystemId === undefined ? SID : opts.subsystemId, localSheetId, opts.name || 'DEV', 'MCM01', 'SUB', 1, 0, 1).lastInsertRowid as number
 }
-function seedCell(localDevId: number, localColId: number, value: string | null, updatedAt: string, cloudCellId: number | null = null): number {
+function seedCell(localDevId: number, localColId: number, value: string | null, updatedAt: string, cloudCellId: number | null = null, version = 0): number {
   return memDb.prepare(
     'INSERT INTO L2CellValues (CloudCellId,DeviceId,ColumnId,Value,UpdatedBy,UpdatedAt,Version) VALUES (?,?,?,?,?,?,?)',
-  ).run(cloudCellId, localDevId, localColId, value, 'local', updatedAt, 0).lastInsertRowid as number
+  ).run(cloudCellId, localDevId, localColId, value, 'local', updatedAt, version).lastInsertRowid as number
 }
 
 const getCell = (id: number) => memDb.prepare('SELECT * FROM L2CellValues WHERE id = ?').get(id) as any
@@ -199,27 +199,64 @@ describe('pull-l2 non-destructive merge', () => {
     expect(getCell(cell).Value).toBe('PASS') // filled local value preserved
   })
 
-  it('3. NEVER overwrites an existing local cell, even when cloud looks newer (FV is field-authored, up-only)', async () => {
+  it('3. overwrites a filled local cell when the cloud version is strictly newer (a cloud-authored FV correction lands)', async () => {
+    // The Beacon-Flashing case: the tablet holds fail@v1 (last synced from
+    // cloud), an admin corrects it to pass@v2 on the cloud, operator presses
+    // Pull. The strictly-newer cloud value must land.
+    const sh = seedSheet(100)
+    const col = seedColumn(200, sh)
+    const dev = seedDevice(300, sh)
+    const cell = seedCell(dev, col, 'fail', '2026-07-16T19:45:00.000Z', 10, 1)
+    const res = await runPull({
+      success: true,
+      sheets: [sheetPayload(100, [colPayload(200)])],
+      devices: [devPayload(300, 100)],
+      cellValues: [cellPayload(10, 300, 200, 'pass', '2026-07-17T08:00:00.000Z', 2)],
+    })
+    expect(res.statusCode).toBe(200)
+    expect(getCell(cell).Value).toBe('pass') // cloud correction landed
+    expect(getCell(cell).Version).toBe(2)    // local version advanced to cloud's
+  })
+
+  it('3-keep-older. keeps a filled local cell when the cloud version is older or equal (no newer authority)', async () => {
     const sh = seedSheet(100)
     const colA = seedColumn(200, sh)
     const colB = seedColumn(201, sh)
     const dev = seedDevice(300, sh)
-    const cellA = seedCell(dev, colA, 'OLD', '2026-01-01T00:00:00.000Z')
-    const cellB = seedCell(dev, colB, 'LOCAL-NEW', '2026-03-01T00:00:00.000Z')
+    const cellA = seedCell(dev, colA, 'LOCAL', '2026-07-16T10:00:00.000Z', 10, 5)
+    const cellB = seedCell(dev, colB, 'LOCAL-EQ', '2026-07-16T10:00:00.000Z', 11, 4)
     const res = await runPull({
       success: true,
       sheets: [sheetPayload(100, [colPayload(200), colPayload(201)])],
       devices: [devPayload(300, 100)],
       cellValues: [
-        // Cloud claims a "newer" value — but nobody edits FV test data on the
-        // cloud, so the pull must IGNORE it and keep the field's value.
-        cellPayload(1, 300, 200, 'CLOUD-NEW', '2026-02-01T00:00:00.000Z'),
-        cellPayload(2, 300, 201, 'CLOUD-OLD', '2026-01-01T00:00:00.000Z'),
+        cellPayload(10, 300, 200, 'CLOUD-OLD', '2026-07-15T10:00:00.000Z', 3), // older version → ignore
+        cellPayload(11, 300, 201, 'CLOUD-EQ', '2026-07-16T10:00:00.000Z', 4),  // equal version, not-newer ts → keep
       ],
     })
     expect(res.statusCode).toBe(200)
-    expect(getCell(cellA).Value).toBe('OLD')       // existing local kept — cloud never overwrites
-    expect(getCell(cellB).Value).toBe('LOCAL-NEW') // existing local kept
+    expect(getCell(cellA).Value).toBe('LOCAL')    // stale cloud version ignored
+    expect(getCell(cellB).Value).toBe('LOCAL-EQ') // equal version, no newer authority
+  })
+
+  it('3-pending. does NOT overwrite a filled local cell that carries an un-pushed local edit, even if cloud looks newer', async () => {
+    // Defense-in-depth: an orphaned pending row is excluded from the pending-queue
+    // block (so the pull still runs) but marks this cell as unsynced field work —
+    // it must be kept regardless of how new the cloud value looks.
+    const sh = seedSheet(100)
+    const col = seedColumn(200, sh)
+    const dev = seedDevice(300, sh)
+    const cell = seedCell(dev, col, 'FIELD-UNSYNCED', '2026-07-16T10:00:00.000Z', 10, 1)
+    memDb.prepare('INSERT INTO L2PendingSyncs (CloudDeviceId,CloudColumnId,Value,UpdatedBy,Version,DeadLettered,Orphaned) VALUES (?,?,?,?,?,?,?)')
+      .run(300, 200, 'FIELD-UNSYNCED', 'local', 1, 1, 1)
+    const res = await runPull({
+      success: true,
+      sheets: [sheetPayload(100, [colPayload(200)])],
+      devices: [devPayload(300, 100)],
+      cellValues: [cellPayload(10, 300, 200, 'CLOUD-NEW', '2026-07-17T10:00:00.000Z', 9)],
+    })
+    expect(res.statusCode).toBe(200)
+    expect(getCell(cell).Value).toBe('FIELD-UNSYNCED') // unsynced local work protected
   })
 
   it('3b. FILLS an EMPTY local cell from cloud — the belt-tracking handoff', async () => {

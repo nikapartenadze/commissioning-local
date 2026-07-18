@@ -9,6 +9,7 @@ import { auditLog } from '@/lib/logging/recovery-log';
 import { mcmTag } from '@/lib/logging/mcm-tag';
 import { runConfigSidePulls } from '@/lib/cloud/config-side-pulls';
 import { runFullPull } from '@/lib/cloud/pull-core';
+import { pullExtraSections } from '@/lib/cloud/pull-extra-sections';
 import { selectRefs, snapshotRefs, discard } from '@/lib/sync/queue-inspector';
 import { writeDiscardLog } from '@/lib/sync/discard-log';
 
@@ -290,6 +291,9 @@ export async function POST(req: Request, res: Response) {
       // scoped, idempotent delete+reinsert per section, so this is safe.
       const side = await runConfigSidePulls(subsystemId, remoteUrl, apiPassword, { db });
       const l2 = await pullL2SelfCall(subsystemId, remoteUrl, apiPassword);
+      // Even on a no-op (IO set unchanged), the extra sections can have moved on
+      // the cloud — refresh them too so a manual pull is never partially stale.
+      const extra = await pullExtraSections(subsystemId, remoteUrl, apiPassword);
       await armRePullSuppression();
       return res.json({
         success: true,
@@ -302,6 +306,7 @@ export async function POST(req: Request, res: Response) {
         safetyPulled: side.safetyPulled,
         punchlistsPulled: side.punchlistsPulled,
         l2Pulled: l2.l2Pulled,
+        ...extra,
       });
     }
 
@@ -358,6 +363,9 @@ export async function POST(req: Request, res: Response) {
 
     const result = pull.iosCount;
     const { networkPulled, estopPulled, safetyPulled, punchlistsPulled, l2Pulled } = pull;
+    // Sections runConfigSidePulls / L2 don't cover (VFD blockers/addressed,
+    // roadmap, MCM diagram) — refresh them so one manual pull is complete.
+    const extra = await pullExtraSections(subsystemId, remoteUrl, apiPassword);
 
     // Invalidate the registry's IO→Subsystem lookup cache so per-IO routing
     // picks up the new rows immediately.
@@ -408,6 +416,7 @@ export async function POST(req: Request, res: Response) {
       safetyPulled,
       punchlistsPulled,
       l2Pulled,
+      ...extra,
     });
   } catch (error) {
     console.error(`${mcmTag(subsystemIdStr)}[MCM ${subsystemIdStr} Pull] error:`, error);
