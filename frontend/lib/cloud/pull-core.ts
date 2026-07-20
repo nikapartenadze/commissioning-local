@@ -74,6 +74,7 @@ export interface CloudIo {
   clarificationNote?: string | null
   networkDeviceName?: string | null
   punchlistStatus?: string | null
+  plannedDate?: string | null
 }
 
 export interface CloudHistory {
@@ -162,8 +163,8 @@ export type RunFullPullResult =
 const PENDING_APPEARED = 'PENDING_APPEARED'
 
 const UPSERT_IO_SQL = `
-  INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, CloudSyncedAt, "Order")
-  VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @CloudSyncedAt, @Order)
+  INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, PlannedDate, CloudSyncedAt, "Order")
+  VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @PlannedDate, @CloudSyncedAt, @Order)
   ON CONFLICT(id) DO UPDATE SET
     Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
     Result = CASE WHEN Ios.Result IS NOT NULL AND Ios.Result != '' THEN Ios.Result ELSE @Result END,
@@ -176,6 +177,7 @@ const UPSERT_IO_SQL = `
     Version = @Version, Trade = @Trade, ClarificationNote = @ClarificationNote,
     NetworkDeviceName = @NetworkDeviceName,
     PunchlistStatus = CASE WHEN @PunchlistStatus IS NOT NULL THEN @PunchlistStatus ELSE Ios.PunchlistStatus END,
+    PlannedDate = @PlannedDate,
     CloudSyncedAt = @CloudSyncedAt,
     "Order" = @Order
 `
@@ -369,6 +371,7 @@ export async function runFullPull(params: RunFullPullParams): Promise<RunFullPul
             ClarificationNote: cloudIo.clarificationNote ?? null,
             NetworkDeviceName: cloudIo.networkDeviceName ?? null,
             PunchlistStatus: cloudIo.punchlistStatus ?? null,
+            PlannedDate: cloudIo.plannedDate ?? null,
             CloudSyncedAt: new Date().toISOString(),
             Order: cloudIo.order ?? null,
           })

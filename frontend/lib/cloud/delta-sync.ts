@@ -51,6 +51,7 @@ export interface DeltaIo {
   clarificationNote?: string | null
   networkDeviceName?: string | null
   punchlistStatus?: string | null
+  plannedDate?: string | null
 }
 
 export interface DeltaPayload {
@@ -95,8 +96,8 @@ let _upsertStmt: ReturnType<typeof db.prepare> | null = null
 function upsertStmt() {
   if (!_upsertStmt) {
     _upsertStmt = db.prepare(`
-      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, CloudSyncedAt, "Order")
-      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @CloudSyncedAt, @Order)
+      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, PlannedDate, CloudSyncedAt, "Order")
+      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @PlannedDate, @CloudSyncedAt, @Order)
       ON CONFLICT(id) DO UPDATE SET
         Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
         Result = CASE WHEN Ios.Result IS NOT NULL AND Ios.Result != '' THEN Ios.Result ELSE @Result END,
@@ -119,6 +120,10 @@ function upsertStmt() {
         Trade = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.Trade ELSE @Trade END,
         ClarificationNote = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.ClarificationNote ELSE @ClarificationNote END,
         PunchlistStatus = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.PunchlistStatus ELSE @PunchlistStatus END,
+        -- PlannedDate is cloud-owned and field-read-only: apply directly,
+        -- including null (a genuine unschedule). No pending guard needed —
+        -- the field never edits it, so there is nothing local to protect.
+        PlannedDate = @PlannedDate,
         CloudSyncedAt = @CloudSyncedAt,
         "Order" = @Order
     `)
@@ -135,8 +140,8 @@ let _upsertKeepClearStmt: ReturnType<typeof db.prepare> | null = null
 function upsertKeepClearStmt() {
   if (!_upsertKeepClearStmt) {
     _upsertKeepClearStmt = db.prepare(`
-      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, CloudSyncedAt, "Order")
-      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @CloudSyncedAt, @Order)
+      INSERT INTO Ios (id, Name, Description, SubsystemId, Result, Comments, Timestamp, TestedBy, IoNumber, InstallationStatus, InstallationPercent, PoweredUp, TagType, Version, Trade, ClarificationNote, NetworkDeviceName, PunchlistStatus, PlannedDate, CloudSyncedAt, "Order")
+      VALUES (@id, @Name, @Description, @SubsystemId, @Result, @Comments, @Timestamp, @TestedBy, @IoNumber, @InstallationStatus, @InstallationPercent, @PoweredUp, @TagType, @Version, @Trade, @ClarificationNote, @NetworkDeviceName, @PunchlistStatus, @PlannedDate, @CloudSyncedAt, @Order)
       ON CONFLICT(id) DO UPDATE SET
         Name = @Name, Description = @Description, SubsystemId = @SubsystemId,
         Result = Ios.Result, Comments = Ios.Comments,
@@ -157,6 +162,10 @@ function upsertKeepClearStmt() {
         Trade = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.Trade ELSE @Trade END,
         ClarificationNote = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.ClarificationNote ELSE @ClarificationNote END,
         PunchlistStatus = CASE WHEN EXISTS (SELECT 1 FROM PendingSyncs WHERE IoId = Ios.id AND TestResult = 'Punchlist Updated') THEN Ios.PunchlistStatus ELSE @PunchlistStatus END,
+        -- PlannedDate is cloud-owned and field-read-only: apply directly,
+        -- including null (a genuine unschedule). No pending guard needed —
+        -- the field never edits it, so there is nothing local to protect.
+        PlannedDate = @PlannedDate,
         CloudSyncedAt = @CloudSyncedAt,
         "Order" = @Order
     `)
@@ -210,6 +219,7 @@ function ioToParams(io: DeltaIo, subsystemId: number) {
     ClarificationNote: io.clarificationNote ?? null,
     NetworkDeviceName: io.networkDeviceName ?? extractDeviceName(io.name) ?? null,
     PunchlistStatus: io.punchlistStatus ?? null,
+    PlannedDate: io.plannedDate ?? null,
     CloudSyncedAt: new Date().toISOString(),
     Order: io.order ?? null,
   }

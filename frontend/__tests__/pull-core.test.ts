@@ -40,7 +40,7 @@ function makeDb(): DB {
       Result TEXT, Comments TEXT, Timestamp TEXT, TestedBy TEXT, IoNumber INTEGER,
       InstallationStatus TEXT, InstallationPercent INTEGER, PoweredUp INTEGER,
       TagType TEXT, Version INTEGER, Trade TEXT, ClarificationNote TEXT,
-      NetworkDeviceName TEXT, PunchlistStatus TEXT, CloudSyncedAt TEXT, "Order" INTEGER
+      NetworkDeviceName TEXT, PunchlistStatus TEXT, PlannedDate TEXT, CloudSyncedAt TEXT, "Order" INTEGER
     , CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE TestHistories (
       id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, Result TEXT, TestedBy TEXT,
@@ -283,6 +283,26 @@ describe('runFullPull — guards preserved', () => {
     // The original IO is still present — no delete ran.
     expect(db.prepare('SELECT COUNT(*) c FROM Ios WHERE id = 1').get().c).toBe(1)
     expect(db.prepare('SELECT COUNT(*) c FROM Ios WHERE id = 2').get().c).toBe(0)
+  })
+
+  it('applies plannedDate verbatim and lets a cloud null CLEAR it (cloud-owned, no local guard)', async () => {
+    // Round 1: cloud assigns a planned date → stored verbatim as TEXT.
+    let res = await runFullPull({
+      db, subsystemId: 16, global: false,
+      cloudIos: [cloudIo(1, { plannedDate: '2026-08-03' })],
+      ...base, deps: makeDeps(),
+    })
+    expect(res.kind).toBe('ok')
+    expect(db.prepare('SELECT PlannedDate FROM Ios WHERE id = 1').get().PlannedDate).toBe('2026-08-03')
+    // Round 2: cloud unschedules (null) → cleared. Unlike Result/Comments there
+    // is NO local-authority CASE WHEN — the field never owns this value.
+    res = await runFullPull({
+      db, subsystemId: 16, global: false,
+      cloudIos: [cloudIo(1, { plannedDate: null })],
+      ...base, deps: makeDeps(),
+    })
+    expect(res.kind).toBe('ok')
+    expect(db.prepare('SELECT PlannedDate FROM Ios WHERE id = 1').get().PlannedDate).toBeNull()
   })
 
   it('backfills NetworkDeviceName via the injected extractDeviceName (scoped filter)', async () => {

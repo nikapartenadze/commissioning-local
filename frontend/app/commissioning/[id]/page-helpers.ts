@@ -25,6 +25,9 @@ export interface IoItem {
   punchlistStatus?: string | null
   clarificationNote?: string | null
   trade?: string | null
+  // Cloud-owned scheduling date ("YYYY-MM-DD" | null); read-only on the field
+  // side — displayed and filterable in the grid, never edited or pushed up.
+  plannedDate?: string | null
 }
 
 export interface ChartData {

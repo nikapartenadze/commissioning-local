@@ -14,7 +14,7 @@ import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
 import { getPartyResponsible } from "@/lib/party-responsible"
 import type { IoItem, TestHistory, SortColumn, SortDir } from "./enhanced-io-data-grid/types"
-import { isBlockedByInstallGate, naturalCompare, installRank, extractLane, compareLanes } from "./enhanced-io-data-grid/helpers"
+import { isBlockedByInstallGate, naturalCompare, installRank, extractLane, compareLanes, matchesPlannedFilter, plannedDateBounds, formatPlannedDate, type PlannedFilter } from "./enhanced-io-data-grid/helpers"
 import { ROW_HEIGHT, LANE_HEADER_HEIGHT } from "./enhanced-io-data-grid/constants"
 import { SortHeader } from "./enhanced-io-data-grid/sort-header"
 import { CopyButton, getStateDisplay } from "./enhanced-io-data-grid/cells"
@@ -81,12 +81,16 @@ function useColumnWidths() {
   // rather than squeezing it into the viewport.
   const installW = 88
 
+  // Planned column shows a compact MM/DD/YY date — fixed like installW; the
+  // grid scrolls horizontally on narrow screens.
+  const plannedW = 90
+
   if (width < 768) {
     // Phone: fixed readable sizes, horizontal scroll handles overflow
     return {
       description: 200, ioPoint: 180, state: 60,
       deviceStatus: 60, installStatus: installW, result: 80,
-      timestamp: 0, comments: 180, reason: reasonW,
+      timestamp: 0, planned: plannedW, comments: 180, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
@@ -97,7 +101,7 @@ function useColumnWidths() {
     return {
       description: 220, ioPoint: 200, state: 70,
       deviceStatus: 60, installStatus: installW, result: 90,
-      timestamp: 0, comments: 200, reason: reasonW,
+      timestamp: 0, planned: plannedW, comments: 200, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
@@ -108,21 +112,21 @@ function useColumnWidths() {
     return {
       description: 260, ioPoint: 220, state: 70,
       deviceStatus: 60, installStatus: installW, result: 90,
-      timestamp: 150, comments: 220, reason: reasonW,
+      timestamp: 150, planned: plannedW, comments: 220, reason: reasonW,
       history: actionW, help: actionW, failed: actionW, clear: actionW,
       mute: actionW, output: fireW,
     }
   }
 
-  // Full desktop: use available width proportionally. Reserve reasonW (fixed)
-  // from the data budget rather than letting it scale — the reason cell
-  // doesn't need elastic width.
-  const dataWidth = (available - reasonW) * 0.85 // 85% for data columns, 15% for actions
+  // Full desktop: use available width proportionally. Reserve reasonW/plannedW
+  // (fixed) from the data budget rather than letting them scale — those cells
+  // don't need elastic width.
+  const dataWidth = (available - reasonW - plannedW) * 0.85 // 85% for data columns, 15% for actions
   return {
     description: Math.floor(dataWidth * 0.22), ioPoint: Math.floor(dataWidth * 0.17),
     state: Math.floor(dataWidth * 0.06), deviceStatus: Math.floor(dataWidth * 0.05),
     installStatus: installW, result: Math.floor(dataWidth * 0.07),
-    timestamp: Math.floor(dataWidth * 0.12), comments: Math.floor(dataWidth * 0.16),
+    timestamp: Math.floor(dataWidth * 0.12), planned: plannedW, comments: Math.floor(dataWidth * 0.16),
     reason: reasonW,
     history: 50, help: 50, failed: 50, clear: 50,
     mute: 50, output: 60,
@@ -224,6 +228,12 @@ export function EnhancedIoDataGrid({
   const [assignKeywordInput, setAssignKeywordInput] = useState('')
   const [showAssignKeywordInput, setShowAssignKeywordInput] = useState(false)
   const COLUMN_WIDTHS = useColumnWidths()
+
+  // Planned-date filter — dates are assigned in the cloud by PMs/PCs and pulled
+  // down read-only; electricians narrow the grid to their day's scheduled list.
+  // A specific date picked in the date input overrides the bucket select.
+  const [plannedFilter, setPlannedFilter] = useState<PlannedFilter>('all')
+  const [plannedExactDate, setPlannedExactDate] = useState('')
 
   // Per-column text filters with include/exclude mode
   const [columnFilters, setColumnFilters] = useState<Record<string, { text: string; mode: 'include' | 'exclude' }>>({})
@@ -495,6 +505,8 @@ export function EnhancedIoDataGrid({
   }, [activePunchlistId, punchlists])
 
   const filteredIos = useMemo(() => {
+    // Bucket bounds for the planned-date filter, computed once per re-filter.
+    const plannedBounds = plannedDateBounds()
     const filtered = ios.filter(io => {
       // Hide SPAREs unless failed or explicitly filtered by SPARE keyword
       const isSpare = io.description?.toUpperCase().includes('SPARE')
@@ -505,6 +517,10 @@ export function EnhancedIoDataGrid({
 
       // Muted-only view — show just the muted IOs when the pill is toggled on
       if (mutedOnly && !mutedIos.has(io.id)) return false
+
+      // Planned-date filter — cloud-assigned schedule (docs/PLANNED-DATES-
+      // CONTRACT.md). Exact date beats the bucket select.
+      if (!matchesPlannedFilter(io.plannedDate, plannedFilter, plannedExactDate, plannedBounds)) return false
 
       // Resolver-state predicates. An ADDRESSED item (electrician fixed it) or a
       // CLARIFICATION item (parked for engineering) leaves the electrician's
@@ -592,6 +608,16 @@ export function EnhancedIoDataGrid({
         if (na) return 1
         if (nb) return -1
         cmp = (ta - tb) * dir
+      } else if (sortColumn === 'planned') {
+        const ta = a.plannedDate ? Date.parse(a.plannedDate) : NaN
+        const tb = b.plannedDate ? Date.parse(b.plannedDate) : NaN
+        const na = Number.isNaN(ta)
+        const nb = Number.isNaN(tb)
+        // Unscheduled rows sink to the bottom regardless of direction.
+        if (na && nb) return byName(a, b)
+        if (na) return 1
+        if (nb) return -1
+        cmp = (ta - tb) * dir
       } else if (sortColumn === 'installStatus') {
         cmp = (installRank(a) - installRank(b)) * dir
       } else {
@@ -628,7 +654,7 @@ export function EnhancedIoDataGrid({
 
     // Array.sort is stable since ES2019 — natural order is preserved within each bucket.
     return sorted.sort((a, b) => sortOrder(a.result) - sortOrder(b.result))
-  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, sortColumn, sortDir, punchlistIoSet, mutedOnly, mutedIos])
+  }, [ios, filterTags, searchTerm, activeQuickFilter, activeKeywordFilters, columnFilters, sortMode, sortColumn, sortDir, punchlistIoSet, mutedOnly, mutedIos, plannedFilter, plannedExactDate])
 
   useEffect(() => {
     if (onFilteredDataChange) {
@@ -809,6 +835,7 @@ export function EnhancedIoDataGrid({
     COLUMN_WIDTHS.installStatus +
     (showResultColumn ? COLUMN_WIDTHS.result : 0) +
     (showTimestamp ? COLUMN_WIDTHS.timestamp : 0) +
+    COLUMN_WIDTHS.planned +
     (showComments ? COLUMN_WIDTHS.comments : 0) +
     COLUMN_WIDTHS.reason +
     COLUMN_WIDTHS.history +
@@ -899,6 +926,46 @@ export function EnhancedIoDataGrid({
             )}
           </div>
         )}
+
+        {/* Planned-date filter — the schedule is assigned in the cloud and
+            read-only here; this narrows the grid to a date bucket, or to one
+            exact date via the picker (which overrides the bucket). */}
+        <div
+          className={cn(
+            "flex items-center h-[44px] rounded border overflow-hidden shrink-0 bg-background",
+            (plannedFilter !== 'all' || plannedExactDate) ? "border-primary" : "border-border"
+          )}
+        >
+          <select
+            value={plannedFilter}
+            onChange={(e) => setPlannedFilter(e.target.value as PlannedFilter)}
+            className="h-full pl-2 pr-1 text-sm bg-transparent outline-none cursor-pointer"
+            title="Filter by planned date (assigned in the cloud)"
+          >
+            <option value="all">Planned: All</option>
+            <option value="overdue">Overdue</option>
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="has">Has date</option>
+            <option value="none">No date</option>
+          </select>
+          <input
+            type="date"
+            value={plannedExactDate}
+            onChange={(e) => setPlannedExactDate(e.target.value)}
+            className="h-full px-1 text-sm bg-transparent outline-none border-l border-border"
+            title="Show only IOs planned for this exact date"
+          />
+          {plannedExactDate && (
+            <button
+              onClick={() => setPlannedExactDate('')}
+              className="h-full px-2 flex items-center border-l border-border text-muted-foreground hover:text-foreground"
+              title="Clear planned-date filter"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
 
         {/* Group by Lane toggle */}
         <button
@@ -1054,6 +1121,15 @@ export function EnhancedIoDataGrid({
                 style={{ width: `${COLUMN_WIDTHS.timestamp}px` }}
               />
             )}
+            <SortHeader
+              column="planned"
+              label="Planned"
+              active={sortColumn === 'planned'}
+              dir={sortDir}
+              onSort={toggleSort}
+              style={{ width: `${COLUMN_WIDTHS.planned}px` }}
+              title="Planned date — scheduled in the cloud by the PM/PC (read-only here)"
+            />
             {showComments && (
             <SortHeader
               column="comments"
@@ -1206,6 +1282,9 @@ export function EnhancedIoDataGrid({
 
             {/* Spacer for Tested column */}
             {showTimestamp && <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.timestamp}px` }} />}
+
+            {/* Spacer for Planned column (its filter lives in the search bar) */}
+            <div className="flex-shrink-0" style={{ width: `${COLUMN_WIDTHS.planned}px` }} />
 
             {/* Notes/Comments filter */}
             {showComments && (
@@ -1501,6 +1580,14 @@ export function EnhancedIoDataGrid({
                       {formatTimestamp(io.timestamp) || <span className="opacity-50">—</span>}
                     </div>
                   )}
+                  {/* Planned — cloud-owned schedule date, display-only here */}
+                  <div
+                    className="px-2 py-2 text-sm text-muted-foreground flex-shrink-0 flex items-center font-mono"
+                    style={{ width: `${COLUMN_WIDTHS.planned}px` }}
+                    title={io.plannedDate ? `Planned: ${io.plannedDate}` : undefined}
+                  >
+                    {formatPlannedDate(io.plannedDate) || <span className="opacity-50">—</span>}
+                  </div>
                    {showComments && (
                    <div
                      className="px-4 py-2 text-sm flex-shrink-0 flex items-start"

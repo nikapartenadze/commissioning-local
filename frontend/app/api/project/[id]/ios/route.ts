@@ -14,7 +14,8 @@ export async function GET(req: Request, res: Response) {
 
     const transformedIos = ios.map((io: any) => ({
       id: io.id, name: io.Name, description: io.Description, result: io.Result,
-      timestamp: io.Timestamp, comments: io.Comments, state: null, subsystemName: io.SubsystemName
+      timestamp: io.Timestamp, comments: io.Comments, state: null, subsystemName: io.SubsystemName,
+      plannedDate: io.PlannedDate ?? null
     }))
 
     return res.json(transformedIos)

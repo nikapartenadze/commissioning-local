@@ -26,6 +26,9 @@ export type IoItem = {
   punchlistStatus?: string | null
   clarificationNote?: string | null
   trade?: string | null
+  // Cloud-owned scheduling date ("YYYY-MM-DD" | null); read-only on the field
+  // side — displayed and filterable in the grid, never edited or pushed up.
+  plannedDate?: string | null
 }
 
 export type TestHistory = {
@@ -41,5 +44,5 @@ export type TestHistory = {
 // intentionally excluded — they change continuously and would reshuffle rows
 // under the operator's fingers. Default is "ioPoint" ascending, which matches
 // the grid's historical always-natural-sort-by-name behaviour.
-export type SortColumn = 'ioPoint' | 'description' | 'result' | 'timestamp' | 'comments' | 'installStatus' | 'reason'
+export type SortColumn = 'ioPoint' | 'description' | 'result' | 'timestamp' | 'comments' | 'installStatus' | 'reason' | 'planned'
 export type SortDir = 'asc' | 'desc'

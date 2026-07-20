@@ -118,6 +118,12 @@ try {
     // re-queued (the discard→reconcile→404→orphan loop). Cleared back to 0 when
     // the IO reappears in a cloud delta (device restored). NULL/0 = live.
     'ALTER TABLE Ios ADD COLUMN CloudRemoved INTEGER DEFAULT 0',
+    // Cloud-owned planned date ("YYYY-MM-DD" stored verbatim, 2026-07-20):
+    // PMs schedule IOs in the cloud; electricians filter/sort the local grid
+    // by it. READ-ONLY on the field side — applied directly by pull/delta
+    // upserts, never pushed, never enters PendingSyncs. See
+    // docs/PLANNED-DATES-CONTRACT.md at the workspace root.
+    'ALTER TABLE Ios ADD COLUMN PlannedDate TEXT',
     // Dead-letter flag: a pending row that the cloud permanently rejected, or
     // that exhausted the retry cap, is PARKED (DeadLettered=1) instead of
     // DELETEd. Deleting it left zero trace — the queue count hit 0 and the UI
@@ -941,6 +947,7 @@ export interface Io {
   HasDependencies: number | null
   FailureMode: string | null
   BlockerDescription: string | null
+  PlannedDate: string | null
 }
 
 export interface TestHistory {
@@ -1026,6 +1033,7 @@ export function ioToApi(row: Io) {
     ioNumber: row.IoNumber ?? null,
     hasDependencies: row.HasDependencies === 1 ? true : row.HasDependencies === 0 ? false : null,
     failureMode: row.FailureMode ?? null,
+    plannedDate: row.PlannedDate ?? null,
   }
 }
 

@@ -12,7 +12,7 @@ const { memDb } = vi.hoisted(() => {
       Result TEXT, Comments TEXT, Timestamp TEXT, TestedBy TEXT, IoNumber INTEGER,
       InstallationStatus TEXT, InstallationPercent REAL, PoweredUp INTEGER, TagType TEXT,
       Version INTEGER DEFAULT 0, Trade TEXT, ClarificationNote TEXT, NetworkDeviceName TEXT,
-      PunchlistStatus TEXT, CloudSyncedAt TEXT, "Order" INTEGER
+      PunchlistStatus TEXT, PlannedDate TEXT, CloudSyncedAt TEXT, "Order" INTEGER
     , CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS PendingSyncs ( id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, TestResult TEXT, RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0, Orphaned INTEGER NOT NULL DEFAULT 0 );
     CREATE TABLE IF NOT EXISTS SyncCursors ( SubsystemId INTEGER PRIMARY KEY, LastSeq INTEGER NOT NULL DEFAULT 0, UpdatedAt TEXT );
@@ -106,6 +106,29 @@ describe('applyDelta', () => {
     memDb.prepare("INSERT INTO PendingSyncs (IoId, TestResult) VALUES (?, 'Punchlist Updated')").run(301)
     applyDelta(40, { toSeq: 31, ios: { upserts: [{ id: 301, name: 'IO-Q', result: 'Failed', punchlistStatus: null }] } })
     expect(getIo(301).PunchlistStatus).toBe('ADDRESSED') // un-pushed local edit protected
+  })
+
+  // ── Planned-date propagation (cloud-owned, field read-only) ────────────────
+  it('applies a cloud plannedDate on delta and a cloud null CLEARS it (direct set)', () => {
+    memDb.prepare("INSERT INTO Ios (id, Name, SubsystemId, PlannedDate) VALUES (?, ?, ?, '2026-07-01')").run(310, 'IO-PD', 40)
+    applyDelta(40, { toSeq: 33, ios: { upserts: [{ id: 310, name: 'IO-PD', plannedDate: '2026-08-03' }] } })
+    expect(getIo(310).PlannedDate).toBe('2026-08-03')
+    // Cloud unschedules → cleared, even though a local value exists. The field
+    // never edits plannedDate, so unlike Result there is nothing to protect.
+    applyDelta(40, { toSeq: 34, ios: { upserts: [{ id: 310, name: 'IO-PD', plannedDate: null }] } })
+    expect(getIo(310).PlannedDate).toBeNull()
+  })
+
+  it('keep-clear variant still applies plannedDate while preserving the local clear', () => {
+    // Protected clear: local Result NULL with a recent 'Cleared' history; cloud
+    // carries a stale result → Result stays cleared, but the cloud-owned
+    // plannedDate (a definition-class field) must still land.
+    memDb.prepare('INSERT INTO Ios (id, Name, SubsystemId, Result, Timestamp) VALUES (?, ?, ?, NULL, NULL)').run(311, 'IO-PDC', 40)
+    memDb.prepare('INSERT INTO TestHistories (IoId, Result, Timestamp) VALUES (?, ?, ?)').run(311, 'Cleared', '2026-07-07 18:00:00')
+    applyDelta(40, { toSeq: 35, ios: { upserts: [{ id: 311, name: 'IO-PDC', result: 'Passed', timestamp: '2026-07-04T20:45:00.000Z', plannedDate: '2026-08-05' }] } })
+    const io = getIo(311)
+    expect(io.Result).toBeNull() // clear preserved
+    expect(io.PlannedDate).toBe('2026-08-05') // schedule applied anyway
   })
 
   it('restores a cloud result over a never-tested (non-deliberate) null IO', () => {
