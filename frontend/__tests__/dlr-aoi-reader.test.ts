@@ -297,7 +297,7 @@ describe('readDlrAoiForMcm — failure paths', () => {
 
     expect(out.ok).toBe(false)
     expect(typeof out.reason).toBe('string')
-    expect(out.reason.length).toBeGreaterThan(0)
+    expect(out.reason!.length).toBeGreaterThan(0)
     expect(out.reason).toMatch(/not connected/i)
     expect(out.reading).toBeUndefined()
   })
@@ -308,7 +308,7 @@ describe('readDlrAoiForMcm — failure paths', () => {
     const out = await readDlrAoiForMcm('47', BASE)
 
     expect(out.ok).toBe(false)
-    expect(out.reason.length).toBeGreaterThan(0)
+    expect(out.reason!.length).toBeGreaterThan(0)
     expect(out.reason).toMatch(/AOI_RACK_NETWORK_NODE/)
   })
 
@@ -335,17 +335,17 @@ describe('readDlrAoiForMcm — failure paths', () => {
     state.batch = null
     const out = await readDlrAoiForMcm('47', BASE)
     expect(out.ok).toBe(false)
-    expect(out.reason.length).toBeGreaterThan(0)
+    expect(out.reason!.length).toBeGreaterThan(0)
   })
 
   it('rejects a missing subsystemId or base without ever touching the PLC layer', async () => {
     const noSid = await readDlrAoiForMcm('', BASE)
     expect(noSid.ok).toBe(false)
-    expect(noSid.reason.length).toBeGreaterThan(0)
+    expect(noSid.reason!.length).toBeGreaterThan(0)
 
     const noBase = await readDlrAoiForMcm('47', '')
     expect(noBase.ok).toBe(false)
-    expect(noBase.reason.length).toBeGreaterThan(0)
+    expect(noBase.reason!.length).toBeGreaterThan(0)
 
     expect(vi.mocked(readTypedTagsForMcm)).not.toHaveBeenCalled()
   })
