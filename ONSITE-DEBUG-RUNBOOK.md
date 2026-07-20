@@ -124,6 +124,7 @@ Two SEPARATE systems — never conflate:
 
 - **Adding a local table column?** Idempotent `ALTER TABLE ... ADD COLUMN` in db-sqlite.ts. Ships with the build.
 - **Adding a spreadsheet/L2 column (or other cloud data)?** Run the cloud script on prod, THEN pull on the field. A redeploy alone will NOT add it — this is exactly why "Run Verified" 422s (`write-l2-cells/route.ts` drops an unmapped column).
+- **Cloud Postgres SCHEMA column (a third case):** `commissioning-cloud/scripts/add-*-column.sql` applied manually on dockerhost (`docker exec -i commissioning-db psql ...`), Prisma schema + `schema.prisma.sha256` re-blessed in the same commit, and the field only *sees* the value if BOTH sync serializers (`sync/subsystem/[id]` and `.../changes`) emit it. Example: `planned_date` (2026-07-21, see `docs/PLANNED-DATES-CONTRACT.md`) — local mirror is `Ios.PlannedDate TEXT`, cloud-owned, applied directly by pull/delta with no local-authority guard.
 - **DATA SAFETY:** local startup migrations run on EVERY boot — a `DELETE`/rewrite there wipes operator data repeatedly (real incident: Belt Tracked migration, fixed in `5a5bf16`). **Never** put destructive SQL in the startup path; verify a backup first.
 - A missing L2 column **drops** the write (422, no queue row) — it is NOT a queue-stuck/park condition.
 - A PostToolUse hook (`.claude/hooks/migration-reminder.sh`) injects this checklist whenever a schema/migration file is edited.
