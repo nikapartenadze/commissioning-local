@@ -222,8 +222,11 @@ case "$SCENARIO" in
     all)                                              # EVERYTHING at once (nightly)
         # PLC program downloads + cloud connectivity flap + cloud-side data
         # mutations + realistic tester load, all together — the harshest run.
-        export DOWNLOAD_STORM="25,45"
-        export CLOUD_FLAP="3,12"; export FLAP_BUDGET=120
+        # Overridable: at SOAK_MINUTES=15 a 25-45min storm NEVER fires, so I3
+        # reported a VACUOUS green on a gate (injected_downloads=0). Defaults
+        # unchanged for the 480min nightly; short smoke runs can now tighten it.
+        export DOWNLOAD_STORM="${DOWNLOAD_STORM:-25,45}"
+        export CLOUD_FLAP="${CLOUD_FLAP:-3,12}"; export FLAP_BUDGET="${FLAP_BUDGET:-120}"
         export COMPOSE_PROFILES=mutate; export MUTATE_PERIOD_SEC=240
         export BOTS="${BOTS:-5}"
         # HOT_FRACTION stays 0 here (as in the mutate scenario): the hot-set is a

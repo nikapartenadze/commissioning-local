@@ -924,14 +924,7 @@ async-FFI `9b60482`) and ran `all` / 15 min. **Verdict PASS.**
 - I5 ✅ 1 server start / 0 PLC flaps — the writeOutputBit/readOutputBit
   sync→async conversion did not destabilise the PLC layer.
 
-⚠️ Two caveats on this run, both worth a second look rather than trusting:
-- **I1 p95 100ms / p99 1.3s / max 3.3s** vs the ~19ms p95 of the 2026-07-15
-  baseline. It still PASSED the gate, but it is 5× worse. The host was heavily
-  loaded (docker build, a dev server, a browser E2E run against the same
-  container, ~29 chrome processes), so this is probably harness noise — but it
-  has NOT been reproduced on a quiet box. Re-run clean before trusting it.
-- **I3 injected_downloads=0** in a 15-min window → the restore check was
-  effectively vacuous this run (1 reconnect restore seen, 0 injected).
+⚠️ Two caveats on that run — BOTH since chased down, see the next entry.
 - I7 failed (9 cloud adds not propagated, queue drained). Report-only, and the
   same pre-existing miss recorded on 2026-07-15 — unrelated to this work.
 
@@ -948,3 +941,60 @@ Green against the battle tool (`BASE_URL=http://localhost:13010 SUBSYSTEM_ID=38`
 Two specs skip on this rig by design, and need a seeded fixture to run:
 `fire-output` 503 needs an `io_check` step (battle's map resolves 0 devices), and
 the L2-outbox spec needs a workable functional task (all 192 are Phase-2 blocked).
+
+## Two rig bugs that manufacture FALSE verdicts (2026-07-20, follow-up)
+
+Chasing the two caveats above turned up two harness defects. Neither is a tool
+bug; both make a soak lie, in opposite directions.
+
+### 1. `server_starts` accumulates across container recreations → FALSE I5 FAIL
+A 15-min `all` run reported **I5 FAIL, server_starts=4** (gate allows
+`1 + toolkills`, and zero toolkills were injected). It looked exactly like a
+crash loop in the just-landed sync→async `writeOutputBit` conversion.
+
+It was not. `server_starts` counts `"server.start"` records in
+`/data/logs/audit-*.jsonl`, the seeder replaces `database.db` but **never
+clears `logs/`**, and the `tool-data` volume survives `compose down`. Every
+`up -d tool` during the day's E2E work appended another start. Re-run after
+`compose down -v`: **server_starts=1, verdict PASS** — the async conversion is
+exonerated (I5 plc_flaps=0, I4 484 writes / 0 wipes / 0 suspect_silent_drops,
+I23 43 guided writes / 0 mismatches / not vacuous).
+
+**Rule: a verdict is only valid from a wiped volume.** `compose down` alone
+carries audit history into the next run's I5. Judge I5 from `down -v` runs only,
+or teach the seeder to truncate `logs/`.
+
+### 2. The `all` scenario HARDCODED its chaos knobs → VACUOUS I3 green
+`run_scenario.sh` `all)` did `export DOWNLOAD_STORM="25,45"` unconditionally,
+clobbering the caller's value. At `SOAK_MINUTES=15` the first download is due at
+25-45min, so **it never fires**: `injected_downloads=0`, while I3 still reported
+**pass** off 4 unrelated cloud-flap reconnect restores. A gate that verified
+nothing and said green — the same vacuous-green class the harness warns about
+for `soak_writes=0`.
+
+PARTIALLY fixed — **and I3 is still vacuous. Do not trust it.**
+`all)` now uses `${DOWNLOAD_STORM:-25,45}` / `${CLOUD_FLAP:-3,12}` /
+`${FLAP_BUDGET:-120}`, which removes the clobber (the 480min nightly is
+unchanged). But a 6min verification run with `DOWNLOAD_STORM="1,2"` STILL
+injected zero downloads — `injected.jsonl` held only cloudcut/calm. So the
+hardcode was not the whole cause and the real blocker is NOT yet identified.
+The chaos service does receive `DOWNLOAD_STORM: ${DOWNLOAD_STORM:-}`
+(docker-compose.battle.yml:465), so the next place to look is the download loop
+in `chaos/chaos_api.py` and whether it is gated on something else (a profile, a
+sim target, or a parse of the "min,max" form).
+
+⚠️ Worse than the vacuousness itself: **I3 returns `pass: true` when
+`injected_downloads == 0`.** A gate that verifies nothing reports green. Until
+the injector is fixed, I3 evidence should be read as "0 downloads injected =
+NOT TESTED", and the check itself should arguably return inconclusive/fail
+rather than pass on an empty sample (same treatment I4 gets for
+`soak_writes=0`).
+
+### Also fixed this pass
+`battle_cloud`/`tool` host ports are overridable (`BATTLE_CLOUD_PORT` /
+`BATTLE_TOOL_PORT`) — a soak previously could not start at all while a local dev
+cloud held 13001, and the failure surfaced as a bare compose port-bind error.
+
+### Standing: I7
+Fails identically to 2026-07-15 (9 cloud adds not propagated, queue drained).
+Pre-existing, report-only, unrelated to this work.
