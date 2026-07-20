@@ -143,7 +143,9 @@ services:
         condition: service_completed_successfully
     networks: [battle]
     ports:
-      - "13001:3000"   # peek at the cloud UI / API during a soak
+      # Overridable so a soak can run alongside a local dev cloud, which also
+      # binds 13001 (commissioning-local-cloud). Default is unchanged.
+      - "${BATTLE_CLOUD_PORT:-13001}:3000"   # peek at the cloud UI / API during a soak
     restart: unless-stopped
     # 19-MCM scenario pulls every subsystem (incl. ~3800-IO MCM11/12) at the I4
     # verdict — 1g OOM'd the cloud-stage so the read failed ("cloud unreachable").
@@ -372,7 +374,7 @@ services:
       - tool-data:/data
     networks: [battle]
     ports:
-      - "13000:3000"   # peek at the UI from the host while a soak runs
+      - "${BATTLE_TOOL_PORT:-13000}:3000"   # peek at the UI from the host while a soak runs
     depends_on:
       seeder:
         condition: service_completed_successfully

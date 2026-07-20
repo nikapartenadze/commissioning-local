@@ -909,3 +909,42 @@ prod-copy cloud, prod never touched). **Verdict PASS.**
   (15 cloud adds not pulled — mutate precondition, not the sync fixes) and I25
   deps (4 mismatches). Both pre-existing, unrelated to this work — flagged for
   a separate look.
+
+## Guided-mode correctness fixes — soak + new fault-path E2E (2026-07-20)
+
+Rebuilt `battle/tool:local` from the working tree (guided fixes `6894cdd` +
+async-FFI `9b60482`) and ran `all` / 15 min. **Verdict PASS.**
+- I4 no-data-loss ✅ 477 writes, 0 true_wipes, **0 suspect_silent_drops**, 0
+  pending at end. The guided write-path changes (Trade/blocker columns on the
+  PendingSync, FailureMode/Trade nulled on clear, MCM-ownership 409) introduce
+  no loss under chaos.
+- I23 guided-survival ✅ 45 guided writes, 0 mismatches, **not vacuous**.
+- I8/I18 FV ✅ 394 writes / 329 judged, 0 missing, 0 divergent. I22 e-stop ✅ 32.
+  I24 blocker ✅ 45, I25 punchlist ✅ 59/67, I26 VFD wizard ✅ 76 — none vacuous.
+- I5 ✅ 1 server start / 0 PLC flaps — the writeOutputBit/readOutputBit
+  sync→async conversion did not destabilise the PLC layer.
+
+⚠️ Two caveats on this run, both worth a second look rather than trusting:
+- **I1 p95 100ms / p99 1.3s / max 3.3s** vs the ~19ms p95 of the 2026-07-15
+  baseline. It still PASSED the gate, but it is 5× worse. The host was heavily
+  loaded (docker build, a dev server, a browser E2E run against the same
+  container, ~29 chrome processes), so this is probably harness noise — but it
+  has NOT been reproduced on a quiet box. Re-run clean before trusting it.
+- **I3 injected_downloads=0** in a 15-min window → the restore check was
+  effectively vacuous this run (1 reconnect restore seen, 0 injected).
+- I7 failed (9 cloud adds not propagated, queue drained). Report-only, and the
+  same pre-existing miss recorded on 2026-07-15 — unrelated to this work.
+
+### New: `frontend/e2e/guided-fault-paths.spec.ts` (Playwright)
+`guided-task-runner.tsx` (~1500 lines) had NO coverage, and BOTH audit
+CRITICALs lived there. These behaviours only appear when a request FAILS, which
+a `node`-env vitest cannot reach. Playwright route interception forces each one.
+Green against the battle tool (`BASE_URL=http://localhost:13010 SUBSYSTEM_ID=38`):
+- firmware FAIL is honest + leaves the task **available** (the CRITICAL, locked)
+- a dead `/api/guided/system-status` poll degrades the ring chip to **NO READING**
+  instead of holding a stale "NOMINAL" (the fail-open safety gate)
+- a rejected skip keeps the task active and says so
+
+Two specs skip on this rig by design, and need a seeded fixture to run:
+`fire-output` 503 needs an `io_check` step (battle's map resolves 0 devices), and
+the L2-outbox spec needs a workable functional task (all 192 are Phase-2 blocked).
