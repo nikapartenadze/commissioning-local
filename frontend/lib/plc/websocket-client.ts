@@ -27,6 +27,18 @@ export interface IOUpdate {
   State: 'TRUE' | 'FALSE'
   Timestamp?: string
   Comments?: string
+  /**
+   * True when this update came from a `TagSnapshot` replay (sent by the server
+   * on every WS connect, including RECONNECT) rather than a live PLC
+   * transition. The value may be arbitrarily old — the tag reader retains the
+   * last-known-good reading through a comms outage.
+   *
+   * SAFETY: consumers that infer a physical action from a state CHANGE (the
+   * guided D6 round-trip) must ignore these. A reconnect replaying the stale
+   * pre-actuation state was otherwise read as "the tester cleared the device"
+   * and auto-PASSED an IO nobody touched.
+   */
+  FromSnapshot?: boolean
   // Failure reason chosen in the Fail dialog. Carried on UpdateIO so other
   // tabs / client laptops see the Party Responsible badge change without a
   // refetch. null on Pass / Clear; absent on state-only updates.
@@ -327,6 +339,8 @@ export function usePlcWebSocket(options: WebSocketConnectionOptions = {}): WebSo
                 State: s.state ? 'TRUE' : 'FALSE',
                 Timestamp: undefined,
                 Comments: undefined,
+                // Cached replay, NOT a live transition — see IOUpdate.FromSnapshot.
+                FromSnapshot: true,
               }
               ioCallbacksRef.current.forEach((cb) => {
                 try { cb(update) } catch (error) {

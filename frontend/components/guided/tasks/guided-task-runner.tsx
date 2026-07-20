@@ -10,6 +10,7 @@ import { useTaskPool } from '@/lib/guided/task-pool/use-task-pool'
 import type { Step, Task } from '@/lib/guided/task-pool/types'
 import {
   advanceRoundTrip,
+  canAdvanceRoundTrip,
   sequenceHint,
   startRoundTrip,
   type RoundTrip,
@@ -23,7 +24,7 @@ import {
   type SwapSuspicion,
   type SwapWatch,
 } from '@/lib/guided/swap-watch'
-import { saveL2Cell } from '@/lib/l2-outbox'
+import { saveL2Cell, replayL2Outbox, pendingCount, type OutboxDeps } from '@/lib/l2-outbox'
 import { authFetch } from '@/lib/api-config'
 import { toast as appToast } from '@/hooks/use-toast'
 import { TaskViewer } from './task-viewer'
@@ -35,7 +36,12 @@ import './guided-tasks.css'
  *  re-served the firmware task forever after the operator recorded it. */
 const MANUAL_COMPLETE_TYPES = new Set<Task['type']>(['network_loop', 'firmware_check'])
 
-type Popup = { kind: 'pass' | 'fail'; message: string } | null
+/**
+ * `onOk` overrides what the acknowledgment button does. Default is
+ * advanceStep() (which completes the task on the last step) — a verdict that
+ * must NOT complete the task (e.g. a firmware FAIL) supplies its own handler.
+ */
+type Popup = { kind: 'pass' | 'fail'; message: string; onOk?: () => void } | null
 
 /**
  * Value recorded when a tester skips a single functional/VFD column step
@@ -45,6 +51,13 @@ type Popup = { kind: 'pass' | 'fail'; message: string } | null
  */
 const SKIP_STEP_VALUE = 'N/A (skipped)'
 type EstopVerdict = { autoVerdict: string; checkTagValue: boolean | null } | null
+
+/**
+ * How long the D4/D5 poll may keep failing before its last reading stops being
+ * treated as current. Four missed 5s polls — long enough to ride out a blip,
+ * short enough that a tester is not acting on a stale safety gate.
+ */
+const STALE_AFTER_MS = 20_000
 
 /** Live D4/D5 status polled from /api/guided/system-status. */
 interface SystemStatus {
@@ -142,6 +155,9 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   const [readinessDismissed, setReadinessDismissed] = useState(false)
   // D4/D5 live gates — polled every 5 s while the runner is open.
   const [sysStatus, setSysStatus] = useState<SystemStatus>({ ring: null, systemRunning: null })
+  /** True once the D4/D5 poll has been failing long enough that the last
+   *  reading must no longer be presented as current (see the poll effect). */
+  const [sysStale, setSysStale] = useState(false)
 
   const [svgMarkup, setSvgMarkup] = useState<string | null>(null)
   const [devices, setDevices] = useState<Device[]>([])
@@ -190,17 +206,38 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   // should be made extremely obvious"); system-running gates functional steps.
   useEffect(() => {
     let active = true
+    let lastOk = Date.now()
     const poll = async () => {
       try {
         // Scoped to THIS MCM — without the param a central/multi-MCM server
         // answers with the singleton ring (null) and the fleet-union D4, so
         // another MCM's running conveyors would unlock functional steps here.
         const r = await fetch(`/api/guided/system-status?subsystemId=${subsystemId}`)
-        if (!r.ok || !active) return
+        if (!active) return
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const data = (await r.json()) as SystemStatus
-        if (active) setSysStatus(data)
+        if (!active) return
+        lastOk = Date.now()
+        setSysStale(false)
+        setSysStatus(data)
       } catch {
-        /* keep last status */
+        // DO NOT keep presenting the last reading as if it were current. Both
+        // hard safety gates read off this state, and holding a stale value made
+        // them fail OPEN: a ring that faulted after the poll died still showed
+        // "RING NOMINAL" and never raised the blocking overlay, and D4 held a
+        // stale `true` so functional checks stayed unlocked after the system
+        // stopped — the exact condition the gate exists to prevent.
+        //
+        // After STALE_AFTER_MS of failures we drop to an explicit no-reading
+        // state. Note this is NOT the same as a SUCCESSFUL poll returning null:
+        // that is the documented "no PLC / no probe" degradation which never
+        // blocks so manual entry keeps working. This is "we cannot see", and it
+        // is shown to the tester rather than hidden behind a healthy-looking chip.
+        if (!active) return
+        if (Date.now() - lastOk >= STALE_AFTER_MS) {
+          setSysStale(true)
+          setSysStatus({ ring: null, systemRunning: null })
+        }
       }
     }
     void poll()
@@ -315,11 +352,35 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     setBusy(true)
     try {
       if (effectiveTask && MANUAL_COMPLETE_TYPES.has(effectiveTask.type)) {
-        await fetch('/api/guided/tasks/complete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subsystemId, taskId: effectiveTask.id, currentUser: currentUser?.fullName }),
-        }).catch(() => {})
+        // Not optional: without this flag the pool re-serves the task forever.
+        // It used to be fire-and-forget, so a 500 here silently produced
+        // exactly that loop with nothing on screen to explain it.
+        try {
+          const res = await fetch('/api/guided/tasks/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subsystemId, taskId: effectiveTask.id, currentUser: currentUser?.fullName }),
+          })
+          if (!res.ok) {
+            appToast({
+              variant: 'destructive',
+              duration: Infinity,
+              title: 'Task was NOT marked complete',
+              description:
+                `"${effectiveTask.title}" could not be flagged done (HTTP ${res.status}). ` +
+                'It will be offered again — re-complete it once the tool is healthy.',
+            })
+          }
+        } catch (e) {
+          appToast({
+            variant: 'destructive',
+            duration: Infinity,
+            title: 'Task was NOT marked complete',
+            description:
+              `"${effectiveTask.title}" could not be flagged done (${e instanceof Error ? e.message : 'network error'}). ` +
+              'It will be offered again.',
+          })
+        }
       }
       setSelectedTaskId(null)
       setStepIndex(0)
@@ -387,10 +448,9 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               updatedBy: user,
               ts: Date.now(),
             },
-            {
-              storage: typeof window !== 'undefined' ? window.localStorage : ({ getItem: () => null, setItem: () => {} } as any),
-              fetchFn: (i, init) => authFetch(i, init) as any,
-            },
+            // Same instance the mount-replay and beforeunload guard use, so
+            // they can never read a different storage than the writer.
+            outboxDepsRef.current,
           )
           if (!r.ok) {
             console.error('[Guided] FV cell save not confirmed — queued in outbox for retry:', r)
@@ -409,6 +469,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ioId: step.ioId,
+              // Lets the server verify this IO actually belongs to the MCM this
+              // session is walking — a wrong-MCM write is rejected, not audited
+              // against the victim subsystem.
+              subsystemId,
               result,
               currentUser: user,
               failureMode: result === 'Failed' ? opts?.failureMode ?? 'No Response' : undefined,
@@ -416,6 +480,17 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
             }),
           })
           if (!res.ok) failLoud(`IO ${result}`, `HTTP ${res.status}`)
+        } else {
+          // NO STORAGE DESTINATION. A step that carries none of the three
+          // routing fields above used to fall out of this chain silently: zero
+          // network calls, no console, no toast — while recordWithPopup still
+          // rendered "added to punchlist". A firmware FAIL and a firmware PASS
+          // produced byte-identical state and the task was marked completed.
+          // Never let a verdict evaporate again: anything unroutable is loud.
+          failLoud(
+            `${result} verdict for "${step.title}"`,
+            'this step has no storage destination (no IO, e-stop or L2 cell)',
+          )
         }
       } catch (e) {
         // UI still advances on acknowledgment, but never silently.
@@ -440,6 +515,84 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     [persistResult],
   )
 
+  /**
+   * Firmware compliance verdict. This step has NO per-IO storage destination —
+   * the durable record is the scan itself (GET /api/firmware), exactly like
+   * every other derived task state. So the tester's judgment must not pretend
+   * to be a punchlist entry, and a FAIL must not mark the task complete.
+   *
+   * Previously both buttons routed through recordWithPopup → persistResult,
+   * which matched no branch and wrote nothing, while the popup claimed the
+   * device had been "added to punchlist" and the task was completed anyway —
+   * making a firmware FAIL indistinguishable from a PASS.
+   */
+  const recordFirmwareVerdict = useCallback(
+    (result: 'Passed' | 'Failed') => {
+      if (resolvedRef.current) return
+      resolvedRef.current = true
+      if (result === 'Passed') {
+        setPopup({ kind: 'pass', message: 'Firmware compliant — task complete.' })
+        return
+      }
+      setPopup({
+        kind: 'fail',
+        message:
+          'Firmware NON-COMPLIANT. This task stays open until every device meets ' +
+          'the approved minimum — open the Firmware page for per-device detail, ' +
+          'update the offending devices, then RE-SCAN.',
+        // Leave the task incomplete and hand the tester back to the pool.
+        onOk: () => {
+          resolvedRef.current = false
+          setSelectedTaskId(null)
+          setStepIndex(0)
+          void refresh()
+        },
+      })
+    },
+    [refresh],
+  )
+
+  /**
+   * Drive an output (beacon / horn / solenoid) so the tester can confirm it
+   * physically fired.
+   *
+   * This was fire-and-forget. The route already reports the truth — 503 when
+   * the PLC is not connected, 500 with the driver error — and the runner threw
+   * all of it away, so a failed write and a successful one looked identical.
+   * The tester watched a beacon that was never commanded, saw nothing, and
+   * tapped FAIL: a HEALTHY device written to the punchlist as defective while
+   * the real fault (PLC down) went unrecorded. Surface it loudly instead.
+   */
+  const fireOutput = useCallback(async (ioId: number) => {
+    try {
+      const res = await fetch(`/api/ios/${ioId}/fire-output`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'toggle' }),
+      })
+      if (!res.ok) {
+        const detail = res.status === 503 ? 'the PLC is not connected' : `HTTP ${res.status}`
+        appToast({
+          variant: 'destructive',
+          duration: Infinity,
+          title: 'Output was NOT fired',
+          description:
+            `The tool could not command this output — ${detail}. The device was never ` +
+            'energised, so do NOT record a Fail against it: fix the connection and fire again.',
+        })
+      }
+    } catch (e) {
+      appToast({
+        variant: 'destructive',
+        duration: Infinity,
+        title: 'Output was NOT fired',
+        description:
+          `The tool could not command this output — ${e instanceof Error ? e.message : 'network error'}. ` +
+          'The device was never energised, so do NOT record a Fail against it.',
+      })
+    }
+  }, [])
+
   /** Operator accepts the swap banner: the EXPECTED point fails with the
    *  wrong-wiring auto-comment (spec: auto-comment, user accepts the fail).
    *  If the triggered point is a SPARE, it is failed too — an unexpected live
@@ -449,20 +602,46 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     const s = swap
     if (!s || resolvedRef.current) return
     if (s.spare) {
-      void fetch('/api/guided/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ioId: s.ioId,
-          result: 'Failed',
-          currentUser: currentUser?.fullName,
-          failureMode: 'Wrong wiring',
-          comments: spareHitComment(currentStep?.ioName ?? 'expected IO'),
-        }),
-      }).catch(() => {})
+      // The SPARE's own wrong-wiring Fail is half of this operation; the
+      // expected IO's Fail (below) is the other. It was fire-and-forget, so the
+      // tester got a confirmation popup for one half and silence for the other
+      // — and a wrong-wiring finding on a spare is exactly what must not be
+      // lost. Surface a failure the same way persistResult does.
+      try {
+        const res = await fetch('/api/guided/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ioId: s.ioId,
+            subsystemId,
+            result: 'Failed',
+            currentUser: currentUser?.fullName,
+            failureMode: 'Wrong wiring',
+            comments: spareHitComment(currentStep?.ioName ?? 'expected IO'),
+          }),
+        })
+        if (!res.ok) {
+          appToast({
+            variant: 'destructive',
+            duration: Infinity,
+            title: `Wrong-wiring Fail for SPARE ${s.ioName ?? s.ioId} was NOT saved`,
+            description:
+              `HTTP ${res.status}. The expected IO's fail was still recorded, but the SPARE ` +
+              'that actually fired has no result — record it manually.',
+          })
+        }
+      } catch (e) {
+        appToast({
+          variant: 'destructive',
+          duration: Infinity,
+          title: `Wrong-wiring Fail for SPARE ${s.ioName ?? s.ioId} was NOT saved`,
+          description:
+            `${e instanceof Error ? e.message : 'network error'}. Record the SPARE manually.`,
+        })
+      }
     }
     await recordWithPopup('Failed', 'Wrong wiring', s.comment)
-  }, [swap, recordWithPopup, currentUser, currentStep?.ioName])
+  }, [swap, recordWithPopup, currentUser, currentStep?.ioName, subsystemId])
 
   const dismissSwap = useCallback(() => {
     if (swap) swapWatchRef.current?.rearm(swap.ioId)
@@ -498,7 +677,17 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
           ok = false
         }
         if (!ok) {
-          showToast(`Couldn't save "${step.l2Column}" — not advancing. Pull the latest L2 data and retry.`)
+          // Persistent, not the 2.6s hint toast: this is the only notice the
+          // tester gets that their value was rejected, and the step silently
+          // not advancing otherwise reads as an unresponsive button.
+          appToast({
+            variant: 'destructive',
+            duration: Infinity,
+            title: `"${step.l2Column}" was NOT saved`,
+            description:
+              'The server did not store this value, so the step has not advanced. ' +
+              'Pull the latest L2 data and retry.',
+          })
           return
         }
         setInputValue('')
@@ -514,11 +703,33 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     if (!effectiveTask?.deviceName) return
     setBusy(true)
     try {
-      await fetch('/api/vfd-commissioning/controls-verified', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceName: effectiveTask.deviceName, completedBy: initialsOf(currentUser?.fullName) }),
-      }).catch(() => {})
+      // Was fire-and-forget with an unconditional advance — the exact pattern
+      // recordVfdColumn (30 lines above) was hardened against. A 500 is a
+      // RESOLVED promise, so `.catch` never even fired: the step closed, the
+      // wizard remembered nothing, and the tester re-walked the VFD later with
+      // no idea why. Block the advance, same as every other VFD write.
+      let ok = false
+      try {
+        const res = await fetch('/api/vfd-commissioning/controls-verified', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceName: effectiveTask.deviceName, completedBy: initialsOf(currentUser?.fullName) }),
+        })
+        ok = res.ok
+      } catch {
+        ok = false
+      }
+      if (!ok) {
+        appToast({
+          variant: 'destructive',
+          duration: Infinity,
+          title: 'Controls Verified was NOT saved',
+          description:
+            `The server did not record Controls Verified for ${effectiveTask.deviceName}, ` +
+            'so the step has not advanced. Retry once the tool is healthy.',
+        })
+        return
+      }
       advanceStep()
     } finally {
       setBusy(false)
@@ -540,6 +751,60 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
   // NO FALSE→TRUE→FALSE. Functional checks no longer watch anything (D1).
   const roundTripRef = useRef<RoundTrip>(startRoundTrip(null))
   const [liveState, setLiveState] = useState<string | null>(null)
+  /** The displayed signal came from a cached snapshot replay, not a live edge. */
+  const [liveCached, setLiveCached] = useState(false)
+
+  /**
+   * Guided mode WRITES into the L2 outbox (persistResult's functional-cell
+   * branch) but used to have no way of draining it: replayL2Outbox was called
+   * only from the FV Validation view. A guided-only tester's failed functional
+   * check sat in localStorage indefinitely and was recovered solely by chance,
+   * if that same tablet later happened to open the FV grid. There was also no
+   * unload guard, so closing the tab discarded it silently.
+   *
+   * Replay on mount, and warn before unload while anything is unconfirmed —
+   * same contract as fv-validation-view.tsx.
+   */
+  const outboxDepsRef = useRef<OutboxDeps>({
+    storage: typeof window !== 'undefined' ? window.localStorage : ({ getItem: () => null, setItem: () => {} } as any),
+    fetchFn: (input, init) => authFetch(input, init) as any,
+  })
+  useEffect(() => {
+    const deps = outboxDepsRef.current
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await replayL2Outbox(deps)
+        if (cancelled) return
+        if (res.evictedEdits.length > 0) {
+          const detail = res.evictedEdits
+            .map((e) => `device ${e.deviceId} col ${e.columnId} = "${e.value ?? ''}"`)
+            .join('; ')
+          appToast({
+            variant: 'destructive',
+            duration: Infinity,
+            title: `${res.evictedEdits.length} functional check(s) could NOT be saved`,
+            description:
+              `These never reached the server and retrying has stopped: ${detail}. ` +
+              'Re-enter them. They are also in the recovery log on this machine.',
+          })
+        }
+      } catch {
+        /* best-effort */
+      }
+    })()
+    const beforeUnload = (e: BeforeUnloadEvent) => {
+      if (pendingCount(deps.storage) > 0) {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => {
+      cancelled = true
+      window.removeEventListener('beforeunload', beforeUnload)
+    }
+  }, [])
   const [seqPhase, setSeqPhase] = useState<RoundTrip['phase']>('arming')
 
   useEffect(() => {
@@ -547,6 +812,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     roundTripRef.current = startRoundTrip(currentStep?.circuit ?? null)
     setSeqPhase(roundTripRef.current.phase)
     setLiveState(null)
+    setLiveCached(false)
     setSwap(null)
     swapWatchRef.current = null
     setInputValue(currentStep?.currentValue ?? '')
@@ -568,6 +834,22 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     const deviceName = currentStep?.deviceName ?? effectiveTask?.deviceName
     const cb = (u: IOUpdate) => {
       if (u.State !== 'TRUE' && u.State !== 'FALSE') return
+      // SAFETY — never infer a physical actuation from a cached replay. The
+      // server re-sends a TagSnapshot of last-known tag states on every WS
+      // connect, including reconnects, and the tag reader holds the last good
+      // reading through a comms outage. Feeding those frames to the round-trip
+      // tracker (which has no concept of time) meant a mid-check network blip
+      // could replay the stale pre-actuation state, read as "device cleared",
+      // and auto-PASS an IO the tester never finished checking. Snapshots may
+      // still refresh the on-screen signal, but they can never advance the
+      // sequence or arm the swap watcher.
+      if (!canAdvanceRoundTrip(u)) {
+        if (watch.has(u.Id)) {
+          setLiveState(u.State)
+          setLiveCached(true)
+        }
+        return
+      }
       if (!watch.has(u.Id)) {
         // Unexpected point moved while we wait on the expected one — feed the
         // swap watcher. A candidate reports only on a FULL round-trip, so
@@ -599,6 +881,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         return
       }
       setLiveState(u.State)
+      setLiveCached(false)
       const next = advanceRoundTrip(roundTripRef.current, u.State)
       if (next !== roundTripRef.current) {
         roundTripRef.current = next
@@ -710,11 +993,26 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     if (!reason) return
     setBusy(true)
     try {
-      await fetch('/api/guided/tasks/skip', {
+      // Unchecked before: the route rejects an empty or >500-char reason with a
+      // 400, and the dialog closed anyway — the task quietly reappeared as
+      // available with the tester's explanation discarded and no message.
+      const res = await fetch('/api/guided/tasks/skip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subsystemId, taskId: effectiveTask.id, reason, currentUser: currentUser?.fullName }),
       })
+      if (!res.ok) {
+        appToast({
+          variant: 'destructive',
+          duration: Infinity,
+          title: 'Task was NOT skipped',
+          description:
+            `The skip reason was rejected (HTTP ${res.status})` +
+            `${res.status === 400 ? ' — it may be empty or longer than 500 characters' : ''}. ` +
+            'The task is still active; shorten the note and try again.',
+        })
+        return
+      }
       setSkipOpen(false)
       setSkipPreset(null)
       setSkipNote('')
@@ -728,11 +1026,19 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 
   const unskip = useCallback(
     async (task: Task) => {
-      await fetch('/api/guided/tasks/skip', {
+      const res = await fetch('/api/guided/tasks/skip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subsystemId, taskId: task.id, unskip: true }),
       })
+      if (!res.ok) {
+        appToast({
+          variant: 'destructive',
+          duration: Infinity,
+          title: 'Task was NOT un-skipped',
+          description: `"${task.title}" is still marked skipped (HTTP ${res.status}). Try again.`,
+        })
+      }
       await refresh()
     },
     [subsystemId, refresh],
@@ -802,10 +1108,16 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         <div className="gt-header-right">
           {/* D5: always-visible ring health chip (the fault overlay is the hard gate) */}
           <span
-            className={`gt-ring-chip gt-ring-chip-${sysStatus.ring?.state ?? 'unknown'}`}
-            title={sysStatus.ring?.reason ?? 'No ring reading yet'}
+            className={`gt-ring-chip gt-ring-chip-${sysStale ? 'unknown' : sysStatus.ring?.state ?? 'unknown'}`}
+            title={
+              sysStale
+                ? 'The status poll is not responding — this is NOT a live ring reading. Ring faults will not be detected until it recovers.'
+                : sysStatus.ring?.reason ?? 'No ring reading yet'
+            }
           >
-            ● DPM RING {(sysStatus.ring?.state ?? 'unknown').toUpperCase()}
+            {sysStale
+              ? '● DPM RING — NO READING'
+              : `● DPM RING ${(sysStatus.ring?.state ?? 'unknown').toUpperCase()}`}
           </span>
           <div className="gt-progress" title={`${overallPct}% handled`}>
             <div className="gt-progress-bar">
@@ -943,6 +1255,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
                 isLast: stepIndex >= steps.length - 1,
                 busy,
                 liveState,
+                liveCached,
                 seqPhase,
                 estopVerdict,
                 firmwareVerdict,
@@ -952,6 +1265,8 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
                 onAdvance: advanceStep,
                 onComplete: completeAndNext,
                 recordWithPopup,
+                recordFirmwareVerdict,
+                fireOutput,
                 recordVfdColumn,
                 recordVfdControls,
                 recordFunctionalValue,
@@ -1044,8 +1359,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
               className="gt-btn gt-btn-primary"
               autoFocus
               onClick={() => {
+                const onOk = popup.onOk
                 setPopup(null)
-                advanceStep()
+                if (onOk) onOk()
+                else advanceStep()
               }}
             >
               OK
@@ -1132,6 +1449,7 @@ interface BodyProps {
   isLast: boolean
   busy: boolean
   liveState: string | null
+  liveCached: boolean
   seqPhase: RoundTrip['phase']
   estopVerdict: EstopVerdict
   firmwareVerdict: FirmwareVerdict
@@ -1141,19 +1459,41 @@ interface BodyProps {
   onAdvance: () => void
   onComplete: () => void
   recordWithPopup: (result: 'Passed' | 'Failed', failureMode?: string) => void
+  recordFirmwareVerdict: (result: 'Passed' | 'Failed') => void
+  fireOutput: (ioId: number) => void
   recordVfdColumn: (value: string) => void
   recordVfdControls: () => void
   recordFunctionalValue: (value: string) => void
   userName?: string | null
 }
 
-function LiveSignal({ liveState }: { liveState: string | null }) {
+/**
+ * `cached` = the last value we have came from a TagSnapshot replay, not a live
+ * transition. It used to render identically to a live reading under the label
+ * "Live PLC signal", which is the stale-as-live incident class reproduced in
+ * the guided UI — the tester had no way to tell a moving signal from a frozen
+ * one. Say so explicitly instead.
+ */
+function LiveSignal({ liveState, cached }: { liveState: string | null; cached?: boolean }) {
+  const value = liveState === 'TRUE' ? 'ON' : liveState === 'FALSE' ? 'OFF' : 'waiting…'
   return (
     <div className="gt-livestate">
       <span
-        className={`gt-dot ${liveState === 'TRUE' ? 'gt-dot-on' : liveState === 'FALSE' ? 'gt-dot-off' : 'gt-dot-unknown'}`}
+        className={`gt-dot ${
+          cached
+            ? 'gt-dot-unknown'
+            : liveState === 'TRUE'
+              ? 'gt-dot-on'
+              : liveState === 'FALSE'
+                ? 'gt-dot-off'
+                : 'gt-dot-unknown'
+        }`}
       />
-      <span>Live PLC signal: {liveState === 'TRUE' ? 'ON' : liveState === 'FALSE' ? 'OFF' : 'waiting…'}</span>
+      <span>
+        {cached
+          ? `Last known PLC signal: ${value} (cached — not live)`
+          : `Live PLC signal: ${value}`}
+      </span>
     </div>
   )
 }
@@ -1228,7 +1568,7 @@ function renderStepBody(p: BodyProps) {
   if (step.kind === 'io_check') {
     return (
       <>
-        <LiveSignal liveState={p.liveState} />
+        <LiveSignal liveState={p.liveState} cached={p.liveCached} />
         <SequenceProgress step={step} seqPhase={p.seqPhase} liveState={p.liveState} />
         <div className="gt-actions-center">
           <button className="gt-btn gt-btn-pass gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Passed')}>
@@ -1263,10 +1603,10 @@ function renderStepBody(p: BodyProps) {
           Firmware: <strong>{label}</strong>
         </div>
         <div className="gt-actions-center">
-          <button className="gt-btn gt-btn-pass gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Passed')}>
+          <button className="gt-btn gt-btn-pass gt-btn-lg" disabled={p.busy} onClick={() => p.recordFirmwareVerdict('Passed')}>
             RECORD PASS
           </button>
-          <button className="gt-btn gt-btn-warn gt-btn-lg" disabled={p.busy} onClick={() => p.recordWithPopup('Failed', 'Firmware non-compliant')}>
+          <button className="gt-btn gt-btn-warn gt-btn-lg" disabled={p.busy} onClick={() => p.recordFirmwareVerdict('Failed')}>
             RECORD FAIL
           </button>
         </div>
@@ -1318,13 +1658,7 @@ function renderStepBody(p: BodyProps) {
         <button
           className="gt-btn gt-btn-primary gt-btn-lg"
           disabled={p.busy}
-          onClick={() => {
-            void fetch(`/api/ios/${fireId}/fire-output`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'toggle' }),
-            }).catch(() => {})
-          }}
+          onClick={() => p.fireOutput(fireId)}
         >
           FIRE OUTPUT
         </button>

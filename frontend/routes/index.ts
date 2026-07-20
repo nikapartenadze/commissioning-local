@@ -400,7 +400,10 @@ export function createApiRouter(): Router {
   router.get('/api/guided/devices/:name', asyncHandler(guidedDeviceByName.GET))
   router.post('/api/guided/reset-subsystem', asyncHandler(guidedResetSubsystem.POST))
   router.post('/api/guided/test', asyncHandler(guidedTest.POST))
-  router.post('/api/guided/clear', asyncHandler(guidedClear.POST))
+  // Auth-gated to match POST /api/ios/:id/reset — both destroy a recorded
+  // result, and it made no sense for the guided one to be open while the grid
+  // one was protected.
+  router.post('/api/guided/clear', authMiddleware, asyncHandler(guidedClear.POST))
   // Guided-Mode Task Pool (Phase→Segment→Task→Step priority engine)
   router.get('/api/guided/tasks', asyncHandler(guidedTasks.GET))
   router.get('/api/guided/tasks/steps', asyncHandler(guidedTasksSteps.GET))

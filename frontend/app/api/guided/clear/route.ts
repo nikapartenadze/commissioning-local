@@ -29,6 +29,19 @@ export async function POST(req: Request, res: Response) {
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
     if (!io) return res.status(404).json({ error: 'IO not found' })
 
+    // MCM ownership — see the matching guard in POST /api/guided/test. This is
+    // a DESTRUCTIVE op, so a wrong-MCM call here erases a real result.
+    const ownerSubsystemId = getMcmIdForIo(ioId) ?? String(io.SubsystemId)
+    const claimedSubsystemId = body.subsystemId != null ? String(body.subsystemId) : null
+    if (claimedSubsystemId && claimedSubsystemId !== ownerSubsystemId) {
+      console.error(
+        `[Guided clear] MCM-MISMATCH REJECTED ioId=${ioId} claimed=${claimedSubsystemId} owner=${ownerSubsystemId}`,
+      )
+      return res.status(409).json({
+        error: `This IO belongs to MCM ${ownerSubsystemId}, not MCM ${claimedSubsystemId}. Re-open guided mode for the correct subsystem.`,
+      })
+    }
+
     const hadComments = !!io.Comments
     const hadResult = !!io.Result
     if (!hadComments && !hadResult) {
@@ -52,8 +65,12 @@ export async function POST(req: Request, res: Response) {
     let testHistoryId: number | bigint = 0
 
     const txn = db.transaction(() => {
+      // FailureMode/Trade MUST be nulled with the result. Clearing left them on
+      // the row while the WS event and the cloud push both reported them blank —
+      // so the local row kept a stale '3rd Party'/'Mech' reason that the cloud
+      // sidebar filter no longer matched. Same rule as POST /api/ios/:id/reset.
       db.prepare(
-        'UPDATE Ios SET Result = NULL, Timestamp = NULL, Comments = NULL, Version = ? WHERE id = ?'
+        'UPDATE Ios SET Result = NULL, Timestamp = NULL, Comments = NULL, FailureMode = NULL, Trade = NULL, Version = ? WHERE id = ?'
       ).run(newVersion, ioId)
       const histResult = db.prepare(
         'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -66,7 +83,7 @@ export async function POST(req: Request, res: Response) {
     // journals io.reset); guided clears previously left no journal entry.
     auditLog({
       type: 'io.reset',
-      subsystemId: getMcmIdForIo(ioId) ?? String(io.SubsystemId),
+      subsystemId: ownerSubsystemId,
       ioId,
       user: currentUser,
       result: TEST_CONSTANTS.RESULT_CLEARED,
@@ -107,13 +124,16 @@ export async function POST(req: Request, res: Response) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'UpdateIO',
+          // Per-MCM scoping — an id-less payload is treated as a global event
+          // by shouldDeliver() and bypasses subscription filtering.
+          subsystemId: ownerSubsystemId,
           id: ioId,
           result: 'Not Tested',
           state: plcState ?? '',
           timestamp,
           comments: '',
-          // Guided Clear blanks Ios.FailureMode server-side; mirror on the
-          // WS event.
+          // Guided Clear blanks Ios.FailureMode/Trade server-side (see the txn
+          // above); mirror on the WS event so every surface agrees.
           failureMode: null,
         }),
       })

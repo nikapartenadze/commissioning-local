@@ -107,6 +107,24 @@ export function startRoundTrip(circuit: Circuit | null): RoundTrip {
  *  - `await_actuate` + state ≠ idle → `await_return`.
  *  - `await_return` + state = idle → `complete`.
  */
+/**
+ * May this tag event drive the round-trip state machine?
+ *
+ * `advanceRoundTrip` is deliberately time-blind — it sees only states, never
+ * timestamps — so freshness MUST be enforced before feeding it. The server
+ * replays a `TagSnapshot` of cached tag states on every WebSocket connect
+ * (including reconnects), and the tag reader keeps the last-known-good value
+ * through a comms outage. A replayed pre-actuation state fed into the tracker
+ * reads as "the tester returned the device to rest" and auto-passes an IO that
+ * was never actually checked.
+ *
+ * Rule: only LIVE transitions advance the sequence. Cached replays may update
+ * a display, never a verdict.
+ */
+export function canAdvanceRoundTrip(evt: { FromSnapshot?: boolean }): boolean {
+  return evt.FromSnapshot !== true
+}
+
 export function advanceRoundTrip(rt: RoundTrip, state: TagState): RoundTrip {
   if (rt.phase === 'complete') return rt
   const idle = rt.idle ?? state

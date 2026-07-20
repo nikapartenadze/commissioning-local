@@ -33,7 +33,7 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'Invalid ioId' })
     }
 
-    const { result, comments, currentUser, failureMode } = body
+    const { result, comments, currentUser, failureMode, trade, blockerResponsibleParty, blockerDescription } = body
     if (!result || !['Pass', 'Fail', 'Passed', 'Failed'].includes(result)) {
       return res.status(400).json({ error: 'Invalid result. Must be "Pass" or "Fail"' })
     }
@@ -47,6 +47,28 @@ export async function POST(req: Request, res: Response) {
 
     const io = db.prepare('SELECT * FROM Ios WHERE id = ?').get(ioId) as Io | undefined
     if (!io) return res.status(404).json({ error: 'IO not found' })
+
+    // MCM ownership. The manual route refuses to write unless the controller
+    // that OWNS this IO is connected; guided deliberately drops the
+    // PLC-connected requirement (demo / training / no-PLC walking, see above),
+    // but it previously dropped the ownership check with it — so `ioId` was
+    // taken on trust and a session pointed at one MCM could commit a result to
+    // another MCM's IO, with the audit line faithfully attributing it to the
+    // victim. Verify the caller's subsystem instead of its connectivity: keeps
+    // the no-PLC capability, closes the wrong-MCM write.
+    const ownerSubsystemId = getMcmIdForIo(ioId) ?? String(io.SubsystemId)
+    const claimedSubsystemId = body.subsystemId != null ? String(body.subsystemId) : null
+    if (claimedSubsystemId && claimedSubsystemId !== ownerSubsystemId) {
+      console.error(
+        `[Guided test] MCM-MISMATCH REJECTED ioId=${ioId} claimed=${claimedSubsystemId} owner=${ownerSubsystemId}`,
+      )
+      return res.status(409).json({
+        error: `This IO belongs to MCM ${ownerSubsystemId}, not MCM ${claimedSubsystemId}. Re-open guided mode for the correct subsystem.`,
+      })
+    }
+    if (!claimedSubsystemId) {
+      console.warn(`[Guided test] no subsystemId supplied — ownership unverified for ioId=${ioId}`)
+    }
 
     if (io.Description?.toUpperCase().includes('SPARE') && normalizedResult === TEST_CONSTANTS.RESULT_PASSED) {
       return res.status(400).json({ error: 'SPARE IOs cannot be passed' })
@@ -82,6 +104,21 @@ export async function POST(req: Request, res: Response) {
     const newFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
       ? (failureMode || null)
       : null
+    // Discipline + blocker parity with the manual route. These were previously
+    // NEVER written by guided mode: Trade was dropped entirely (cloud punchlist
+    // Discipline column stayed NULL for every guided Fail) and the blocker pair
+    // never reached the PendingSync, so the cloud never wrote the shared Devices
+    // row. Same data-loss class as the FailureMode gap fixed above — the fix had
+    // been applied to one column and not the other three.
+    const newTrade = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (trade || null)
+      : null
+    const newBlockerResponsibleParty = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (blockerResponsibleParty || null)
+      : null
+    const newBlockerDescription = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
+      ? (blockerDescription || null)
+      : null
 
     const oldComment = io.Comments
     const newVersion = (io.Version ?? 0) + 1
@@ -89,8 +126,8 @@ export async function POST(req: Request, res: Response) {
 
     const txn = db.transaction(() => {
       db.prepare(
-        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ? WHERE id = ?'
-      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, ioId)
+        'UPDATE Ios SET Result = ?, Timestamp = ?, Comments = ?, Version = ?, FailureMode = ?, Trade = ? WHERE id = ?'
+      ).run(normalizedResult, timestamp, combinedComment || null, newVersion, newFailureMode, newTrade, ioId)
       const histResult = db.prepare(
         'INSERT INTO TestHistories (IoId, Result, Timestamp, Comments, State, TestedBy, FailureMode, Source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(ioId, normalizedResult, timestamp, oldComment, plcState, currentUser ?? 'Unknown', newFailureMode, 'guided')
@@ -100,7 +137,7 @@ export async function POST(req: Request, res: Response) {
 
     // MCM-aware subsystem id for attribution (registry MCM tag, fallback to the
     // IO's SubsystemId) — same resolution the manual route uses.
-    const subsystemId = getMcmIdForIo(ioId) ?? String(io.SubsystemId)
+    const subsystemId = ownerSubsystemId
     // Failure reason only applies to a Fail result (parity with the manual route,
     // where newFailureMode is null on Pass).
     const auditFailureMode = normalizedResult === TEST_CONSTANTS.RESULT_FAILED
@@ -130,8 +167,20 @@ export async function POST(req: Request, res: Response) {
     // Cloud sync — best-effort, never block the response
     try {
       const info = db.prepare(
-        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(ioId, currentUser || null, normalizedResult, combinedComment || null, plcState, new Date().toISOString(), newVersion - 1, newFailureMode)
+        'INSERT INTO PendingSyncs (IoId, InspectorName, TestResult, Comments, State, Timestamp, Version, FailureMode, BlockerResponsibleParty, BlockerDescription, Trade) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(
+        ioId,
+        currentUser || null,
+        normalizedResult,
+        combinedComment || null,
+        plcState,
+        new Date().toISOString(),
+        newVersion - 1,
+        newFailureMode,
+        newBlockerResponsibleParty,
+        newBlockerDescription,
+        newTrade,
+      )
       console.log(
         `[Guided test] PENDING-QUEUED pendingId=${info.lastInsertRowid} ioId=${ioId} ` +
         `result=${normalizedResult} tester=${currentUser ?? 'unknown'} version=${newVersion - 1}`,
@@ -167,13 +216,16 @@ export async function POST(req: Request, res: Response) {
           state: plcState ?? '',
           timestamp,
           comments: combinedComment || '',
-          // Forward failureMode so cross-tab Party Responsible badges update
-          // in lockstep with Result. Guided mode currently does NOT
-          // denormalise failureMode onto the Ios row (it only writes
-          // TestHistories.FailureMode — see the txn above) so we forward
-          // the request's failureMode directly. On Pass we explicitly send
-          // null to blank the badge.
-          failureMode: normalizedResult === TEST_CONSTANTS.RESULT_FAILED ? (failureMode ?? null) : null,
+          // Per-MCM scoping: without this the payload has no subsystemId, and
+          // shouldDeliver() (server-express.ts) treats an id-less frame as a
+          // GLOBAL event that bypasses every client's subscription filter — so
+          // guided results leaked into central-tool tabs watching other MCMs.
+          subsystemId,
+          // Forward failureMode so cross-tab Party Responsible badges update in
+          // lockstep with Result. This IS denormalised onto the Ios row in the
+          // txn above; forward the same computed value so the WS event, the Ios
+          // row and the cloud push can never disagree. On Pass it is null.
+          failureMode: newFailureMode,
         }),
       })
     } catch { /* WS broadcast is best-effort */ }
