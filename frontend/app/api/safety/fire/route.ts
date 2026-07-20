@@ -26,7 +26,7 @@ export async function POST(req: Request, res: Response) {
     } else {
       const client = getPlcClient()
       const r = client.isConnected
-        ? client.writeOutputBit({ id: -1, name: tag }, bitValue)
+        ? await client.writeOutputBit({ id: -1, name: tag }, bitValue)
         : { success: false, error: 'PLC not connected' }
       result = { connected: client.isConnected, success: r.success, currentState: r.currentState, error: r.error }
     }

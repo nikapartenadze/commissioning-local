@@ -34,6 +34,7 @@ import {
   plc_tag_get_int16,
   plc_tag_get_int32,
   plc_tag_get_float32,
+  createTagAsync,
   readTagAsync,
   writeTagAsync,
   createTagsBatchAsync,
@@ -588,7 +589,7 @@ export class PlcClient extends EventEmitter {
   /**
    * Read the current state of an output tag (per-tag handle, multi-user safe).
    */
-  readOutputBit(io: IoTag): { success: boolean; currentState?: boolean; error?: string } {
+  async readOutputBit(io: IoTag): Promise<{ success: boolean; currentState?: boolean; error?: string }> {
     if (!this.connectionConfig || !io.name) {
       return { success: false, error: 'No connection config or tag name' };
     }
@@ -598,7 +599,11 @@ export class PlcClient extends EventEmitter {
 
     if (handle === undefined) {
       try {
-        handle = createTag({
+        // createTagAsync returns {handle,status}: the create is initiated
+        // non-blocking and the status awaited off the event loop, which is the
+        // whole point of the swap. A non-OK status means the tag never became
+        // usable, so destroy the handle rather than caching a dead one.
+        const created = await createTagAsync({
           gateway: this.connectionConfig.ip,
           path: this.connectionConfig.path,
           name: tagName,
@@ -606,9 +611,11 @@ export class PlcClient extends EventEmitter {
           elemCount: 1,
           timeout: this.config.timeout || 5000,
         });
-        if (handle < 0) {
-          return { success: false, error: `Failed to create tag ${tagName}: ${getStatusMessage(handle)}` };
+        if (created.handle < 0 || created.status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          if (created.handle >= 0) plc_tag_destroy(created.handle);
+          return { success: false, error: `Failed to create tag ${tagName}: ${getStatusMessage(created.status)}` };
         }
+        handle = created.handle;
         this.writeHandles.set(tagName, handle);
       } catch (error) {
         return { success: false, error: String(error) };
@@ -616,7 +623,7 @@ export class PlcClient extends EventEmitter {
     }
 
     try {
-      const readStatus = plc_tag_read(handle, 5000);
+      const readStatus = await readTagAsync(handle, 5000);
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         this.destroyWriteHandle(tagName);
         return { success: false, error: `Read failed: ${getStatusMessage(readStatus)}` };
@@ -635,10 +642,10 @@ export class PlcClient extends EventEmitter {
    *
    * Returns current state (before write) and success/error.
    */
-  writeOutputBit(
+  async writeOutputBit(
     io: IoTag,
     value: number | 'toggle'
-  ): { success: boolean; currentState?: boolean; error?: string } {
+  ): Promise<{ success: boolean; currentState?: boolean; error?: string }> {
     if (!this.connectionConfig || !io.name) {
       return { success: false, error: 'No connection config or tag name' };
     }
@@ -650,7 +657,7 @@ export class PlcClient extends EventEmitter {
 
     if (handle === undefined) {
       try {
-        handle = createTag({
+        const created = await createTagAsync({
           gateway: this.connectionConfig.ip,
           path: this.connectionConfig.path,
           name: tagName,
@@ -659,12 +666,14 @@ export class PlcClient extends EventEmitter {
           timeout: this.config.timeout || 5000,
         });
 
-        if (handle < 0) {
-          const msg = `Failed to create output tag ${tagName}: ${getStatusMessage(handle)}`;
+        if (created.handle < 0 || created.status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          if (created.handle >= 0) plc_tag_destroy(created.handle);
+          const msg = `Failed to create output tag ${tagName}: ${getStatusMessage(created.status)}`;
           this.emit('error', new Error(msg));
           return { success: false, error: msg };
         }
 
+        handle = created.handle;
         this.writeHandles.set(tagName, handle);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -675,7 +684,7 @@ export class PlcClient extends EventEmitter {
 
     try {
       // Read current value (syncs tag buffer — required before writing)
-      const readStatus = plc_tag_read(handle, 5000);
+      const readStatus = await readTagAsync(handle, 5000);
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         // Handle may be stale — destroy and remove so next call recreates
         this.destroyWriteHandle(tagName);
@@ -691,12 +700,15 @@ export class PlcClient extends EventEmitter {
       // Set new value
       const setStatus = plc_tag_set_int8(handle, 0, targetValue);
       if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        // Destroy on failure too: the read path already did this, but the two
+        // write-failure paths left a possibly-stale handle cached for reuse.
+        this.destroyWriteHandle(tagName);
         return { success: false, currentState, error: `Set value failed: ${getStatusMessage(setStatus)}` };
       }
 
-      // Write to PLC (blocking)
-      const writeStatus = plc_tag_write(handle, 5000);
+      const writeStatus = await writeTagAsync(handle, 5000);
       if (writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        this.destroyWriteHandle(tagName);
         return { success: false, currentState, error: `Write failed: ${getStatusMessage(writeStatus)}` };
       }
 

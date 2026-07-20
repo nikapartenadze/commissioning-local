@@ -203,22 +203,22 @@ app.get('/mcm/:subsystemId/tags', (req: Request, res: Response) => {
 });
 
 // ── Per-IO single-bit write/read ──────────────────────────────────────────────
-app.post('/mcm/:subsystemId/io/write', (req: Request, res: Response) => {
+app.post('/mcm/:subsystemId/io/write', async (req: Request, res: Response) => {
   const subsystemId = String(req.params.subsystemId);
   const { io, value } = req.body ?? {};
   if (!io || typeof io.name !== 'string') {
     return res.status(400).json({ connected: false, success: false, error: 'io.name is required' });
   }
-  res.json(writeOutputBitForMcm(subsystemId, io, value));
+  res.json(await writeOutputBitForMcm(subsystemId, io, value));
 });
 
-app.post('/mcm/:subsystemId/io/read', (req: Request, res: Response) => {
+app.post('/mcm/:subsystemId/io/read', async (req: Request, res: Response) => {
   const subsystemId = String(req.params.subsystemId);
   const { io } = req.body ?? {};
   if (!io || typeof io.name !== 'string') {
     return res.status(400).json({ connected: false, success: false, error: 'io.name is required' });
   }
-  res.json(readOutputBitForMcm(subsystemId, io));
+  res.json(await readOutputBitForMcm(subsystemId, io));
 });
 
 // ── Generic typed tag batch write/read (VFD commissioning, etc.) ──────────────

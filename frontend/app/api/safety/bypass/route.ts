@@ -49,7 +49,7 @@ async function writeBypassBit(
   }
   const client = getPlcClient()
   if (!client.isConnected) return { connected: false, success: false, error: 'PLC not connected' }
-  const r = client.writeOutputBit({ id: -1, name: bssTag }, value)
+  const r = await client.writeOutputBit({ id: -1, name: bssTag }, value)
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error }
 }
 

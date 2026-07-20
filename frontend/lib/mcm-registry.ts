@@ -694,7 +694,7 @@ export async function writeOutputBitForIo(
     client = legacyPlcClient();
   }
   if (!client || !client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
-  const r = client.writeOutputBit(io as IoTag, value);
+  const r = await client.writeOutputBit(io as IoTag, value);
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
 }
 
@@ -719,7 +719,7 @@ export async function readOutputBitForIo(ioId: number, io: IoRef): Promise<IoBit
     client = legacyPlcClient();
   }
   if (!client || !client.isConnected) return { connected: false, success: false, error: 'PLC not connected' };
-  const r = client.readOutputBit(io as IoTag);
+  const r = await client.readOutputBit(io as IoTag);
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
 }
 
@@ -729,23 +729,23 @@ export async function readOutputBitForIo(ioId: number, io: IoRef): Promise<IoBit
 // EMBEDDED-only (the gateway always runs embedded). They resolve the client by
 // subsystemId — the app passes the id, the gateway never touches SQLite.
 
-export function writeOutputBitForMcm(
+export async function writeOutputBitForMcm(
   subsystemId: string,
   io: IoRef,
   value: number | 'toggle'
-): IoBitResult {
+): Promise<IoBitResult> {
   const entry = reg().mcms.get(subsystemId);
   if (!entry) return { connected: false, success: false, error: `MCM ${subsystemId} not registered` };
   if (!entry.client.isConnected) return { connected: false, success: false, error: `MCM ${subsystemId} not connected` };
-  const r = entry.client.writeOutputBit(io as IoTag, value);
+  const r = await entry.client.writeOutputBit(io as IoTag, value);
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
 }
 
-export function readOutputBitForMcm(subsystemId: string, io: IoRef): IoBitResult {
+export async function readOutputBitForMcm(subsystemId: string, io: IoRef): Promise<IoBitResult> {
   const entry = reg().mcms.get(subsystemId);
   if (!entry) return { connected: false, success: false, error: `MCM ${subsystemId} not registered` };
   if (!entry.client.isConnected) return { connected: false, success: false, error: `MCM ${subsystemId} not connected` };
-  const r = entry.client.readOutputBit(io as IoTag);
+  const r = await entry.client.readOutputBit(io as IoTag);
   return { connected: true, success: r.success, currentState: r.currentState, error: r.error };
 }
 
@@ -762,12 +762,12 @@ export async function writeOutputBitBySubsystem(
   value: number | 'toggle'
 ): Promise<IoBitResult> {
   if (REMOTE) return gatewayClient.writeIo(subsystemId, io, value);
-  return writeOutputBitForMcm(subsystemId, io, value);
+  return await writeOutputBitForMcm(subsystemId, io, value);
 }
 
 export async function readOutputBitBySubsystem(subsystemId: string, io: IoRef): Promise<IoBitResult> {
   if (REMOTE) return gatewayClient.readIo(subsystemId, io);
-  return readOutputBitForMcm(subsystemId, io);
+  return await readOutputBitForMcm(subsystemId, io);
 }
 
 // ── Generic typed tag write/read by name (VFD commissioning, etc.) ────────────
