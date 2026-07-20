@@ -114,27 +114,6 @@ export interface AppConfig {
    * logged or echoed back in an error.
    */
   sharepoint?: SharePointConfig;
-
-  /**
-   * Optional SNMP settings for the on-demand Ring Commissioning check. Absent
-   * or enabled:false → the feature reads no switches and shows an explanatory
-   * empty state; it never runs in the background and cannot affect core tool
-   * behaviour. Community/creds live here alongside the other secrets.
-   */
-  snmp?: SnmpConfig;
-}
-
-/**
- * SNMP settings for ring-commissioning switch reads. All optional beyond the
- * enable flag; when disabled the ring-commissioning feature self-disables.
- */
-export interface SnmpConfig {
-  enabled: boolean;
-  version: 'v2c' | 'v3';
-  community?: string;
-  port?: number;
-  timeoutMs?: number;
-  retries?: number;
 }
 
 /**

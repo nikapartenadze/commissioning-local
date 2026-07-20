@@ -74,6 +74,7 @@ import * as mcmPlcConnect from '@/app/api/mcm/[subsystemId]/plc/connect/route'
 import * as mcmPlcDisconnect from '@/app/api/mcm/[subsystemId]/plc/disconnect/route'
 import * as mcmPlcTags from '@/app/api/mcm/[subsystemId]/plc/tags/route'
 import * as mcmPull from '@/app/api/mcm/[subsystemId]/pull/route'
+import * as mcmDlr from '@/app/api/mcm/[subsystemId]/dlr/route'
 import * as updateStatus from '@/app/api/update/status/route'
 import * as updateInstall from '@/app/api/update/install/route'
 import * as history from '@/app/api/history/route'
@@ -89,9 +90,6 @@ import * as networkChainStatus from '@/app/api/network/chain-status/route'
 import * as networkDevices from '@/app/api/network/devices/route'
 import * as networkModules from '@/app/api/network/modules/route'
 import * as networkFiomPorts from '@/app/api/network/fiom-ports/route'
-import * as ringCapture from '@/app/api/network/ring/capture/route'
-import * as ringBaseline from '@/app/api/network/ring/baseline/route'
-import * as ringCheck from '@/app/api/network/ring/check/route'
 import * as changeRequests from '@/app/api/change-requests/route'
 import * as changeRequestById from '@/app/api/change-requests/[id]/route'
 import * as estopStatus from '@/app/api/estop/status/route'
@@ -291,6 +289,7 @@ export function createApiRouter(): Router {
   router.post('/api/mcm/:subsystemId/plc/disconnect', asyncHandler(mcmPlcDisconnect.POST))
   router.get('/api/mcm/:subsystemId/plc/tags', asyncHandler(mcmPlcTags.GET))
   router.post('/api/mcm/:subsystemId/pull', asyncHandler(mcmPull.POST))
+  router.get('/api/mcm/:subsystemId/dlr', asyncHandler(mcmDlr.GET))
 
   // ── App Updates ───────────────────────────────────────────────────────────
   router.get('/api/update/status', asyncHandler(updateStatus.GET))
@@ -322,11 +321,6 @@ export function createApiRouter(): Router {
   router.get('/api/network/devices', asyncHandler(networkDevices.GET))
   router.get('/api/network/modules', asyncHandler(networkModules.GET))
   router.get('/api/network/fiom-ports', asyncHandler(networkFiomPorts.GET))
-  // Ring Commissioning — on-demand, isolated, fail-safe (see specs/2026-07-08-*)
-  router.post('/api/network/ring/capture', asyncHandler(ringCapture.POST))
-  router.get('/api/network/ring/baseline', asyncHandler(ringBaseline.GET))
-  router.post('/api/network/ring/baseline', asyncHandler(ringBaseline.POST))
-  router.post('/api/network/ring/check', asyncHandler(ringCheck.POST))
 
   // ── Change Requests ────────────────────────────────────────────
   router.get('/api/change-requests', asyncHandler(changeRequests.GET))

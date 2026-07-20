@@ -8,7 +8,7 @@ import { authFetch, API_ENDPOINTS } from '@/lib/api-config'
 import { cn } from '@/lib/utils'
 import { NetworkDiagnosticsView } from '@/components/network-diagnostics-view'
 import { RingHealthBadge } from '@/components/ring-health-badge'
-import { RingCommissioningView } from '@/components/ring-commissioning-view'
+import { DlrPlcBadge } from '@/components/dlr-diagnostics'
 import { useNetworkSnapshots } from '@/lib/hooks/use-network-snapshots'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 
@@ -881,8 +881,6 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   // Esc / backdrop closes.
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [diagnosticsSingleDevice, setDiagnosticsSingleDevice] = useState<string | undefined>(undefined)
-  // On-demand Ring Commissioning panel (isolated; no effect on the topology view)
-  const [showRingCommissioning, setShowRingCommissioning] = useState(false)
 
   // Page-level WS subscription to the network poller. Runs while the Network
   // page is mounted, so when the operator opens the Diagnostics modal the
@@ -1133,6 +1131,10 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         </div>
         <div className="flex items-center gap-2">
           <RingHealthBadge ring={networkSnapshots.ringStatus} />
+          {/* Second, independent opinion on the ring: what the controller's own
+              DLR AOI reports. Kept beside — not instead of — RingHealthBadge so
+              a disagreement between the tool's CIP read and the PLC is visible. */}
+          <DlrPlcBadge subsystemId={subsystemId} />
           <button
             type="button"
             onClick={() => openDiagnostics()}
@@ -1140,13 +1142,6 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
           >
             <Activity className="w-4 h-4" />
             Diagnostics
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowRingCommissioning(v => !v)}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm rounded-md border bg-card hover:bg-accent transition-colors"
-          >
-            Ring Commissioning
           </button>
         <button
           onClick={() => fetchTopology(true)}
@@ -1158,8 +1153,6 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
         </button>
         </div>
       </div>
-
-      {showRingCommissioning && <RingCommissioningView subsystemId={subsystemId} />}
 
       {/* Ring diagrams (left) + Not-Communicating roll-up (right) */}
       <div className="flex gap-4 items-start">

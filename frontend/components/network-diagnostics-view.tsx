@@ -24,7 +24,18 @@ import { Activity, Network, ServerCrash, ChevronDown, ChevronRight } from 'lucid
 import { cn } from '@/lib/utils'
 import type { NetworkDeviceSnapshotMessage, RingStatusUpdateMessage } from '@/lib/plc/types'
 import { RingHealthBadge } from '@/components/ring-health-badge'
+import { DlrDiagnostics } from '@/components/dlr-diagnostics'
 import { isExcludedRackSlot } from '@/lib/plc/network/types'
+import {
+  hasMediaErrors,
+  isActivelyDown,
+  hasHardError,
+  hasSoftWarning,
+  isDuplexMismatch,
+  isDegradedSpeed,
+  needsReset,
+  NOMINAL_SPEED_MBPS,
+} from '@/lib/plc/network/port-health'
 import { authFetch } from '@/lib/api-config'
 
 type Snapshot = NetworkDeviceSnapshotMessage['snapshot']
@@ -110,43 +121,25 @@ function formatNumber(n: number): string {
   return n.toLocaleString()
 }
 
-function hasMediaErrors(p: Port): boolean {
-  return (
-    p.alignErr > 0 || p.fcsErr > 0 || p.singleColl > 0 || p.multiColl > 0 ||
-    p.sqeErr > 0 || p.deferredTx > 0 || p.lateColl > 0 || p.excessColl > 0 ||
-    p.macTxErr > 0 || p.carrierSense > 0 || p.frameTooLong > 0 || p.macRxErr > 0
-  )
-}
-function hasInterfaceErrors(p: Port): boolean {
-  return p.errorsIn > 0 || p.errorsOut > 0 || p.discardsIn > 0 || p.discardsOut > 0
-}
-function isActivelyDown(p: Port): boolean {
-  if (p.linkUp) return false
-  return p.octetsIn > 0 || p.octetsOut > 0
-}
+// The pure per-port predicates (hasMediaErrors / isActivelyDown / hasHardError /
+// hasSoftWarning / isDuplexMismatch / isDegradedSpeed / needsReset) now live in
+// lib/plc/network/port-health.ts so they can be unit-tested without React.
 
 interface DeviceSummary {
   activePorts: number
   /** Total problem ports (errorPorts + warnPorts). */
   warnCount: number
-  /** Ports with physical-layer problems: actively down, media errors, interface errors, or hardware fault. RED severity. */
+  /** Ports with physical-layer problems: actively down, media errors, interface errors, hardware fault, half-duplex, or degraded speed. RED severity. */
   errorCount: number
-  /** Ports with only soft signals (discards): RED is too loud, ORANGE is right. */
+  /** Ports with only soft signals (discards, pending reset): RED is too loud, ORANGE is right. */
   softWarnCount: number
   errorPorts: Port[]
   mediaPorts: Port[]
   downPorts: Port[]
-}
-
-function hasHardError(p: Port): boolean {
-  // Physical-layer / frame-level problems. These are real network breakage,
-  // not "things are a bit slow" — should always render RED.
-  return p.hardwareFault || hasMediaErrors(p) || p.errorsIn > 0 || p.errorsOut > 0
-}
-function hasOnlyDiscards(p: Port): boolean {
-  // Discards without any hard errors → soft warning. The PLC chose to drop
-  // these packets (e.g. congestion); nothing is broken at the wire level.
-  return (p.discardsIn > 0 || p.discardsOut > 0) && !hasHardError(p)
+  /** Live links running half duplex — auto-negotiation / cabling fault. RED. */
+  duplexPorts: Port[]
+  /** Live links negotiated below 100 Mbps (i.e. 10 Mbps). RED. */
+  speedPorts: Port[]
 }
 
 function summarize(snap: Snapshot): DeviceSummary {
@@ -154,16 +147,22 @@ function summarize(snap: Snapshot): DeviceSummary {
   const errorPorts: Port[] = []
   const mediaPorts: Port[] = []
   const downPorts: Port[] = []
+  const duplexPorts: Port[] = []
+  const speedPorts: Port[] = []
   // Only the visible ports count toward the device's health roll-up.
   for (const p of visiblePorts(snap)) {
     if (p.linkUp) activePorts++
     const down = isActivelyDown(p)
     if (down) downPorts.push(p)
     if (hasMediaErrors(p)) mediaPorts.push(p)
+    if (isDuplexMismatch(p)) duplexPorts.push(p)
+    if (isDegradedSpeed(p)) speedPorts.push(p)
     if (down || hasHardError(p)) {
       errorCount++
       errorPorts.push(p)
-    } else if (hasOnlyDiscards(p)) {
+    } else if (hasSoftWarning(p)) {
+      // Discards OR a pending module reset. hasSoftWarning() covers both so a
+      // reset-required-only port isn't swallowed by the discards requirement.
       softWarnCount++
     }
   }
@@ -175,6 +174,8 @@ function summarize(snap: Snapshot): DeviceSummary {
     errorPorts,
     mediaPorts,
     downPorts,
+    duplexPorts,
+    speedPorts,
   }
 }
 
@@ -362,7 +363,11 @@ export function NetworkDiagnosticsView({
       {/* Body */}
       <div className="flex-1 overflow-auto">
         <div className="px-5 py-4">
+          {/* Ring-wide facts first, then per-device detail. DLR break location
+              is a property of the ring, not of any one device, so it sits
+              beside the controller card rather than inside a device section. */}
           {!singleDevice && <ControllerFirmwareCard controller={controllerFw} />}
+          {!singleDevice && <DlrDiagnostics subsystemId={subsystemId} />}
           {!singleDevice && totalKnown === 0 && (
             <div className="border border-dashed border-border bg-card/50 px-5 py-10 text-center text-sm text-muted-foreground rounded">
               {active
@@ -588,10 +593,11 @@ function DeviceSection({ state, now, defaultExpanded, baselines = [] }: { state:
         ? 'warn'
         : 'ok'
 
-  // Chips surface the actual problem ports. Media errors and actively-down
-  // ports are physical-layer faults — RED. Discards-only would be orange but
-  // we don't list those individually (the device-level WARN tag is enough).
-  const chips: { text: string; kind: 'error'; title: string }[] = [
+  // Chips surface the actual problem ports. Media errors, actively-down ports,
+  // half-duplex links and links negotiated below 100 Mbps are physical-layer
+  // faults — RED. A pending module reset is a config state — ORANGE.
+  // Discards-only stays unlisted (the device-level WARN tag is enough).
+  const chips: { text: string; kind: 'error' | 'warn'; title: string }[] = [
     ...summary.mediaPorts.map((p) => ({
       text: `P${p.portNumber} media err`,
       kind: 'error' as const,
@@ -601,6 +607,21 @@ function DeviceSection({ state, now, defaultExpanded, baselines = [] }: { state:
       text: `P${p.portNumber} down`,
       kind: 'error' as const,
       title: `OctetsIn=${p.octetsIn}, OctetsOut=${p.octetsOut}`,
+    })),
+    ...summary.duplexPorts.map((p) => ({
+      text: `P${p.portNumber} half-duplex`,
+      kind: 'error' as const,
+      title: 'Link negotiated HALF duplex — auto-negotiation or cabling fault. Causes late collisions.',
+    })),
+    ...summary.speedPorts.map((p) => ({
+      text: `P${p.portNumber} ${p.speedMbps} Mbps`,
+      kind: 'error' as const,
+      title: `Link negotiated ${p.speedMbps} Mbps instead of ${NOMINAL_SPEED_MBPS} — cabling or auto-negotiation fault.`,
+    })),
+    ...ports.filter((p) => needsReset(p)).map((p) => ({
+      text: `P${p.portNumber} reset required`,
+      kind: 'warn' as const,
+      title: 'A link parameter change is pending an Identity Object reset on this module.',
     })),
   ]
 
@@ -741,16 +762,21 @@ function Chip({
   title,
   children,
 }: {
-  /** All chips currently denote errors. Kept as a discriminator for future soft-warning chips. */
-  kind: 'error'
+  /** 'error' = RED physical-layer fault, 'warn' = ORANGE configuration signal. */
+  kind: 'error' | 'warn'
   title?: string
   children: React.ReactNode
 }) {
-  void kind
+  // Colour is never the only signal — the chip always carries its text label.
   return (
     <span
       title={title}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-[10px] font-semibold uppercase tracking-wider font-mono border-red-500/40 bg-red-500/10 text-red-500"
+      className={cn(
+        'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-[10px] font-semibold uppercase tracking-wider font-mono',
+        kind === 'error'
+          ? 'border-red-500/40 bg-red-500/10 text-red-500'
+          : 'border-orange-500/40 bg-orange-500/10 text-orange-500',
+      )}
     >
       <ServerCrash className="w-2.5 h-2.5" />
       {children}
@@ -771,16 +797,19 @@ const PortRow = memo(function PortRow({ port: p }: { port: Port }) {
   const down = isActivelyDown(p)
   const ifErr = p.errorsIn > 0 || p.errorsOut > 0
   const hwFault = p.hardwareFault
-  const hasError = media || down || ifErr || hwFault
-  const discardsOnly =
-    !hasError && (p.discardsIn > 0 || p.discardsOut > 0)
+  const halfDuplex = isDuplexMismatch(p)
+  const slowLink = isDegradedSpeed(p)
+  const resetPending = needsReset(p)
+  const hasError = media || down || ifErr || hwFault || halfDuplex || slowLink
+  const softWarn =
+    !hasError && ((p.discardsIn > 0 || p.discardsOut > 0) || resetPending)
   return (
     <div
       className={cn(
         'border rounded bg-background/40 overflow-hidden',
         hasError && 'border-red-500/50 shadow-[inset_2px_0_0_0_theme(colors.red.500)]',
-        !hasError && discardsOnly && 'border-orange-500/40 shadow-[inset_2px_0_0_0_theme(colors.orange.500)]',
-        !hasError && !discardsOnly && 'shadow-[inset_2px_0_0_0_theme(colors.border)]',
+        !hasError && softWarn && 'border-orange-500/40 shadow-[inset_2px_0_0_0_theme(colors.orange.500)]',
+        !hasError && !softWarn && 'shadow-[inset_2px_0_0_0_theme(colors.border)]',
       )}
     >
       <div className="px-3 py-1.5 border-b bg-muted/20 flex items-center justify-between gap-3 flex-wrap">
@@ -789,7 +818,7 @@ const PortRow = memo(function PortRow({ port: p }: { port: Port }) {
             className={cn(
               'font-mono text-xs font-bold tracking-tight uppercase tabular-nums',
               hasError && 'text-red-500',
-              !hasError && discardsOnly && 'text-orange-500',
+              !hasError && softWarn && 'text-orange-500',
             )}
           >
             Port {String(p.portNumber).padStart(2, '0')}
@@ -808,9 +837,16 @@ const PortRow = memo(function PortRow({ port: p }: { port: Port }) {
               .join(' + ')}
           </span>
         )}
-        {!hasError && discardsOnly && (
+        {/* Label the soft signals individually — a reset-pending port must not
+            be mislabelled "discards", they are different conditions. */}
+        {!hasError && (p.discardsIn > 0 || p.discardsOut > 0) && (
           <span className="text-[9px] uppercase tracking-widest font-bold font-mono text-orange-500">
             discards
+          </span>
+        )}
+        {!hasError && resetPending && (
+          <span className="text-[9px] uppercase tracking-widest font-bold font-mono text-orange-500">
+            reset required
           </span>
         )}
       </div>

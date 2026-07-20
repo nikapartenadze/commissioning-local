@@ -26,6 +26,7 @@ import {
   plc_tag_write,
   plc_tag_status,
   plc_tag_get_int8,
+  plc_tag_get_uint8,
   plc_tag_set_int8,
   plc_tag_get_bit,
   plc_tag_set_bit,
@@ -67,10 +68,24 @@ function floatToInt32Bits(value: number): number {
  */
 export type PlcScalarType = 'BOOL' | 'REAL' | 'INT' | 'DINT';
 
+/**
+ * Types valid for READS only. SINT is deliberately absent from PlcScalarType
+ * so it can never reach encodeScalarWrite(), whose final branch falls through
+ * to int16 — a SINT slipping into that path would write 2 bytes to a 1-byte
+ * tag, the same data-type-mismatch class as the REAL-bits-into-DINT overflow.
+ * Reads are safe (we only decode), so SINT lives here instead.
+ *
+ * SINT reads decode via plc_tag_get_uint8, NOT plc_tag_get_int8: the int8
+ * binding is declared I32-over-int8_t and returns ABI garbage in the upper
+ * bytes. uint8 is declared U8 and yields a clean 0-255.
+ */
+export type PlcReadType = PlcScalarType | 'SINT';
+
 /** Element size in bytes per supported scalar PLC data type. */
-function elemSizeFor(dataType: PlcScalarType): number {
-  // BOOL=1, INT(16-bit)=2, REAL=4, DINT(32-bit)=4.
-  return dataType === 'BOOL' ? 1 : dataType === 'INT' ? 2 : 4;
+function elemSizeFor(dataType: PlcReadType): number {
+  // BOOL=1, SINT=1, INT(16-bit)=2, REAL=4, DINT(32-bit)=4.
+  if (dataType === 'BOOL' || dataType === 'SINT') return 1;
+  return dataType === 'INT' ? 2 : 4;
 }
 
 /**
@@ -807,7 +822,7 @@ export class PlcClient extends EventEmitter {
    */
   readTypedTag(
     tagName: string,
-    dataType: PlcScalarType
+    dataType: PlcReadType
   ): { success: boolean; value?: number | boolean; error?: string } {
     if (!this.connectionConfig) return { success: false, error: 'No connection config' };
     const handle = createTag({
@@ -826,6 +841,7 @@ export class PlcClient extends EventEmitter {
       }
       let value: number | boolean;
       if (dataType === 'BOOL') value = plc_tag_get_bit(handle, 0) === 1;
+      else if (dataType === 'SINT') value = plc_tag_get_uint8(handle, 0);
       else if (dataType === 'REAL') value = plc_tag_get_float32(handle, 0);
       else if (dataType === 'DINT') value = plc_tag_get_int32(handle, 0);
       else value = plc_tag_get_int16(handle, 0);
@@ -848,7 +864,7 @@ export class PlcClient extends EventEmitter {
    * temporary-handle semantics and value decoding as readTypedTag.
    */
   async readTypedTags(
-    reads: Array<{ name: string; dataType: PlcScalarType }>,
+    reads: Array<{ name: string; dataType: PlcReadType }>,
     timeoutMs: number = 5000,
   ): Promise<Array<{ name: string; success: boolean; value?: number | boolean; error?: string }>> {
     if (!this.connectionConfig) {
@@ -888,11 +904,13 @@ export class PlcClient extends EventEmitter {
           const dt = reads[i].dataType;
           out[i].value = dt === 'BOOL'
             ? plc_tag_get_bit(created[i].handle, 0) === 1
-            : dt === 'REAL'
-              ? plc_tag_get_float32(created[i].handle, 0)
-              : dt === 'DINT'
-                ? plc_tag_get_int32(created[i].handle, 0)
-                : plc_tag_get_int16(created[i].handle, 0);
+            : dt === 'SINT'
+              ? plc_tag_get_uint8(created[i].handle, 0)
+              : dt === 'REAL'
+                ? plc_tag_get_float32(created[i].handle, 0)
+                : dt === 'DINT'
+                  ? plc_tag_get_int32(created[i].handle, 0)
+                  : plc_tag_get_int16(created[i].handle, 0);
           out[i].success = true;
         } catch (err) {
           out[i].error = err instanceof Error ? err.message : String(err);

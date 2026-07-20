@@ -62,9 +62,12 @@ export interface PortStat {
   linkStatusRaw: number;
   /**
    * Current interface speed in Mbps (0/10/100/1000) — Attr 1.
-   * NOTE: only populated if the PLC ladder MSG-reads Class 0xF6 Attr 1; the
-   * IOCT_COMMUNICATION_MONITOR routine in CDW5_MCM01_REV1.L5X does not, so
-   * this stays 0 on those sites.
+   * NOTE: only populated if the PLC ladder MSG-reads Class 0xF6 Attr 1.
+   * Current PLC builds DO: IOCT_COMMUNICATION_MONITOR issues a per-port
+   * `_SPEED<n>` MSG on attr 16#0001, so speed is populated on current sites.
+   * Older L5X builds (e.g. the original CDW5_MCM01_REV1.L5X) lack those MSGs
+   * and leave this 0 — treat 0 as "not reported by this program", not as a
+   * link running at 0 Mbps.
    */
   speedMbps: number;
   /**

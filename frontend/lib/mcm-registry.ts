@@ -776,8 +776,14 @@ export async function readOutputBitBySubsystem(subsystemId: string, io: IoRef): 
 // bit-pattern. Speed setpoints (HMI.Speed_At_30rev) are DINT on the controller;
 // writing them as REAL overflowed to ~1.1e9. See PlcScalarType in plc-client.
 export type TagDataType = 'BOOL' | 'REAL' | 'INT' | 'DINT';
+/**
+ * Reads may additionally use SINT (1-byte). It is kept OUT of TagDataType so a
+ * SINT can never reach a write path — see PlcReadType in lib/plc/plc-client.ts
+ * for why that separation is load-bearing.
+ */
+export type TagReadDataType = TagDataType | 'SINT';
 export interface TypedTagWrite { name: string; value: number; dataType: TagDataType; }
-export interface TypedTagRead { name: string; dataType: TagDataType; }
+export interface TypedTagRead { name: string; dataType: TagReadDataType; }
 export interface TypedWriteResult { name: string; success: boolean; error?: string; }
 export interface TypedReadResult { name: string; success: boolean; value?: number | boolean; error?: string; }
 export interface TypedBatchResult<T> { connected: boolean; results: T[]; }
