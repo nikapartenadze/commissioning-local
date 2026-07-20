@@ -157,33 +157,43 @@ test.describe('failed writes are surfaced, never silent', () => {
   })
 
   /**
-   * A functional cell that the server never confirmed must warn, not look saved.
-   * The pool hands firmware/network first, so walk the Task Viewer to a
-   * functional task rather than depending on what happens to be next.
+   * Guided WROTE into the L2 outbox but never drained it — replayL2Outbox was
+   * called only from the FV Validation view, so a guided-only tester's failed
+   * functional check sat in localStorage forever and was recovered only by
+   * chance, if that tablet later happened to open the FV grid.
+   *
+   * Tested by planting a pending edit BEFORE load (the state a tester would
+   * leave behind after a failed save) and asserting the runner drains it on
+   * mount. Doing it this way tests the replay wiring itself and does not
+   * depend on a functional task being workable in whatever rig we point at.
    */
-  test('an unconfirmed functional cell raises the outbox warning', async ({ page }) => {
-    await page.route('**/api/l2/cell', (route) => route.fulfill({ status: 500, body: '{}' }))
+  test('a pending outbox edit is replayed on mount', async ({ page }) => {
+    let replayAttempts = 0
+    await page.route('**/api/l2/cell', (route) => {
+      replayAttempts++
+      return route.fulfill({ status: 500, body: '{}' })
+    })
+
+    await page.addInitScript(() => {
+      window.localStorage.setItem(
+        'l2-cell-outbox-v1',
+        JSON.stringify({
+          '9999:8888': {
+            deviceId: 9999,
+            columnId: 8888,
+            value: 'Pass',
+            updatedBy: 'e2e',
+            ts: Date.now(),
+            attempts: 0,
+          },
+        }),
+      )
+    })
+
     await openGuided(page)
 
-    await page.getByRole('button', { name: 'TASK VIEWER' }).click()
-    const viewer = page.locator('.gt-viewer, .gt-task-viewer').first()
-    await expect(viewer).toBeVisible({ timeout: 10_000 })
-
-    // First workable Functional Validation row (unclaimed rows expose "Go").
-    const go = page
-      .locator('.gt-viewer-row, li, tr')
-      .filter({ hasText: /Check:/ })
-      .locator('button', { hasText: 'Go' })
-      .first()
-    test.skip(!(await go.count()), 'no workable functional task in this pool')
-    await go.click()
-
-    const save = page.getByRole('button', { name: /SAVE & CONTINUE|^PASS$/ }).first()
-    test.skip(!(await save.count()), 'functional task exposed no data-entry step')
-    await save.click()
-
-    await expect(page.getByText(/not confirmed|could NOT be saved/i)).toBeVisible({
-      timeout: 15_000,
-    })
+    // The decisive assertion: the runner drains the outbox WITHOUT the tester
+    // ever visiting the FV grid. Before the fix this stayed at 0 forever.
+    await expect.poll(() => replayAttempts, { timeout: 30_000 }).toBeGreaterThan(0)
   })
 })

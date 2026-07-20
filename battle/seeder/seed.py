@@ -208,6 +208,70 @@ VFD_CMD_FIELDS = ["Valid_Map", "Valid_HP", "Valid_Direction", "Normal_Polarity",
 FORBIDDEN = set(" \t\"'[]")
 
 
+def seed_device_map(db: sqlite3.Connection, mcms: list[tuple[str, str]]) -> None:
+    """Give every seeded MCM a device-ACCURATE SVG map.
+
+    THE RIG'S #1 GOTCHA, fixed at the source. `McmDiagrams` shipped empty, so
+    the tool fell back to the bundled MCM09 demo SVG, whose <g id>s match none
+    of MCM02's devices. Guided mode then resolved 0 devices → generated ZERO
+    io_check tasks → every guided IO path (auto-detect round-trip, swap watch,
+    fire-output) went completely unexercised by the soak, and the readiness
+    blocker banner fired on every run.
+
+    Guided matches an SVG element id to `Ios.NetworkDeviceName` (see
+    app/api/guided/devices/route.ts), so emitting one <g id="{NDN}"> per
+    distinct device is all it takes. Laid out on a coarse grid purely so the
+    map renders sensibly if a human opens it — position is irrelevant to the
+    engine, which only reads ids and document order.
+    """
+    cur = db.cursor()
+    for sid, name in mcms:
+        cur.execute(
+            "SELECT DISTINCT NetworkDeviceName FROM Ios "
+            "WHERE SubsystemId = ? AND NetworkDeviceName IS NOT NULL "
+            "AND NetworkDeviceName <> '' ORDER BY NetworkDeviceName",
+            (sid,),
+        )
+        devices = [r[0] for r in cur.fetchall()]
+        if not devices:
+            print(f"seeder: MCM {sid} has no NetworkDeviceName — skipping map")
+            continue
+
+        cols, cell = 10, 140
+        parts = [
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            f'viewBox="0 0 {cols * cell} {((len(devices) // cols) + 1) * cell}">'
+        ]
+        for i, dev in enumerate(devices):
+            x, y = (i % cols) * cell + 20, (i // cols) * cell + 20
+            safe = dev.replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
+            parts.append(
+                f'<g id="{safe}">'
+                f'<rect x="{x}" y="{y}" width="100" height="60" rx="6" '
+                f'fill="#1d2734" stroke="#4a5a70"/>'
+                f'<text x="{x + 50}" y="{y + 35}" font-size="9" fill="#cfd8e3" '
+                f'text-anchor="middle">{safe}</text>'
+                f"</g>"
+            )
+        parts.append("</svg>")
+        svg = "".join(parts)
+
+        # McmDiagrams is keyed by Subsystems.NAME, not the id — see
+        # app/api/maps/subsystem/[id]/route.ts, which resolves the row via
+        # `SELECT Name FROM Subsystems WHERE id = ?` first. Keying this by the
+        # id silently yields no map (the lookup simply misses) and guided falls
+        # back to the bundled MCM09 demo SVG again.
+        key = name or str(sid)
+        cur.execute("DELETE FROM McmDiagrams WHERE McmName = ?", (key,))
+        cur.execute(
+            "INSERT INTO McmDiagrams (McmName, SvgContent, ServerUploadedAt, FetchedAt) "
+            "VALUES (?, ?, datetime('now'), datetime('now'))",
+            (key, svg),
+        )
+        print(f"seeder: MCM {sid} ({key}) device map — {len(devices)} devices, {len(svg)} bytes")
+    db.commit()
+
+
 def tag_ok(name: str) -> bool:
     return bool(name) and not (set(name) & FORBIDDEN)
 
@@ -232,6 +296,8 @@ def main() -> None:
         print(f"seeder: MCM_MODE=real — {len(mcms)} subsystems with IOs in the seed")
     else:
         mcms = clone_subsystems(rw)
+    # Device-accurate maps so guided mode actually generates io_check tasks.
+    seed_device_map(rw, mcms)
     rw.close()
     multi = MCM_MODE == "real" or MCM_COUNT > 1
 
