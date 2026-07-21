@@ -563,16 +563,19 @@ export async function pullFromCloud(state: PullState): Promise<void> {
     )
 
     const selectStmt = db.prepare('SELECT Result, Version FROM Ios WHERE id = ?')
+    // PlannedDate rides every branch: it's cloud-owned and version-bump-free, so
+    // the def-only update must carry it too (it's part of the "definition" the
+    // cloud owns — mirrors pull-core/delta-sync, which set it unconditionally).
     const insertStmt = db.prepare(`
-      INSERT OR IGNORE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO Ios (id, SubsystemId, Name, Description, "Order", Version, TagType, Result, Timestamp, Comments, PlannedDate)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const updateDefStmt = db.prepare(`
-      UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType)
+      UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType), PlannedDate = ?
       WHERE id = ?
     `)
     const updateWithResultStmt = db.prepare(`
-      UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType),
+      UPDATE Ios SET Name = ?, Description = ?, "Order" = ?, Version = ?, TagType = COALESCE(?, TagType), PlannedDate = ?,
       Result = ?, Timestamp = ?, Comments = ?
       WHERE id = ?
     `)
@@ -615,6 +618,7 @@ export async function pullFromCloud(state: PullState): Promise<void> {
               cloudIo.result ?? null,
               cloudIo.timestamp ?? null,
               cloudIo.comments ?? null,
+              cloudIo.plannedDate ?? null,
             )
           } else if (shouldMergeResult) {
             updateWithResultStmt.run(
@@ -623,6 +627,7 @@ export async function pullFromCloud(state: PullState): Promise<void> {
               cloudIo.order ?? null,
               cloudVersion,
               cloudIo.tagType ?? null,
+              cloudIo.plannedDate ?? null,
               cloudIo.result || null,
               cloudIo.timestamp ?? null,
               cloudIo.comments ?? null,
@@ -636,6 +641,7 @@ export async function pullFromCloud(state: PullState): Promise<void> {
               cloudIo.order ?? null,
               cloudVersion,
               cloudIo.tagType ?? null,
+              cloudIo.plannedDate ?? null,
               cloudIo.id,
             )
           }
