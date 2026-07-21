@@ -527,7 +527,10 @@ export async function pullFromCloud(state: PullState): Promise<void> {
     }
 
     // Change detection — hash all versions to detect any change anywhere
-    const versionHash = cloudIos.map((io: any) => `${io.id}:${io.version}:${io.result || '-'}`).join('|')
+    // plannedDate is cloud-owned and written WITHOUT a version bump — hash it
+    // explicitly or date-only changes read as "no changes" (mirrors the scoped
+    // /api/mcm/:id/pull hash).
+    const versionHash = cloudIos.map((io: any) => `${io.id}:${io.version}:${io.result || '-'}:${io.plannedDate || '-'}`).join('|')
     if (versionHash === state.lastPullVersion) {
       // IO set unchanged — skip the IO merge, but STILL refresh the config/FV
       // sections. network/estop/safety/L2 changes on the cloud do NOT move the

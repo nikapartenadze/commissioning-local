@@ -278,9 +278,12 @@ export async function POST(req: Request, res: Response) {
     // pull (safe).
     const pullHashStore = ((globalThis as { __mcmPullHash?: Map<number, string> })
       .__mcmPullHash ??= new Map<number, string>());
+    // plannedDate is cloud-owned and written WITHOUT a version bump, so it must
+    // be hashed explicitly — otherwise a date-only change reads as "no changes"
+    // and a manual pull never refreshes it.
     const versionHash = cloudIos
-      .map((io: { id: number; version?: number; result?: string }) =>
-        `${io.id}:${io.version ?? 0}:${io.result || '-'}`)
+      .map((io: { id: number; version?: number; result?: string; plannedDate?: string | null }) =>
+        `${io.id}:${io.version ?? 0}:${io.result || '-'}:${io.plannedDate || '-'}`)
       .join('|');
     if (!force && pullHashStore.get(subsystemId) === versionHash) {
       // IO set unchanged → skip the destructive IO backup + delete/reinsert
