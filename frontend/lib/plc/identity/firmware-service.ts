@@ -25,10 +25,32 @@
 
 import { getPlcStatus, getLatestNetworkDeviceSnapshots } from '@/lib/plc-client-manager'
 import { hasAnyMcm, getAllNetworkSnapshots, listMcms } from '@/lib/mcm-registry'
+import { configService } from '@/lib/config/config-service'
 import { readIdentity } from './identity-reader'
 import { getCachedBaselines, getLastBaselineSyncAt } from '@/lib/cloud/firmware-baseline-sync'
 import { findBaseline, evaluateCompliance, type ComplianceVerdict, type FirmwareBaseline } from './compliance'
 import type { DeviceIdentity } from './identity-parse'
+
+/**
+ * Parse a device's owning subsystem id (string, as carried on MCM registry
+ * entries / aggregate snapshots) into the number `findBaseline` expects.
+ * Falls back to `null` (fleet-wide match) when absent or not a valid number
+ * — a lookup must never be handed `NaN`.
+ */
+function parseSubsystemId(id: string | undefined | null): number | null {
+  if (!id) return null
+  const n = Number(id)
+  return Number.isNaN(n) ? null : n
+}
+
+/**
+ * Resolve the single-MCM tablet's configured subsystem id for baseline
+ * lookup. Parsed once per scan (never re-parsed per device) with `Number(...)`
+ * via `parseSubsystemId`.
+ */
+async function tabletSubsystemId(): Promise<number | null> {
+  return parseSubsystemId((await configService.getConfig()).subsystemId)
+}
 
 export interface FirmwareDeviceResult {
   label: string
@@ -38,12 +60,19 @@ export interface FirmwareDeviceResult {
   modelName: string | null
   /** "major.minor" live firmware, or null when unreachable / not yet populated. */
   liveRevision: string | null
-  /** "major.minor" approved minimum, or null when no baseline entry. */
+  /** "major.minor" approved revision, or null when no baseline entry. */
   approvedMin: string | null
   vendorId: number | null
   productCode: number | null
   serial: number | null
   verdict: ComplianceVerdict
+  /**
+   * True when `verdict`/`approvedMin` came from the fleet-wide fallback
+   * baseline (no row curated for this device's own subsystem) rather than an
+   * MCM-specific one — the UI badges this so a verdict never implies more
+   * authority than it has.
+   */
+  fleetDefault: boolean
   /**
    * Owning MCM. Present on central-server (multi-MCM) results so each device /
    * controller can be attributed to its subsystem; undefined on legacy
@@ -76,13 +105,17 @@ export function getLastFirmwareScan(): FirmwareScanResult | null {
 
 const rev = (major: number, minor: number) => `${major}.${minor}`
 
+/** Result of `findBaseline` — the resolved baseline plus whether it came from the fleet-wide fallback. */
+type BaselineLookup = { baseline: FirmwareBaseline; fleetDefault: boolean } | undefined
+
 function toResult(
   label: string,
   source: string,
   identity: DeviceIdentity | null,
-  baseline: FirmwareBaseline | undefined,
+  lookup: BaselineLookup,
   subsystemId?: string,
 ): FirmwareDeviceResult {
+  const baseline = lookup?.baseline
   return {
     label,
     source,
@@ -93,6 +126,7 @@ function toResult(
     productCode: identity?.productCode ?? null,
     serial: identity?.serial ?? null,
     verdict: evaluateCompliance(identity, baseline),
+    fleetDefault: lookup?.fleetDefault ?? false,
     ...(subsystemId !== undefined ? { subsystemId } : {}),
   }
 }
@@ -138,20 +172,23 @@ export async function scanControllers(): Promise<FirmwareDeviceResult[]> {
     const results = await Promise.all(
       connected.map(async (mcm) => {
         const ctrl = await readIdentity(mcm.ip, mcm.path)
-        const baseline = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode) : undefined
+        const sub = parseSubsystemId(mcm.subsystemId)
+        const lookup = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode, sub) : undefined
         const label = mcm.name ? `Controller (${mcm.name})` : `Controller (MCM ${mcm.subsystemId})`
-        return toResult(label, mcm.path, ctrl, baseline, mcm.subsystemId)
+        return toResult(label, mcm.path, ctrl, lookup, mcm.subsystemId)
       }),
     )
     return results
   }
 
-  // Singleton (tablet) path — unchanged.
+  // Singleton (tablet) path — unchanged, except the baseline lookup is now
+  // scoped to the tablet's own configured subsystem (fleet-wide fallback).
   const status = getPlcStatus()
   if (!status.connected || !status.connectionConfig) return []
   const ctrl = await readIdentity(status.connectionConfig.ip, status.connectionConfig.path)
-  const baseline = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode) : undefined
-  return [toResult('Controller', status.connectionConfig.path, ctrl, baseline)]
+  const sub = await tabletSubsystemId()
+  const lookup = ctrl ? findBaseline(baselines, ctrl.vendorId, ctrl.productCode, sub) : undefined
+  return [toResult('Controller', status.connectionConfig.path, ctrl, lookup)]
 }
 
 /**
@@ -286,13 +323,18 @@ export async function scanFirmware(): Promise<FirmwareScanResult> {
   // registry's aggregate snapshots (REMOTE-aware) when the registry is in use;
   // fall back to the singleton poller for legacy single-MCM tablets.
   const deviceSnapshots = central ? getAllNetworkSnapshots() : getLatestNetworkDeviceSnapshots()
+  // Tablets have no per-device subsystem — resolve the tablet's own configured
+  // subsystem once (never per device) and reuse it for every snapshot below.
+  const tabletSub = central ? null : await tabletSubsystemId()
   for (const snap of deviceSnapshots) {
     const identity = identityFromSnapshot(snap.productCode, snap.firmwareMajor, snap.firmwareMinor)
-    // vendorId unknown from diagnostics → match baseline by productCode only.
-    const baseline = identity ? findBaseline(baselines, null, identity.productCode) : undefined
     // Aggregate snapshots carry subsystemId; the singleton poller's do not.
     const sub = (snap as { subsystemId?: string }).subsystemId
-    devices.push(toResult(snap.deviceName, snap.tagName, identity, baseline, sub))
+    // vendorId unknown from diagnostics → match baseline by productCode only.
+    const lookup = identity
+      ? findBaseline(baselines, null, identity.productCode, central ? parseSubsystemId(sub) : tabletSub)
+      : undefined
+    devices.push(toResult(snap.deviceName, snap.tagName, identity, lookup, sub))
   }
 
   // Surface the per-MCM controllers separately on a central server so callers
