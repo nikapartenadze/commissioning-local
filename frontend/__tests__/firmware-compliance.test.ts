@@ -6,6 +6,7 @@ import {
   type FirmwareBaseline,
 } from '@/lib/plc/identity/compliance'
 import type { DeviceIdentity } from '@/lib/plc/identity/identity-parse'
+import { summariseScan } from '@/lib/plc/identity/scan-verdict'
 
 const ident = (vendorId: number, productCode: number, revMajor: number, revMinor: number): DeviceIdentity => ({
   vendorId, deviceType: 14, productCode, revMajor, revMinor,
@@ -124,5 +125,37 @@ describe('evaluateCompliance (exact match)', () => {
     const live = ident(1, 2, 2, 1)
     expect(evaluateCompliance(live, findBaseline(rows, null, 2, 40)?.baseline)).toBe('compliant')
     expect(evaluateCompliance(live, findBaseline(rows, null, 2, 41)?.baseline)).toBe('non_compliant')
+  })
+})
+
+describe('summariseScan — honest-failure rule', () => {
+  it('never passes when nothing could be verified', () => {
+    expect(summariseScan([{ verdict: 'no_baseline' }, { verdict: 'unreachable' }]).verdict)
+      .toBe('unknown')
+  })
+
+  it('never passes on an empty scan', () => {
+    expect(summariseScan([]).verdict).toBe('unknown')
+  })
+
+  it('is unknown when even one device is unverified', () => {
+    expect(summariseScan([{ verdict: 'compliant' }, { verdict: 'no_baseline' }]).verdict)
+      .toBe('unknown')
+  })
+
+  it('treats differs as verified and passing', () => {
+    const s = summariseScan([{ verdict: 'compliant' }, { verdict: 'differs' }])
+    expect(s.verdict).toBe('pass')
+    expect(s.differs).toBe(1)
+  })
+
+  it('fails on any non_compliant device, even alongside differs', () => {
+    expect(summariseScan([{ verdict: 'differs' }, { verdict: 'non_compliant' }]).verdict)
+      .toBe('fail')
+  })
+
+  it('non_compliant outranks unverified', () => {
+    expect(summariseScan([{ verdict: 'non_compliant' }, { verdict: 'unreachable' }]).verdict)
+      .toBe('fail')
   })
 })

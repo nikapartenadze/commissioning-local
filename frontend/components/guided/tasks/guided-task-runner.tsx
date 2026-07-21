@@ -25,6 +25,7 @@ import {
   type SwapWatch,
 } from '@/lib/guided/swap-watch'
 import { saveL2Cell, replayL2Outbox, pendingCount, type OutboxDeps } from '@/lib/l2-outbox'
+import { summariseScan } from '@/lib/plc/identity/scan-verdict'
 import { authFetch } from '@/lib/api-config'
 import { toast as appToast } from '@/hooks/use-toast'
 import { TaskViewer } from './task-viewer'
@@ -957,17 +958,15 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         const devs = (scan.devices ?? []).filter(
           (d: { subsystemId?: string }) => d.subsystemId == null || String(d.subsystemId) === String(subsystemId),
         )
-        const nonCompliant = devs.filter((d: { verdict?: string }) => d.verdict === 'non_compliant').length
-        const unverified = devs.filter(
-          (d: { verdict?: string }) => d.verdict === 'no_baseline' || d.verdict === 'unreachable',
-        ).length
         // A device that couldn't be judged is NOT a pass — pass only when every
-        // read device verified compliant (and there was at least one).
+        // read device verified compliant (and there was at least one). See
+        // scan-verdict.ts for the honest-failure rule this delegates to.
+        const summary = summariseScan(devs)
         setFirmwareVerdict({
-          verdict: nonCompliant > 0 ? 'fail' : unverified > 0 || devs.length === 0 ? 'unknown' : 'pass',
-          nonCompliant,
-          unverified,
-          deviceCount: devs.length,
+          verdict: summary.verdict,
+          nonCompliant: summary.nonCompliant,
+          unverified: summary.unverified,
+          deviceCount: summary.deviceCount,
           scanned: true,
         })
       } catch {

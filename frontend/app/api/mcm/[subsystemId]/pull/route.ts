@@ -12,6 +12,7 @@ import { runFullPull } from '@/lib/cloud/pull-core';
 import { pullExtraSections } from '@/lib/cloud/pull-extra-sections';
 import { selectRefs, snapshotRefs, discard } from '@/lib/sync/queue-inspector';
 import { writeDiscardLog } from '@/lib/sync/discard-log';
+import { syncFirmwareBaseline } from '@/lib/cloud/firmware-baseline-sync';
 
 /**
  * L2/FV self-call — kept out of runConfigSidePulls so that helper has no
@@ -60,6 +61,22 @@ async function armRePullSuppression(): Promise<void> {
     getAutoSyncService()?.markManualPull();
   } catch {
     // auto-sync not loaded yet — nothing to suppress.
+  }
+}
+
+/**
+ * Pull the approved-firmware baseline as part of the scoped MCM pull.
+ * BEST-EFFORT: a technician pulling an MCM must still receive IOs and L2 when
+ * the firmware endpoint is unavailable — a firmware failure must NEVER fail
+ * (or throw out of) the pull. syncFirmwareBaseline() already returns a
+ * structured { ok, error } result rather than throwing on the expected
+ * failure modes; this wrapper is a last-resort net for anything unexpected.
+ */
+async function pullFirmwareBaselineBestEffort(): Promise<{ ok: boolean; count?: number; error?: string }> {
+  try {
+    return await syncFirmwareBaseline();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -297,6 +314,10 @@ export async function POST(req: Request, res: Response) {
       // Even on a no-op (IO set unchanged), the extra sections can have moved on
       // the cloud — refresh them too so a manual pull is never partially stale.
       const extra = await pullExtraSections(subsystemId, remoteUrl, apiPassword);
+      // Best-effort: a firmware-baseline failure must never fail this pull —
+      // the technician still needs their IOs and L2 when the firmware endpoint
+      // is unavailable.
+      const firmwareBaseline = await pullFirmwareBaselineBestEffort();
       await armRePullSuppression();
       return res.json({
         success: true,
@@ -309,6 +330,7 @@ export async function POST(req: Request, res: Response) {
         safetyPulled: side.safetyPulled,
         punchlistsPulled: side.punchlistsPulled,
         l2Pulled: l2.l2Pulled,
+        firmwareBaseline,
         ...extra,
       });
     }
@@ -369,6 +391,10 @@ export async function POST(req: Request, res: Response) {
     // Sections runConfigSidePulls / L2 don't cover (VFD blockers/addressed,
     // roadmap, MCM diagram) — refresh them so one manual pull is complete.
     const extra = await pullExtraSections(subsystemId, remoteUrl, apiPassword);
+    // Best-effort: a firmware-baseline failure must never fail this pull — the
+    // technician still needs their IOs and L2 when the firmware endpoint is
+    // unavailable.
+    const firmwareBaseline = await pullFirmwareBaselineBestEffort();
 
     // Invalidate the registry's IO→Subsystem lookup cache so per-IO routing
     // picks up the new rows immediately.
@@ -419,6 +445,7 @@ export async function POST(req: Request, res: Response) {
       safetyPulled,
       punchlistsPulled,
       l2Pulled,
+      firmwareBaseline,
       ...extra,
     });
   } catch (error) {
