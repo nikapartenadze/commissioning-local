@@ -8,7 +8,8 @@
  *
  * Cloud endpoint: GET {remoteUrl}/api/firmware/approved  (header X-API-Key)
  * Returns: [{ vendorId, productCode, modelName?, minRevMajor, minRevMinor,
- *            notes?, updatedBy?, updatedAt? }]
+ *            notes?, updatedBy?, updatedAt?, subsystemId? }]
+ * subsystemId scopes a row to one MCM; absent/null means fleet-wide default.
  *
  * See docs/superpowers/specs/2026-06-16-firmware-compliance-design.md.
  */
@@ -27,13 +28,14 @@ export interface BaselineSyncResult {
 /** Read the locally-cached approved-firmware baseline (offline source). */
 export function getCachedBaselines(): FirmwareBaseline[] {
   const rows = db
-    .prepare('SELECT VendorId, ProductCode, ModelName, MinRevMajor, MinRevMinor FROM ApprovedFirmware')
+    .prepare('SELECT VendorId, ProductCode, ModelName, MinRevMajor, MinRevMinor, SubsystemId FROM ApprovedFirmware')
     .all() as Array<{
       VendorId: number
       ProductCode: number
       ModelName: string | null
       MinRevMajor: number
       MinRevMinor: number
+      SubsystemId: number | null
     }>
   return rows.map((r) => ({
     vendorId: r.VendorId,
@@ -41,6 +43,7 @@ export function getCachedBaselines(): FirmwareBaseline[] {
     modelName: r.ModelName ?? undefined,
     minRevMajor: r.MinRevMajor,
     minRevMinor: r.MinRevMinor,
+    subsystemId: r.SubsystemId ?? null,
   }))
 }
 
@@ -60,6 +63,7 @@ interface CloudBaselineRow {
   notes?: string | null
   updatedBy?: string | null
   updatedAt?: string | null
+  subsystemId?: number | null
 }
 
 /**
@@ -113,14 +117,17 @@ export async function syncFirmwareBaseline(): Promise<BaselineSyncResult> {
       notes: r.notes ?? null,
       updatedBy: r.updatedBy ?? null,
       updatedAt: r.updatedAt ?? null,
+      // A missing/garbage subsystemId degrades to fleet-wide (NULL) rather
+      // than throwing — better a slightly-broader baseline than a failed sync.
+      subsystemId: Number.isFinite(r.subsystemId) ? Math.trunc(r.subsystemId as number) : null,
     }))
 
   const replaceAll = db.transaction((items: typeof clean) => {
     db.prepare('DELETE FROM ApprovedFirmware').run()
     const ins = db.prepare(
       `INSERT INTO ApprovedFirmware
-         (VendorId, ProductCode, ModelName, MinRevMajor, MinRevMinor, Notes, UpdatedBy, UpdatedAt)
-       VALUES (@vendorId, @productCode, @modelName, @minRevMajor, @minRevMinor, @notes, @updatedBy, @updatedAt)`,
+         (VendorId, ProductCode, ModelName, MinRevMajor, MinRevMinor, Notes, UpdatedBy, UpdatedAt, SubsystemId)
+       VALUES (@vendorId, @productCode, @modelName, @minRevMajor, @minRevMinor, @notes, @updatedBy, @updatedAt, @subsystemId)`,
     )
     for (const it of items) ins.run(it)
   })

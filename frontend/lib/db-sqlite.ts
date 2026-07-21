@@ -234,6 +234,85 @@ try {
     console.warn('[DB] EStopEpcChecks CheckType migration failed:', (e as Error).message)
   }
 
+  // Approved-firmware baseline goes per-MCM — widen ApprovedFirmware's UNIQUE
+  // key to include SubsystemId. SQLite CANNOT ALTER an inline UNIQUE
+  // constraint, so a pre-existing table must be RECREATED. This runs on EVERY
+  // startup, so it is guarded to be IDEMPOTENT and DATA-PRESERVING:
+  //   - Fresh DBs already get the new schema (with SubsystemId + 3-col UNIQUE)
+  //     from the CREATE TABLE IF NOT EXISTS above → the guard finds
+  //     SubsystemId and skips.
+  //   - Old DBs have ApprovedFirmware WITHOUT SubsystemId → recreate once:
+  //     copy all existing rows across with SubsystemId NULL (fleet-wide —
+  //     exactly their behaviour today), drop, rename. The tool is
+  //     offline-first, so the cache must survive the upgrade even if the
+  //     technician never reconnects to re-sync. After this runs once
+  //     SubsystemId exists, so the guard skips forever.
+  try {
+    const afCols = db.prepare('PRAGMA table_info(ApprovedFirmware)').all() as { name: string }[]
+    const afTableExists = afCols.length > 0
+    const hasSubsystemId = afCols.some(c => c.name === 'SubsystemId')
+    if (afTableExists && !hasSubsystemId) {
+      console.log('[DB] Migrating ApprovedFirmware: adding SubsystemId + widening UNIQUE key (recreate)')
+      const migrateFirmware = db.transaction(() => {
+        // No inline UNIQUE(...) here either — SQLite rejects expressions in a
+        // table-level UNIQUE constraint. Enforced by the expression index
+        // created right after the rename, same as the fresh-DB DDL above.
+        db.exec(`
+          CREATE TABLE ApprovedFirmware_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            VendorId INTEGER NOT NULL,
+            ProductCode INTEGER NOT NULL,
+            ModelName TEXT,
+            MinRevMajor INTEGER NOT NULL,
+            MinRevMinor INTEGER NOT NULL,
+            Notes TEXT,
+            UpdatedBy TEXT,
+            UpdatedAt TEXT,
+            SubsystemId INTEGER
+          );
+        `)
+        // Existing rows carry no scope, so they become fleet-wide defaults —
+        // exactly the behaviour they have today.
+        db.exec(`
+          INSERT INTO ApprovedFirmware_new
+            (id, VendorId, ProductCode, ModelName, MinRevMajor, MinRevMinor, Notes, UpdatedBy, UpdatedAt, SubsystemId)
+          SELECT
+            id, VendorId, ProductCode, ModelName, MinRevMajor, MinRevMinor, Notes, UpdatedBy, UpdatedAt, NULL
+          FROM ApprovedFirmware;
+        `)
+        db.exec('DROP TABLE ApprovedFirmware;')
+        db.exec('ALTER TABLE ApprovedFirmware_new RENAME TO ApprovedFirmware;')
+        db.exec(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_approvedfirmware_scope
+            ON ApprovedFirmware(VendorId, ProductCode, IFNULL(SubsystemId, -1));
+        `)
+      })
+      migrateFirmware()
+    }
+  } catch (e) {
+    console.warn('[DB] ApprovedFirmware SubsystemId migration failed:', (e as Error).message)
+  }
+
+  // Create the (VendorId, ProductCode, scope) expression index for
+  // ApprovedFirmware AFTER the rebuild above, never inside initializeSchema()'s
+  // single giant multi-statement exec: on an upgrading DB, initializeSchema()
+  // runs FIRST (before the rebuild migration, since it's called at module load
+  // above this try block) and its CREATE TABLE IF NOT EXISTS is a no-op against
+  // an already-existing old-shape table — so an index referencing SubsystemId
+  // there would throw "no such column: SubsystemId" mid-exec and silently skip
+  // every statement declared after it in that same exec (verified: it does).
+  // By construction, SubsystemId always exists here — either the table was
+  // fresh (initializeSchema() created it with the column) or the rebuild just
+  // above added it — so this is safe and IF NOT EXISTS makes it idempotent.
+  try {
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_approvedfirmware_scope
+        ON ApprovedFirmware(VendorId, ProductCode, IFNULL(SubsystemId, -1));
+    `)
+  } catch (e) {
+    console.warn('[DB] ApprovedFirmware scope index creation failed:', (e as Error).message)
+  }
+
   // TestHistories FK-cascade rebuild (2026-07-08 forensics audit) — one-time,
   // existing DBs only. The legacy table carried REFERENCES Ios(id) ON DELETE
   // CASCADE, and with foreign_keys=ON the scoped pull's DELETE-and-reinsert of
@@ -860,9 +939,21 @@ export function initializeSchema() {
 
     -- Cloud-curated approved-firmware baseline, pulled from the cloud and
     -- cached locally so firmware compliance evaluates OFFLINE. Keyed by
-    -- (VendorId, ProductCode); MinRevMajor.MinRevMinor is the MINIMUM supported
-    -- revision (live >= min ⇒ compliant). Replaced wholesale on each baseline
-    -- sync. See docs/superpowers/specs/2026-06-16-firmware-compliance-design.md.
+    -- (VendorId, ProductCode, SubsystemId); MinRevMajor.MinRevMinor is the
+    -- MINIMUM supported revision (live >= min ⇒ compliant). SubsystemId NULL
+    -- means fleet-wide default; a non-NULL value scopes the row to one MCM,
+    -- overriding the fleet default for that model. Replaced wholesale on each
+    -- baseline sync. See docs/superpowers/specs/2026-06-16-firmware-compliance-design.md.
+    -- SQLite rejects expressions inside an inline UNIQUE table constraint
+    -- ("expressions prohibited in PRIMARY KEY and UNIQUE constraints"), so the
+    -- (VendorId, ProductCode, scope) uniqueness is enforced by a separate
+    -- expression index (idx_approvedfirmware_scope), created further down
+    -- AFTER the SubsystemId rebuild migration runs — NOT here. This CREATE
+    -- TABLE is one statement inside a single giant multi-statement exec; on an
+    -- upgrading DB this IF NOT EXISTS is a no-op against the still-old-shape
+    -- table (the rebuild hasn't run yet), so an index statement referencing
+    -- SubsystemId placed here would throw "no such column" mid-exec and
+    -- silently abort every statement declared after it in this same block.
     CREATE TABLE IF NOT EXISTS ApprovedFirmware (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       VendorId INTEGER NOT NULL,
@@ -873,7 +964,7 @@ export function initializeSchema() {
       Notes TEXT,
       UpdatedBy TEXT,
       UpdatedAt TEXT,
-      UNIQUE(VendorId, ProductCode)
+      SubsystemId INTEGER
     );
 
     -- Per-subsystem delta-sync cursor: the highest cloud change-log seq this

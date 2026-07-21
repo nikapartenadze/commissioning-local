@@ -65,8 +65,12 @@ import {
 } from '@/lib/cloud/firmware-baseline-sync'
 
 beforeEach(() => {
-  // Mirror the production DDL exactly (lib/db-sqlite.ts ~line 704) — UNIQUE
-  // (VendorId, ProductCode) is the baseline key; the sync replaces wholesale.
+  // Mirror the production DDL exactly (lib/db-sqlite.ts ApprovedFirmware) —
+  // (VendorId, ProductCode, SubsystemId) is the baseline key: SubsystemId NULL
+  // is the fleet-wide default, a non-NULL value scopes a row to one MCM. An
+  // inline UNIQUE(...) can't reference IFNULL(SubsystemId, -1) (SQLite rejects
+  // expressions in table-level UNIQUE constraints), so it's a separate
+  // expression index, same as production. The sync replaces the cache wholesale.
   ;(db as any).exec('DROP TABLE IF EXISTS ApprovedFirmware')
   ;(db as any).exec(`CREATE TABLE ApprovedFirmware (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,8 +82,10 @@ beforeEach(() => {
     Notes TEXT,
     UpdatedBy TEXT,
     UpdatedAt TEXT,
-    UNIQUE(VendorId, ProductCode)
+    SubsystemId INTEGER
   )`)
+  ;(db as any).exec(`CREATE UNIQUE INDEX idx_approvedfirmware_scope
+    ON ApprovedFirmware(VendorId, ProductCode, IFNULL(SubsystemId, -1))`)
   // Reset config to the happy default for each test.
   mockConfig.remoteUrl = 'https://cloud.example/'
   mockConfig.apiPassword = 'secret'
@@ -173,8 +179,31 @@ describe('syncFirmwareBaseline — cloud→field baseline pull + cache', () => {
     const res = await syncFirmwareBaseline()
     expect(res).toEqual({ ok: true, count: 1 })
     expect(getCachedBaselines()).toEqual([
-      { vendorId: 1, productCode: 166, modelName: undefined, minRevMajor: 33, minRevMinor: 11 },
+      { vendorId: 1, productCode: 166, modelName: undefined, minRevMajor: 33, minRevMinor: 11, subsystemId: null },
     ])
+  })
+
+  it('caches and round-trips subsystemId — a scoped row stays scoped, an unscoped row reads back fleet-wide (null)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => [
+        okRow(1, 166, 33, 11, { subsystemId: 118 }),
+        okRow(1, 200, 5, 1), // no subsystemId on the wire → fleet-wide default
+      ],
+    })))
+    expect((await syncFirmwareBaseline()).count).toBe(2)
+    const cached = getCachedBaselines()
+    expect(cached.find((b) => b.productCode === 166)).toMatchObject({ subsystemId: 118 })
+    expect(cached.find((b) => b.productCode === 200)).toMatchObject({ subsystemId: null })
+  })
+
+  it('a non-finite/garbage subsystemId degrades to fleet-wide (null) rather than throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => [okRow(1, 166, 33, 11, { subsystemId: 'not-a-number' })],
+    })))
+    expect((await syncFirmwareBaseline()).count).toBe(1)
+    expect(getCachedBaselines()[0]).toMatchObject({ subsystemId: null })
   })
 
   it('truncates non-integer numerics before caching', async () => {
