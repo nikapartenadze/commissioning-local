@@ -1041,3 +1041,23 @@ I27 stays report-only until it has two clean non-vacuous runs (rig rule #4).
 **Standing signal:** while I27 reports `vacuous`, guided's core loop — D6
 round-trip auto-detect, swap detection, fire-output — has **zero** automated
 coverage in this rig. Do not read a green soak as guided IO being exercised.
+
+### s7 attempt 2 — network_loop setup added, STILL vacuous (2026-07-21)
+Added a one-shot guided setup on bot 1: complete every `network_loop` task, the
+gate that blocked 12/12 cleared io_check tasks. Re-ran s7/10min:
+**I27 still `guided_io_writes=0, vacuous=True, pass=False`.**
+
+Could not diagnose further: **the crew container's stdout is not collected into
+`battle-artifacts/`** (only tool/cloud/observer are), and `compose up -d`
+detaches, so the run log has no crew output either. There is no record of
+whether the setup call fired, whether network_loop actually completed, or
+whether the walk found a workable task.
+
+**Next step is therefore a rig fix, not a guess: collect crew logs into the run
+artifacts.** Without that, every guided-walk iteration is blind. After that,
+the open question stays gate 3 — the D6 NC pre-check needs plc-sim to model
+rest states (NC points must boot TRUE), which may not be expressible in
+ab_server's tag syntax and should be scoped before it is attempted.
+
+I27 continues to correctly report NOT TESTED. Treat guided's core loop (D6
+round-trip, swap detection, fire-output) as having ZERO automated coverage.

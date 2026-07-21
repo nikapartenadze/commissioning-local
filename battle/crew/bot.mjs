@@ -111,6 +111,33 @@ async function bot(n) {
   await sleep(rand(0, 5000));
   console.log(`[crew] ${name} starting`);
 
+  // ── Guided IO setup: complete the Network Loop task, once, on bot 1. ──────
+  // EVERY io_check task is gated on "All Network Loop tasks must be done", and
+  // nothing in the rig ever completed it — so even with the device map seeded
+  // and results cleared, the guided pool had nothing workable and the guided IO
+  // loop could not run at all. In the field a tester completes this manually
+  // (it's a manual_confirm step), so doing it here is faithful, not a cheat.
+  // Safety io_check may still be blocked by the D6 NC pre-check — plc-sim does
+  // not model rest states — but the non-safety devices become workable.
+  if (n === 1 && GUIDED_IO_FRACTION > 0) {
+    try {
+      const { body: subs } = await api('/api/subsystems');
+      const ids = (subs?.subsystems ?? subs ?? []).map((s) => s.id ?? s.subsystemId).filter(Boolean);
+      for (const sid of ids.length ? ids : [process.env.SUBSYSTEM_ID ?? 38]) {
+        const { body: pool } = await api(`/api/guided/tasks?subsystemId=${sid}`);
+        for (const t of (pool?.tasks ?? []).filter((x) => x.type === 'network_loop' && x.state !== 'completed')) {
+          const r = await api('/api/guided/tasks/complete', {
+            method: 'POST',
+            body: JSON.stringify({ subsystemId: Number(sid), taskId: t.id, currentUser: name }),
+          });
+          console.log(`[crew] ${name}: guided setup — completed ${t.id} -> ${r.status}`);
+        }
+      }
+    } catch (e) {
+      console.log(`[crew] ${name}: guided setup failed: ${e?.message ?? e}`);
+    }
+  }
+
   // Realistic client behavior: a real tablet / browser grid fetches ONE
   // MCM's IO list (?subsystemId=), never the whole site. On the 19-MCM
   // central seed an unscoped /api/ios serializes 25k rows — 12 bots doing
