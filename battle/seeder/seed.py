@@ -272,6 +272,45 @@ def seed_device_map(db: sqlite3.Connection, mcms: list[tuple[str, str]]) -> None
     db.commit()
 
 
+def clear_devices_for_guided(db: sqlite3.Connection, mcms: list[tuple[str, str]]) -> None:
+    """Make guided io_check tasks WORKABLE by clearing a slice of devices.
+
+    The seed is a REAL commissioned MCM, so nearly every IO already has a
+    result — which derives every io_check task to `completed`. The guided pool
+    then has nothing to hand a tester, and the whole guided IO loop (D6
+    round-trip, swap watch, /api/guided/test) goes unexercised even once the
+    device map exists. That is why I23 could report "guided writes: 43" while
+    the guided IO path had never once run.
+
+    Clearing results for the first GUIDED_CLEAR_DEVICES devices (by name, so it
+    is deterministic across runs) leaves those tasks `available`. Test-rig only
+    — this touches the throwaway /data copy, never a field database.
+    """
+    n_dev = int(os.environ.get("GUIDED_CLEAR_DEVICES", "0"))
+    if n_dev <= 0:
+        return
+    cur = db.cursor()
+    for sid, _name in mcms:
+        cur.execute(
+            "SELECT DISTINCT NetworkDeviceName FROM Ios "
+            "WHERE SubsystemId = ? AND NetworkDeviceName IS NOT NULL "
+            "AND NetworkDeviceName <> '' ORDER BY NetworkDeviceName LIMIT ?",
+            (sid, n_dev),
+        )
+        devs = [r[0] for r in cur.fetchall()]
+        if not devs:
+            continue
+        marks = ",".join("?" * len(devs))
+        cur.execute(
+            f"UPDATE Ios SET Result = NULL, Timestamp = NULL, Comments = NULL, "
+            f"FailureMode = NULL WHERE SubsystemId = ? AND NetworkDeviceName IN ({marks})",
+            (sid, *devs),
+        )
+        print(f"seeder: MCM {sid} cleared {cur.rowcount} IOs on {len(devs)} devices "
+              f"→ guided io_check tasks become workable")
+    db.commit()
+
+
 def tag_ok(name: str) -> bool:
     return bool(name) and not (set(name) & FORBIDDEN)
 
@@ -298,6 +337,8 @@ def main() -> None:
         mcms = clone_subsystems(rw)
     # Device-accurate maps so guided mode actually generates io_check tasks.
     seed_device_map(rw, mcms)
+    # …and clear a slice of them so those tasks are WORKABLE, not `completed`.
+    clear_devices_for_guided(rw, mcms)
     rw.close()
     multi = MCM_MODE == "real" or MCM_COUNT > 1
 

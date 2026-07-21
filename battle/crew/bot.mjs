@@ -51,6 +51,9 @@ const FV_FRACTION = _fvFraction > 0 ? _fvFraction
 //   blocker→ DeviceBlockerPendingSyncs (VFD bump-test blocker)
 const ESTOP_FRACTION = parseFloat(process.env.ESTOP_FRACTION ?? '0');
 const GUIDED_FRACTION = parseFloat(process.env.GUIDED_FRACTION ?? '0');
+// Guided IO WALK (pool → steps → /api/guided/test). Distinct from
+// GUIDED_FRACTION, which only writes synthetic GuidedTaskState rows.
+const GUIDED_IO_FRACTION = parseFloat(process.env.GUIDED_IO_FRACTION ?? '0');
 const PUNCH_FRACTION = parseFloat(process.env.PUNCH_FRACTION ?? '0');
 const DEPS_FRACTION = parseFloat(process.env.DEPS_FRACTION ?? '0');
 const BLOCKER_FRACTION = parseFloat(process.env.BLOCKER_FRACTION ?? '0');
@@ -236,6 +239,58 @@ async function bot(n) {
           if (r.status !== 200) console.log(`[crew] ${name}: POST /api/estop/check -> ${r.status}`);
           await sleep(rand(THINK_MIN, THINK_MAX));
           continue;
+        }
+      }
+
+      // ── GUIDED IO WALK — the REAL guided loop, end to end. ────────────────
+      // Everything else labelled "guided" in this rig writes synthetic task ids
+      // to GuidedTaskState, which only proves the override table syncs. This
+      // walks what a technician actually does: build the pool, open a task,
+      // fetch its server-built steps, and record a verdict through
+      // POST /api/guided/test — the path that carries the MCM-ownership guard,
+      // the SPARE rejection, the install gate, Trade/blocker columns on the
+      // PendingSync, and the recovery journal.
+      //
+      // Single-writer discipline (rig rule): a bot only records IOs where
+      // io.id % BOTS === n-1, so I4's last-write is never ambiguous.
+      if (scoped && GUIDED_IO_FRACTION > 0 && Math.random() < GUIDED_IO_FRACTION) {
+        const { body: pool } = await api(`/api/guided/tasks?subsystemId=${scoped}`);
+        const workable = (pool?.tasks ?? []).filter(
+          (t) => String(t.type ?? '').startsWith('io_check') &&
+                 (t.state === 'available' || t.state === 'in_progress') && !t.claimedBy);
+        if (workable.length) {
+          const task = workable[Math.floor(Math.random() * workable.length)];
+          const { body: sb } = await api(
+            `/api/guided/tasks/steps?subsystemId=${scoped}&taskId=${encodeURIComponent(task.id)}`);
+          // Only io_check steps carry an ioId; navigate/info steps record nothing.
+          const mine = (sb?.steps ?? []).filter(
+            (s) => s.kind === 'io_check' && Number.isInteger(s.ioId) && (s.ioId % BOTS) === (n - 1));
+          if (mine.length) {
+            const step = mine[Math.floor(Math.random() * mine.length)];
+            const result = Math.random() < 0.85 ? 'Pass' : 'Fail';
+            const t0 = Date.now();
+            const r = await api('/api/guided/test', {
+              method: 'POST',
+              body: JSON.stringify({
+                ioId: step.ioId,
+                subsystemId: Number(scoped),   // exercises the ownership guard
+                result,
+                currentUser: name,
+                failureMode: result === 'Fail' ? 'No Response' : undefined,
+                trade: result === 'Fail' ? 'Controls' : undefined,
+                comments: result === 'Fail' ? `battle-bot${n}: guided fail ${Date.now()}` : undefined,
+              }),
+            });
+            // Journal in the SAME shape as a grid 'mark' so I4 counts these as
+            // real field writes and a silent drop here fails the data-loss gate.
+            log({ action: 'mark', subsystemId: Number(scoped), ioId: step.ioId,
+                  result: result === 'Pass' ? 'Passed' : 'Failed',
+                  via: 'guided', taskId: task.id, status: r.status,
+                  latencyMs: Date.now() - t0 });
+            if (r.status !== 200) console.log(`[crew] ${name}: guided io -> ${r.status}`);
+            await sleep(rand(THINK_MIN, THINK_MAX));
+            continue;
+          }
         }
       }
 

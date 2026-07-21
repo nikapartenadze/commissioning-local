@@ -116,6 +116,15 @@ case "$SCENARIO" in
     s2) export DOWNLOAD_STORM="20,40" ;;              # PLC program downloads
     s3) export CLOUD_FLAP="2,6"; export FLAP_BUDGET=60 ;;  # cloud connectivity hell
     s6) DELAY_MS=300 ;;                               # CIP-saturated controller
+    # s7 — GUIDED IO loop under load. Clears a device slice so guided io_check
+    # tasks are workable, then drives the REAL guided path (pool → steps →
+    # /api/guided/test) hard. Verifies I27 + I4 for guided-origin writes.
+    s7)
+        export GUIDED_CLEAR_DEVICES="${GUIDED_CLEAR_DEVICES:-12}"
+        export GUIDED_IO_FRACTION="${GUIDED_IO_FRACTION:-0.55}"
+        export GUIDED_FRACTION="${GUIDED_FRACTION:-0.05}"
+        export BOTS="${BOTS:-4}"
+        ;;
     mutate)                                           # cloud-side data changes
         export CLOUD_FLAP="3,12"; export FLAP_BUDGET=60
         export COMPOSE_PROFILES=mutate
@@ -225,6 +234,10 @@ case "$SCENARIO" in
         # Overridable: at SOAK_MINUTES=15 a 25-45min storm NEVER fires, so I3
         # reported a VACUOUS green on a gate (injected_downloads=0). Defaults
         # unchanged for the 480min nightly; short smoke runs can now tighten it.
+        # Guided IO loop: clear a few devices so io_check tasks are workable,
+        # then have the crew actually walk them (see s7 for the focused run).
+        export GUIDED_CLEAR_DEVICES="${GUIDED_CLEAR_DEVICES:-6}"
+        export GUIDED_IO_FRACTION="${GUIDED_IO_FRACTION:-0.10}"
         export DOWNLOAD_STORM="${DOWNLOAD_STORM:-25,45}"
         export CLOUD_FLAP="${CLOUD_FLAP:-3,12}"; export FLAP_BUDGET="${FLAP_BUDGET:-120}"
         export COMPOSE_PROFILES=mutate; export MUTATE_PERIOD_SEC=240

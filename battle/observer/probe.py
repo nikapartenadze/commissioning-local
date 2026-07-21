@@ -1297,6 +1297,59 @@ def check_i23_guided_survival() -> dict:
             "mismatch_samples": mismatches[:10]}
 
 
+def check_i27_guided_io_loop() -> dict:
+    """I27 (REPORT) — the REAL guided IO loop ran, and its verdicts survive.
+
+    Everything else in this rig labelled "guided" writes SYNTHETIC task ids to
+    GuidedTaskState (see I23), which only proves the override table syncs. It
+    never touches the path a technician actually drives: build the pool, open a
+    task, fetch server-built steps, record through POST /api/guided/test — the
+    route carrying the MCM-ownership guard, SPARE rejection, install gate,
+    Trade/blocker columns on the PendingSync, and the recovery journal.
+
+    The crew journals guided verdicts as `action=mark` with `via="guided"`, so
+    they also flow through I4's no-data-loss maths. Here we assert the guided
+    ones specifically landed in Ios.
+
+    VACUOUS IS NOT A PASS. If the crew recorded zero guided verdicts, this
+    reports pass=False with vacuous=True rather than a green that verified
+    nothing — the failure mode that let I3 report pass on 0 injected downloads
+    and let I23 look like guided coverage for months.
+    """
+    guided: dict[int, str] = {}
+    for path in sorted(glob.glob(os.path.join(RUNS_DIR, RUN_ID, "journal-bot*.jsonl"))):
+        try:
+            with open(path, errors="replace") as f:
+                for line in f:
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        continue
+                    if e.get("action") == "mark" and e.get("via") == "guided"                        and e.get("status") == 200 and isinstance(e.get("ioId"), int):
+                        guided[e["ioId"]] = e.get("result")
+        except OSError:
+            pass
+
+    mismatches: list[dict] = []
+    for io_id, want in guided.items():
+        rows = _local_query("SELECT Result FROM Ios WHERE id=?", (io_id,))
+        have = rows[0][0] if rows else None
+        if norm(have) != norm(want):
+            mismatches.append({"ioId": io_id, "journaled": want, "local": have})
+
+    vacuous = len(guided) == 0
+    return {
+        "pass": (not vacuous) and len(mismatches) == 0,
+        "vacuous": vacuous,
+        "guided_io_writes": len(guided),
+        "mismatches": len(mismatches),
+        "mismatch_samples": mismatches[:10],
+        "note": ("NOT TESTED — crew recorded zero guided IO verdicts; set "
+                 "GUIDED_IO_FRACTION>0 and GUIDED_CLEAR_DEVICES>0 (scenario s7)"
+                 if vacuous else "real guided pool→steps→/api/guided/test path exercised"),
+    }
+
+
 def check_i24_blocker_survival() -> dict:
     """I24 (REPORT) — VFD device blockers the crew set are not silently lost.
     The tool's contract is enqueue=success, drain best-effort with park-not-
@@ -1926,6 +1979,7 @@ def main() -> None:
     # Journal→local, same discipline as I18. REPORT-ONLY until proven twice.
     invariants["I22_estop_survival"] = check_i22_estop_survival()
     invariants["I23_guided_survival"] = check_i23_guided_survival()
+    invariants["I27_guided_io_loop"] = check_i27_guided_io_loop()
     invariants["I24_blocker_survival"] = check_i24_blocker_survival()
     invariants["I25_punchlist_survival"] = check_i25_punchlist_survival()
     invariants["I26_vfd_wizard_survival"] = check_i26_vfd_wizard_survival()

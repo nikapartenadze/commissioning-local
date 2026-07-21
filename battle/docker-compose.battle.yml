@@ -60,6 +60,11 @@ services:
       # (positional match with MCM_GATEWAY_IPS). Empty → all subsystems.
       MCM_ONLY: ${MCM_ONLY:-}
       KEEP_DATA: ${KEEP_DATA:-0}
+      # Guided IO loop (s7): clear N devices' results so guided io_check
+      # tasks derive to `available` instead of `completed`. The seed is a
+      # fully-commissioned MCM, so without this the guided pool has nothing
+      # workable to hand a tester and the whole loop goes unexercised.
+      GUIDED_CLEAR_DEVICES: ${GUIDED_CLEAR_DEVICES:-0}
       # Ambient CIP-saturation: write /gen/delay so EVERY sim boots slow (a site
       # of sluggish controllers), layered under the storms. 0/unset = no delay.
       SIM_DELAY_MS: ${SIM_DELAY_MS:-}
@@ -438,6 +443,8 @@ services:
       # (the bug that made the first `features` soak fire 0 feature actions).
       ESTOP_FRACTION: ${ESTOP_FRACTION:-0}
       GUIDED_FRACTION: ${GUIDED_FRACTION:-0}
+      # Real guided IO walk (pool → steps → /api/guided/test).
+      GUIDED_IO_FRACTION: ${GUIDED_IO_FRACTION:-0}
       PUNCH_FRACTION: ${PUNCH_FRACTION:-0}
       DEPS_FRACTION: ${DEPS_FRACTION:-0}
       BLOCKER_FRACTION: ${BLOCKER_FRACTION:-0}

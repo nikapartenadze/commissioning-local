@@ -998,3 +998,46 @@ cloud held 13001, and the failure surfaced as a bare compose port-bind error.
 ### Standing: I7
 Fails identically to 2026-07-15 (9 cloud adds not propagated, queue drained).
 Pre-existing, report-only, unrelated to this work.
+
+## Why guided IO has NEVER been battle-tested — three gates, not one (2026-07-21)
+
+Built `s7` to drive the real guided loop (pool → steps → `/api/guided/test`)
+and a new **I27_guided_io_loop** invariant. I27 correctly reported
+`vacuous=True, pass=False, "NOT TESTED"` — it refuses to green-light a path
+that never ran, unlike I3 (passes on 0 injected downloads) and I23 (see below).
+
+**First: what I23 actually covers.** The crew's "guided" action posts SYNTHETIC
+task ids (`battle-guided-38-bot2-5`) to `/api/guided/tasks/complete|skip`. It
+proves the `GuidedTaskState` override table syncs — nothing more. It has never
+built a pool, fetched a step, or called `/api/guided/test`. "I23 guided writes:
+43, 0 mismatches" reads like guided coverage and is not.
+
+**Three gates block a workable io_check task, and I only knew about one:**
+1. `McmDiagrams` empty → 0 devices → 0 io_check tasks. FIXED (see prior entry).
+2. Every IO already has a result (real commissioned seed) → all 100 io_check
+   tasks derive to `completed`. FIXED: `GUIDED_CLEAR_DEVICES` clears a device
+   slice (verified: 189 IOs on 12 devices).
+3. **STILL BLOCKING — and this is the real one.** With the first two fixed, all
+   12 cleared tasks are still `blocked`:
+   - **12/12 on "All Network Loop tasks must be done"** — io_check is gated on
+     network_loop completion, and nothing in the rig ever completes it.
+   - **4/12 additionally on the D6 NC pre-check** — e.g. `UL21_2_VFD:SI.In00Data
+     reads FALSE at rest — NC device must read TRUE`. The engine is behaving
+     CORRECTLY: it is catching what looks like a miswire. The rig is at fault —
+     **plc-sim does not model rest states**, so every NC safety point reads
+     FALSE and guided rightly refuses to test it.
+
+### To actually close this
+- Complete `network_loop` as scenario setup (POST `/api/guided/tasks/complete`),
+  or seed `NetworkRings` healthy so it derives complete.
+- Teach the seeder to emit rest-state initial values in `/gen/tags.txt` so NC
+  points boot TRUE. Without this the D6 pre-check will always (correctly) block
+  safety io_check, and the auto-detect round-trip can never be exercised.
+
+`s7` + `GUIDED_CLEAR_DEVICES` + `GUIDED_IO_FRACTION` + the bot's guided walk +
+I27 are all committed and correct; they are blocked on gate 3, not broken.
+I27 stays report-only until it has two clean non-vacuous runs (rig rule #4).
+
+**Standing signal:** while I27 reports `vacuous`, guided's core loop — D6
+round-trip auto-detect, swap detection, fire-output — has **zero** automated
+coverage in this rig. Do not read a green soak as guided IO being exercised.
