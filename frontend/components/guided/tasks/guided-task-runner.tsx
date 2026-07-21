@@ -950,7 +950,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         if (!res.ok || !active) return
         const scan = (await res.json())?.scan
         if (!scan || !scan.connected) {
-          setFirmwareVerdict({ verdict: 'unknown', nonCompliant: 0, unverified: 0, deviceCount: 0, scanned: false })
+          setFirmwareVerdict({ verdict: 'unknown', nonCompliant: 0, differs: 0, unverified: 0, deviceCount: 0, scanned: false })
           return
         }
         // Scope to this subsystem on a central server (devices carry subsystemId);
@@ -965,6 +965,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         setFirmwareVerdict({
           verdict: summary.verdict,
           nonCompliant: summary.nonCompliant,
+          differs: summary.differs,
           unverified: summary.unverified,
           deviceCount: summary.deviceCount,
           scanned: true,
@@ -1436,6 +1437,9 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
 type FirmwareVerdict = {
   verdict: 'pass' | 'fail' | 'unknown'
   nonCompliant: number
+  /** Live newer than approved — display-only; summariseScan already treats
+   *  this as verified/passing, so it never affects `verdict`. */
+  differs: number
   /** Devices that could not be judged — no_baseline or unreachable. They must
    *  never read as a pass ("ALL COMPLIANT" with zero verified devices). */
   unverified: number
@@ -1594,7 +1598,12 @@ function renderStepBody(p: BodyProps) {
         : fv.deviceCount === 0
           ? 'NO DEVICES READ'
           : v === 'pass'
-            ? `ALL ${fv.deviceCount} COMPLIANT`
+            ? fv.differs > 0
+              // Passing verdict, but not silently green: some devices run a
+              // DIFFERENT (newer) revision than approved — display-only, does
+              // not affect pass/fail (see scan-verdict.ts honest-failure rule).
+              ? `ALL ${fv.deviceCount} VERIFIED — ${fv.differs} DIFFERS FROM APPROVED`
+              : `ALL ${fv.deviceCount} COMPLIANT`
             : `${fv.unverified} OF ${fv.deviceCount} UNVERIFIED — NO BASELINE / UNREACHABLE`
     return (
       <>

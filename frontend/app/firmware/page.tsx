@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ShieldCheck, ArrowLeft, RefreshCw, Loader2, Cpu, CheckCircle2,
-  XCircle, AlertTriangle, HelpCircle, CircleSlash,
+  XCircle, AlertTriangle, HelpCircle, CircleSlash, Download,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { AutstandLogo } from '@/components/autstand-logo'
 import { authFetch } from '@/lib/api-config'
-import { displayVerdict, type DisplayVerdict } from '@/lib/plc/identity/compliance'
+import type { ComplianceVerdict } from '@/lib/plc/identity/compliance'
 
 /**
  * Standalone firmware-compliance inventory page (field tool).
@@ -18,15 +18,13 @@ import { displayVerdict, type DisplayVerdict } from '@/lib/plc/identity/complian
  * an operator can't tell firmware checking exists. This is the dedicated,
  * nav-linked surface promised in the phase-1 design
  * (docs/superpowers/specs/2026-06-16-firmware-compliance-design.md): a full
- * device inventory with live revision vs approved minimum, a verdict badge per
+ * device inventory with live revision vs approved revision, a verdict badge per
  * device, a "non-compliant only" filter, and an on-demand Scan button.
  *
  * Data comes from the existing endpoints — no new backend:
  *   - GET  /api/firmware       → last cached scan (no PLC touch)
  *   - POST /api/firmware/scan  → refresh baseline from cloud, re-read, re-judge
  */
-
-type Verdict = 'compliant' | 'non_compliant' | 'no_baseline' | 'unreachable'
 
 interface DeviceResult {
   label: string
@@ -37,7 +35,10 @@ interface DeviceResult {
   vendorId: number | null
   productCode: number | null
   serial: number | null
-  verdict: Verdict
+  verdict: ComplianceVerdict
+  /** True when the verdict/approvedMin came from the fleet-wide fallback
+   *  baseline rather than a row curated for this device's own MCM. */
+  fleetDefault: boolean
   subsystemId?: string
 }
 
@@ -51,17 +52,16 @@ interface ScanResult {
   error?: string
 }
 
-const VERDICT_META: Record<DisplayVerdict, { label: string; cls: string; Icon: typeof CheckCircle2 }> = {
+const VERDICT_META: Record<ComplianceVerdict, { label: string; cls: string; Icon: typeof CheckCircle2 }> = {
   compliant: { label: 'Compliant', cls: 'border-success/40 bg-success/10 text-success', Icon: CheckCircle2 },
-  // Satisfies the minimum but runs a DIFFERENT revision than approved (newer
-  // than the project was engineered against) — shown, never silently green.
-  mismatch: { label: 'Differs from approved', cls: 'border-warning/40 bg-warning/10 text-warning', Icon: AlertTriangle },
-  non_compliant: { label: 'Below minimum', cls: 'border-destructive/40 bg-destructive/10 text-destructive', Icon: XCircle },
+  // Live is NEWER than the approved revision — surfaced, never silently green.
+  differs: { label: 'Differs from approved', cls: 'border-warning/40 bg-warning/10 text-warning', Icon: AlertTriangle },
+  non_compliant: { label: 'Does not match approved', cls: 'border-destructive/40 bg-destructive/10 text-destructive', Icon: XCircle },
   no_baseline: { label: 'No baseline', cls: 'border-warning/40 bg-warning/10 text-warning', Icon: HelpCircle },
   unreachable: { label: 'Unreachable', cls: 'border-border bg-muted text-muted-foreground', Icon: CircleSlash },
 }
 
-function VerdictBadge({ verdict }: { verdict: DisplayVerdict }) {
+function VerdictBadge({ verdict }: { verdict: ComplianceVerdict }) {
   const m = VERDICT_META[verdict]
   return (
     <span className={cn('inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-semibold', m.cls)}>
@@ -70,6 +70,29 @@ function VerdictBadge({ verdict }: { verdict: DisplayVerdict }) {
     </span>
   )
 }
+
+/**
+ * Build a CSV of firmware results — mirrors the on-screen columns plus the
+ * fields the table doesn't show (vendorId/productCode/subsystemId), for
+ * take-away triage. Fields per FirmwareDeviceResult (lib/plc/identity/
+ * firmware-service.ts): the approved revision is `approvedMin`.
+ */
+function toCsv(rows: DeviceResult[], scannedAt: number): string {
+  const head = ['mcm', 'device', 'source', 'vendorId', 'productCode', 'model', 'liveRevision', 'approvedRevision', 'verdict', 'fleetDefault', 'scannedAt']
+  const esc = (v: unknown) => {
+    const s = v == null ? '' : String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const when = new Date(scannedAt).toISOString()
+  return [head.join(',')].concat(rows.map((d) => [
+    d.subsystemId ?? '', d.label, d.source, d.vendorId ?? '', d.productCode ?? '',
+    d.modelName ?? '', d.liveRevision ?? '', d.approvedMin ?? '', d.verdict,
+    d.fleetDefault ? 'yes' : 'no', when,
+  ].map(esc).join(','))).join('\n')
+}
+
+/** Verdicts that count as an "issue" for the CSV export's default scope. */
+const ISSUE_VERDICTS = new Set<ComplianceVerdict>(['non_compliant', 'differs', 'no_baseline'])
 
 function timeAgo(ts: number | null): string {
   if (!ts) return 'never'
@@ -120,22 +143,37 @@ export default function FirmwarePage() {
     return scan.controllers ? [...scan.controllers, ...scan.devices] : scan.devices
   }, [scan])
 
-  // "Issues" = below minimum OR revision differs from approved (mismatch).
+  // "Issues" on screen = does not match approved OR differs from approved.
   const rows = useMemo(
     () => (nonCompliantOnly
-      ? allRows.filter((d) => displayVerdict(d.verdict, d.liveRevision, d.approvedMin) !== 'compliant'
-          && d.verdict !== 'no_baseline' && d.verdict !== 'unreachable')
+      ? allRows.filter((d) => d.verdict === 'differs' || d.verdict === 'non_compliant')
       : allRows),
     [allRows, nonCompliantOnly],
   )
 
   const counts = useMemo(() => {
-    const c = { compliant: 0, mismatch: 0, non_compliant: 0, no_baseline: 0, unreachable: 0 }
-    for (const d of allRows) c[displayVerdict(d.verdict, d.liveRevision, d.approvedMin)]++
+    const c: Record<ComplianceVerdict, number> = { compliant: 0, differs: 0, non_compliant: 0, no_baseline: 0, unreachable: 0 }
+    for (const d of allRows) c[d.verdict]++
     return c
   }, [allRows])
 
   const hasSubsystems = useMemo(() => allRows.some((d) => d.subsystemId != null), [allRows])
+
+  // CSV export's own "issues only" scope also includes no_baseline (unknown
+  // hardware is an issue worth triaging even though the on-screen filter
+  // above doesn't surface it as a row-level defect). Honours the same
+  // "Show issues only" checkbox as the table.
+  const exportCsv = useCallback(() => {
+    if (!scan) return
+    const exportRows = nonCompliantOnly ? allRows.filter((d) => ISSUE_VERDICTS.has(d.verdict)) : allRows
+    const blob = new Blob([toCsv(exportRows, scan.scannedAt)], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `firmware-mismatches-${new Date(scan.scannedAt).toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [scan, allRows, nonCompliantOnly])
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans">
@@ -156,6 +194,12 @@ export default function FirmwarePage() {
             </div>
           </div>
           <div className="flex-1" />
+          {scan?.connected && allRows.length > 0 && (
+            <Button onClick={exportCsv} disabled={scanning} size="sm" variant="outline" className="gap-1.5">
+              <Download className="h-4 w-4" />
+              <span className="hidden sm:inline">Export CSV</span>
+            </Button>
+          )}
           <Button onClick={runScan} disabled={scanning} size="sm" className="gap-1.5">
             {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             <span className="hidden sm:inline">{scanning ? 'Scanning…' : 'Scan now'}</span>
@@ -191,7 +235,7 @@ export default function FirmwarePage() {
         {scan?.connected && allRows.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <SummaryChip n={counts.compliant} verdict="compliant" />
-            <SummaryChip n={counts.mismatch} verdict="mismatch" />
+            <SummaryChip n={counts.differs} verdict="differs" />
             <SummaryChip n={counts.non_compliant} verdict="non_compliant" />
             <SummaryChip n={counts.no_baseline} verdict="no_baseline" />
             <SummaryChip n={counts.unreachable} verdict="unreachable" />
@@ -226,7 +270,7 @@ export default function FirmwarePage() {
                   {hasSubsystems && <th className="px-3 py-2 font-semibold">MCM</th>}
                   <th className="px-3 py-2 font-semibold">Model</th>
                   <th className="px-3 py-2 font-semibold text-right">Live rev</th>
-                  <th className="px-3 py-2 font-semibold text-right">Approved min</th>
+                  <th className="px-3 py-2 font-semibold text-right">Approved</th>
                   <th className="px-3 py-2 font-semibold">Status</th>
                   <th className="px-3 py-2 font-semibold text-right">Serial</th>
                 </tr>
@@ -239,7 +283,16 @@ export default function FirmwarePage() {
                     <td className="px-3 py-2 text-muted-foreground">{d.modelName || '—'}</td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums">{d.liveRevision ?? '—'}</td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">{d.approvedMin ?? '—'}</td>
-                    <td className="px-3 py-2"><VerdictBadge verdict={displayVerdict(d.verdict, d.liveRevision, d.approvedMin)} /></td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <VerdictBadge verdict={d.verdict} />
+                        {d.fleetDefault && (
+                          <span className="inline-flex items-center rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground" title="Approved revision came from the fleet-wide fallback baseline, not one curated for this MCM">
+                            fleet default
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground tabular-nums">{d.serial ?? '—'}</td>
                   </tr>
                 ))}
@@ -256,7 +309,7 @@ export default function FirmwarePage() {
   )
 }
 
-function SummaryChip({ n, verdict }: { n: number; verdict: DisplayVerdict }) {
+function SummaryChip({ n, verdict }: { n: number; verdict: ComplianceVerdict }) {
   const m = VERDICT_META[verdict]
   return (
     <span className={cn('inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold', n === 0 ? 'border-border bg-muted/40 text-muted-foreground' : m.cls)}>
@@ -272,7 +325,7 @@ function EmptyState({ onScan, scanning }: { onScan: () => void; scanning: boolea
       <div className="max-w-md w-full text-center">
         <div className="mx-auto grid place-items-center h-16 w-16 rounded-lg bg-primary/10 ring-1 ring-primary/30 mb-4"><ShieldCheck className="h-8 w-8 text-primary" /></div>
         <h2 className="text-lg font-bold">Check firmware compliance</h2>
-        <p className="text-sm text-muted-foreground mt-1.5 px-4">Read the firmware revision of the controller and every networked device, and check each against the cloud-approved minimum supported version.</p>
+        <p className="text-sm text-muted-foreground mt-1.5 px-4">Read the firmware revision of the controller and every networked device, and check each against the cloud-approved revision for this MCM.</p>
         <Button onClick={onScan} disabled={scanning} className="mt-5 gap-2">
           {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{scanning ? 'Scanning…' : 'Run scan'}
         </Button>
