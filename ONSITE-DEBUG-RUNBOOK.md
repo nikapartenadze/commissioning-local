@@ -129,6 +129,48 @@ Two SEPARATE systems — never conflate:
 - A missing L2 column **drops** the write (422, no queue row) — it is NOT a queue-stuck/park condition.
 - A PostToolUse hook (`.claude/hooks/migration-reminder.sh`) injects this checklist whenever a schema/migration file is edited.
 
+### Firmware baseline — per-MCM scoping (2026-07-21)
+
+A **fourth** case worth its own entry, because it is BOTH kinds at once and the
+order between them is load-bearing.
+
+**CLOUD (manual, does NOT auto-run on deploy):**
+`commissioning-cloud/scripts/add-firmware-subsystem-column.sql` — adds
+`approved_firmware.subsystem_id` (NULL = fleet-wide default) and swaps the
+fleet-wide unique key for one on `COALESCE(subsystem_id,-1)`.
+GOTCHA: Prisma implements `@@unique` on Postgres as a bare UNIQUE **INDEX**, not a
+table constraint, so `DROP CONSTRAINT IF EXISTS` silently no-ops. The script drops
+**both** forms. Verify after applying:
+```
+\d approved_firmware   -- expect subsystem_id + approved_firmware_vendor_product_subsystem_key
+```
+
+**FIELD (automatic on startup):** `ApprovedFirmware` is REBUILT to carry
+`SubsystemId` plus a per-scope unique index. Rows are **COPIED** across as
+fleet-wide — the baseline must survive the upgrade because the tool is
+offline-first. Verify after upgrading a tablet:
+```
+sqlite3 database.db "SELECT COUNT(*) FROM ApprovedFirmware;"
+```
+A drop to zero is a FAILED migration — re-pull and report it.
+GOTCHA: SQLite REJECTS an expression inside an inline UNIQUE constraint
+("expressions prohibited in PRIMARY KEY and UNIQUE"). It must be a separate
+`CREATE UNIQUE INDEX`, placed AFTER the rebuild — inside the big
+`initializeSchema()` exec it throws on old DBs and silently aborts every
+statement after it in that block.
+
+> **⚠ ORDER IS MANDATORY — GET IT WRONG AND THE FLEET LOSES FIRMWARE SCANNING.**
+> A field tool WITHOUT the migration, talking to a cloud that HAS scoped rows,
+> gets `POST /api/firmware/scan` → **HTTP 500** (old `UNIQUE(VendorId,ProductCode)`
+> rejects two rows for one model; txn throws at `firmware-baseline-sync.ts`).
+> Reproduced live. Correct order:
+>   1. apply cloud SQL (inert on its own)
+>   2. deploy cloud code (still inert — no scoped rows yet)
+>   3. **ship the field release to every tablet**
+>   4. ONLY THEN import scoped baselines per MCM
+> Between 2 and 4 the fleet is safe: fleet-wide-only rows satisfy the old key.
+> IO/L2 sync is unaffected either way — only firmware scanning breaks.
+
 ## 7. Maintenance
 
 When you finish an onsite debug: add the new symptom→location row to §2, any new grep pattern, any new gotcha to §0/§4, and bump the "Last major update" line. Cross-link the detailed writeup in `.claude/.../memory/`.

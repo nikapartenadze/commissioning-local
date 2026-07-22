@@ -42,8 +42,14 @@ interface FVDevice {
   DeviceName: string
   Mcm: string
   Subsystem: string
+  // Owning MCM. Present on every row a scoped pull has stamped; null only on
+  // legacy pre-migration rows, where the Mcm label is used as the key instead.
+  SubsystemId: number | null
   CompletedChecks: number
   TotalChecks: number
+  // Cloud-owned planned date ("YYYY-MM-DD"|null) — when this device's FV work
+  // is scheduled. Field is read-only for it; PMs set it in the cloud.
+  PlannedDate?: string | null
 }
 
 interface FVCellValue {
@@ -182,10 +188,15 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   const [l2PullResult, setL2PullResult] = useState<string | null>(null)
 
   // VFD wizard state — opened from either the VFD tab or the sheet grid
-  const [wizardDevice, setWizardDevice] = useState<{ id: number; deviceName: string; mcm: string; subsystem: string; sheetName?: string } | null>(null)
+  const [wizardDevice, setWizardDevice] = useState<{ id: number; deviceName: string; mcm: string; subsystem: string; subsystemId: number; sheetName?: string } | null>(null)
 
   type QuickFilter = "all" | "complete" | "incomplete" | "has_failures" | "all_passed" | "addressed"
   const [quickFilter, setQuickFilter] = useState<QuickFilter>((_saved.current.quickFilter as QuickFilter) ?? "all")
+  // Planned-date filter — the field half of the dated punchlist. Dates are
+  // date-only strings compared lexically against the tablet's local day, so no
+  // timezone conversion can shift a day (same rule as the IO grid).
+  type PlannedFilter = "all" | "overdue" | "today" | "thisWeek" | "hasDate" | "noDate"
+  const [plannedFilter, setPlannedFilter] = useState<PlannedFilter>("all")
   const [columnFilters, setColumnFilters] = useState<Record<string, any>>(_saved.current.columnFilters ?? {})
   const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>(_saved.current.fixedFilters ?? { device: null, mcm: null, subsystem: null })
   const [searchQuery, setSearchQuery] = useState(_saved.current.searchQuery ?? "")
@@ -238,16 +249,16 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       // subsystem's devices (not whichever MCM was pulled last). Omitted on a
       // single-MCM tablet (no subsystemId) → returns all, as before.
       //
-      // VFD mode scopes by SHEET, not subsystem: /api/l2?subsystemId=N would
-      // filter L2 devices by their owning subsystem, but VFD/APF belts may be
-      // keyed to a different subsystem than the route :id (cloud set them to 38
-      // while the page is /commissioning/16) — subsystem-scoping would show the
-      // APF sheet with ZERO devices. Instead ?vfd=1 returns ONLY the VFD/APF
-      // sheet's devices + their cells (all subsystems), which is the exact set
-      // this tab renders — a fraction of the payload vs the old unscoped fetch
-      // that pulled every sheet's devices + the whole cell-values table (the
-      // multi-second empty-grid delay on large projects like CDW5).
-      const scope = vfdMode ? 'vfd=1&' : (subsystemId ? `subsystemId=${subsystemId}&` : '')
+      // VFD mode adds ?vfd=1 to narrow to the VFD/APF sheet (a fraction of the
+      // payload vs every sheet's devices + the whole cell-values table — the
+      // multi-second empty-grid delay on large projects like CDW5), but it is
+      // scoped by subsystem exactly like the functional tab. It previously sent
+      // vfd=1 INSTEAD of the subsystem, on the rationale that VFD/APF belts were
+      // cloud-keyed to a different subsystem than the route :id. That mismatch
+      // was fixed; the bypass was not, so this tab rendered every MCM's belts on
+      // every MCM's page and the wizard bumped motors on the wrong machine.
+      const sub = subsystemId ? `subsystemId=${subsystemId}&` : ''
+      const scope = vfdMode ? `vfd=1&${sub}` : sub
       const res = await authFetch(`/api/l2?${scope}_t=${Date.now()}`)
       if (!res.ok) throw new Error(`Failed to fetch functional validation data: ${res.status}`)
       const json: FVData = await res.json()
@@ -317,15 +328,18 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   const loadVfdAnnotations = useCallback(async () => {
     if (!vfdMode) return
     try {
-      const res = await authFetch('/api/vfd-commissioning/state')
+      // Scope to THIS MCM. Unscoped, the endpoint returns every MCM's VFD state
+      // and collapses same-named belts from different machines into one record.
+      const scope = subsystemId ? `?subsystemId=${subsystemId}` : ''
+      const res = await authFetch(`/api/vfd-commissioning/state${scope}`)
       if (!res.ok) return
       const json = await res.json()
       const map = new Map<string, VfdAnnotation>()
       for (const row of (json.states || [])) {
         if (!row.deviceName) continue
-        // MCM-scoped key: device names repeat across MCMs in this multi-MCM grid,
-        // so keying by name alone leaked one MCM's blocker onto another's belt.
-        map.set(vfdAnnotationKey(row.mcm, row.deviceName), {
+        // Subsystem-scoped key: device names repeat across MCMs, so keying by
+        // name alone leaked one MCM's blocker onto another's belt.
+        map.set(vfdAnnotationKey(row.subsystemId, row.mcm, row.deviceName), {
           blocked: Boolean(row.blocked),
           blockerParty: row.blockerParty ?? null,
           blockerReason: row.blockerReason ?? null,
@@ -336,7 +350,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       }
       setVfdAnnotations(map)
     } catch { /* best-effort; columns simply show "—" */ }
-  }, [vfdMode])
+  }, [vfdMode, subsystemId])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -752,8 +766,8 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     ? activeColumns.filter(c => ((c.Name || '').trim().toLowerCase()) in VFD_COL_RANK).map(c => c.id)
     : []
   const rowTone = vfdMode
-    ? (device: { id: number; DeviceName: string; Mcm: string }): 'blocked' | 'complete' | null => {
-        if (vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))?.blocked) return 'blocked'
+    ? (device: { id: number; DeviceName: string; Mcm: string; SubsystemId: number | null }): 'blocked' | 'complete' | null => {
+        if (vfdAnnotations.get(vfdAnnotationKey(device.SubsystemId, device.Mcm, device.DeviceName))?.blocked) return 'blocked'
         if (
           vfdCheckColIds.length > 0 &&
           vfdCheckColIds.every(cid => {
@@ -805,6 +819,29 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       }
     }
 
+    // Planned-date filter (cloud-scheduled work)
+    if (plannedFilter !== "all") {
+      const d = device.PlannedDate || null
+      if (plannedFilter === "noDate") {
+        if (d) return false
+      } else if (!d) {
+        return false
+      } else {
+        const now = new Date()
+        const pad = (n: number) => String(n).padStart(2, "0")
+        const iso = (x: Date) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`
+        const todayStr = iso(now)
+        if (plannedFilter === "overdue" && !(d < todayStr)) return false
+        if (plannedFilter === "today" && d !== todayStr) return false
+        if (plannedFilter === "thisWeek") {
+          const dow = now.getDay()
+          const end = new Date(now)
+          end.setDate(end.getDate() + (dow === 0 ? 0 : 7 - dow))
+          if (!(d <= iso(end))) return false
+        }
+      }
+    }
+
     // Quick filter
     if (quickFilter !== "all") {
       const progressCols = activeColumns.filter((c) => doesFVColumnCountForProgress(c))
@@ -830,22 +867,27 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
         if (!allPassed) return false
       } else if (quickFilter === "addressed") {
         // VFD handoff: belts a mechanic marked addressed on the cloud (ready to re-run).
-        if (!vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))?.addressed) return false
+        if (!vfdAnnotations.get(vfdAnnotationKey(device.SubsystemId, device.Mcm, device.DeviceName))?.addressed) return false
       }
     }
 
     return true
   })
 
-  const hasActiveFilters = quickFilter !== "all" || Object.keys(columnFilters).length > 0 || fixedFilters.device !== null || fixedFilters.mcm !== null || fixedFilters.subsystem !== null || searchQuery !== ""
+  const hasActiveFilters = plannedFilter !== "all" || quickFilter !== "all" || Object.keys(columnFilters).length > 0 || fixedFilters.device !== null || fixedFilters.mcm !== null || fixedFilters.subsystem !== null || searchQuery !== ""
 
   /** Open the VFD wizard from the sheet grid */
-  const handleOpenWizardFromGrid = (device: { id: number; DeviceName: string; Mcm: string; Subsystem: string }) => {
+  const handleOpenWizardFromGrid = (device: { id: number; DeviceName: string; Mcm: string; Subsystem: string; SubsystemId: number | null }) => {
     setWizardDevice({
       id: device.id,
       deviceName: device.DeviceName,
       mcm: device.Mcm || '',
       subsystem: device.Subsystem || '',
+      // The DEVICE's own MCM, not the route's. Every PLC write the wizard makes
+      // (Valid_Map, Bump, Speed) is addressed by subsystemId; taking it from the
+      // route would bump a motor on whichever MCM the page happens to be, which
+      // is a different machine whenever a foreign row is visible.
+      subsystemId: device.SubsystemId ?? subsystemId ?? 0,
       sheetName: sheetNameById.get(activeSheetData.id) || '',
     })
   }
@@ -859,7 +901,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       label: 'Blocked',
       width: 240,
       render: (device) => {
-        const a = vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))
+        const a = vfdAnnotations.get(vfdAnnotationKey(device.SubsystemId, device.Mcm, device.DeviceName))
         if (!a?.blocked) return <span className="text-muted-foreground/50">—</span>
         return (
           <span
@@ -880,7 +922,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       label: 'Addressed',
       width: 180,
       render: (device) => {
-        const a = vfdAnnotations.get(vfdAnnotationKey(device.Mcm, device.DeviceName))
+        const a = vfdAnnotations.get(vfdAnnotationKey(device.SubsystemId, device.Mcm, device.DeviceName))
         if (!a?.blocked || !a.addressed) return <span className="text-muted-foreground/50">—</span>
         const stamp = (() => {
           const parts: string[] = []
@@ -1095,6 +1137,27 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
             </button>
           )
         })}
+        {/* Planned-date filter — "what am I supposed to do today". Cloud-owned
+            dates, so this is read-only here: a select, not an editor. */}
+        <select
+          value={plannedFilter}
+          onChange={(e) => setPlannedFilter(e.target.value as typeof plannedFilter)}
+          aria-label="Filter by planned date"
+          title="Filter by the date this work is scheduled for"
+          className={cn(
+            "rounded-md border px-2 py-1 text-[11px] font-medium transition-colors bg-background",
+            plannedFilter !== "all"
+              ? "border-primary text-primary"
+              : "border-border text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <option value="all">Any date</option>
+          <option value="overdue">Overdue</option>
+          <option value="today">Due today</option>
+          <option value="thisWeek">Due this week</option>
+          <option value="hasDate">Has a date</option>
+          <option value="noDate">No date</option>
+        </select>
         {vfdMode && (
           <button
             onClick={() => setQuickFilter(quickFilter === "addressed" ? "all" : "addressed")}
@@ -1240,7 +1303,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       {wizardDevice && (
         <VfdWizardModal
           device={wizardDevice}
-          subsystemId={subsystemId || 0}
+          subsystemId={wizardDevice.subsystemId || subsystemId || 0}
           plcConnected={plcConnected}
           sheetName={wizardDevice.sheetName}
           onClose={() => {

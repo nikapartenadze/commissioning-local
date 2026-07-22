@@ -148,13 +148,34 @@ export async function POST(req: Request, res: Response) {
     }
 
     // 1. Resolve target device + sheet
-    const allMatches = stmts.findDevice.all(deviceName) as Array<{
+    let allMatches = stmts.findDevice.all(deviceName) as Array<{
       deviceId: number; SheetId: number; deviceCloudId: number | null; subsystemId: number | null
       sheetName: string; sheetDisplayName: string | null
     }>
     if (allMatches.length === 0) {
       return res.status(404).json({ error: `No L2 device found with name "${deviceName}"` })
     }
+
+    // Narrow to the caller's MCM FIRST. This route NULLs durable operator
+    // stamps, so picking the wrong same-named row destroys another machine's
+    // commissioning record (the CDW5-polarity class). Sheets are project-global
+    // templates, so the sheetName tie-break below cannot separate two MCMs.
+    const clearSid = Number(subsystemId)
+    if (Number.isFinite(clearSid) && clearSid > 0) {
+      const scoped = allMatches.filter(d => d.subsystemId === clearSid || d.subsystemId == null)
+      if (scoped.length === 0) {
+        return res.status(404).json({
+          error: `No L2 device named "${deviceName}" belongs to subsystem ${clearSid}`,
+        })
+      }
+      allMatches = scoped
+    } else if (allMatches.length > 1) {
+      const owners = Array.from(new Set(allMatches.map(d => d.subsystemId ?? 'unstamped'))).join(', ')
+      return res.status(400).json({
+        error: `Ambiguous device "${deviceName}": it exists on multiple MCMs (${owners}). Send subsystemId to disambiguate.`,
+      })
+    }
+
     let target = allMatches[0]
     if (sheetName) {
       const wanted = sheetName.toLowerCase().trim()

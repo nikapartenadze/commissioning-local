@@ -212,9 +212,16 @@ interface L2CommissioningCells {
   bumpBlocker:         string | null
 }
 
-async function readL2CellsForDevice(deviceName: string): Promise<L2CommissioningCells | null> {
+async function readL2CellsForDevice(
+  subsystemId: number,
+  deviceName: string,
+): Promise<L2CommissioningCells | null> {
   try {
-    const res = await fetch('/api/vfd-commissioning/state')
+    // Scope to this device's OWN MCM. Unscoped, /state returns every MCM's rows
+    // and the find-by-name below would restore another machine's commissioning
+    // cells into this wizard.
+    const scope = subsystemId > 0 ? `?subsystemId=${subsystemId}` : ''
+    const res = await fetch(`/api/vfd-commissioning/state${scope}`)
     if (!res.ok) return null
     const data = await res.json()
     const row = (data.states || []).find((s: any) => s.deviceName === deviceName)
@@ -675,7 +682,7 @@ function Step2Content({ sts, loading, deviceName, subsystemId, plcConnected, she
   // Prefill HP inputs from the L2 spreadsheet (single source of truth).
   useEffect(() => {
     let cancelled = false
-    readL2CellsForDevice(deviceName).then(cells => {
+    readL2CellsForDevice(subsystemId, deviceName).then(cells => {
       if (cancelled || !cells) return
       if (cells.motorHpField) setMotorHp(cells.motorHpField)
       if (cells.vfdHpField) setDriveHp(cells.vfdHpField)
@@ -1528,7 +1535,7 @@ function Step5Content({ sts, stsErrors, loading, deviceName, subsystemId, plcCon
   // don't get the lastResult card until the user re-logs.
   useEffect(() => {
     let cancelled = false
-    readL2CellsForDevice(deviceName).then(cells => {
+    readL2CellsForDevice(subsystemId, deviceName).then(cells => {
       if (cancelled || !cells) return
       const parsed = parseSpeedStamp(cells.speedSetUp)
       if (parsed) {
@@ -1856,7 +1863,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => { if (clearTimerRef.current) clearTimeout(clearTimerRef.current) }, [])
   useEffect(() => {
-    readL2CellsForDevice(device.deviceName).then(cells => {
+    readL2CellsForDevice(subsystemId, device.deviceName).then(cells => {
       console.log(`[VFD Wizard] Restoring state for ${device.deviceName}:`, {
         polarity: cells?.polarity ?? null,
         beltTracked: cells?.beltTracked ?? null,
@@ -2169,7 +2176,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       // Refresh from L2 — cells should all be NULL now; mirror the mount
       // useEffect's restore logic so any racing cell still in flight is
       // honoured rather than ignored.
-      readL2CellsForDevice(device.deviceName).then(cells => {
+      readL2CellsForDevice(subsystemId, device.deviceName).then(cells => {
         const parsedPolarity = parsePolarityStamp(cells?.polarity)
         if (parsedPolarity) setPolaritySetDone(parsedPolarity)
         const parsedBlocker = parseBumpBlockerCell(cells?.bumpBlocker)
@@ -2251,7 +2258,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
     if (sts.Valid_Map == null && sts.Valid_Direction == null) return
 
     backfilledRef.current = true
-    readL2CellsForDevice(device.deviceName).then(cells => {
+    readL2CellsForDevice(subsystemId, device.deviceName).then(cells => {
       if (!cells) return
       const toWrite: { columnName: string; value: string }[] = []
       const stamp = buildInitialsStamp(userName)
@@ -2463,7 +2470,7 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
               fetch('/api/vfd-commissioning/controls-verified', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ deviceName: device.deviceName, completedBy: userName }),
+                body: JSON.stringify({ subsystemId, deviceName: device.deviceName, completedBy: userName }),
               })
                 .then(r => {
                   if (!r.ok) console.error('[VFD Controls] POST failed:', r.status)
