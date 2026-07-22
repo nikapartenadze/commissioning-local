@@ -339,8 +339,10 @@ function ConfigForm({ mcm, onSaved }: { mcm: McmRow; onSaved: () => void }) {
 }
 
 // ── Sync Center nav button ───────────────────────────────────────────────────
-// Self-contained: polls the sync queue summary and shows the parked count as a
-// red badge so field users see stuck rows at a glance and can open the fixer.
+// Self-contained: polls the sync queue summary and badges the number of rows
+// that need a human. Deliberately counts ONLY those — rows that are simply
+// sending, or that the tool cleared by itself, are not a to-do and must never
+// put a red number in front of a field user.
 function SyncNavButton() {
   const [parked, setParked] = useState(0)
   useEffect(() => {
