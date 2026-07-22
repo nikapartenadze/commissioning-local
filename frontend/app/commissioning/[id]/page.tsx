@@ -30,7 +30,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { UserMenu } from "@/components/user-menu"
-import { Download, Settings, BarChart3, History, ArrowLeft } from "lucide-react"
+import { Download, Settings, BarChart3, History, ArrowLeft, AlertTriangle, RefreshCw } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import {
   PlcConfig,
@@ -96,6 +96,13 @@ export default function CommissioningPage() {
   const [subsystemLabel, setSubsystemLabel] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const hasLoadedOnce = useRef(false)
+  // Last IO-load failure, or null when the grid is showing trustworthy data.
+  // 'first'   — we have never loaded, so the grid is legitimately empty and the
+  //             operator needs an explanation + a way to retry.
+  // 'refresh' — a refresh failed but the rows on screen are real (just stale).
+  // hasLoadedOnce is a ref (not reactive), so this separate state is what the
+  // render actually keys off.
+  const [ioLoadError, setIoLoadError] = useState<null | 'first' | 'refresh'>(null)
   const [signalRWasConnected, setSignalRWasConnected] = useState(false)
   const [plcStatus, setPlcStatus] = useState<PlcConnectionStatus>({
     isConnected: false,
@@ -375,13 +382,59 @@ export default function CommissioningPage() {
   }, [projectId])
 
   // Poll network/estop stats — always poll network for faulted device detection
+  //
+  // FIELD BUG ("the IO grid clears everything every 2 minutes, I have to refresh
+  // the page"): this poll used to be a bare setInterval(poll, 3000) with no
+  // timeout, no abort and no in-flight guard. Once /api/network/status started
+  // taking 7-71s on a loaded controller, a fresh request went out every 3s on
+  // top of every request still hanging — production logs showed ~23 stacked —
+  // and those consumed the browser's ~6-sockets-per-origin budget for the whole
+  // page. The IO refetch kicked off by the 120s delta sweep's IOsUpdated event
+  // then couldn't get a socket, hit its own 15s timeout, and (before the fix
+  // below in loadIos) blanked the grid. So: one request at a time, a hard
+  // client-side timeout that hands the socket back, and exponential backoff so
+  // a slow controller degrades the refresh cadence instead of starving the page.
+  const networkPollInFlight = useRef(false)
+  const networkPollFailures = useRef(0)
+  const networkPollAbort = useRef<AbortController | null>(null)
   useEffect(() => {
     if (activeTab === 'network' || activeTab === 'io') {
       let active = true
+      let timer: ReturnType<typeof setTimeout> | null = null
+
+      const NETWORK_POLL_BASE_MS = 3000   // normal cadence when the endpoint is healthy
+      const NETWORK_POLL_MAX_MS = 30000   // slowest we ever back off to
+      const NETWORK_POLL_TIMEOUT_MS = 5000 // a socket must never be held longer than this
+
+      // Backoff doubles per consecutive failure (3s → 6s → 12s → 24s → 30s cap)
+      // and snaps straight back to 3s on the first success, so a controller that
+      // recovers gets live network status again immediately.
+      const schedule = () => {
+        if (!active) return
+        const delay = Math.min(
+          NETWORK_POLL_BASE_MS * Math.pow(2, networkPollFailures.current),
+          NETWORK_POLL_MAX_MS
+        )
+        timer = setTimeout(poll, delay)
+      }
+
       const poll = async () => {
+        if (!active) return
+        // In-flight guard — a slow endpoint must never stack requests.
+        if (networkPollInFlight.current) { schedule(); return }
+        networkPollInFlight.current = true
+        // One AbortController serves both jobs: the timeout below, and the
+        // unmount/tab-change cleanup. (AbortSignal.any is deliberately avoided —
+        // it isn't available on every browser build this tool ships against.)
+        const controller = new AbortController()
+        networkPollAbort.current = controller
+        const timeoutId = setTimeout(() => controller.abort(), NETWORK_POLL_TIMEOUT_MS)
         try {
-          const res = await authFetch(`/api/network/status?subsystemId=${projectId}`)
-          if (res.ok && active) {
+          const res = await authFetch(`/api/network/status?subsystemId=${projectId}`, { signal: controller.signal })
+          if (!res.ok) {
+            networkPollFailures.current = Math.min(networkPollFailures.current + 1, 4)
+          } else if (active) {
+            networkPollFailures.current = 0
             const data = await res.json()
             if (data.success && data.tags) {
               const tags = data.tags as Record<string, boolean | null>
@@ -427,11 +480,28 @@ export default function CommissioningPage() {
               setDeviceStatuses(statuses)
             }
           }
-        } catch {}
+        } catch {
+          // Timeout, abort or transport error — count it so the cadence backs
+          // off instead of hammering a struggling endpoint every 3s.
+          if (active) networkPollFailures.current = Math.min(networkPollFailures.current + 1, 4)
+        } finally {
+          clearTimeout(timeoutId)
+          networkPollInFlight.current = false
+          if (networkPollAbort.current === controller) networkPollAbort.current = null
+          schedule()
+        }
       }
       poll()
-      const interval = setInterval(poll, 3000)
-      return () => { active = false; clearInterval(interval) }
+      return () => {
+        active = false
+        if (timer) clearTimeout(timer)
+        // Abort anything still in flight — otherwise a hung request keeps its
+        // socket after the operator switches tabs or leaves the page, which is
+        // exactly the starvation this fix exists to prevent.
+        networkPollAbort.current?.abort()
+        networkPollAbort.current = null
+        networkPollInFlight.current = false
+      }
     } else if (activeTab === 'estop') {
       let active = true
       const poll = async () => {
@@ -1140,6 +1210,30 @@ export default function CommissioningPage() {
     }
   }, [addToDialogQueue]) // Handlers registered once, use refs for mutable state
 
+  // Shared failure path for loadIos.
+  //
+  // FIELD BUG ("the IO grid clears everything every 2 minutes"): both failure
+  // branches used to call setIos([]) / setFilteredIos([]). A failed fetch is
+  // NEVER evidence that zero IOs exist — and on site it was routinely just the
+  // 15s timeout firing because the /api/network/status poll above had eaten the
+  // socket pool. The 120s delta sweep broadcasts IOsUpdated → loadIos() → the
+  // refetch times out → the whole grid went blank, and since nothing retries on
+  // a timer it stayed blank until a manual page reload. So a failed REFRESH now
+  // leaves the rows exactly as they are; only a failed FIRST load is allowed to
+  // present an empty grid, and then only with an explicit error state so the
+  // operator isn't staring at an unexplained blank page.
+  const reportIoLoadFailure = (reason: string) => {
+    const firstLoad = !hasLoadedOnce.current
+    setIoLoadError(firstLoad ? 'first' : 'refresh')
+    toast({
+      title: firstLoad ? "Failed to load IO data" : "Couldn't refresh IO data",
+      description: firstLoad
+        ? `${reason}. No IO data has loaded yet — check the connection and retry.`
+        : `${reason}. Showing the last known data, which may be out of date.`,
+      variant: "destructive",
+    })
+  }
+
   const loadIos = async () => {
     try {
       // Only show full-page loading spinner on very first load, never on pull/refresh
@@ -1203,6 +1297,7 @@ export default function CommissioningPage() {
           return initialStates
         })
         hasLoadedOnce.current = true
+        setIoLoadError(null)
         // Note: Don't auto-connect WebSocket here - only connect when PLC is connected
         // WebSocket is for real-time PLC tag updates, not needed for just viewing IOs
 
@@ -1228,15 +1323,11 @@ export default function CommissioningPage() {
         }
       } else {
         logger.error('Failed to load IOs from backend:', response.status)
-        toast({ title: "Failed to load IO data", description: `Backend returned ${response.status}`, variant: "destructive" })
-        setIos([])
-        setFilteredIos([])
+        reportIoLoadFailure(`Backend returned ${response.status}`)
       }
     } catch (error) {
       logger.error('Error loading IOs:', error)
-      toast({ title: "Failed to load IO data", description: "Cannot connect to backend server", variant: "destructive" })
-      setIos([])
-      setFilteredIos([])
+      reportIoLoadFailure("Cannot connect to backend server")
     } finally {
       setLoading(false)
     }
@@ -2196,6 +2287,37 @@ export default function CommissioningPage() {
       {/* Muted-IO indicator moved INTO the grid's search row (compact pill +
           filter). The old full-width banner here shifted the grid down on every
           mute/unmute — jerking the UI — so it was removed. */}
+
+      {/* IO load failure banner.
+          Two distinct states, because they mean very different things to the
+          operator (see reportIoLoadFailure): a failed FIRST load means the grid
+          below is legitimately empty and needs an explanation + retry, whereas a
+          failed REFRESH means the rows below are real but possibly stale. The
+          old code blanked the grid for both and said nothing, which is what made
+          the on-site "grid clears itself every 2 minutes" fault so confusing. */}
+      {ioLoadError && (
+        <div className="flex-shrink-0 px-3 py-2">
+          <div
+            className={cn(
+              "flex items-center gap-2 rounded-md border px-3 py-2 text-sm",
+              ioLoadError === 'first'
+                ? "border-destructive/50 bg-destructive/10 text-destructive"
+                : "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            )}
+          >
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            <span className="flex-1">
+              {ioLoadError === 'first'
+                ? "Could not load IO data for this subsystem. Nothing has loaded yet — check the connection to the tool's backend, then retry."
+                : "Could not refresh IO data. The rows below are the last known values and may be out of date."}
+            </span>
+            <Button size="sm" variant="outline" onClick={() => loadIos()}>
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+              Retry
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Data Grid - Takes all remaining space */}
       <div className="flex-1 min-h-0 overflow-hidden">
