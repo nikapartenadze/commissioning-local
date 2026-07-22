@@ -78,11 +78,13 @@ import {
   writeTagAsync,
   plc_tag_destroy,
   plc_tag_get_bit,
+  plc_tag_get_float32,
   plc_tag_set_int8,
   PlcTagStatus,
   getStatusMessage,
   type PlcTagConfig,
 } from '@/lib/plc'
+import { configService } from '@/lib/config'
 import { polarityFlagWrites, parsePolarity, type FlagWrite } from '@/lib/vfd-polarity'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -166,6 +168,195 @@ export function flagsForDevice(row: ValidationRow, hasBeltTrackedColumn = false)
     writes.push(...polarityFlagWrites(row.polarityRaw))
   }
   return writes
+}
+
+// ── Belt-tracking freshness gate ───────────────────────────────────
+//
+// WHY (MCM15, 2026-07-22 — four hours lost):
+// FOUR tool instances were simultaneously connected to MCM15 (two even sharing
+// the hostname "autstand"). flagsForDevice() is ASSERT-ONLY and LEVEL-triggered
+// on the local 'Belt Tracked' L2 cell: whenever the local cell says tracked it
+// pushes Tracking_Finished=1 (+ Valid_Direction + polarity). The triggers are
+// PLC reconnect, the 2 s l2-change debounce, and the 5-minute safety sweep.
+//
+// So ANY instance still holding a STALE 'Yes' re-latched Tracking_Finished on
+// the SHARED controller minutes after someone cleared it elsewhere. Per rung 3
+// of AOI_IOCT_BELT_TRACKING, a latched Tracking_Finished transfers polarity
+// ownership away from the keypad (`XIO(Tracking_Finished) [XIC(Flip_Polarity)
+// OTL(Reverse_Polarity) ...]` only runs while the latch is CLEAR) — so mechanics
+// physically could not change belt direction, and an engineer had to remote into
+// every instance by hand to find the one writing back.
+//
+// The rule: an instance must not assert belt-tracking flags from a local cell it
+// has not RECENTLY CONFIRMED against the cloud. Silence is the safe failure —
+// the AOI latch is retentive, so declining to assert never un-does correct
+// state, whereas asserting from stale data actively breaks the plant.
+//
+// FRESHNESS SOURCE (reused, no parallel store — see the report):
+//   (a) LIVE  — the cloud SSE client (lib/cloud/cloud-sse-client.ts). It is the
+//       channel the untrack hint arrives on; `isConnected` + `lastEventAt`
+//       (bumped by the cloud's own heartbeat/ping frames, not just data events)
+//       proves this instance is on the live hint channel RIGHT NOW. Process-
+//       scoped by construction, which satisfies the "never this process" rule.
+//   (b) DURABLE — SyncCursors.UpdatedAt for the subsystem (lib/cloud/
+//       sync-cursor.ts), the per-subsystem delta cursor. It proves a cloud delta
+//       for THIS subsystem was actually applied here. Because setSyncCursor only
+//       bumps UpdatedAt when the cursor ADVANCES, it goes stale during quiet
+//       periods and can NEVER be the sole signal — and because it survives
+//       restarts, it is additionally required to post-date process start so a
+//       freshly-booted offline instance can't inherit a pre-restart stamp.
+//
+// Only the belt-tracking WRITES are gated. Valid_Map / Valid_HP come from local
+// wizard truth (identity + HP cells), not from a cloud belt-tracking decision,
+// and keep flowing so mech never loses the keypad unlock. Nothing on any
+// read-only/status path is gated.
+
+/** Flags whose assertion depends on cloud-confirmed belt-tracking truth. */
+export const BELT_TRACKING_GATED_FIELDS = [
+  'Tracking_Finished',
+  'Valid_Direction',
+  'Normal_Polarity',
+  'Reverse_Polarity',
+] as const
+
+/**
+ * How recently this instance must have confirmed belt-tracking truth against
+ * the cloud before it may assert the gated flags. Default 15 min — long enough
+ * to ride out a brief WAN blip, short enough that a genuinely disconnected
+ * instance stops fighting its peers well inside a shift.
+ */
+export const BELT_TRACKING_FRESHNESS_MS = (() => {
+  const n = parseInt(process.env.VFD_BELT_TRACKING_FRESHNESS_MS || '', 10)
+  return Number.isFinite(n) && n >= 60_000 ? n : 15 * 60_000
+})()
+
+/** Module load = process start, for the "never confirmed THIS process" rule. */
+const PROCESS_START_MS = Date.now()
+
+/** Everything judgeBeltTrackingFreshness needs — injectable for tests. */
+export interface FreshnessProbe {
+  /** Cloud SSE stream currently in the 'connected' state. */
+  sseConnected: boolean
+  /** epoch ms of the last SSE frame (incl. heartbeat/ping), or null. */
+  sseLastEventMs: number | null
+  /** epoch ms of SyncCursors.UpdatedAt for the subsystem, or null. */
+  cursorUpdatedMs: number | null
+}
+
+export interface FreshnessVerdict {
+  fresh: boolean
+  /** Human-readable WHY, for the throttled log line. */
+  reason: string
+}
+
+/**
+ * Decide whether this instance may assert belt-tracking flags for a subsystem.
+ *
+ * PURE. Fresh iff EITHER:
+ *   (a) the cloud SSE stream is connected AND produced a frame within the
+ *       window — this instance is on the live untrack-hint channel; or
+ *   (b) a cloud delta for this subsystem was applied within the window AND
+ *       that happened after process start (a durable pre-restart stamp is not
+ *       evidence that THIS process ever reached the cloud).
+ *
+ * Everything else — offline, SSE dropped, never synced, no cloud configured —
+ * is STALE, and stale means QUIET.
+ */
+export function judgeBeltTrackingFreshness(
+  probe: FreshnessProbe,
+  nowMs: number,
+  processStartMs: number = PROCESS_START_MS,
+  thresholdMs: number = BELT_TRACKING_FRESHNESS_MS,
+): FreshnessVerdict {
+  const { sseConnected, sseLastEventMs, cursorUpdatedMs } = probe
+
+  if (sseConnected && sseLastEventMs != null) {
+    const age = nowMs - sseLastEventMs
+    if (age >= 0 && age <= thresholdMs) {
+      return { fresh: true, reason: `cloud SSE live (last frame ${Math.round(age / 1000)}s ago)` }
+    }
+  }
+
+  if (cursorUpdatedMs != null && cursorUpdatedMs > processStartMs) {
+    const age = nowMs - cursorUpdatedMs
+    if (age >= 0 && age <= thresholdMs) {
+      return { fresh: true, reason: `cloud delta applied ${Math.round(age / 1000)}s ago` }
+    }
+  }
+
+  // Stale — spell out which leg failed so the field log is actionable.
+  const sseNote = !sseConnected
+    ? 'cloud SSE not connected'
+    : sseLastEventMs == null
+      ? 'cloud SSE connected but no frame received yet'
+      : `last SSE frame ${Math.round((nowMs - sseLastEventMs) / 1000)}s ago`
+  const cursorNote = cursorUpdatedMs == null
+    ? 'no delta cursor for this subsystem'
+    : cursorUpdatedMs <= processStartMs
+      ? 'delta cursor predates this process start (never confirmed since boot)'
+      : `last delta applied ${Math.round((nowMs - cursorUpdatedMs) / 1000)}s ago`
+  return { fresh: false, reason: `${sseNote}; ${cursorNote}` }
+}
+
+/**
+ * Drop the belt-tracking-dependent writes from a device's flag list, leaving
+ * Valid_Map / Valid_HP intact. Returns the SAME array reference when nothing
+ * is gated, so the common (fresh) path allocates nothing.
+ */
+export function stripBeltTrackingWrites(writes: FlagWrite[]): FlagWrite[] {
+  const gated = BELT_TRACKING_GATED_FIELDS as readonly string[]
+  if (!writes.some(w => gated.includes(w.field))) return writes
+  return writes.filter(w => !gated.includes(w.field))
+}
+
+// Throttle the "skipping, stale" log to once per subsystem per freshness
+// window. Without this a 5-minute sweep plus every reconnect and every
+// l2-change debounce would flood the field log.
+const lastStaleLogMsBySubsystem = new Map<string, number>()
+
+function logStaleOnce(subsystemKey: string, reason: string, heldBack: number, nowMs: number): void {
+  const last = lastStaleLogMsBySubsystem.get(subsystemKey) ?? 0
+  if (nowMs - last < BELT_TRACKING_FRESHNESS_MS) return
+  lastStaleLogMsBySubsystem.set(subsystemKey, nowMs)
+  console.warn(
+    `[VfdValidationWriter] Belt-tracking flags HELD BACK for subsystem ${subsystemKey}: ` +
+    `local 'Belt Tracked' state not confirmed against the cloud within ` +
+    `${Math.round(BELT_TRACKING_FRESHNESS_MS / 60_000)} min (${reason}). ` +
+    `${heldBack} device(s) affected — Tracking_Finished / Valid_Direction / polarity NOT asserted. ` +
+    'Valid_Map and Valid_HP are unaffected. This is deliberate: asserting from stale local state ' +
+    'on a shared controller re-latches tracking and locks mechanics out of the keypad.',
+  )
+}
+
+/** Read SyncCursors.UpdatedAt (stored as UTC `datetime('now')` text) as epoch ms. */
+function readCursorUpdatedMs(subsystemId: string): number | null {
+  try {
+    const row = db
+      .prepare('SELECT UpdatedAt FROM SyncCursors WHERE SubsystemId = ?')
+      .get(parseInt(subsystemId, 10)) as { UpdatedAt: string | null } | undefined
+    if (!row?.UpdatedAt) return null
+    // SQLite datetime('now') is UTC without a zone suffix — parse it as UTC.
+    const ms = Date.parse(`${row.UpdatedAt.replace(' ', 'T')}Z`)
+    return Number.isFinite(ms) ? ms : null
+  } catch {
+    // Table absent (older DB) → no evidence of confirmation → stale.
+    return null
+  }
+}
+
+/** Live probe: SSE liveness + this subsystem's durable delta cursor. */
+async function probeFreshness(subsystemId: string): Promise<FreshnessProbe> {
+  let sseConnected = false
+  let sseLastEventMs: number | null = null
+  try {
+    const { getCloudSseClient } = await import('@/lib/cloud/cloud-sse-client')
+    const sse = getCloudSseClient()
+    if (sse) {
+      sseConnected = sse.isConnected
+      sseLastEventMs = sse.lastEventAt ? sse.lastEventAt.getTime() : null
+    }
+  } catch { /* cloud SSE module unavailable → treat as not connected */ }
+  return { sseConnected, sseLastEventMs, cursorUpdatedMs: readCursorUpdatedMs(subsystemId) }
 }
 
 // ── Throttle / state ───────────────────────────────────────────────
@@ -751,6 +942,596 @@ async function runRemoteTargetPass(
   return { ok, verified, fail, skipped, skippedFaulted: 0, abortedAt: null, disconnected: false }
 }
 
+// ── Untrack retraction (edge-triggered) ────────────────────────────
+//
+// WHY: nothing in this tool EVER un-latched the PLC. `Invalidate_Tracking_
+// Finished` was written by NO code path — it existed only in the read
+// allowlist. So an untrack on the cloud merely stopped future assertion and
+// left the controller latched forever, with the keypad still locked out.
+//
+// GROUND TRUTH — read directly out of AOI_IOCT_BELT_TRACKING_AOI222.L5X
+// (do NOT re-derive from code comments; several in this repo are wrong):
+//
+//   rung 3: XIC(Valid_HP)[ XIC(CTRL.CMD.Tracking_Finished) ONS OTL(Tracking_Finished),
+//                          XIC(CTRL.CMD.Invalidate_Tracking_Finished) OTU(Tracking_Finished),
+//                          XIO(Tracking_Finished)[ XIC(Flip_Polarity) OTL(Reverse_Polarity),
+//                                                  XIO(Flip_Polarity) OTU(Reverse_Polarity) ],
+//                          XIC(Tracking_Finished)[ XIC(CTRL.CMD.Reverse_Polarity) ONS OTL(Reverse_Polarity),
+//                                                  XIC(CTRL.CMD.Normal_Polarity) OTU(Reverse_Polarity) ] ]
+//   rung 6: [ XIC(Tracking_Finished) XIC(CTRL.CMD.Valid_Direction) ONS OTL(Valid_Direction),
+//             XIC(CTRL.CMD.Invalidate_Direction) OTU(Valid_Direction), ... ]
+//   rung 7: [ XIO(Reverse_Polarity) OTE(Drive_Outputs.DirectionCmd_0),
+//             XIC(Reverse_Polarity) OTE(Drive_Outputs.DirectionCmd_1) ]
+//   rung 9: XIC(Track_Belt) OTE(CTRL.STS.Belt_Tracking_ON),
+//           MOVE(Drive_Outputs.CommandedVelocity, CTRL.STS.RVS)
+//
+// Four consequences drive this implementation:
+//
+//  1. The WHOLE of rung 3 is gated on Valid_HP. With Valid_HP=0 the invalidate
+//     SILENTLY DOES NOTHING — so we verify STS.Valid_HP=1 first and skip if not.
+//     (Note: rung 6's Invalidate_Direction branch is NOT under that XIC, so it
+//     works either way; we still gate the whole sequence to keep it atomic.)
+//  2. Valid_Direction does NOT drop when Tracking_Finished drops — rung 6 needs
+//     its OWN pulse. Two writes, not one.
+//  3. CMD.Normal_Polarity is only honoured on the `XIC(Tracking_Finished)`
+//     branch of rung 3 — i.e. ONLY WHILE THE LATCH IS STILL SET. And rung 7 is
+//     UNCONDITIONAL, so unlatching Tracking_Finished hands Reverse_Polarity back
+//     to the keypad's Flip_Polarity and can flip DirectionCmd. On a MOVING belt
+//     that is a DIRECTION REVERSAL with Start still asserted. Hence the strict
+//     order Normal_Polarity → Invalidate_Direction → Invalidate_Tracking_Finished,
+//     and hence retraction is DEFERRED until the drive is proven stopped.
+//  4. NEVER send Invalidate_HP before these — it drops Valid_HP and makes the
+//     tracking latch permanently unclearable (see point 1).
+//
+// `Stop_Belt_Tracking` is a DEAD TAG — declared in the CMD UDT, used in ZERO
+// rungs of the AOI. It is never written here.
+//
+// Two AOI revisions are in the fleet with different STS member names:
+// AOI222 exposes `STS.Belt_Tracking_ON`, the older UDT exposes `STS.Track_Belt`.
+// Both are probed; a missing member must not throw.
+//
+// `Tracking_Finished` is NOT exposed in STS on EITHER revision, so the latch
+// state cannot be read back. That is exactly why the tracked→untracked EDGE
+// must be persisted locally rather than recomputed from the controller.
+
+/**
+ * The retraction write order. NOT alphabetical, NOT arbitrary — see point 3
+ * above. Normal_Polarity must land while Tracking_Finished is still latched
+ * (rung 3's XIC(Tracking_Finished) branch), and the tracking latch must drop
+ * LAST so the belt never changes direction under an asserted Start.
+ */
+export const RETRACTION_WRITE_ORDER: readonly string[] = [
+  'Normal_Polarity',
+  'Invalidate_Direction',
+  'Invalidate_Tracking_Finished',
+]
+
+/** STS member names for "belt tracking mode is running", newest revision first. */
+export const BELT_TRACKING_ON_MEMBERS: readonly string[] = ['Belt_Tracking_ON', 'Track_Belt']
+
+/**
+ * |STS.RVS| below this counts as stopped. STS.RVS is a MOVE of
+ * Drive_Outputs.CommandedVelocity (rung 9) — commanded, not measured — so it
+ * sits at exactly 0.0 when idle; the epsilon only absorbs float noise.
+ */
+export const RVS_STOPPED_EPSILON = 0.5
+
+/** STS snapshot the retraction decision is made from. `null` = unreadable. */
+export interface RetractionSts {
+  /** STS.Valid_HP, 0/1, or null when unreadable. */
+  validHp: number | null
+  /** STS.Belt_Tracking_ON or STS.Track_Belt, 0/1, or null when NEITHER exists. */
+  beltTrackingOn: number | null
+  /** STS.RVS (REAL), or null when unreadable. */
+  rvs: number | null
+}
+
+export type RetractionAction = 'retract' | 'defer' | 'skip'
+
+export interface RetractionPlan {
+  action: RetractionAction
+  reason: string
+}
+
+/**
+ * PURE decision: may we retract this device's tracking latch right now?
+ *
+ *   skip    — the write provably cannot work (Valid_HP=0 → rung 3 dead). Do not
+ *             retry blindly; log it.
+ *   defer   — the drive is (or may be) moving, or we cannot PROVE it is stopped.
+ *             Retraction stays pending and is retried on a later pass. We never
+ *             force it: rung 7 is unconditional, so retracting under motion
+ *             reverses a running belt.
+ *   retract — Valid_HP=1, belt-tracking mode off, and commanded velocity ~0.
+ *
+ * "Cannot prove stopped" is deliberately DEFER, not retract. If neither STS
+ * member exists, or RVS is unreadable, we have no evidence of a stopped drive
+ * and the conservative answer is to wait.
+ */
+export function planRetraction(sts: RetractionSts): RetractionPlan {
+  if (sts.validHp == null) {
+    return { action: 'defer', reason: 'STS.Valid_HP unreadable — cannot confirm the invalidate rung is live' }
+  }
+  if (sts.validHp === 0) {
+    return {
+      action: 'skip',
+      reason: 'STS.Valid_HP=0 — the whole of AOI rung 3 is gated on Valid_HP, so ' +
+        'Invalidate_Tracking_Finished would silently do nothing',
+    }
+  }
+  if (sts.beltTrackingOn == null) {
+    return {
+      action: 'defer',
+      reason: 'neither STS.Belt_Tracking_ON nor STS.Track_Belt is readable — cannot prove the drive is stopped',
+    }
+  }
+  if (sts.beltTrackingOn !== 0) {
+    return { action: 'defer', reason: 'belt tracking is still RUNNING — retracting now would reverse a moving belt (AOI rung 7 is unconditional)' }
+  }
+  if (sts.rvs == null) {
+    return { action: 'defer', reason: 'STS.RVS unreadable — cannot prove commanded velocity is zero' }
+  }
+  if (Math.abs(sts.rvs) >= RVS_STOPPED_EPSILON) {
+    return { action: 'defer', reason: `STS.RVS=${sts.rvs} — drive still commanded to move` }
+  }
+  return { action: 'retract', reason: 'drive stopped (tracking off, RVS~0) and Valid_HP=1' }
+}
+
+/**
+ * PURE edge computation for one pass.
+ *
+ * CRITICAL: this is EDGE-triggered on a real tracked→not-tracked transition,
+ * NOT level-triggered on "the cell is empty". Level-triggering would fire an
+ * invalidate pulse at every device that was simply NEVER tracked — most of the
+ * fleet — on every reconnect and every 5-minute sweep.
+ *
+ * `prevTracked` is the durable set of devices this instance believes it has
+ * latched on the controller. On the FIRST EVER pass it is null: we seed it from
+ * the current truth and emit NO edges, so installing this build can never spray
+ * invalidate pulses across a plant.
+ *
+ * A device re-tracked while a retraction was still pending is REMOVED from the
+ * pending set — mech changed their mind, and the level-triggered assert path
+ * will (re)latch it.
+ */
+export function computeRetractionEdges(
+  prevTracked: Set<string> | null,
+  nowTracked: Set<string>,
+  pending: Set<string>,
+): { nextTracked: Set<string>; nextPending: Set<string>; newlyUntracked: string[] } {
+  // First run on this install: adopt current truth, emit nothing.
+  if (prevTracked === null) {
+    return { nextTracked: new Set(nowTracked), nextPending: new Set(pending), newlyUntracked: [] }
+  }
+
+  const newlyUntracked = Array.from(prevTracked)
+    .filter(name => !nowTracked.has(name))
+    .sort()
+
+  const nextPending = new Set(pending)
+  for (const name of newlyUntracked) nextPending.add(name)
+  // Re-tracked → cancel any pending retraction for it.
+  for (const name of Array.from(nowTracked)) nextPending.delete(name)
+
+  return { nextTracked: new Set(nowTracked), nextPending, newlyUntracked }
+}
+
+// Durable edge state. Reuses the existing SyncMaintenanceFlags KV table
+// (lib/db-sqlite.ts) rather than inventing a parallel store — the facts here are
+// exactly what that table is for: durable, tool-scoped, must survive a restart.
+// An in-memory set would lose the edge across a service restart and leave the
+// controller latched forever, which is the bug being fixed.
+const KV_TRACKED = 'vfd_belt_tracking_latched'   // JSON string[] — believed latched on the PLC
+const KV_PENDING = 'vfd_belt_tracking_retract_pending' // JSON string[] — untracked, retraction owed
+
+function kvReadSet(key: string): Set<string> | null {
+  try {
+    const row = db.prepare('SELECT Value FROM SyncMaintenanceFlags WHERE Key = ?').get(key) as
+      | { Value: string | null } | undefined
+    if (!row || row.Value == null) return null
+    const parsed = JSON.parse(row.Value)
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : null
+  } catch {
+    return null
+  }
+}
+
+function kvWriteSet(key: string, value: Set<string>): void {
+  try {
+    db.prepare(
+      `INSERT INTO SyncMaintenanceFlags (Key, Value, UpdatedAt)
+       VALUES (?, ?, datetime('now'))
+       ON CONFLICT(Key) DO UPDATE SET Value = excluded.Value, UpdatedAt = datetime('now')`,
+    ).run(key, JSON.stringify(Array.from(value).sort()))
+  } catch (err) {
+    console.error(`[VfdValidationWriter] Failed to persist ${key}:`, err)
+  }
+}
+
+/** PLC ops for retraction — superset of PlcWriteOps, injectable for tests. */
+export interface PlcRetractOps extends PlcWriteOps {
+  /** Read a REAL out of the tag buffer. */
+  getFloat32: (handle: number, offset: number) => number
+}
+
+const realRetractOps: PlcRetractOps = { ...realOps, getFloat32: plc_tag_get_float32 }
+
+/** Read one BOOL STS member. Returns null when the member doesn't exist. */
+async function readStsBool(
+  ops: PlcRetractOps,
+  gateway: string,
+  path: string,
+  tagPath: string,
+): Promise<number | null> {
+  let handle = -1
+  try {
+    const created = await ops.createTagAsync({ gateway, path, name: tagPath, elemSize: 1, elemCount: 1 }, CREATE_TAG_TIMEOUT_MS)
+    handle = created.handle
+    if (created.status !== PlcTagStatus.PLCTAG_STATUS_OK) return null
+    if (await ops.readTagAsync(handle, 2000) !== PlcTagStatus.PLCTAG_STATUS_OK) return null
+    const bit = ops.getBit(handle, 0)
+    return bit < 0 ? null : (bit === 0 ? 0 : 1)
+  } catch {
+    return null
+  } finally {
+    if (handle >= 0) { try { ops.destroy(handle) } catch { /* ignore */ } }
+  }
+}
+
+/** Read STS.RVS (REAL). Returns null when unreadable. */
+async function readStsReal(
+  ops: PlcRetractOps,
+  gateway: string,
+  path: string,
+  tagPath: string,
+): Promise<number | null> {
+  let handle = -1
+  try {
+    const created = await ops.createTagAsync({ gateway, path, name: tagPath, elemSize: 4, elemCount: 1 }, CREATE_TAG_TIMEOUT_MS)
+    handle = created.handle
+    if (created.status !== PlcTagStatus.PLCTAG_STATUS_OK) return null
+    if (await ops.readTagAsync(handle, 2000) !== PlcTagStatus.PLCTAG_STATUS_OK) return null
+    const v = ops.getFloat32(handle, 0)
+    return Number.isFinite(v) ? v : null
+  } catch {
+    return null
+  } finally {
+    if (handle >= 0) { try { ops.destroy(handle) } catch { /* ignore */ } }
+  }
+}
+
+/**
+ * Read the STS snapshot for a device, probing BOTH AOI revisions' member names
+ * for the belt-tracking-on bit. A missing member yields null, never a throw.
+ */
+export async function readRetractionSts(
+  ops: PlcRetractOps,
+  gateway: string,
+  path: string,
+  deviceName: string,
+): Promise<RetractionSts> {
+  const base = `CBT_${deviceName}.CTRL.STS.`
+  const validHp = await readStsBool(ops, gateway, path, `${base}Valid_HP`)
+
+  let beltTrackingOn: number | null = null
+  for (const member of BELT_TRACKING_ON_MEMBERS) {
+    beltTrackingOn = await readStsBool(ops, gateway, path, `${base}${member}`)
+    if (beltTrackingOn !== null) break
+  }
+
+  const rvs = await readStsReal(ops, gateway, path, `${base}RVS`)
+  return { validHp, beltTrackingOn, rvs }
+}
+
+/** Write one CMD bit. Returns true on a confirmed successful write. */
+async function writeCmdBit(
+  ops: PlcRetractOps,
+  gateway: string,
+  path: string,
+  tagPath: string,
+  value: number,
+): Promise<boolean> {
+  let handle = -1
+  try {
+    const created = await ops.createTagAsync({ gateway, path, name: tagPath, elemSize: 1, elemCount: 1 }, CREATE_TAG_TIMEOUT_MS)
+    handle = created.handle
+    if (created.status !== PlcTagStatus.PLCTAG_STATUS_OK) return false
+    // Read first so the buffer is valid before we mutate one byte of it —
+    // same convention as the clear route and the convergence pass.
+    if (await ops.readTagAsync(handle, 2000) !== PlcTagStatus.PLCTAG_STATUS_OK) return false
+    if (ops.setInt8(handle, 0, value) !== PlcTagStatus.PLCTAG_STATUS_OK) return false
+    return (await ops.writeTagAsync(handle, 2000)) === PlcTagStatus.PLCTAG_STATUS_OK
+  } catch {
+    return false
+  } finally {
+    if (handle >= 0) { try { ops.destroy(handle) } catch { /* ignore */ } }
+  }
+}
+
+export interface RetractionOutcome {
+  deviceName: string
+  action: RetractionAction | 'failed'
+  reason: string
+  /** CMD fields successfully written, in the order they were issued. */
+  written: string[]
+}
+
+/**
+ * Retract ONE device's tracking latch on an FFI target.
+ *
+ * Sequence, strictly ordered and sequential (each await completes before the
+ * next is issued) — see RETRACTION_WRITE_ORDER and the ground-truth block:
+ *   1. CMD.Normal_Polarity = 1              (honoured only while still latched)
+ *   2. CMD.Invalidate_Direction = 1         (rung 6 — its own pulse)
+ *   3. CMD.Invalidate_Tracking_Finished = 1 (rung 3 — the latch, LAST)
+ *
+ * Invalidate_HP is NEVER sent. If any step fails the sequence ABORTS: dropping
+ * the tracking latch without having restored Normal_Polarity first is precisely
+ * the direction-flip we are avoiding.
+ */
+export async function retractDeviceOnFfi(
+  ops: PlcRetractOps,
+  gateway: string,
+  path: string,
+  deviceName: string,
+): Promise<RetractionOutcome> {
+  const sts = await readRetractionSts(ops, gateway, path, deviceName)
+  const plan = planRetraction(sts)
+  if (plan.action !== 'retract') {
+    return { deviceName, action: plan.action, reason: plan.reason, written: [] }
+  }
+
+  const written: string[] = []
+  for (const field of RETRACTION_WRITE_ORDER) {
+    const okWrite = await writeCmdBit(ops, gateway, path, `CBT_${deviceName}.CTRL.CMD.${field}`, 1)
+    if (!okWrite) {
+      return {
+        deviceName,
+        action: 'failed',
+        reason: `write of CMD.${field} failed after [${written.join(', ') || 'none'}] — ` +
+          'sequence ABORTED so the tracking latch is not dropped with polarity unrestored',
+        written,
+      }
+    }
+    written.push(field)
+  }
+  return { deviceName, action: 'retract', reason: plan.reason, written }
+}
+
+/**
+ * Retract ONE device's tracking latch on a REMOTE (plc-gateway) target.
+ * Same guards and the same ordering; the three writes are issued as three
+ * SEPARATE sequential batches so the gateway cannot reorder them.
+ */
+export async function retractDeviceOnRemote(
+  subsystemId: string,
+  deviceName: string,
+  io: {
+    readTyped: (sid: string, reads: Array<{ name: string; dataType: 'BOOL' | 'REAL' }>) => Promise<{
+      connected: boolean
+      results: Array<{ success: boolean; value?: unknown; error?: string }>
+    }>
+    writeTyped: (sid: string, writes: Array<{ name: string; value: number; dataType: 'BOOL' }>) => Promise<{
+      connected: boolean
+      results: Array<{ success: boolean; error?: string }>
+    }>
+  },
+): Promise<RetractionOutcome> {
+  const base = `CBT_${deviceName}.CTRL.STS.`
+  const reads: Array<{ name: string; dataType: 'BOOL' | 'REAL' }> = [
+    { name: `${base}Valid_HP`, dataType: 'BOOL' },
+    ...BELT_TRACKING_ON_MEMBERS.map(m => ({ name: `${base}${m}`, dataType: 'BOOL' as const })),
+    { name: `${base}RVS`, dataType: 'REAL' },
+  ]
+  const batch = await io.readTyped(subsystemId, reads)
+  if (!batch.connected) {
+    return { deviceName, action: 'defer', reason: 'MCM not connected', written: [] }
+  }
+
+  const bool = (i: number): number | null => {
+    const r = batch.results[i]
+    if (!r?.success) return null
+    return r.value === true || r.value === 1 ? 1 : 0
+  }
+  const validHp = bool(0)
+  let beltTrackingOn: number | null = null
+  for (let i = 0; i < BELT_TRACKING_ON_MEMBERS.length; i++) {
+    const v = bool(1 + i)
+    if (v !== null) { beltTrackingOn = v; break }
+  }
+  const rvsRes = batch.results[1 + BELT_TRACKING_ON_MEMBERS.length]
+  const rvs = rvsRes?.success && typeof rvsRes.value === 'number' ? rvsRes.value : null
+
+  const plan = planRetraction({ validHp, beltTrackingOn, rvs })
+  if (plan.action !== 'retract') {
+    return { deviceName, action: plan.action, reason: plan.reason, written: [] }
+  }
+
+  const written: string[] = []
+  for (const field of RETRACTION_WRITE_ORDER) {
+    const w = await io.writeTyped(subsystemId, [
+      { name: `CBT_${deviceName}.CTRL.CMD.${field}`, value: 1, dataType: 'BOOL' },
+    ])
+    if (!w.connected || !w.results[0]?.success) {
+      return {
+        deviceName,
+        action: 'failed',
+        reason: `write of CMD.${field} failed after [${written.join(', ') || 'none'}] — sequence ABORTED`,
+        written,
+      }
+    }
+    written.push(field)
+  }
+  return { deviceName, action: 'retract', reason: plan.reason, written }
+}
+
+/** Devices whose local 'Belt Tracked' cell currently reads tracked. */
+function trackedDeviceNames(): Set<string> {
+  try {
+    const rows = db.prepare(`
+      SELECT DISTINCT d.DeviceName AS deviceName
+      FROM L2Devices d
+      JOIN L2Sheets s   ON s.id = d.SheetId
+      JOIN L2Columns c  ON c.SheetId = d.SheetId AND c.Name = '${BELT_TRACKED_COLUMN_NAME}'
+      JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
+      WHERE LOWER(TRIM(COALESCE(cv.Value, ''))) = '${BELT_TRACKED_VALUE.toLowerCase()}'
+        AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
+    `).all() as Array<{ deviceName: string }>
+    return new Set(rows.map(r => r.deviceName))
+  } catch (err) {
+    console.error('[VfdValidationWriter] tracked-device query failed:', err)
+    // Query failure must NOT look like "everything got untracked" — returning an
+    // empty set would manufacture an edge for every latched device. Signal
+    // failure by throwing to the caller's guard instead.
+    throw err
+  }
+}
+
+// Throttle repeated defer/skip logging per device.
+const lastRetractLogMs = new Map<string, number>()
+const RETRACT_LOG_INTERVAL_MS = 15 * 60_000
+
+function logRetractOnce(deviceName: string, message: string, nowMs: number): void {
+  const last = lastRetractLogMs.get(deviceName) ?? 0
+  if (nowMs - last < RETRACT_LOG_INTERVAL_MS) return
+  lastRetractLogMs.set(deviceName, nowMs)
+  console.warn(message)
+}
+
+/** One controller this pass writes to. */
+export interface WriteTarget {
+  /** ffi = in-process PlcClient (embedded); remote = via plc-gateway typed batches. */
+  kind: 'ffi' | 'remote'
+  label: string
+  ip: string
+  path: string
+  /** Owning subsystem. Required for remote (gateway route key); also set on
+   *  embedded MCM targets so the belt-tracking freshness gate can look up that
+   *  subsystem's delta cursor. Undefined only on a legacy singleton with no
+   *  configured subsystem. */
+  subsystemId?: string
+  isConnected: () => boolean
+  readTagCached: (name: string) => boolean | null
+  devices: ValidatedDevice[]
+}
+
+/**
+ * Edge-triggered retraction pass: find devices that went tracked→untracked
+ * since the last pass and un-latch them on the controller that owns them.
+ *
+ * Freshness applies here too, but INVERTED in spirit: we only ACT on an
+ * untrack for a subsystem whose truth we have recently confirmed. Retracting
+ * from a stale local cell would be the mirror-image of the original bug — an
+ * out-of-contact instance clearing a latch another instance legitimately set.
+ * A stale subsystem's edges stay pending and are retracted once contact
+ * returns; nothing is lost, because the pending set is durable.
+ */
+export async function runRetractionPass(
+  targets: WriteTarget[],
+  freshBySubsystem: Map<string, boolean>,
+): Promise<RetractionOutcome[]> {
+  // If the tracked-device query fails we must NOT proceed: an empty result
+  // would look like "the whole plant got untracked" and spray invalidates.
+  const nowTracked = trackedDeviceNames()
+
+  const prevTracked = kvReadSet(KV_TRACKED)
+  const pending = kvReadSet(KV_PENDING) ?? new Set<string>()
+  const { nextTracked, nextPending, newlyUntracked } = computeRetractionEdges(prevTracked, nowTracked, pending)
+
+  if (prevTracked === null) {
+    // First run on this install: adopt current truth, emit NOTHING. This is the
+    // guard that stops a fresh deploy from pulsing invalidate at every device
+    // that was simply never tracked.
+    kvWriteSet(KV_TRACKED, nextTracked)
+    kvWriteSet(KV_PENDING, nextPending)
+    console.log(
+      `[VfdValidationWriter] Retraction baseline seeded: ${nextTracked.size} device(s) recorded as ` +
+      'belt-tracked. No retraction issued (edge state had never been persisted).',
+    )
+    return []
+  }
+
+  kvWriteSet(KV_TRACKED, nextTracked)
+  kvWriteSet(KV_PENDING, nextPending)
+  if (newlyUntracked.length > 0) {
+    console.log(
+      `[VfdValidationWriter] Belt-tracking UNTRACK edge on ${newlyUntracked.length} device(s): ` +
+      `${newlyUntracked.join(', ')} — retraction owed.`,
+    )
+  }
+  if (nextPending.size === 0) return []
+
+  // Route each pending device to the target that owns it.
+  const targetByDevice = new Map<string, WriteTarget>()
+  for (const target of targets) {
+    for (const d of target.devices) targetByDevice.set(d.deviceName, target)
+  }
+
+  const now = Date.now()
+  const outcomes: RetractionOutcome[] = []
+  const stillPending = new Set(nextPending)
+
+  for (const deviceName of Array.from(nextPending).sort()) {
+    const target = targetByDevice.get(deviceName)
+    if (!target) {
+      // Owning controller not connected (or the device no longer has any
+      // earned flags, so it isn't in a target's device list). Stay pending.
+      continue
+    }
+    const key = target.subsystemId ?? 'active'
+    if (freshBySubsystem.get(key) === false) {
+      logRetractOnce(
+        deviceName,
+        `[VfdValidationWriter] Retraction of ${deviceName} DEFERRED: subsystem ${key} is not ` +
+        'cloud-confirmed, so the untrack may itself be stale local state. Stays pending.',
+        now,
+      )
+      continue
+    }
+
+    let outcome: RetractionOutcome
+    if (target.kind === 'remote') {
+      const { readTypedTagsForMcm, writeTypedTagsForMcm } = await import('@/lib/mcm-registry')
+      outcome = await retractDeviceOnRemote(target.subsystemId!, deviceName, {
+        readTyped: (sid, reads) => readTypedTagsForMcm(sid, reads as any) as any,
+        writeTyped: (sid, writes) => writeTypedTagsForMcm(sid, writes as any) as any,
+      })
+    } else {
+      if (!target.isConnected()) continue
+      outcome = await retractDeviceOnFfi(realRetractOps, target.ip, target.path, deviceName)
+    }
+    outcomes.push(outcome)
+
+    if (outcome.action === 'retract') {
+      // Only a COMPLETED sequence clears the debt. A partial/failed sequence
+      // stays pending so the next pass finishes the job.
+      stillPending.delete(deviceName)
+      console.log(
+        `[VfdValidationWriter] RETRACTED belt tracking on ${deviceName} (${target.label}): ` +
+        `wrote ${outcome.written.join(' → ')} — ${outcome.reason}`,
+      )
+    } else if (outcome.action === 'skip') {
+      // Provably impossible (Valid_HP=0). Drop the debt — retrying forever
+      // would just burn CIP slots — but say so loudly.
+      stillPending.delete(deviceName)
+      console.warn(
+        `[VfdValidationWriter] Retraction of ${deviceName} SKIPPED: ${outcome.reason}. ` +
+        'The tracking latch (if set) must be cleared manually or by re-validating HP first.',
+      )
+    } else {
+      logRetractOnce(
+        deviceName,
+        `[VfdValidationWriter] Retraction of ${deviceName} ${outcome.action.toUpperCase()}: ` +
+        `${outcome.reason}. Stays pending, will retry.`,
+        now,
+      )
+    }
+  }
+
+  if (stillPending.size !== nextPending.size) kvWriteSet(KV_PENDING, stillPending)
+  return outcomes
+}
+
 // ── Main sync function ─────────────────────────────────────────────
 
 /**
@@ -799,18 +1580,6 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
     // gets its own convergence pass against its own controller — writing a
     // device's flags to a PLC that doesn't own it is at best wasted CIP
     // traffic and at worst a wrong-controller write.
-    interface WriteTarget {
-      /** ffi = in-process PlcClient (embedded); remote = via plc-gateway typed batches. */
-      kind: 'ffi' | 'remote'
-      label: string
-      ip: string
-      path: string
-      /** remote targets only — the gateway route key. */
-      subsystemId?: string
-      isConnected: () => boolean
-      readTagCached: (name: string) => boolean | null
-      devices: ValidatedDevice[]
-    }
     const targets: WriteTarget[] = []
 
     let singletonTarget: WriteTarget | null = null
@@ -868,6 +1637,7 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
           label: `mcm-${mcm.subsystemId}`,
           ip: mcm.ip,
           path: mcm.path,
+          subsystemId: mcm.subsystemId,
           isConnected: () => mcm.client.isConnected,
           readTagCached: (name) => mcm.client.readTagCached(name),
           devices: [],
@@ -912,6 +1682,49 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
           'owning MCM not connected and no active singleton PLC to fall back to',
         )
       }
+    }
+
+    // ── Belt-tracking freshness gate (per subsystem) ─────────────────
+    // Before ANY flag write: if this instance has not recently confirmed its
+    // local 'Belt Tracked' truth against the cloud for a subsystem, strip the
+    // belt-tracking-dependent flags from that subsystem's devices. Valid_Map /
+    // Valid_HP are untouched. See the BELT_TRACKING_FRESHNESS_MS block for the
+    // MCM15 incident this exists for.
+    if (singletonTarget && singletonTarget.subsystemId === undefined) {
+      // Legacy tablet: the singleton's subsystem comes from config.
+      try {
+        const cfg = await configService.getConfig()
+        const sid = typeof cfg.subsystemId === 'number' ? cfg.subsystemId : parseInt(String(cfg.subsystemId), 10)
+        if (Number.isFinite(sid) && sid > 0) singletonTarget.subsystemId = String(sid)
+      } catch { /* no config — SSE liveness is then the only freshness leg */ }
+    }
+
+    const freshBySubsystem = new Map<string, boolean>()
+    for (const target of targets) {
+      if (target.devices.length === 0) continue
+      const key = target.subsystemId ?? 'active'
+      const verdict = judgeBeltTrackingFreshness(await probeFreshness(key), Date.now())
+      freshBySubsystem.set(key, verdict.fresh)
+      if (verdict.fresh) continue
+
+      let heldBack = 0
+      for (const device of target.devices) {
+        const gatedOut = stripBeltTrackingWrites(device.writes)
+        if (gatedOut !== device.writes) {
+          device.writes = gatedOut
+          heldBack++
+        }
+      }
+      if (heldBack > 0) logStaleOnce(key, verdict.reason, heldBack, Date.now())
+    }
+
+    // ── Untrack retraction (edge-triggered) ──────────────────────────
+    // Runs BEFORE the assert pass so a device untracked this cycle is
+    // retracted rather than re-asserted-then-retracted. Never throws out.
+    try {
+      await runRetractionPass(targets, freshBySubsystem)
+    } catch (err) {
+      console.error('[VfdValidationWriter] Retraction pass error (non-fatal):', err)
     }
 
     // ── One convergence pass per target, sequential ──────────────────
