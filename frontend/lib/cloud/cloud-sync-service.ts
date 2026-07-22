@@ -34,6 +34,7 @@ import {
   parkDeviceBlockerSync,
 } from '@/lib/db/repositories/device-blocker-sync-repository'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { noteCloudEmitsRejectionCode } from '@/lib/sync/backlog-readjudication'
 
 // Retry cap for device-blocker queue rows (F7, 2026-07-03 sync audit): same
 // 10-strike park policy as every other queue. Before this, a permanently-
@@ -434,6 +435,19 @@ export class CloudSyncService {
           responseData = await response.json() as SyncResp
         } catch {
           responseData = null
+        }
+
+        // CAPABILITY SIGNAL (2026-07-22). The PRESENCE of a `code` on ANY
+        // rejected[] entry — any code, any id, permanent or not — proves this
+        // cloud is new enough to adjudicate a deleted IO with a machine-readable
+        // verdict rather than the bare English 'IO not found'. Banked durably;
+        // it is the gate on the one-time backlog re-adjudication sweep, which
+        // must NEVER release parked rows against a pre-`code` cloud (they would
+        // re-park through the old path and burn the one retry each row gets).
+        // Checked across the whole array, not just our own id, so an ordinary
+        // batch reveals the capability as early as possible.
+        if (responseData?.rejected?.some(r => r?.code)) {
+          try { noteCloudEmitsRejectionCode() } catch { /* never fail a push on telemetry */ }
         }
 
         // Cloud now surfaces rejections explicitly (added 2026-05-21 after the

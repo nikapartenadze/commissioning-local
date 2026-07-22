@@ -29,6 +29,7 @@ import {
   permanentRejectionReason,
   rejectionCodeReason,
 } from '@/lib/cloud/sync-failure-classification'
+import { runBacklogReAdjudication } from '@/lib/sync/backlog-readjudication'
 import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
 import { SubsystemNetworkDeferral } from '@/lib/cloud/subsystem-network-deferral'
 import { isSupersededBySameKind } from '@/lib/cloud/b7-supersede'
@@ -354,6 +355,17 @@ class AutoSyncService {
     this.isPushing = true
 
     try {
+      // ── One-time backlog re-adjudication ─────────────────────────────
+      // Rows parked by the PRE-rejection-code build (a deleted IO answered
+      // HTTP 200 + rejected:[{reason:'IO not found'}], which the `HTTP <status>`
+      // regex could never match) are DeadLettered=1 and therefore never retried
+      // — so the fixed code path never sees them and they sit in the
+      // needs-a-human bucket forever. This releases them ONCE so the cloud
+      // re-adjudicates them properly. Runs BEFORE the drain so a released row is
+      // picked up on this very tick; early-outs on an in-memory boolean once the
+      // sweep is banked, and never throws.
+      try { runBacklogReAdjudication() } catch { /* never block the drain */ }
+
       // Drop IO pending-sync rows that have failed too many times. Mirrors the
       // L2 PENDING_RETRY_CAP below — the previous behaviour was to retry
       // forever, which on a non-recoverable cloud rejection (e.g. cloud's
@@ -603,6 +615,10 @@ class AutoSyncService {
             // and field tablets run against one for weeks. With no code we fall
             // through to the untouched HTTP 404/410 path — behaviour identical
             // to before.
+            // NOTE: the CAPABILITY SIGNAL (this cloud emits machine-readable
+            // codes at all) is banked in cloud-sync-service where the whole
+            // rejected[] array is parsed — not here, which only sees the entry
+            // for THIS row. See noteCloudEmitsRejectionCode().
             const rejectionCode = r.rejectionCode
             const removedByCode = isRemovedOnCloudCode(rejectionCode)
             const removedStatus = parsePermanentRemovalStatus(r.reason)

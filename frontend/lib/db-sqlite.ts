@@ -207,6 +207,24 @@ try {
     'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN Resolved INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN ResolvedAt TEXT',
     'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN ResolvedReason TEXT',
+    // ReAdjudicatedAt — the AT-MOST-ONCE marker for the one-time backlog
+    // re-adjudication sweep (2026-07-22). The rejection-code routing added
+    // alongside Resolved only fixes NEW rejections; rows parked by the OLD path
+    // (a deleted IO answered HTTP 200 + rejected:[{reason:'IO not found'}], which
+    // the `HTTP <status>` regex could never match) are DeadLettered=1 and are
+    // therefore never retried — the new code path never sees them, so the
+    // standing backlog would sit there forever.
+    //
+    // The sweep releases those rows ONCE (DeadLettered→0, RetryCount→0,
+    // LastError→NULL) so the cloud re-adjudicates them and returns a TRUSTWORTHY
+    // verdict. It deliberately does NOT bulk-mark them Resolved: that would mean
+    // trusting the English LastError string-matching this whole change exists to
+    // remove, and one false positive silently hides a real unsynced test.
+    //
+    // The stamp is written in the SAME UPDATE that releases the row, so the sweep
+    // is safe to interrupt midway and a row that re-parks is never picked up
+    // again. NULL = never re-adjudicated; never cleared once set.
+    'ALTER TABLE PendingSyncs ADD COLUMN ReAdjudicatedAt TEXT',
     // First-run hardening: the seeded default admin (Admin/111111) is flagged
     // MustChangePin=1 so the UI forces a new PIN on first admin login under
     // enforced auth. Additive + backward-safe: existing users default to 0.
@@ -556,7 +574,14 @@ export function initializeSchema() {
       -- delta-sync reappearance path clears this back to 0. See migrations above.
       Resolved INTEGER NOT NULL DEFAULT 0,
       ResolvedAt TEXT,
-      ResolvedReason TEXT
+      ResolvedReason TEXT,
+      -- One-time backlog RE-ADJUDICATION marker (2026-07-22). Stamped the moment
+      -- the one-shot sweep releases a legacy parked row back to the active queue.
+      -- NULL = never re-adjudicated. This is the AT-MOST-ONCE guard: a released
+      -- row that re-parks keeps its stamp, so the next boot's sweep skips it and
+      -- cannot build an infinite requeue loop. Never cleared. See
+      -- lib/sync/backlog-readjudication.ts.
+      ReAdjudicatedAt TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_ioid ON PendingSyncs(IoId);
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_createdat ON PendingSyncs(CreatedAt);
@@ -1044,6 +1069,27 @@ export function initializeSchema() {
       SubsystemId INTEGER PRIMARY KEY,
       LastSeq     INTEGER NOT NULL DEFAULT 0,
       UpdatedAt   TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Durable, tool-scoped flags for ONE-TIME / capability-gated sync
+    -- maintenance (2026-07-22). Deliberately a tiny KV table rather than more
+    -- columns: these facts are about the TOOL's relationship with the cloud, not
+    -- about any one queue row, and they must survive restarts (an in-memory
+    -- boolean would re-run a one-shot sweep on every boot).
+    --
+    -- Keys in use (see lib/sync/backlog-readjudication.ts):
+    --   cloud_emits_rejection_code   ISO ts of the FIRST time /api/sync/update
+    --                                answered with a machine-readable "code" on a
+    --                                rejected[] entry. Proves the cloud is new
+    --                                enough to adjudicate a deleted IO properly.
+    --   backlog_readjudication_v1    ISO ts the one-shot sweep completed.
+    --   backlog_readjudication_canary ISO ts + row id of the last canary release.
+    --
+    -- Values are opaque TEXT. Never holds field data.
+    CREATE TABLE IF NOT EXISTS SyncMaintenanceFlags (
+      Key       TEXT PRIMARY KEY,
+      Value     TEXT,
+      UpdatedAt TEXT DEFAULT (datetime('now'))
     );
 
   `)
