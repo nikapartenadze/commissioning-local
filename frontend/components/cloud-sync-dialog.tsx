@@ -107,7 +107,7 @@ export function CloudSyncDialog({
       const data = await response.json() as { items: L2PendingItem[] }
       setPendingItems(Array.isArray(data.items) ? data.items : [])
     } catch (error) {
-      setItemsError(error instanceof Error ? error.message : 'Failed to load pending items')
+      setItemsError(error instanceof Error ? error.message : 'Could not load the list')
       setPendingItems([])
     } finally {
       setItemsLoading(false)
@@ -144,8 +144,8 @@ export function CloudSyncDialog({
 
   const handleDropOne = async (id: number, label: string) => {
     const ok = await askConfirm(
-      `Drop pending sync for ${label}?`,
-      `This removes the retry queue entry only. The cell value stays in local data; ` +
+      `Stop sending ${label}?`,
+      `This removes only the copy waiting to be sent. The cell value stays in local data; ` +
       `the cloud's current value becomes authoritative for this cell. Use this when ` +
       `you've confirmed cloud already has the right value or you don't want local's ` +
       `value to overwrite cloud.`
@@ -157,7 +157,7 @@ export function CloudSyncDialog({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       await Promise.all([loadPendingItems(), loadStatus()])
     } catch (error) {
-      setItemsError(error instanceof Error ? error.message : 'Failed to drop pending row')
+      setItemsError(error instanceof Error ? error.message : 'Could not stop sending that row')
       setItemsLoading(false)
     }
   }
@@ -188,11 +188,11 @@ export function CloudSyncDialog({
           setUploadedCount(result.syncedCount || 0)
           setSyncStatus('success')
         } else {
-          const failMsg = result.errors?.join(', ') || result.message || 'Upload failed - check backend logs'
+          const failMsg = result.errors?.join(', ') || result.message || 'Could not send — check the tool logs'
           if (result.syncedCount > 0) {
             // Partial success — some synced, some failed
             setUploadedCount(result.syncedCount)
-            setErrorMessage(`${result.syncedCount} synced, ${result.failedCount} failed: ${failMsg}`)
+            setErrorMessage(`${result.syncedCount} sent, ${result.failedCount} could not be sent: ${failMsg}`)
             setSyncStatus('error')
           } else {
             setErrorMessage(failMsg)
@@ -200,7 +200,7 @@ export function CloudSyncDialog({
           }
         }
       } else {
-        let nextErrorMessage = 'Failed to sync to cloud'
+        let nextErrorMessage = 'Could not send to the cloud'
         try {
           const error = await response.json()
           nextErrorMessage = error.message || error.error || nextErrorMessage
@@ -286,19 +286,19 @@ export function CloudSyncDialog({
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="rounded-lg border p-3">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground">IO Queue</div>
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">I/O Results</div>
               <div className="mt-1 text-2xl font-bold">{pendingIo}</div>
-              <div className="text-xs text-muted-foreground">Ordered test changes waiting for cloud ack</div>
+              <div className="text-xs text-muted-foreground">Test results still sending, in the order they were entered</div>
             </div>
             <div className="rounded-lg border p-3">
-              <div className="text-xs uppercase tracking-wide text-muted-foreground">Functional Validation Queue</div>
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">Functional Validation</div>
               <div className="mt-1 text-2xl font-bold">{pendingL2}</div>
-              <div className="text-xs text-muted-foreground">Latest-value cell updates waiting for retry</div>
+              <div className="text-xs text-muted-foreground">Cell entries still sending — the latest value wins</div>
             </div>
             <div className="rounded-lg border p-3">
               <div className="text-xs uppercase tracking-wide text-muted-foreground">Change Requests</div>
               <div className="mt-1 text-2xl font-bold">{pendingChangeRequests}</div>
-              <div className="text-xs text-muted-foreground">Local requests still awaiting cloud acknowledgement</div>
+              <div className="text-xs text-muted-foreground">Requests waiting for the cloud to confirm</div>
             </div>
           </div>
 
@@ -312,8 +312,8 @@ export function CloudSyncDialog({
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-medium">
                 {parked > 0
-                  ? `${parked} stuck — needs attention`
-                  : totalPending > 0 ? 'Waiting to sync' : 'Queues are clean'}
+                  ? `${parked} need${parked === 1 ? 's' : ''} attention`
+                  : totalPending > 0 ? 'Sending to cloud…' : 'Everything is synced'}
               </div>
               {/* Always reachable — Sync Center is the full source of truth. */}
               <a
@@ -331,19 +331,19 @@ export function CloudSyncDialog({
             <div className="text-xs text-muted-foreground mt-1 space-y-1">
               {totalPending > 0 && (
                 <div>
-                  {totalPending} row{totalPending === 1 ? '' : 's'} waiting to sync — uploads
-                  automatically in the background. Cloud pull stays blocked until this active
-                  work uploads.
+                  {totalPending} row{totalPending === 1 ? '' : 's'} still sending — this happens
+                  automatically in the background, no action needed. Downloads from the cloud wait
+                  until it finishes.
                 </div>
               )}
               {parked > 0 && (
                 <div className="text-red-700 dark:text-red-300">
-                  {parked} row{parked === 1 ? '' : 's'} stopped retrying (rejected by cloud or out
-                  of retries). These will NOT upload on their own — open the Sync Center to retry
-                  or discard them. Your local data stays saved on this device either way.
+                  {parked} row{parked === 1 ? '' : 's'} the cloud would not accept. These will NOT
+                  send on their own — open the Sync Center to see what happened and either send them
+                  again or discard them. Your local data stays saved on this device either way.
                 </div>
               )}
-              {totalPending === 0 && parked === 0 && <div>No local queues are blocking cloud pull.</div>}
+              {totalPending === 0 && parked === 0 && <div>Nothing is waiting to be sent.</div>}
             </div>
             {operationalStatus?.error && (
               <div className="text-xs text-amber-700 dark:text-amber-300 mt-2">
@@ -364,7 +364,7 @@ export function CloudSyncDialog({
                 </div>
                 <Button size="sm" variant="outline" onClick={retryAllParked} disabled={retryingAll}>
                   {retryingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                  Retry all parked ({parkedItems.length})
+                  Try all again ({parkedItems.length})
                 </Button>
               </div>
               <ul className="divide-y max-h-56 overflow-auto text-sm">
@@ -395,7 +395,7 @@ export function CloudSyncDialog({
             >
               <span className="flex items-center gap-2">
                 {itemsExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                FV Queue Details
+                Functional Validation details
                 {pendingL2 > 0 && <Badge variant="secondary" className="ml-1">{pendingL2}</Badge>}
               </span>
               {itemsExpanded && (
@@ -405,8 +405,8 @@ export function CloudSyncDialog({
                       href="/sync"
                       onClick={(e) => e.stopPropagation()}
                       className="inline-flex items-center gap-1 px-2 h-7 rounded-md text-xs border border-border hover:bg-muted/60 cursor-pointer"
-                      aria-label="Open Sync Center to triage stuck rows"
-                      title="Open the Sync Center to retry or discard stuck rows (discards only parked rows, never your local data)"
+                      aria-label="Open Sync Center to fix rows that need attention"
+                      title="Open the Sync Center to send rows again or discard them (this only clears the copy waiting to be sent, never your local data)"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
                       Open Sync Center
@@ -418,7 +418,7 @@ export function CloudSyncDialog({
                     onClick={(e) => { e.stopPropagation(); void loadPendingItems() }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); void loadPendingItems() } }}
                     className="inline-flex items-center justify-center h-7 w-7 rounded-md hover:bg-muted cursor-pointer"
-                    aria-label="Refresh pending items"
+                    aria-label="Refresh the list"
                   >
                     {itemsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                   </span>
@@ -433,11 +433,11 @@ export function CloudSyncDialog({
                 )}
                 {!itemsError && itemsLoading && pendingItems === null && (
                   <div className="px-3 py-4 text-xs text-muted-foreground flex items-center gap-2">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading queue…
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
                   </div>
                 )}
                 {!itemsError && pendingItems !== null && pendingItems.length === 0 && (
-                  <div className="px-3 py-4 text-xs text-muted-foreground">FV queue is empty.</div>
+                  <div className="px-3 py-4 text-xs text-muted-foreground">Nothing is waiting to be sent.</div>
                 )}
                 {!itemsError && pendingItems !== null && pendingItems.length > 0 && (
                   <div className="max-h-72 overflow-auto">
@@ -486,8 +486,8 @@ export function CloudSyncDialog({
                                   type="button"
                                   onClick={() => void handleDropOne(it.id, dropLabel)}
                                   className="inline-flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                                  aria-label={`Drop pending sync for ${dropLabel}`}
-                                  title="Drop this pending row (cloud value wins)"
+                                  aria-label={`Stop sending ${dropLabel}`}
+                                  title="Stop sending this row (the cloud’s value wins)"
                                 >
                                   <X className="h-3.5 w-3.5" />
                                 </button>
@@ -500,11 +500,12 @@ export function CloudSyncDialog({
                   </div>
                 )}
                 <div className="px-3 py-2 text-[11px] text-muted-foreground border-t">
-                  Rebased rows clear on the next push attempt. Rows highlighted in amber have retried ≥3 times.
-                  Use the <X className="inline h-3 w-3" /> on a row to drop a single pending entry and let
-                  cloud&apos;s value win — useful when switching subsystems and the queue is blocking the pull.
-                  For stuck (parked) rows, use <span className="font-medium">Open Sync Center</span> to retry or
-                  discard them; discarding only removes the queue copy and never deletes your local data.
+                  Rows that started from the cloud&apos;s value clear on the next attempt. Rows highlighted in
+                  amber have been tried several times. Use the <X className="inline h-3 w-3" /> on a row to drop a
+                  single entry and let cloud&apos;s value win — useful when switching subsystems and this is holding
+                  up the download. For rows that need attention, use <span className="font-medium">Open Sync
+                  Center</span> to send them again or discard them; discarding only removes the copy waiting to be
+                  sent and never deletes your local data.
                 </div>
               </div>
             )}
@@ -536,12 +537,12 @@ export function CloudSyncDialog({
               <Loader2 className="h-12 w-12 animate-spin text-primary" />
               <div className="text-center space-y-1">
                 <p className="font-medium">
-                  {syncTarget === 'l2' ? 'Syncing FV queue to cloud...' : 'Syncing IO queue to cloud...'}
+                  {syncTarget === 'l2' ? 'Sending Functional Validation to cloud…' : 'Sending I/O results to cloud…'}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {syncTarget === 'l2'
-                    ? 'Pushing latest cell values for each pending item'
-                    : 'Functional validation and change requests continue retrying in the background'}
+                    ? 'Sending the latest value for each entry'
+                    : 'Functional Validation and change requests keep sending in the background'}
                 </p>
               </div>
             </div>
@@ -554,7 +555,7 @@ export function CloudSyncDialog({
               </div>
               <div className="text-center space-y-2">
                 <p className="font-semibold text-lg">
-                  {syncTarget === 'l2' ? 'FV Queue Synced' : 'IO Queue Synced'}
+                  {syncTarget === 'l2' ? 'Functional Validation sent' : 'I/O results sent'}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Uploaded <Badge variant="outline" className="mx-1 font-mono">{uploadedCount}</Badge>
@@ -570,7 +571,7 @@ export function CloudSyncDialog({
                 <XCircle className="h-12 w-12 text-destructive" />
               </div>
               <div className="text-center space-y-2">
-                <p className="font-semibold text-lg text-destructive">Sync Failed</p>
+                <p className="font-semibold text-lg text-destructive">Could not send</p>
                 <p className="text-sm text-muted-foreground max-w-xl">
                   {errorMessage}
                 </p>
@@ -587,11 +588,11 @@ export function CloudSyncDialog({
               </Button>
               <Button onClick={() => handleSync('l2')} variant="secondary" className="gap-2" disabled={statusLoading || pendingL2 === 0}>
                 <Upload className="h-4 w-4" />
-                Sync FV Queue{pendingL2 > 0 ? ` (${pendingL2})` : ''}
+                Send Functional Validation{pendingL2 > 0 ? ` (${pendingL2})` : ''}
               </Button>
               <Button onClick={() => handleSync('io')} className="gap-2" disabled={statusLoading || pendingIo === 0}>
                 <Upload className="h-4 w-4" />
-                Sync IO Queue{pendingIo > 0 ? ` (${pendingIo})` : ''}
+                Send I/O results{pendingIo > 0 ? ` (${pendingIo})` : ''}
               </Button>
             </>
           )}

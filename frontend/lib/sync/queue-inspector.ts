@@ -67,16 +67,31 @@ const TABLE_BY_KIND: Record<QueueKind, string> = {
 // pending or parked (never orphaned).
 const KINDS_WITH_ORPHANED: ReadonlySet<QueueKind> = new Set<QueueKind>(['io', 'l2', 'blocker'])
 
+/**
+ * PLAIN LANGUAGE CONTRACT (do not regress this):
+ * These strings are read by field technicians on a tablet, not by the people who
+ * wrote the queue. They must never contain internal vocabulary — "parked",
+ * "dead-lettered", "orphaned", "stuck in queue", "retry cap exhausted" — because
+ * those words describe our implementation, not the tech's situation.
+ *
+ * Each reason answers exactly two questions, in this order:
+ *   1. What happened, in words that mean something on a warehouse floor.
+ *   2. Whether anyone has to DO something, or whether the tool handles it.
+ *
+ * That second half is the part that must survive any future rewording. Blurring
+ * "this is on its way" into "this will never arrive unless you act" would make
+ * the tool quietly claim success — strictly worse than the jargon it replaced.
+ */
 const REASONS: Record<Classification, string> = {
   gone_on_cloud:
-    'This device/IO no longer exists on the cloud (it was removed). Nothing to sync to — safe to discard.',
+    'This record was removed on the cloud, so there is nothing left to send it to. Nothing to do — your entry stays saved on this device.',
   version_conflict:
-    'A newer value already exists on the cloud for this item. Retrying will re-base on the cloud value.',
+    'The cloud already has a newer value for this item. Sending again will start from the cloud’s value.',
   transient:
-    'Temporary network/cloud problem. Should clear on its own; Retry to force it now.',
+    'A temporary network or cloud problem. Nothing to do — this sends itself once the connection recovers. Retry sends it now.',
   cloud_rejected:
-    'The cloud rejected this value — retrying will not change it (e.g. an invalid value, a SPARE that can’t pass, or repeated rejections that exhausted the retries). Check the value/target, or Discard if it’s no longer needed.',
-  unknown: 'Sync error with no reported reason — Retry, or Discard if it’s no longer needed.',
+    'The cloud would not accept this value, and sending it again will not change that (for example an invalid value, or a SPARE that cannot be marked Passed). Check the value or the target, or Discard it if it is no longer needed.',
+  unknown: 'This did not send and the cloud gave no reason — Retry, or Discard it if it is no longer needed.',
 }
 
 /**

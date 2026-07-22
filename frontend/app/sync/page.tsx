@@ -99,7 +99,7 @@ interface ClassMeta {
 const CLASS_META: Record<Classification, ClassMeta> = {
   gone_on_cloud: {
     label: 'Removed on cloud',
-    hint: 'This record no longer exists on the cloud, so it can never be uploaded. Safe to discard.',
+    hint: 'This record was removed on the cloud, so there is nothing left to send it to. Nothing to do — clearing it here is safe, and your entry stays on this device.',
     chip: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
     Icon: CloudOff,
     safeToDiscard: true,
@@ -113,21 +113,21 @@ const CLASS_META: Record<Classification, ClassMeta> = {
   },
   transient: {
     label: 'Temporary network issue',
-    hint: 'A network or server hiccup. This usually clears on its own — Retry to push it now.',
+    hint: 'A network or server hiccup. Nothing to do — this sends itself once the connection recovers. Retry sends it now.',
     chip: 'border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400',
     Icon: Wifi,
     safeToDiscard: false,
   },
   cloud_rejected: {
-    label: 'Cloud rejected it',
-    hint: 'The cloud refused this value — an invalid value, a SPARE that can’t pass, or repeated rejections that used up the retries. Retrying won’t change it: check the value/target, or Discard if it’s no longer needed (your data stays on this device).',
+    label: 'Cloud would not accept it',
+    hint: 'The cloud refused this value and sending it again will not change that — an invalid value, or a SPARE that cannot be marked Passed. Check the value or the target, or Discard it if it is no longer needed (your data stays on this device).',
     chip: 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-400',
     Icon: AlertTriangle,
     safeToDiscard: false,
   },
   unknown: {
     label: 'Needs review',
-    hint: 'The tool could not classify why this row is stuck. Try Retry; if it stays, discarding is safe (your data stays on this device).',
+    hint: 'The tool does not recognise this error. Try Retry; if it stays, discarding is safe (your data stays on this device).',
     chip: 'border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-400',
     Icon: HelpCircle,
     safeToDiscard: false,
@@ -151,7 +151,20 @@ function formatAge(mins: number | null): string {
   return `${Math.round(h / 24)}d`
 }
 
-type Tab = 'parked' | 'orphaned' | 'pending' | 'all' | 'compare'
+/**
+ * Tabs are named for the USER'S situation, not for the queue's internal state.
+ * The query values behind them are unchanged, so the API contract still holds:
+ *
+ *   tab 'parked'   → "Needs attention"       — will NOT send unless someone acts
+ *   tab 'pending'  → "Sending"               — on its way, no action needed
+ *   tab 'orphaned' → "Removed on cloud"      — target deleted; clears itself
+ *   tab 'resolved' → "Cleared automatically" — terminal, already handled by the tool
+ *
+ * The split that matters is the first line vs the rest: exactly one of these
+ * groups needs a human. Collapsing them so nothing sounds alarming would hide
+ * the only distinction a tech actually has to act on.
+ */
+type Tab = 'parked' | 'pending' | 'orphaned' | 'resolved' | 'all' | 'compare'
 
 // ── Confirm dialog state ──────────────────────────────────────────────────────
 interface ConfirmState {
@@ -175,6 +188,12 @@ export default function SyncPage() {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [reconciling, setReconciling] = useState(false)
+  // Rows the tool already cleared by itself. Fetched separately and ONLY when
+  // that tab is open: the main `?status=all` response excludes them by design,
+  // so they can never reach the summary, the attention counts, or a bulk
+  // selector. This is a reachable archive, not part of the working set.
+  const [resolvedItems, setResolvedItems] = useState<QueueItem[] | null>(null)
+  const [resolvedLoading, setResolvedLoading] = useState(false)
 
   const rowKey = (i: { kind: Kind; id: number }) => `${i.kind}:${i.id}`
 
@@ -199,6 +218,25 @@ export default function SyncPage() {
     const t = setInterval(() => load(), POLL_MS)
     return () => clearInterval(t)
   }, [load])
+
+  // Lazy-load the auto-cleared archive the first time that tab is opened.
+  const loadResolved = useCallback(async () => {
+    setResolvedLoading(true)
+    try {
+      const r = await authFetch('/api/sync/queue?status=resolved')
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const json = (await r.json()) as QueueResponse
+      setResolvedItems(json.items ?? [])
+    } catch {
+      setResolvedItems([])  // best-effort: this tab is informational only
+    } finally {
+      setResolvedLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (tab === 'resolved' && resolvedItems === null && !resolvedLoading) void loadResolved()
+  }, [tab, resolvedItems, resolvedLoading, loadResolved])
 
   // "Sync now": on-demand orphan reconcile. Re-queues local results/comments the
   // cloud is missing but that have no queue row — the exact case the pull guard
@@ -298,9 +336,9 @@ export default function SyncPage() {
       const res = await postAction({ action, ids: [{ kind: item.kind, id: item.id }] })
       const discardNote = res.discardLog ? ` A record was saved to backups/${res.discardLog}.` : ''
       toast({
-        title: action === 'retry' ? 'Retry queued' : 'Row discarded',
+        title: action === 'retry' ? 'Sending again' : 'Row discarded',
         description: (res.message ?? (action === 'retry'
-          ? 'The tool will try to upload this row again.'
+          ? 'The tool will try to send this row again.'
           : 'Stopped uploading this row. Your data is still saved on this device.')) + (action === 'discard' ? discardNote : ''),
       })
       await load()
@@ -319,7 +357,7 @@ export default function SyncPage() {
     setBulkBusy(label)
     try {
       const res = await postAction(body)
-      const base = res.message ?? `${res.affected} row${res.affected === 1 ? '' : 's'} ${body.action === 'retry' ? 'queued for retry' : 'discarded'}.`
+      const base = res.message ?? `${res.affected} row${res.affected === 1 ? '' : 's'} ${body.action === 'retry' ? 'sending again' : 'discarded'}.`
       // Surface both artifacts: the .db backup (full restore point) and the
       // readable .txt record of exactly which rows were cleared.
       const artifacts = [
@@ -365,9 +403,9 @@ export default function SyncPage() {
   const askDiscardAllParked = () => {
     const n = summary?.parked ?? 0
     setConfirm({
-      title: `Discard all ${n} parked row${n === 1 ? '' : 's'}?`,
-      body: 'This clears every stuck row from the cloud upload queue. Your entries remain saved on this device and shown in the grid — this never deletes your data.',
-      confirmLabel: 'Discard all parked',
+      title: `Stop trying to send ${n} row${n === 1 ? '' : 's'}?`,
+      body: 'This clears every row that needs attention from the cloud upload queue. Your entries remain saved on this device and shown in the grid — this never deletes your data.',
+      confirmLabel: 'Discard them',
       destructive: true,
       run: () => bulkAction('discard-all-parked', { action: 'discard', allParked: true, subsystemId: scopeId }),
     })
@@ -413,9 +451,9 @@ export default function SyncPage() {
               <CloudUpload className="h-4 w-4 text-primary" />Sync Center
             </h1>
             <p className="text-[11px] text-muted-foreground mt-1">
-              {loading ? 'Loading queue…'
+              {loading ? 'Loading…'
                 : parked > 0 ? `${parked} row${parked === 1 ? '' : 's'} need attention`
-                : pending > 0 ? `${pending} waiting to sync`
+                : pending > 0 ? `${pending} still sending`
                 : 'Everything is synced'}
             </p>
           </div>
@@ -493,15 +531,15 @@ export default function SyncPage() {
                 active={parked > 0}
                 count={parked}
                 label="Needs attention"
-                sub="Parked — stopped retrying"
+                sub="Will not send until someone acts"
                 Icon={AlertTriangle}
               />
               <SummaryCard
                 tone="pending"
                 active={pending > 0}
                 count={pending}
-                label="Waiting to sync"
-                sub="Pending — will upload automatically"
+                label="Sending"
+                sub="On its way — no action needed"
                 Icon={CloudUpload}
               />
             </div>
@@ -545,7 +583,7 @@ export default function SyncPage() {
                   onClick={() => bulkAction('retry-all-parked', { action: 'retry', allParked: true, subsystemId: scopeId })}
                 >
                   {bulkBusy === 'retry-all-parked' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                  Retry all parked
+                  Try all again
                 </Button>
                 {(summary?.byClassification.gone_on_cloud ?? 0) > 0 && (
                   <Button
@@ -566,16 +604,18 @@ export default function SyncPage() {
                   onClick={askDiscardAllParked}
                 >
                   {bulkBusy === 'discard-all-parked' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                  Discard all parked
+                  Discard all ({parked})
                 </Button>
               </div>
             )}
 
             {/* ───────── Tabs ───────── */}
-            <div className="flex items-center gap-1 border-b border-border">
-              <TabButton active={tab === 'parked'} onClick={() => setTab('parked')} label="Needs Attention" count={parked} tone="attention" />
+            <div className="flex items-center gap-1 border-b border-border overflow-x-auto" role="tablist" aria-label="Sync queue views">
+              <TabButton active={tab === 'parked'} onClick={() => setTab('parked')} label="Needs attention" count={parked} tone="attention" />
+              <TabButton active={tab === 'pending'} onClick={() => setTab('pending')} label="Sending" count={pending} tone="pending" />
               <TabButton active={tab === 'orphaned'} onClick={() => setTab('orphaned')} label="Removed on cloud" count={orphaned} tone="removed" />
-              <TabButton active={tab === 'pending'} onClick={() => setTab('pending')} label="Pending" count={pending} tone="pending" />
+              {/* No count: these are done. A number here would read as a to-do. */}
+              <TabButton active={tab === 'resolved'} onClick={() => setTab('resolved')} label="Cleared automatically" count={undefined} tone="neutral" />
               <TabButton active={tab === 'all'} onClick={() => setTab('all')} label="All" count={items.length} tone="neutral" />
               <TabButton active={tab === 'compare'} onClick={() => setTab('compare')} label="Compare with cloud" count={undefined} tone="neutral" />
             </div>
@@ -583,6 +623,14 @@ export default function SyncPage() {
             {/* ───────── Compare with cloud (version-aware diff) ───────── */}
             {tab === 'compare' ? (
               <SyncCompare subsystemId={mcmFilter === MCM_ALL ? 'all' : mcmFilter} />
+            ) : /* ───────── Cleared automatically (resolved) — read-only archive ───────── */
+            tab === 'resolved' ? (
+              <ResolvedPanel
+                items={resolvedItems}
+                loading={resolvedLoading}
+                mcmFilter={mcmFilter}
+                formatAge={formatAge}
+              />
             ) : /* ───────── Removed-on-cloud (orphaned) section ───────── */
             tab === 'orphaned' ? (
               orphaned === 0 ? (
@@ -590,7 +638,7 @@ export default function SyncPage() {
                   <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-3" />
                   <p className="font-semibold">Nothing removed on cloud</p>
                   <p className="text-sm text-muted-foreground mt-1">
-                    No queued work is waiting on a device that was deleted from the cloud.
+                    Nothing here is waiting on a record that was deleted from the cloud.
                   </p>
                 </div>
               ) : (
@@ -598,10 +646,11 @@ export default function SyncPage() {
                   <div className="flex flex-wrap items-start gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
                     <CloudOff className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
                     <div className="text-sm min-w-0 flex-1">
-                      <p className="font-semibold text-emerald-700 dark:text-emerald-300">Removed on cloud</p>
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300">Removed on cloud — nothing to do</p>
                       <p className="text-muted-foreground mt-0.5">
-                        These devices/records were removed on the cloud — auto-restores if the device comes back;
-                        discard to clear. Your entries stay saved on this device; nothing here is deleted.
+                        These records were removed on the cloud, so there is nothing left to send them to. The tool
+                        clears them by itself, and sends them again on its own if a record comes back. You can clear
+                        them now instead. Your entries stay saved on this device; nothing here is deleted.
                       </p>
                     </div>
                     <Button
@@ -620,7 +669,7 @@ export default function SyncPage() {
                       <div className="flex items-center gap-2 bg-emerald-500/5 px-3 py-2 border-b border-emerald-500/20">
                         <CloudOff className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                         <span className="font-semibold text-sm truncate">{title}</span>
-                        <span className="text-[11px] text-muted-foreground">{rows.length} queued {rows.length === 1 ? 'value' : 'values'}</span>
+                        <span className="text-[11px] text-muted-foreground">{rows.length} {rows.length === 1 ? 'value' : 'values'} held here</span>
                       </div>
                       <div className="divide-y divide-border">
                         {rows.map((item) => {
@@ -658,10 +707,10 @@ export default function SyncPage() {
               <div className="grid place-items-center py-16 text-center">
                 <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-3" />
                 <p className="font-semibold">
-                  {tab === 'parked' ? 'Nothing needs attention' : tab === 'pending' ? 'Nothing waiting to sync' : 'The sync queue is empty'}
+                  {tab === 'parked' ? 'Nothing needs attention' : tab === 'pending' ? 'Nothing left to send' : 'Nothing to show'}
                 </p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  All your work is uploaded to the cloud, or safely queued and moving.
+                  All your work is on the cloud, or on its way there.
                 </p>
               </div>
             ) : (
@@ -673,7 +722,7 @@ export default function SyncPage() {
                       <th>Item</th>
                       <th className="hidden md:table-cell">Value</th>
                       <th>Status</th>
-                      <th className="hidden sm:table-cell">Why it’s stuck</th>
+                      <th className="hidden sm:table-cell">What happened</th>
                       <th className="hidden lg:table-cell">Age</th>
                       <th className="text-right">Actions</th>
                     </tr>
@@ -821,25 +870,131 @@ function FragmentRow({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/**
+ * The user-facing name of each queue state. Every badge carries an ICON AND A
+ * WORD, never colour alone — amber/emerald are unreadable to a colourblind tech
+ * and invisible in direct sunlight on a tablet, which is where this is used.
+ *
+ * `title` carries the consequence, because the badge itself only has room for
+ * the state. The consequence is the load-bearing half: "Sending" and "Needs
+ * attention" look equally harmless at a glance, and only one of them is.
+ */
 function StatusBadge({ status }: { status: QueueStatus }) {
+  if (status === 'resolved') {
+    return (
+      <Badge variant="outline" className="gap-1 border-slate-500/50 bg-slate-500/10 text-slate-600 dark:text-slate-400"
+        title="The cloud record was removed, so the tool cleared this by itself. Nothing to do.">
+        <CheckCircle2 className="h-3 w-3" />Cleared automatically
+      </Badge>
+    )
+  }
   if (status === 'orphaned') {
     return (
-      <Badge variant="outline" className="gap-1 border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+      <Badge variant="outline" className="gap-1 border-emerald-500/50 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+        title="The record was removed on the cloud. This clears itself — nothing to do.">
         <CloudOff className="h-3 w-3" />Removed on cloud
       </Badge>
     )
   }
   if (status === 'parked') {
     return (
-      <Badge variant="outline" className="gap-1 border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400">
-        <AlertTriangle className="h-3 w-3" />Parked
+      <Badge variant="outline" className="gap-1 border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+        title="This will not send unless someone acts on it.">
+        <AlertTriangle className="h-3 w-3" />Needs attention
       </Badge>
     )
   }
   return (
-    <Badge variant="outline" className="gap-1 border-sky-500/50 bg-sky-500/10 text-sky-600 dark:text-sky-400">
-      <CloudUpload className="h-3 w-3" />Pending
+    <Badge variant="outline" className="gap-1 border-sky-500/50 bg-sky-500/10 text-sky-600 dark:text-sky-400"
+      title="On its way to the cloud. Nothing to do.">
+      <CloudUpload className="h-3 w-3" />Sending…
     </Badge>
+  )
+}
+
+/**
+ * Read-only archive of rows the tool cleared by itself. Deliberately has NO
+ * retry/discard controls and no attention styling: presenting a self-healed row
+ * as something to triage is exactly the confusion this work exists to remove.
+ */
+function ResolvedPanel({
+  items, loading, mcmFilter, formatAge,
+}: {
+  items: QueueItem[] | null
+  loading: boolean
+  mcmFilter: number | typeof MCM_ALL
+  formatAge: (m: number | null) => string
+}) {
+  const scoped = useMemo(
+    () => (items ?? []).filter((i) => mcmFilter === MCM_ALL || i.subsystemId === mcmFilter),
+    [items, mcmFilter],
+  )
+
+  if (loading && items === null) {
+    return (
+      <div className="grid place-items-center py-16 text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin mr-2" />Loading…
+      </div>
+    )
+  }
+  if (scoped.length === 0) {
+    return (
+      <div className="grid place-items-center py-16 text-center">
+        <CheckCircle2 className="h-10 w-10 text-emerald-500 mb-3" />
+        <p className="font-semibold">Nothing has been cleared automatically</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          When a record is deleted on the cloud, the tool clears its queued entry by itself and lists it here.
+        </p>
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
+        <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+        <div className="text-sm">
+          <p className="font-semibold">Cleared automatically — nothing to do</p>
+          <p className="text-muted-foreground mt-0.5">
+            These records were removed on the cloud, so the tool stopped trying to send them. It kept
+            your entries: they are still saved on this device, and if a record comes back on the cloud
+            the tool sends them again on its own.
+          </p>
+        </div>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 text-muted-foreground">
+            <tr className="[&>th]:px-3 [&>th]:py-2.5 [&>th]:text-left [&>th]:font-semibold [&>th]:whitespace-nowrap">
+              <th>Item</th>
+              <th className="hidden md:table-cell">Value</th>
+              <th>Status</th>
+              <th className="hidden lg:table-cell">Age</th>
+            </tr>
+          </thead>
+          <tbody>
+            {scoped.map((item) => (
+              <tr key={`${item.kind}:${item.id}`} className="border-t border-border align-top">
+                <td className="px-3 py-3">
+                  <div className="font-medium leading-tight">{item.title}</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                    <span className="uppercase tracking-wide">{KIND_LABEL[item.kind]}</span>
+                    <span className="opacity-40">•</span>
+                    <span className="font-semibold text-foreground/70">{item.mcm ?? 'Unassigned'}</span>
+                  </div>
+                </td>
+                <td className="px-3 py-3 hidden md:table-cell">
+                  {item.value ? <span className="font-mono text-xs">{item.value}</span> : <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="px-3 py-3"><StatusBadge status={item.status} /></td>
+                <td className="px-3 py-3 hidden lg:table-cell whitespace-nowrap text-muted-foreground">
+                  <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{formatAge(item.ageMinutes)}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 
@@ -892,6 +1047,11 @@ function TabButton({
   return (
     <button
       onClick={onClick}
+      role="tab"
+      // Selection is announced, not just tinted — the active tab is otherwise
+      // distinguished only by a coloured underline.
+      aria-selected={active}
+      aria-label={count != null ? `${label}, ${count}` : label}
       className={cn(
         'relative px-3 sm:px-4 py-2.5 text-sm font-medium transition-colors -mb-px border-b-2 whitespace-nowrap',
         active ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
