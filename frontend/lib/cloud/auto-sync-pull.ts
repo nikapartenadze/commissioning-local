@@ -654,6 +654,27 @@ export async function pullFromCloud(state: PullState): Promise<void> {
 
     pullTransaction()
 
+    // Refresh the config/FV sections after an IO merge too — NOT only in the
+    // no-op branch above.
+    //
+    // This path seeds the delta cursor to the cloud's head (see the cursorSeq
+    // seed earlier in this function), which leaps over any entity_type='l2'
+    // change-log rows written while this tablet was off. Those rows are what
+    // would otherwise raise `sections.l2` and trigger pullL2Scoped. Because the
+    // boot L2 population elsewhere is one-time-only (skipped once the tablet
+    // has devices), FV data set overnight was stranded: measured on the rig as
+    // IO dates arriving in 52s and FV dates NEVER arriving, over 10+ minutes.
+    // These pulls are scoped and idempotent, so running them here is safe.
+    try {
+      const sid = parseInt(String(subsystemId), 10)
+      if (Number.isFinite(sid)) {
+        await runConfigSidePulls(sid, remoteUrl, apiPassword || '', { db })
+        await pullL2Scoped(sid, remoteUrl, apiPassword)
+      }
+    } catch (e) {
+      console.warn('[AutoSync] post-merge config/FV side-pull failed:', e instanceof Error ? e.message : e)
+    }
+
     state.lastPullVersion = versionHash
     state.lastPullAt = new Date()
     state.lastPullResult = `updated ${updatedCount} IOs${mergedResults > 0 ? `, merged ${mergedResults} results from other users` : ''}`
