@@ -118,6 +118,20 @@ export interface HeartbeatSystemInfo {
    * visible fleet-side without reading its logs.
    */
   auditCounters?: Record<string, number>
+  /**
+   * What THIS instance believes is belt-tracked, per subsystem (2026-07-22).
+   *
+   * `plc.mcms[]` above already tells the cloud which MCMs this instance is
+   * connected to; it has never told the cloud what the instance THINKS the
+   * belt-tracking values are. Since every instance asserts flags into the
+   * SHARED controller from its own local L2 copy, divergence between the N
+   * instances on one MCM was only findable by remoting into each machine — see
+   * lib/heartbeat/belt-tracking-telemetry.ts for the incident this closes.
+   *
+   * Compact by construction: counts + a digest + a capped sample, never the
+   * full cell set, because this ships every ~10 s.
+   */
+  beltTracking?: import('@/lib/heartbeat/belt-tracking-telemetry').BeltTrackingSubsystemSnapshot[]
 }
 
 function bytesToMb(bytes: number): number {
@@ -328,6 +342,22 @@ function collectAuditCountersSafe(): Record<string, number> | undefined {
   }
 }
 
+/**
+ * Lazy-required for the same reason as queue-stats: keeps the belt-tracking
+ * module (and the vfd-validation-writer constants it reads) out of the
+ * heartbeat's eager import graph, so a load-time failure there cannot stop a
+ * heartbeat from being assembled at all.
+ */
+function collectBeltTrackingTelemetrySafe() {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { collectBeltTrackingSafe } = require('@/lib/heartbeat/belt-tracking-telemetry') as typeof import('@/lib/heartbeat/belt-tracking-telemetry')
+    return collectBeltTrackingSafe()
+  } catch {
+    return undefined
+  }
+}
+
 export function collectSystemInfo(): HeartbeatSystemInfo {
   const cpus = os.cpus()
   const cpuModel = cpus[0]?.model ?? 'unknown'
@@ -337,6 +367,7 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
   const dbSizeMb = collectDbSizeMb()
   const networkDevices = collectNetworkDevices()
   const activeOperators = collectActiveOperators()
+  const beltTracking = collectBeltTrackingTelemetrySafe()
 
   return {
     os: {
@@ -369,6 +400,9 @@ export function collectSystemInfo(): HeartbeatSystemInfo {
     // failure visibility) reads these. Best-effort, never breaks a heartbeat.
     queueStats: collectQueueStatsSafe(),
     auditCounters: collectAuditCountersSafe(),
+    // Per-subsystem belt-tracking belief. Omitted entirely on tablets with no
+    // VFD/APF sheets, so their payload is unchanged.
+    ...(beltTracking ? { beltTracking } : {}),
     // Only emitted on central servers, so field-tablet payloads are unchanged.
     ...(isCentralDeployment() ? { central: true } : {}),
     ...(activeOperators.length > 0 ? { activeOperators } : {}),
