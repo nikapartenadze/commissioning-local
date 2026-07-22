@@ -14,6 +14,12 @@
  * UNCLEARABLE. On the MCM path all five went out as one batch, so they could
  * even collapse into a single scan.
  *
+ * SECOND INCIDENT (same ladder, opposite end): ordering Invalidate_HP LAST
+ * stopped the stranding but still left Valid_HP=0 — and rungs 2/3/4/5 are ALL
+ * gated on XIC(Valid_HP), which is the master enable for every operator keypad
+ * function. Clear Test handed mechanics a drive they could not start or
+ * reverse. Invalidate_HP is no longer emitted at all; Invalidate_Map still is.
+ *
  * These tests pin the corrected sequence through the pure/injectable seam —
  * no DB, no DLL, no controller.
  */
@@ -25,6 +31,7 @@ import {
   resolveStsFromTypedReads,
   CLEAR_WRITE_ORDER,
   LATCH_WRITE_FIELDS,
+  VALIDITY_WRITE_FIELDS,
   BELT_TRACKING_ON_MEMBERS,
   RVS_STOPPED_EPSILON,
   type RetractionSts,
@@ -48,14 +55,23 @@ function recorder(fail?: { field: string; error?: string }) {
 }
 
 describe('CLEAR_WRITE_ORDER', () => {
-  it('is exactly the corrected order, with Invalidate_HP LAST', () => {
+  it('is exactly the corrected order, ending at Invalidate_Map', () => {
     expect(CLEAR_WRITE_ORDER).toEqual([
       'Normal_Polarity',
       'Invalidate_Direction',
       'Invalidate_Tracking_Finished',
       'Invalidate_Map',
-      'Invalidate_HP',
     ])
+  })
+
+  it('NEVER writes Invalidate_HP — it drops the master keypad enable (rungs 2/3/4/5)', () => {
+    expect(CLEAR_WRITE_ORDER).not.toContain('Invalidate_HP')
+    expect(VALIDITY_WRITE_FIELDS).not.toContain('Invalidate_HP')
+    expect(LATCH_WRITE_FIELDS).not.toContain('Invalidate_HP')
+  })
+
+  it('still invalidates the Map, so the next OTL(Valid_HP) must be re-earned (rung 1)', () => {
+    expect(VALIDITY_WRITE_FIELDS).toEqual(['Invalidate_Map'])
   })
 
   it('reuses the writer\'s retraction prefix verbatim, so the two cannot drift', () => {
@@ -124,7 +140,7 @@ describe('planClearPlcSequence — stopped-drive guard', () => {
 })
 
 describe('runClearPlcSequence — emitted order', () => {
-  it('emits the five pulses in the corrected order', async () => {
+  it('emits the four pulses in the corrected order', async () => {
     const { issued, writeOne } = recorder()
     const r = await runClearPlcSequence(stopped(), writeOne)
     expect(r.action).toBe('proceed')
@@ -133,21 +149,24 @@ describe('runClearPlcSequence — emitted order', () => {
       'Invalidate_Direction',
       'Invalidate_Tracking_Finished',
       'Invalidate_Map',
-      'Invalidate_HP',
     ])
     expect(r.latchCleared).toBe(true)
   })
 
-  it('THE BUG: Invalidate_HP never precedes Invalidate_Tracking_Finished', async () => {
+  it('THE FIRST BUG: nothing that touches rung 1 precedes the latch invalidate', async () => {
     const { issued, writeOne } = recorder()
     await runClearPlcSequence(stopped(), writeOne)
-    expect(issued.indexOf('Invalidate_HP')).toBeGreaterThan(
-      issued.indexOf('Invalidate_Tracking_Finished'),
-    )
-    // ...and Invalidate_Map, which seals Valid_HP's OTL on rung 1, is also after.
+    // Invalidate_Map, which seals Valid_HP's OTL on rung 1, comes after.
     expect(issued.indexOf('Invalidate_Map')).toBeGreaterThan(
       issued.indexOf('Invalidate_Tracking_Finished'),
     )
+  })
+
+  it('THE SECOND BUG: Clear Test leaves the keypad alive — Invalidate_HP is never issued', async () => {
+    const { issued, writeOne } = recorder()
+    const r = await runClearPlcSequence(stopped(), writeOne)
+    expect(issued).not.toContain('Invalidate_HP')
+    expect(r.writes.map(w => w.field)).not.toContain('Invalidate_HP')
   })
 
   it('Normal_Polarity lands FIRST, while the latch is still set (rung 3 branch 4)', async () => {
@@ -171,7 +190,7 @@ describe('runClearPlcSequence — emitted order', () => {
       calls.push([field])
       return { ok: true }
     })
-    expect(calls).toHaveLength(5)
+    expect(calls).toHaveLength(4)
     expect(calls.every(c => c.length === 1)).toBe(true)
   })
 
@@ -192,11 +211,11 @@ describe('runClearPlcSequence — emitted order', () => {
     }
   })
 
-  it('on Valid_HP=0 skips the dead rung-3 writes but still does the rung-1 pair', async () => {
+  it('on Valid_HP=0 skips the dead rung-3 writes but still does the rung-1 write', async () => {
     const { issued, writeOne } = recorder()
     const r = await runClearPlcSequence(stopped({ validHp: 0 }), writeOne)
     expect(r.action).toBe('proceed-without-latch-writes')
-    expect(issued).toEqual(['Invalidate_Map', 'Invalidate_HP'])
+    expect(issued).toEqual(['Invalidate_Map'])
     expect(r.latchCleared).toBe(false)
     // The dead writes are reported as skipped, not as successes.
     for (const f of LATCH_WRITE_FIELDS) {
@@ -208,7 +227,7 @@ describe('runClearPlcSequence — emitted order', () => {
 })
 
 describe('runClearPlcSequence — failure handling', () => {
-  it('a failed Invalidate_Tracking_Finished ABORTS before Invalidate_HP can strand the belt', async () => {
+  it('a failed Invalidate_Tracking_Finished ABORTS the rest — the reset did not happen', async () => {
     const { issued, writeOne } = recorder({ field: 'Invalidate_Tracking_Finished' })
     const r = await runClearPlcSequence(stopped(), writeOne)
     expect(issued).toEqual([
@@ -217,9 +236,9 @@ describe('runClearPlcSequence — failure handling', () => {
     expect(issued).not.toContain('Invalidate_HP')
     expect(issued).not.toContain('Invalidate_Map')
     expect(r.latchCleared).toBe(false)
-    const hp = r.writes.find(w => w.field === 'Invalidate_HP')
-    expect(hp?.skipped).toBe(true)
-    expect(hp?.error).toMatch(/strand/)
+    const map = r.writes.find(w => w.field === 'Invalidate_Map')
+    expect(map?.skipped).toBe(true)
+    expect(map?.error).toMatch(/did not complete/)
   })
 
   it('a failed Normal_Polarity aborts too — the latch must not drop with polarity unrestored', async () => {
@@ -230,13 +249,12 @@ describe('runClearPlcSequence — failure handling', () => {
     expect(r.writes.map(w => w.field)).toEqual([...CLEAR_WRITE_ORDER])
   })
 
-  it('a failed Invalidate_Map does NOT stop Invalidate_HP — rung 1 branches are independent', async () => {
+  it('a failed Invalidate_Map does not undo the latch clear — the safety-critical part succeeded', async () => {
     const { issued, writeOne } = recorder({ field: 'Invalidate_Map' })
     const r = await runClearPlcSequence(stopped(), writeOne)
     expect(issued).toEqual([...CLEAR_WRITE_ORDER])
-    // The safety-critical part already succeeded.
     expect(r.latchCleared).toBe(true)
-    expect(r.writes.find(w => w.field === 'Invalidate_HP')?.ok).toBe(true)
+    expect(r.writes.find(w => w.field === 'Invalidate_Map')?.ok).toBe(false)
   })
 })
 
@@ -338,9 +356,7 @@ describe('both route branches', () => {
     )
     expect(r.action).toBe('proceed')
     expect(issued).toEqual([...CLEAR_WRITE_ORDER])
-    expect(issued.indexOf('Invalidate_HP')).toBeGreaterThan(
-      issued.indexOf('Invalidate_Tracking_Finished'),
-    )
+    expect(issued).not.toContain('Invalidate_HP')
   })
 
   it('MCM branch: disconnect mid-sequence aborts the remaining writes', async () => {

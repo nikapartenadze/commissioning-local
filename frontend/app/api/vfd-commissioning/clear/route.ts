@@ -38,13 +38,23 @@ import {
  * write ORDER and the stopped-drive guard. In brief:
  *
  *   Normal_Polarity → Invalidate_Direction → Invalidate_Tracking_Finished
- *                   → Invalidate_Map → Invalidate_HP
+ *                   → Invalidate_Map
  *
  * one field per round-trip, and only when the drive is PROVABLY not commanded
  * to move. This route previously sent Invalidate_HP FIRST and never sent
  * Invalidate_Tracking_Finished at all, which left belts latched with the
  * clearing rung dead — permanently unclearable. Do not reorder these without
  * reading the AOI ground truth quoted in vfd-clear-sequence.ts.
+ *
+ * Invalidate_HP IS NO LONGER SENT AT ALL. Moving it last stopped the stranding,
+ * but it still dropped Valid_HP — and AOI rungs 2/3/4/5 are ALL gated on
+ * XIC(Valid_HP), so that one bit is the master enable for every operator
+ * keypad function (F1 start/stop, F0+F2 direction, F0/F2 speed). Clear Test
+ * was handing the mechanic a drive they could neither start nor reverse. It is
+ * pressed to give a belt BACK; it must not take the keypad away on the way
+ * out. Invalidate_Map still goes last and still forces the next
+ * re-commissioning to walk identity → HP in order (rung 1 gates OTL(Valid_HP)
+ * on Valid_Map). Full reasoning in vfd-clear-sequence.ts's CLEAR_WRITE_ORDER.
  *
  * Request body:
  *   { deviceName, sheetName?, clearPlc?: true, updatedBy?, subsystemId? }
@@ -365,9 +375,10 @@ export async function POST(req: Request, res: Response) {
         //
         // ONE FIELD PER CALL, sequentially. This used to be a single 5-tag
         // batch; the gateway is free to order a batch as it likes, and even a
-        // faithfully-ordered batch can land inside ONE controller scan, where
-        // Invalidate_HP kills rung 3's XIC(Valid_HP) gate before the
-        // invalidate on that same rung is evaluated.
+        // faithfully-ordered batch can land inside ONE controller scan — where
+        // rung 3's branches evaluate top-to-bottom, so OTU(Tracking_Finished)
+        // runs before the XIC(Tracking_Finished) branch that honours
+        // Normal_Polarity, and the polarity reset is silently lost.
         const { writeTypedTagsForMcm, readTypedTagsForMcm } = await import('@/lib/mcm-registry')
         const sid = String(subsystemId)
         const stsBatch = await readTypedTagsForMcm(sid, clearStsReads(deviceName))
