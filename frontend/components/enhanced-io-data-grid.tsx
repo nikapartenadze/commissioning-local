@@ -8,7 +8,8 @@ import { TestHistoryDialog } from "@/components/test-history-dialog"
 import { DiagnosticStepsDialog } from "@/components/diagnostic-steps-dialog"
 import { formatTimestamp, getResultBadgeVariant } from "@/lib/utils"
 import { TEST_CONSTANTS } from "@/lib/constants"
-import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Wifi, WifiOff, Network } from "lucide-react"
+import { Search, History, X, Play, AlertTriangle, HelpCircle, FileEdit, Volume2, VolumeX, Wifi, WifiOff, Network, Rows3 } from "lucide-react"
+import { PlannedDateFilter } from "@/components/planned-date-filter"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
 import { isOutputIo, isSafetyOutput } from "@/lib/io-classification"
@@ -519,7 +520,7 @@ export function EnhancedIoDataGrid({
       if (mutedOnly && !mutedIos.has(io.id)) return false
 
       // Planned-date filter — cloud-assigned schedule (docs/PLANNED-DATES-
-      // CONTRACT.md). Exact date beats the bucket select.
+      // CONTRACT.md). An exact date beats the bucket.
       if (!matchesPlannedFilter(io.plannedDate, plannedFilter, plannedExactDate, plannedBounds)) return false
 
       // Resolver-state predicates. An ADDRESSED item (electrician fixed it) or a
@@ -849,8 +850,10 @@ export function EnhancedIoDataGrid({
     <>
     <div className="h-full flex flex-col border-t border-border bg-card">
       {/* Compact Search Bar */}
-      <div data-tour="search-area" className="flex items-center gap-2 p-2 border-b bg-muted/30 flex-shrink-0">
-        <div className="relative flex-1">
+      {/* flex-wrap + a search min-width: this runs on tablets, and without it the
+          row overflowed sideways instead of stacking. */}
+      <div data-tour="search-area" className="flex flex-wrap items-center gap-2 p-2 border-b bg-muted/30 flex-shrink-0">
+        <div className="relative flex-1 min-w-[220px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
           <div className="flex flex-wrap gap-1 pl-10 pr-10 py-2 border rounded bg-background min-h-[44px] items-center">
             {filterTags.map((tag, index) => (
@@ -862,14 +865,20 @@ export function EnhancedIoDataGrid({
                 {tag}
                 <button
                   onClick={() => removeFilterTag(tag)}
-                  className="ml-1 hover:bg-muted-foreground/20 rounded-full p-0.5"
+                  aria-label={`Remove filter ${tag}`}
+                  title={`Remove filter ${tag}`}
+                  className={cn(
+                    "ml-1 rounded-full p-1 hover:bg-muted-foreground/20 transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  )}
                 >
-                  <X className="h-3 w-3" />
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               </Badge>
             ))}
             <input
               type="text"
+              aria-label="Search IO points"
               placeholder={filterTags.length === 0 ? "Search IO points..." : ""}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -880,10 +889,15 @@ export function EnhancedIoDataGrid({
           {(filterTags.length > 0 || searchTerm) && (
             <button
               onClick={clearAllFilters}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
-              title="Clear"
+              aria-label="Clear search and filter tags"
+              className={cn(
+                "absolute right-0 top-1/2 -translate-y-1/2 h-[40px] w-[40px] flex items-center justify-center rounded",
+                "text-muted-foreground hover:text-foreground transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              )}
+              title="Clear search and filter tags"
             >
-              <X className="h-5 w-5" />
+              <X className="h-5 w-5" aria-hidden="true" />
             </button>
           )}
         </div>
@@ -891,7 +905,10 @@ export function EnhancedIoDataGrid({
         {/* Sort dropdown removed — Pass/Fail filters in toolbar serve the same purpose */}
 
         {/* Count Badge */}
-        <div className="h-[44px] px-4 flex items-center bg-muted rounded font-mono text-sm whitespace-nowrap">
+        <div
+          className="h-[44px] px-4 flex items-center bg-muted rounded font-mono text-sm whitespace-nowrap shrink-0"
+          title={`${filteredIos.length} of ${ios.length} IO points shown by the current filters`}
+        >
           <span className="font-bold">{filteredIos.length}</span>
           <span className="text-muted-foreground ml-1">/ {ios.length}</span>
         </div>
@@ -900,28 +917,38 @@ export function EnhancedIoDataGrid({
             Lives in this always-present row so muting never shifts the grid down.
             Click to filter to muted-only; the × unmutes all. */}
         {mutedIos.size > 0 && (
-          <div className="flex items-center h-[44px] rounded border border-orange-300 dark:border-orange-800/60 overflow-hidden shrink-0">
+          // Two separate actions, so two separate targets. They used to share one
+          // pill split by a 1px border, which is how "filter to muted" and the
+          // irreversible "unmute all" ended up a pixel apart.
+          <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => setMutedOnly(v => !v)}
+              aria-pressed={mutedOnly}
               className={cn(
-                "h-full px-3 flex items-center gap-1.5 text-sm font-medium whitespace-nowrap transition-colors",
+                "h-[44px] px-3 flex items-center gap-1.5 rounded border border-orange-300 dark:border-orange-800/60 text-sm font-medium whitespace-nowrap transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 mutedOnly
                   ? "bg-orange-500 text-white"
                   : "bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-900/40"
               )}
               title={mutedOnly ? "Showing muted only — click to show all IOs" : "Show only muted IOs"}
             >
-              <VolumeX className="h-4 w-4" />
+              <VolumeX className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span className="tabular-nums">{mutedIos.size}</span>
               <span className="hidden sm:inline">muted</span>
             </button>
             {onUnmuteAll && (
               <button
                 onClick={onUnmuteAll}
-                className="h-full px-2 flex items-center border-l border-orange-300 dark:border-orange-800/60 text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40"
+                aria-label={`Unmute all ${mutedIos.size} muted IOs`}
+                className={cn(
+                  "h-[44px] w-[44px] flex items-center justify-center rounded border border-orange-300 dark:border-orange-800/60",
+                  "text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                )}
                 title="Unmute all"
               >
-                <X className="h-4 w-4" />
+                <X className="h-4 w-4" aria-hidden="true" />
               </button>
             )}
           </div>
@@ -929,56 +956,39 @@ export function EnhancedIoDataGrid({
 
         {/* Planned-date filter — the schedule is assigned in the cloud and
             read-only here; this narrows the grid to a date bucket, or to one
-            exact date via the picker (which overrides the bucket). */}
-        <div
-          className={cn(
-            "flex items-center h-[44px] rounded border overflow-hidden shrink-0 bg-background",
-            (plannedFilter !== 'all' || plannedExactDate) ? "border-primary" : "border-border"
-          )}
-        >
-          <select
-            value={plannedFilter}
-            onChange={(e) => setPlannedFilter(e.target.value as PlannedFilter)}
-            className="h-full pl-2 pr-1 text-sm bg-transparent outline-none cursor-pointer"
-            title="Filter by planned date (assigned in the cloud)"
-          >
-            <option value="all">Planned: All</option>
-            <option value="overdue">Overdue</option>
-            <option value="today">Today</option>
-            <option value="week">This week</option>
-            <option value="has">Has date</option>
-            <option value="none">No date</option>
-          </select>
-          <input
-            type="date"
-            value={plannedExactDate}
-            onChange={(e) => setPlannedExactDate(e.target.value)}
-            className="h-full px-1 text-sm bg-transparent outline-none border-l border-border"
-            title="Show only IOs planned for this exact date"
-          />
-          {plannedExactDate && (
-            <button
-              onClick={() => setPlannedExactDate('')}
-              className="h-full px-2 flex items-center border-l border-border text-muted-foreground hover:text-foreground"
-              title="Clear planned-date filter"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-        </div>
+            exact date (which overrides the bucket). Shared with the FV grid so
+            the question looks identical on both pages. */}
+        <PlannedDateFilter
+          bucket={plannedFilter}
+          exactDate={plannedExactDate}
+          onChange={(bucket, exactDate) => {
+            setPlannedFilter(bucket)
+            setPlannedExactDate(exactDate)
+          }}
+        />
 
-        {/* Group by Lane toggle */}
+        {/* Separates "narrow the rows" from "rearrange the rows". Without it the
+            planned filter and the lane toggle read as one control strip, and a
+            near-miss on either lands on the other. */}
+        <div className="h-6 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
+
+        {/* Group by Lane toggle. The label is deliberately constant — the old
+            'Grouped' / 'Group by Lane' swap resized the button on every click,
+            shifting whatever sat beside it under the tech's finger. */}
         <button
           onClick={() => setGroupByLane(v => !v)}
+          aria-pressed={groupByLane}
           className={cn(
-            "h-[44px] px-3 text-sm rounded font-medium whitespace-nowrap border",
+            "h-[44px] px-3 flex items-center gap-1.5 text-sm rounded font-medium whitespace-nowrap border shrink-0 transition-colors",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             groupByLane
               ? "bg-primary text-primary-foreground border-primary"
-              : "bg-background hover:bg-accent"
+              : "bg-background border-border hover:bg-accent"
           )}
-          title={groupByLane ? "Grouped by lane — click for flat list" : "Group rows by lane (UL17, UL20, …)"}
+          title={groupByLane ? "Grouped by lane — click for a flat list" : "Group rows by lane (UL17, UL20, …)"}
         >
-          {groupByLane ? 'Grouped' : 'Group by Lane'}
+          <Rows3 className="h-4 w-4 shrink-0" aria-hidden="true" />
+          Group by Lane
         </button>
 
         {/* Assign Mode Toggle — disabled for now
