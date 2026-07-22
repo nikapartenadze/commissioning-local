@@ -48,8 +48,8 @@ export async function POST(req: Request, res: Response) {
     // work blocks the pull.
     const l2QueueCounts = db.prepare(
       `SELECT
-         SUM(CASE WHEN DeadLettered = 0 THEN 1 ELSE 0 END) as active,
-         SUM(CASE WHEN DeadLettered = 1 AND Orphaned = 0 THEN 1 ELSE 0 END) as parked
+         SUM(CASE WHEN DeadLettered = 0 AND Resolved = 0 THEN 1 ELSE 0 END) as active,
+         SUM(CASE WHEN DeadLettered = 1 AND Orphaned = 0 AND Resolved = 0 THEN 1 ELSE 0 END) as parked
        FROM L2PendingSyncs
        WHERE CloudDeviceId IN (SELECT CloudId FROM L2Devices WHERE SubsystemId = ? OR SubsystemId IS NULL)`,
     ).get(Number(subsystemId)) as { active: number | null; parked: number | null }
@@ -184,7 +184,11 @@ export async function POST(req: Request, res: Response) {
       // rows (Orphaned→0, back to Active) so held local FV values drain again,
       // values intact. Keyed by CloudDeviceId (= the cloud device id).
       const requeueOrphanedL2 = db.prepare(
-        'UPDATE L2PendingSyncs SET Orphaned = 0, DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE CloudDeviceId = ? AND Orphaned = 1',
+        // Resolved MUST clear here too — it gates every active-queue read, so a
+        // reappearing device whose row stayed Resolved would never re-sync its
+        // held FV value. Mirrors delta-sync's IO reappearance path.
+        'UPDATE L2PendingSyncs SET Orphaned = 0, DeadLettered = 0, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, ' +
+        'RetryCount = 0, LastError = NULL WHERE CloudDeviceId = ? AND Orphaned = 1',
       )
       const getCell = db.prepare('SELECT id, Value, UpdatedAt, Version FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
       const insertCell = db.prepare('INSERT INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')

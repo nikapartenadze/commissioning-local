@@ -31,11 +31,15 @@ export function collectQueueStats(now: Date = new Date()): QueueStats {
   let oldest: number | null = null
   for (const table of QUEUES) {
     try {
+      // Resolved rows are terminal (cloud target provably removed) — they are
+      // excluded from BOTH legs so the fleet-alert sweep never reports a tablet
+      // as having stuck work that no human can or should clear. Resolved ⇒
+      // DeadLettered, so only the `parked` leg can actually match one.
       const row = db.prepare(
         `SELECT
-           SUM(CASE WHEN DeadLettered = 0 THEN 1 ELSE 0 END) AS active,
-           SUM(CASE WHEN DeadLettered = 1 THEN 1 ELSE 0 END) AS parked,
-           MIN(CASE WHEN DeadLettered = 0 THEN CreatedAt END) AS oldest
+           SUM(CASE WHEN DeadLettered = 0 AND Resolved = 0 THEN 1 ELSE 0 END) AS active,
+           SUM(CASE WHEN DeadLettered = 1 AND Resolved = 0 THEN 1 ELSE 0 END) AS parked,
+           MIN(CASE WHEN DeadLettered = 0 AND Resolved = 0 THEN CreatedAt END) AS oldest
          FROM ${table}`,
       ).get() as { active: number | null; parked: number | null; oldest: string | null }
       const a = row.active ?? 0

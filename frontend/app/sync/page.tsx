@@ -20,7 +20,10 @@ import { toast } from '@/hooks/use-toast'
 
 // ── Contract types (must match the backend /api/sync/queue contract) ──────────
 type Kind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
-type QueueStatus = 'pending' | 'parked' | 'orphaned'
+// 'resolved' is TERMINAL (cloud target provably removed). The backend excludes
+// it from the default listing, so it never reaches this page today — declared so
+// the contract type matches the server's and a resolved row can't be mistyped.
+type QueueStatus = 'pending' | 'parked' | 'orphaned' | 'resolved'
 type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'cloud_rejected' | 'unknown'
 
 interface QueueItem {
@@ -44,6 +47,8 @@ interface QueueSummary {
   pending: number
   parked: number
   orphaned: number
+  /** Terminal rows, auto-resolved. Reported for completeness; not rendered. */
+  resolved: number
   byClassification: Record<Classification, number>
 }
 
@@ -68,10 +73,11 @@ const MCM_ALL = 'all' as const
 // chips, and bulk-button labels always match exactly what's shown.
 function summarize(items: QueueItem[]): QueueSummary {
   const s: QueueSummary = {
-    pending: 0, parked: 0, orphaned: 0,
+    pending: 0, parked: 0, orphaned: 0, resolved: 0,
     byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, cloud_rejected: 0, unknown: 0 },
   }
   for (const it of items) {
+    if (it.status === 'resolved') { s.resolved++; continue }  // terminal — never a to-do
     if (it.status === 'orphaned') s.orphaned++
     else if (it.status === 'parked') s.parked++
     else s.pending++

@@ -28,12 +28,12 @@ beforeEach(() => {
       id INTEGER PRIMARY KEY AUTOINCREMENT, SubsystemId INTEGER NOT NULL, ZoneName TEXT, CheckTag TEXT,
       Result TEXT, CheckType TEXT DEFAULT 'preliminary', DeadLettered INTEGER NOT NULL DEFAULT 0,
       LastError TEXT, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now'))
-    );
+    , Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
     CREATE TABLE GuidedTaskStatePendingSyncs (
       id INTEGER PRIMARY KEY AUTOINCREMENT, SubsystemId INTEGER NOT NULL, TaskId TEXT, Status TEXT,
       Reason TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0, LastError TEXT,
       RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now'))
-    );
+    , Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
   `)
 })
 

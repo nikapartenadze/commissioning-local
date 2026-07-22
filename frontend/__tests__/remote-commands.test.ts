@@ -9,11 +9,11 @@ const { memDb, spawnSyncMock, kickPush, saveConfig, configState, runJournalUploa
   const Database = require('better-sqlite3')
   const d = new Database(':memory:')
   d.exec(`
-    CREATE TABLE L2PendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')));
-    CREATE TABLE EStopCheckPendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')));
-    CREATE TABLE GuidedTaskStatePendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')));
-    CREATE TABLE DeviceBlockerPendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')));
-    CREATE TABLE PendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')));
+    CREATE TABLE L2PendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')), Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
+    CREATE TABLE EStopCheckPendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')), Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
+    CREATE TABLE GuidedTaskStatePendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')), Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
+    CREATE TABLE DeviceBlockerPendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')), Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
+    CREATE TABLE PendingSyncs (id INTEGER PRIMARY KEY, DeadLettered INTEGER DEFAULT 0, RetryCount INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')), Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
   `)
   const spawnSyncMock = vi.fn(() => ({ status: 0, stdout: 'STATE : 4 RUNNING' }))
   const kickPush = vi.fn()

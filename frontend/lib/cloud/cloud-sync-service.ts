@@ -60,6 +60,15 @@ export interface SyncIoResult {
   network?: boolean
   /** Human-readable reason for the failure / rejection. */
   reason?: string
+  /**
+   * MACHINE-READABLE rejection code from the cloud's `rejected[]` entry
+   * ('io_not_found' | 'io_wrong_project' | 'io_disappeared' | 'version_conflict').
+   * UNDEFINED when talking to an older cloud that doesn't send one — callers
+   * MUST fall back to the existing HTTP-status path in that case, since field
+   * tablets run against a pre-`code` cloud for weeks after this ships.
+   * See sync-failure-classification.ts (CloudRejectionCode).
+   */
+  rejectionCode?: string
 }
 
 // =============================================================================
@@ -416,7 +425,9 @@ export class CloudSyncService {
       if (response.ok) {
         type SyncResp = {
           updatedCount?: number
-          rejected?: { id: number; reason: string; permanent?: boolean }[]
+          // `code` is the machine-readable discriminator (added cloud-side
+          // 2026-07-22); OPTIONAL because an older cloud sends only `reason`.
+          rejected?: { id: number; reason: string; permanent?: boolean; code?: string }[]
         }
         let responseData: SyncResp | null = null
         try {
@@ -433,12 +444,16 @@ export class CloudSyncService {
         const rejection = responseData?.rejected?.find(r => r.id === update.id)
         if (rejection?.permanent) {
           log.error(
-            `[CloudSync] Cloud PERMANENTLY rejected IO ${update.id}: ${rejection.reason}. ` +
+            `[CloudSync] Cloud PERMANENTLY rejected IO ${update.id}: ${rejection.reason}` +
+            `${rejection.code ? ` [code=${rejection.code}]` : ''}. ` +
             `Payload was: result=${JSON.stringify(update.result)}, version=${update.version}, ` +
             `state=${JSON.stringify(update.state)}, testedBy=${JSON.stringify(update.testedBy)}. ` +
             `Local SQLite still has this IO's state — re-pass/fail/clear in the grid if the value is wrong on cloud.`
           )
-          return { ok: false, permanent: true, reason: `cloud-rejected: ${rejection.reason}` }
+          // Surface the code verbatim (when present) so the push loop can route
+          // a DELETED IO to orphan() instead of the needs-a-human dead-letter
+          // bucket. Absent code → caller falls back to the HTTP-status path.
+          return { ok: false, permanent: true, reason: `cloud-rejected: ${rejection.reason}`, rejectionCode: rejection.code }
         }
 
         if (responseData?.updatedCount !== undefined && responseData.updatedCount < 1) {

@@ -25,7 +25,9 @@ import { mcmTag } from '@/lib/logging/mcm-tag'
 import {
   isNetworkLevelFailure,
   isPermanentRejectionStatus,
+  isRemovedOnCloudCode,
   permanentRejectionReason,
+  rejectionCodeReason,
 } from '@/lib/cloud/sync-failure-classification'
 import { drainSimpleQueue, type SimpleQueueRow } from '@/lib/cloud/drain-simple-queue'
 import { SubsystemNetworkDeferral } from '@/lib/cloud/subsystem-network-deferral'
@@ -558,7 +560,12 @@ class AutoSyncService {
             // A newer write for this IO just reached cloud — any earlier PARKED
             // (rejected/capped) row for the same IO is now stale; clear it so
             // the "needs attention" surface doesn't keep flagging a resolved IO.
-            try { db.prepare('DELETE FROM PendingSyncs WHERE IoId = ? AND DeadLettered = 1').run(pending.IoId) } catch { /* best-effort */ }
+            // AND Resolved = 0 — a RESOLVED row is never removed by this sweep.
+            // Resolved means "the cloud proved this IO was removed"; its test
+            // value must survive and stay queryable (2026-05-21 silent test-loss
+            // lesson). If the IO genuinely came back, delta-sync's reappearance
+            // path un-resolves the row instead of destroying it.
+            try { db.prepare('DELETE FROM PendingSyncs WHERE IoId = ? AND DeadLettered = 1 AND Resolved = 0').run(pending.IoId) } catch { /* best-effort */ }
             // Per-row trail so forensics can answer "did this specific IO
             // actually reach cloud?" without joining the summary line below
             // back to the queue snapshot.
@@ -580,17 +587,42 @@ class AutoSyncService {
             // churn); give the parked row a human-readable LastError instead of
             // the bare `HTTP 404` so the Sync Center shows an honest reason.
             // Other permanent rejects (e.g. SPARE cannot be Passed) keep theirs.
+            // ROUTE ON THE CODE FIRST (2026-07-22). A DELETED IO does NOT come
+            // back as HTTP 404 — /api/sync/update answers 200 with
+            // rejected:[{ reason: 'IO not found', permanent: true }], which the
+            // `HTTP <status>` regex below can never match. Every such row
+            // therefore dead-lettered into the needs-a-human bucket and stayed
+            // there forever (the bulk of the standing backlog) instead of
+            // orphaning and self-healing. The cloud now tags each rejection with
+            // a machine-readable `code`; io_not_found / io_disappeared are
+            // confirmed removals → orphan. io_wrong_project is an API-key/project
+            // MISCONFIGURATION, not a removal — it stays parked so a human sees
+            // it and its data is never auto-cleared.
+            //
+            // FALLBACK IS LOAD-BEARING: an older cloud sends no `code` at all,
+            // and field tablets run against one for weeks. With no code we fall
+            // through to the untouched HTTP 404/410 path — behaviour identical
+            // to before.
+            const rejectionCode = r.rejectionCode
+            const removedByCode = isRemovedOnCloudCode(rejectionCode)
             const removedStatus = parsePermanentRemovalStatus(r.reason)
-            const parkReason = removedStatus != null
-              ? permanentRejectionReason(removedStatus)
-              : (r.reason ?? 'cloud permanently rejected')
-            // CONFIRMED removal (403/404/410) → ORPHAN (Orphaned=1, a subset of
-            // dead-letter): the IO was deleted on cloud, so this row would 404
-            // forever. Orphaning drops it off the amber attention badge and lets
-            // it AUTO-REQUEUE if the IO reappears via a delta upsert. Any OTHER
-            // permanent reject (e.g. SPARE cannot be Passed) stays a plain park —
-            // it's a genuine "needs a human" case, not a removal.
-            if (removedStatus != null) {
+            const isRemoval = removedByCode || removedStatus != null
+            const parkReason = removedByCode
+              ? rejectionCodeReason(rejectionCode!, r.reason)
+              : removedStatus != null
+                ? permanentRejectionReason(removedStatus)
+                : rejectionCode
+                  ? rejectionCodeReason(rejectionCode, r.reason)
+                  : (r.reason ?? 'cloud permanently rejected')
+            // CONFIRMED removal (a removal `code`, or the legacy HTTP 404/410)
+            // → ORPHAN (Orphaned=1, a subset of dead-letter): the IO was deleted
+            // on cloud, so this row would be rejected forever. Orphaning drops it
+            // off the amber attention badge, marks it Resolved (terminal — no
+            // human ever sees it), and lets it AUTO-REQUEUE if the IO reappears
+            // via a delta upsert. Any OTHER permanent reject (SPARE cannot be
+            // Passed, io_wrong_project) stays a plain park — a genuine
+            // "needs a human" case, not a removal.
+            if (isRemoval) {
               pendingSyncRepository.orphan(pending.id, parkReason)
             } else {
               pendingSyncRepository.deadLetter(pending.id, parkReason)
@@ -940,7 +972,12 @@ class AutoSyncService {
                 // was deleted on cloud → ORPHAN (Orphaned=1, a subset of the park)
                 // so the row drops off the amber attention badge and AUTO-REQUEUES
                 // when the device reappears via pull-l2 — with its value intact.
-                db.prepare('UPDATE L2PendingSyncs SET DeadLettered = 1, Orphaned = 1, RetryCount = 0, LastError = ? WHERE id = ?').run(parkReason, p.id)
+                // Also TERMINAL (Resolved=1): the removal is proven, so no human
+                // owes this row anything. pull-l2's requeue clears Resolved.
+                db.prepare(
+                  'UPDATE L2PendingSyncs SET DeadLettered = 1, Orphaned = 1, Resolved = 1, ' +
+                  "ResolvedAt = datetime('now'), ResolvedReason = ?, RetryCount = 0, LastError = ? WHERE id = ?",
+                ).run(parkReason, parkReason, p.id)
                 const l2Subsystem = this.l2SubsystemLabel(p.CloudDeviceId)
                 auditLog({
                   type: 'l2.push.park',
@@ -1184,6 +1221,7 @@ class AutoSyncService {
       `SELECT ps.id, ps.IoId, ps.TestResult, ps.Comments, ps.Version, ps.DeadLettered, i.SubsystemId
          FROM PendingSyncs ps JOIN Ios i ON i.id = ps.IoId
         WHERE ps.LastError LIKE '%updatedCount=0%'
+          AND ps.Resolved = 0
           AND (ps.DeadLettered = 1 OR ps.RetryCount >= 3)`
     ).all() as ConflictRow[]
     if (rows.length === 0) return

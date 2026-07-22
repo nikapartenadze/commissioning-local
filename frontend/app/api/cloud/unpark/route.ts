@@ -45,10 +45,11 @@ export async function POST(req: Request, res: Response) {
     let sql: string
     let args: number[]
     if (pendingId != null && Number.isFinite(pendingId)) {
-      sql = `UPDATE ${spec.table} SET DeadLettered = 0, RetryCount = 0 WHERE id = ? AND DeadLettered = 1`
+      // Resolved cleared alongside — see the note in queue-inspector.retry().
+      sql = `UPDATE ${spec.table} SET DeadLettered = 0, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, RetryCount = 0 WHERE id = ? AND DeadLettered = 1`
       args = [pendingId]
     } else if (all && subsystemId != null && Number.isFinite(subsystemId) && spec.subsystemCol) {
-      sql = `UPDATE ${spec.table} SET DeadLettered = 0, RetryCount = 0 WHERE ${spec.subsystemCol} = ? AND DeadLettered = 1`
+      sql = `UPDATE ${spec.table} SET DeadLettered = 0, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, RetryCount = 0 WHERE ${spec.subsystemCol} = ? AND DeadLettered = 1`
       args = [subsystemId]
     } else {
       return res.status(400).json({

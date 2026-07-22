@@ -43,13 +43,13 @@ export async function POST(req: Request, res: Response) {
     const rows = (ioId
       ? db.prepare(
           `SELECT id, IoId, TestResult, Comments, State, Version, InspectorName
-           FROM PendingSyncs WHERE IoId = ? AND (DeadLettered = 1 OR RetryCount > 0)
+           FROM PendingSyncs WHERE IoId = ? AND Resolved = 0 AND (DeadLettered = 1 OR RetryCount > 0)
            ORDER BY CreatedAt ASC`,
         ).all(ioId)
       : db.prepare(
           `SELECT ps.id, ps.IoId, ps.TestResult, ps.Comments, ps.State, ps.Version, ps.InspectorName
            FROM PendingSyncs ps JOIN Ios i ON i.id = ps.IoId
-           WHERE i.SubsystemId = ? AND (ps.DeadLettered = 1 OR ps.RetryCount > 0)
+           WHERE i.SubsystemId = ? AND ps.Resolved = 0 AND (ps.DeadLettered = 1 OR ps.RetryCount > 0)
            ORDER BY ps.CreatedAt ASC`,
         ).all(subsystemId)) as StuckRow[]
 

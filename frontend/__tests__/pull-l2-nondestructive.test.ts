@@ -84,7 +84,7 @@ const { memDb } = vi.hoisted(() => {
       LastError TEXT,
       DeadLettered INTEGER NOT NULL DEFAULT 0,
       Orphaned INTEGER NOT NULL DEFAULT 0
-    );
+    , Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
   `)
   return { memDb: d }
 })

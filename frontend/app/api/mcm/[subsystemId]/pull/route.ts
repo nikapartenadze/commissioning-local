@@ -156,7 +156,7 @@ export async function POST(req: Request, res: Response) {
       .prepare(
         `SELECT COUNT(*) as cnt FROM PendingSyncs ps
          JOIN Ios i ON i.id = ps.IoId
-         WHERE i.SubsystemId = ? AND ps.DeadLettered = 1`,
+         WHERE i.SubsystemId = ? AND ps.DeadLettered = 1 AND ps.Resolved = 0`,
       )
       .get(subsystemId) as { cnt: number }).cnt;
     // E-stop EPC checks and guided-task overrides have their own offline push

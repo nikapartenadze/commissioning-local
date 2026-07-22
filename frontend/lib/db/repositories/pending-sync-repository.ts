@@ -88,6 +88,14 @@ export const pendingSyncRepository = {
    * badge and (b) auto-requeues (Orphaned→0, DeadLettered→0) if the IO ever
    * reappears via a delta upsert — with its local value fully intact.
    *
+   * Orphaning is also TERMINAL: the same statement marks the row Resolved
+   * (Resolved=1 ⇒ Orphaned=1) with a timestamp + reason. The cloud has proved
+   * the target is gone, so there is nothing left for a human to decide — the row
+   * leaves every attention count, the heartbeat, and the Sync Center's default
+   * view rather than accumulating in the "removed on cloud" tab forever.
+   * RESOLVED ≠ DELETED: the TestResult/Comments/State survive untouched and stay
+   * queryable, and delta-sync clears Resolved if the IO ever comes back.
+   *
    * RetryCount is reset to 0 so a later reappearance+requeue starts clean.
    * NEVER call this on a network/transient failure, a version conflict
    * (updatedCount=0), or a retry-cap park — those keep plain deadLetter/retry
@@ -95,8 +103,8 @@ export const pendingSyncRepository = {
    */
   orphan(id: number, reason: string): void {
     db.prepare(
-      'UPDATE PendingSyncs SET DeadLettered = 1, Orphaned = 1, LastError = ?, RetryCount = 0 WHERE id = ?',
-    ).run(reason, id)
+      'UPDATE PendingSyncs SET DeadLettered = 1, Orphaned = 1, Resolved = 1, ResolvedAt = ?, ResolvedReason = ?, LastError = ?, RetryCount = 0 WHERE id = ?',
+    ).run(new Date().toISOString(), reason, reason, id)
     // Tombstone the underlying IO (CloudRemoved=1). A cloud-removed result must
     // (a) stop tripping the pull-guard "would erase" diff, which reads Ios
     // directly and warned forever, and (b) stop being re-queued by the orphan
@@ -110,9 +118,13 @@ export const pendingSyncRepository = {
     ).run(id)
   },
 
-  /** Count of rows parked for attention (cloud-rejected / cap-exhausted). */
+  /**
+   * Count of rows parked for attention (cloud-rejected / cap-exhausted).
+   * Excludes Resolved rows — those reached a terminal state (their cloud target
+   * is provably gone) and must never be counted as something a human owes work on.
+   */
   countDeadLettered(): number {
-    return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 1').get() as any).count
+    return (db.prepare('SELECT COUNT(*) as count FROM PendingSyncs WHERE DeadLettered = 1 AND Resolved = 0').get() as any).count
   },
 
   /**

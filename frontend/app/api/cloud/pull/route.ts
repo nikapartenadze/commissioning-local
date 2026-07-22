@@ -190,7 +190,11 @@ export async function POST(req: Request, res: Response) {
     // pull (it overwrites local; a backup is taken first), but the guidance differs:
     // sync the active ones, RESOLVE the parked ones.
     const pendingIoActive = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 0').get() as { cnt: number }).cnt
-    const pendingIoParked = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
+    // AND Resolved = 0: a resolved row's IO is provably gone on cloud (and its
+    // Ios row already carries CloudRemoved=1, which excludes it from the
+    // "would erase" diff), so it is not unsynced work this pull can endanger.
+    // Blocking on it would wedge the pull on rows no human can ever clear.
+    const pendingIoParked = (db.prepare('SELECT COUNT(*) as cnt FROM PendingSyncs WHERE DeadLettered = 1 AND Resolved = 0').get() as { cnt: number }).cnt
     const pendingL2Count = (getPullStmts().pendingL2Count.get() as { cnt: number }).cnt
     const pendingChangeRequestCount = (getPullStmts().pendingChangeRequestCount.get() as { cnt: number }).cnt
     // E-stop EPC checks and guided-task overrides have their own offline push
