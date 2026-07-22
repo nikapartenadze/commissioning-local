@@ -58,7 +58,8 @@ const { memDb } = vi.hoisted(() => {
       Subsystem TEXT,
       DisplayOrder INTEGER NOT NULL,
       CompletedChecks INTEGER DEFAULT 0,
-      TotalChecks INTEGER DEFAULT 0
+      TotalChecks INTEGER DEFAULT 0,
+      PlannedDate TEXT
     );
     CREATE TABLE IF NOT EXISTS L2CellValues (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
