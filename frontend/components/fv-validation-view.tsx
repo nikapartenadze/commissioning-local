@@ -12,6 +12,10 @@ import { Button } from '@/components/ui/button'
 import { useUser } from '@/lib/user-context'
 import { useSignalR, FVCellUpdate } from '@/lib/signalr-client'
 import { doesFVColumnCountForProgress, normalizeFVInputType, fvColumnAppliesToMcms } from '@/lib/fv-utils'
+import { PlannedDateFilter, type PlannedBucket } from './planned-date-filter'
+// The planned-date predicate is shared with the IO grid rather than re-derived
+// here, so "Due this week" cannot come to mean two different things on two pages.
+import { matchesPlannedFilter, plannedDateBounds } from './enhanced-io-data-grid/helpers'
 import { vfdAnnotationKey } from '@/lib/vfd-annotation-key'
 import { saveL2Cell, replayL2Outbox, pendingCount, type OutboxDeps } from '@/lib/l2-outbox'
 import { toast } from '@/hooks/use-toast'
@@ -122,6 +126,8 @@ interface FVPersistedState {
   fixedFilters: { device: string[] | null; mcm: string[] | null; subsystem: string[] | null }
   searchQuery: string
   viewMode: 'sheets' | 'overview'
+  plannedBucket: PlannedBucket
+  plannedExactDate: string
 }
 
 // `scope` distinguishes persisted filter state per subsystem AND per mode, so the
@@ -195,16 +201,22 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   // Planned-date filter — the field half of the dated punchlist. Dates are
   // date-only strings compared lexically against the tablet's local day, so no
   // timezone conversion can shift a day (same rule as the IO grid).
-  type PlannedFilter = "all" | "overdue" | "today" | "thisWeek" | "hasDate" | "noDate"
-  const [plannedFilter, setPlannedFilter] = useState<PlannedFilter>("all")
+  //
+  // Persisted alongside its sibling filters: every other filter in this toolbar
+  // survives a remount, and a planned filter that alone reset itself was the
+  // odd one out ("my search came back but the date didn't"). A restored exact
+  // date does go stale, so the trigger always spells the active filter out and
+  // the all-rows-hidden panel names this filter by name.
+  const [plannedBucket, setPlannedBucket] = useState<PlannedBucket>((_saved.current.plannedBucket as PlannedBucket) ?? "all")
+  const [plannedExactDate, setPlannedExactDate] = useState(_saved.current.plannedExactDate ?? "")
   const [columnFilters, setColumnFilters] = useState<Record<string, any>>(_saved.current.columnFilters ?? {})
   const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>(_saved.current.fixedFilters ?? { device: null, mcm: null, subsystem: null })
   const [searchQuery, setSearchQuery] = useState(_saved.current.searchQuery ?? "")
 
   // Persist filter state whenever it changes
   useEffect(() => {
-    saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode }, persistScope)
-  }, [activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, persistScope])
+    saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, plannedBucket, plannedExactDate }, persistScope)
+  }, [activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, plannedBucket, plannedExactDate, persistScope])
 
   // Detect narrow viewport (tablet)
   useEffect(() => {
@@ -782,6 +794,10 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   // Is the currently selected sheet a VFD/APF sheet?
   const isActiveSheetVfd = vfdSheetIds.has(activeSheetData.id)
 
+  // Today + this Monday–Sunday week, resolved once per render rather than per
+  // row (and never from a parsed date-only string).
+  const plannedBounds = plannedDateBounds()
+
   const filteredDevices = activeDevices.filter((device) => {
     // Search query
     if (searchQuery) {
@@ -819,28 +835,9 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       }
     }
 
-    // Planned-date filter (cloud-scheduled work)
-    if (plannedFilter !== "all") {
-      const d = device.PlannedDate || null
-      if (plannedFilter === "noDate") {
-        if (d) return false
-      } else if (!d) {
-        return false
-      } else {
-        const now = new Date()
-        const pad = (n: number) => String(n).padStart(2, "0")
-        const iso = (x: Date) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`
-        const todayStr = iso(now)
-        if (plannedFilter === "overdue" && !(d < todayStr)) return false
-        if (plannedFilter === "today" && d !== todayStr) return false
-        if (plannedFilter === "thisWeek") {
-          const dow = now.getDay()
-          const end = new Date(now)
-          end.setDate(end.getDate() + (dow === 0 ? 0 : 7 - dow))
-          if (!(d <= iso(end))) return false
-        }
-      }
-    }
+    // Planned-date filter (cloud-scheduled work). An exact date overrides the
+    // bucket — same rule, same helper, as the IO grid.
+    if (!matchesPlannedFilter(device.PlannedDate, plannedBucket, plannedExactDate, plannedBounds)) return false
 
     // Quick filter
     if (quickFilter !== "all") {
@@ -874,7 +871,20 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     return true
   })
 
-  const hasActiveFilters = plannedFilter !== "all" || quickFilter !== "all" || Object.keys(columnFilters).length > 0 || fixedFilters.device !== null || fixedFilters.mcm !== null || fixedFilters.subsystem !== null || searchQuery !== ""
+  const hasActiveFilters = plannedBucket !== "all" || plannedExactDate !== "" || quickFilter !== "all" || Object.keys(columnFilters).length > 0 || fixedFilters.device !== null || fixedFilters.mcm !== null || fixedFilters.subsystem !== null || searchQuery !== ""
+
+  // One clear-everything action, shared by the toolbar link and the
+  // all-rows-hidden panel. Previously duplicated, and BOTH copies left the
+  // planned-date filter set — so "Clear filters" could leave the grid empty and
+  // the button still showing.
+  const clearAllFilters = () => {
+    setQuickFilter("all")
+    setColumnFilters({})
+    setFixedFilters({ device: null, mcm: null, subsystem: null })
+    setSearchQuery("")
+    setPlannedBucket("all")
+    setPlannedExactDate("")
+  }
 
   /** Open the VFD wizard from the sheet grid */
   const handleOpenWizardFromGrid = (device: { id: number; DeviceName: string; Mcm: string; Subsystem: string; SubsystemId: number | null }) => {
@@ -1103,80 +1113,82 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
       </div>
       )}
 
-      {/* Search + quick filters */}
-      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b shrink-0">
+      {/* Search + quick filters. Wraps rather than overflows: at tablet widths
+          the five quick filters, the planned-date control and (in VFD mode) the
+          Addressed toggle do not fit one line, and the row used to squeeze them
+          instead of moving to a second line. */}
+      <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5 border-b shrink-0">
         <div className="relative mr-1">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground pointer-events-none" />
           <input
             type="text"
             placeholder="Search devices..."
+            aria-label="Search devices"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-7 w-44 rounded-md border bg-background pl-7 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-[44px] w-44 rounded-md border bg-background pl-7 pr-7 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           {searchQuery && (
-            <button onClick={() => setSearchQuery("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-              <X className="h-3 w-3" />
+            <button
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear device search"
+              title="Clear device search"
+              className="absolute right-0 top-0 h-[44px] w-7 flex items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <X className="h-3 w-3" aria-hidden="true" />
             </button>
           )}
         </div>
-        {(["all", "complete", "incomplete", "has_failures", "all_passed"] as const).map((qf) => {
-          const labels = { all: "All", complete: "Complete", incomplete: "Incomplete", has_failures: "Has Failures", all_passed: "All Passed" }
-          return (
-            <button
-              key={qf}
-              onClick={() => setQuickFilter(quickFilter === qf ? "all" : qf)}
-              className={cn(
-                "rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
-                quickFilter === qf
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
-              )}
-            >
-              {labels[qf]}
-            </button>
-          )
-        })}
+        <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
+          {(["all", "complete", "incomplete", "has_failures", "all_passed"] as const).map((qf) => {
+            const labels = { all: "All", complete: "Complete", incomplete: "Incomplete", has_failures: "Has Failures", all_passed: "All Passed" }
+            return (
+              <button
+                key={qf}
+                onClick={() => setQuickFilter(quickFilter === qf ? "all" : qf)}
+                aria-pressed={quickFilter === qf}
+                className={cn(
+                  "h-[44px] px-3 rounded-md border text-[11px] font-medium whitespace-nowrap transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  quickFilter === qf
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+                )}
+              >
+                {labels[qf]}
+              </button>
+            )
+          })}
+        </div>
         {/* Planned-date filter — "what am I supposed to do today". Cloud-owned
-            dates, so this is read-only here: a select, not an editor. */}
-        <select
-          value={plannedFilter}
-          onChange={(e) => setPlannedFilter(e.target.value as typeof plannedFilter)}
-          aria-label="Filter by planned date"
-          title="Filter by the date this work is scheduled for"
-          className={cn(
-            "rounded-md border px-2 py-1 text-[11px] font-medium transition-colors bg-background",
-            plannedFilter !== "all"
-              ? "border-primary text-primary"
-              : "border-border text-muted-foreground hover:text-foreground",
-          )}
-        >
-          <option value="all">Any date</option>
-          <option value="overdue">Overdue</option>
-          <option value="today">Due today</option>
-          <option value="thisWeek">Due this week</option>
-          <option value="hasDate">Has a date</option>
-          <option value="noDate">No date</option>
-        </select>
+            dates, so this only ever reads them; the same control the IO grid
+            uses, so the question looks identical on every page. */}
+        <PlannedDateFilter
+          bucket={plannedBucket}
+          exactDate={plannedExactDate}
+          onChange={(bucket, exactDate) => { setPlannedBucket(bucket); setPlannedExactDate(exactDate) }}
+        />
         {vfdMode && (
           <button
             onClick={() => setQuickFilter(quickFilter === "addressed" ? "all" : "addressed")}
+            aria-pressed={quickFilter === "addressed"}
             className={cn(
-              "rounded-md border px-2 py-1 text-[11px] font-medium transition-colors flex items-center gap-1",
+              "h-[44px] px-3 rounded-md border text-[11px] font-medium whitespace-nowrap transition-colors flex items-center gap-1",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               quickFilter === "addressed"
                 ? "border-sky-500 bg-sky-500 text-white"
                 : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
             )}
             title="Show only belts a mechanic addressed on the cloud (ready to re-run)"
           >
-            <Wrench className="h-3 w-3" />
+            <Wrench className="h-3 w-3" aria-hidden="true" />
             Addressed
           </button>
         )}
         {hasActiveFilters && (
           <button
-            onClick={() => { setQuickFilter("all"); setColumnFilters({}); setFixedFilters({ device: null, mcm: null, subsystem: null }); setSearchQuery("") }}
-            className="ml-1 text-[11px] text-muted-foreground underline hover:text-foreground"
+            onClick={clearAllFilters}
+            className="h-[44px] px-2 inline-flex items-center rounded-md text-[11px] text-muted-foreground underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Clear filters
           </button>
@@ -1204,12 +1216,12 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
                   All {activeDevices.length} devices are hidden by active filters
                 </p>
                 <p className="text-xs text-amber-700 dark:text-amber-400">
-                  A search, quick filter or column filter (saved from a previous visit) is excluding every row.
+                  A search, quick filter, column filter or planned-date filter (saved from a previous visit) is excluding every row.
                 </p>
               </div>
               <Button
                 size="sm"
-                onClick={() => { setQuickFilter("all"); setColumnFilters({}); setFixedFilters({ device: null, mcm: null, subsystem: null }); setSearchQuery("") }}
+                onClick={clearAllFilters}
                 className="gap-2 bg-amber-600 hover:bg-amber-700 text-white border-0"
               >
                 <X className="h-4 w-4" />
