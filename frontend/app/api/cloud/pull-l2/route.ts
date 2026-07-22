@@ -55,15 +55,23 @@ export async function POST(req: Request, res: Response) {
     ).get(Number(subsystemId)) as { active: number | null; parked: number | null }
     const l2Active = l2QueueCounts.active ?? 0
     const l2Parked = l2QueueCounts.parked ?? 0
-    if (l2Active + l2Parked > 0) {
-      const parts = [
-        l2Active > 0 ? `sync ${l2Active} pending FV cell change(s) first` : null,
-        l2Parked > 0 ? `resolve ${l2Parked} parked FV cell(s) the cloud rejected` : null,
-      ].filter(Boolean).join('; ')
+    // PARKED rows deliberately do NOT block. A parked row is one the cloud
+    // permanently rejected, so it never drains on its own — counting it here
+    // meant a single stale cell starved that tablet of ALL cloud→field FV data
+    // forever, including planned dates, with every trigger 409ing indefinitely.
+    // The IO pull guard already excludes parked rows for exactly this reason
+    // (auto-sync-pull.ts). Parked rows still surface in the Sync Center; they
+    // just no longer hold the whole section hostage.
+    if (l2Active > 0) {
       return res.status(409).json({
         success: false,
-        error: `FV pull blocked to protect unsynced local FV data: ${parts}.`,
+        error: `FV pull blocked to protect unsynced local FV data: sync ${l2Active} pending FV cell change(s) first.`,
       })
+    }
+    if (l2Parked > 0) {
+      console.warn(
+        `[L2Pull] proceeding with ${l2Parked} parked FV cell(s) present (cloud rejected them; they cannot drain and must not block cloud→field data).`,
+      )
     }
 
     const l2Url = `${remoteUrl}/api/sync/l2/${subsystemId}`
