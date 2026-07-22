@@ -134,10 +134,10 @@ function seedSheet(cloudSheetId: number): number {
     'INSERT INTO L2Sheets (CloudId,Name,DisplayName,DisplayOrder,Discipline,DeviceCount) VALUES (?,?,?,?,?,?)',
   ).run(cloudSheetId, 'FV', 'FV', 1, 'E', 0).lastInsertRowid as number
 }
-function seedColumn(cloudColId: number, localSheetId: number): number {
+function seedColumn(cloudColId: number, localSheetId: number, name = 'Check'): number {
   return memDb.prepare(
     'INSERT INTO L2Columns (CloudId,SheetId,Name,ColumnType,InputType,DisplayOrder,IsSystem,IsEditable,IncludeInProgress,IsRequired,Description) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-  ).run(cloudColId, localSheetId, 'Check', 'check', 'check', 1, 0, 1, 1, 0, null).lastInsertRowid as number
+  ).run(cloudColId, localSheetId, name, 'check', 'check', 1, 0, 1, 1, 0, null).lastInsertRowid as number
 }
 function seedDevice(cloudDevId: number, localSheetId: number, opts: { subsystemId?: number | null; name?: string } = {}): number {
   return memDb.prepare(
@@ -186,6 +186,9 @@ describe('pull-l2 non-destructive merge', () => {
     })
   })
 
+  // NOTE (2026-07-22): tests 2 / 2-owned are a PAIR. The never-blank rule below
+  // is deliberately scoped to FIELD-owned columns (this one is named 'Check');
+  // for a CLOUD-owned column an empty value is an instruction, see 2-owned.
   it('2. does NOT blank a filled local cell when cloud sends an empty value', async () => {
     const sh = seedSheet(100)
     const col = seedColumn(200, sh)
@@ -198,6 +201,58 @@ describe('pull-l2 non-destructive merge', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(getCell(cell).Value).toBe('PASS') // filled local value preserved
+  })
+
+  it('2-owned. CLEARS a filled local "Belt Tracked" cell when the cloud sends an empty value (untrack syncs DOWN)', async () => {
+    // 2026-07-22 incident: a coordinator untracked belts at 12:37 (cloud wrote
+    // value=''); the tablets discarded the empty value, kept asserting
+    // Tracking_Finished into the PLC, and mech could not change belt direction
+    // from the keypad for four hours. "Belt Tracked" is CLOUD-owned, so an empty
+    // cloud value is a real instruction, not missing data.
+    const sh = seedSheet(100)
+    const col = seedColumn(200, sh, 'Belt Tracked')
+    const dev = seedDevice(300, sh)
+    const cell = seedCell(dev, col, 'Yes', '2026-07-22T12:00:00.000Z', 10, 1)
+    const res = await runPull({
+      success: true,
+      sheets: [sheetPayload(100, [colPayload(200, 'Belt Tracked')])],
+      devices: [devPayload(300, 100)],
+      cellValues: [cellPayload(10, 300, 200, '', '2026-07-22T12:37:00.000Z', 2)],
+    })
+    expect(res.statusCode).toBe(200)
+    expect(getCell(cell).Value ?? '').toBe('') // untrack landed — belt is cleared
+  })
+
+  it('2-owned-case. matches the cloud-owned column name case-insensitively', async () => {
+    const sh = seedSheet(100)
+    const col = seedColumn(200, sh, 'belt tracked')
+    const dev = seedDevice(300, sh)
+    const cell = seedCell(dev, col, 'Yes', '2026-07-22T12:00:00.000Z', 10, 1)
+    const res = await runPull({
+      success: true,
+      sheets: [sheetPayload(100, [colPayload(200, 'belt tracked')])],
+      devices: [devPayload(300, 100)],
+      cellValues: [cellPayload(10, 300, 200, null, '2026-07-22T12:37:00.000Z', 2)],
+    })
+    expect(res.statusCode).toBe(200)
+    expect(getCell(cell).Value ?? '').toBe('')
+  })
+
+  it('2-owned-notnewer. still respects version ordering — a NON-newer empty cloud value does not clear', async () => {
+    // The ownership change relaxes the EMPTY check only; it does not weaken the
+    // strictly-newer requirement that keeps a stale payload from clobbering.
+    const sh = seedSheet(100)
+    const col = seedColumn(200, sh, 'Belt Tracked')
+    const dev = seedDevice(300, sh)
+    const cell = seedCell(dev, col, 'Yes', '2026-07-22T12:00:00.000Z', 10, 5)
+    const res = await runPull({
+      success: true,
+      sheets: [sheetPayload(100, [colPayload(200, 'Belt Tracked')])],
+      devices: [devPayload(300, 100)],
+      cellValues: [cellPayload(10, 300, 200, '', '2026-07-20T10:00:00.000Z', 3)],
+    })
+    expect(res.statusCode).toBe(200)
+    expect(getCell(cell).Value).toBe('Yes') // stale untrack ignored
   })
 
   it('3. overwrites a filled local cell when the cloud version is strictly newer (a cloud-authored FV correction lands)', async () => {

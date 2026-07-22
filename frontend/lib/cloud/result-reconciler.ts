@@ -30,6 +30,7 @@ import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { isCloudOwnedColumn } from '@/lib/cloud/column-ownership'
 
 /** Local Ios row, with the fields a faithful re-push must carry. */
 export interface LocalResultRow {
@@ -257,6 +258,8 @@ export interface LocalL2CellRow {
   columnCloudId: number
   value: string
   updatedBy: string | null
+  /** Column NAME — used only to skip cloud-OWNED columns (see below). */
+  columnName?: string | null
 }
 
 export interface CloudL2CellState {
@@ -279,6 +282,14 @@ export interface L2ReconcileEnqueue {
  * Pure diff: local mapped, non-empty FV cells the cloud has no value for
  * (cell missing or empty), excluding cells that already have a queue row.
  * A *different* cloud value is never touched — normal last-write-wins.
+ *
+ * CLOUD-OWNED columns are EXCLUDED (2026-07-22). For a field-owned column,
+ * "local filled + cloud empty" means the cloud is MISSING the operator's work
+ * and we re-push it. For a cloud-owned column like "Belt Tracked" the exact
+ * same shape means the OPPOSITE: the cloud deliberately CLEARED it (an untrack)
+ * and local is simply behind. Re-enqueuing there pushes the stale 'Yes' back UP
+ * and silently RE-TRACKS the belt — undoing the pull/SSE clears on the very next
+ * reconcile cycle. The cloud is the author; local has nothing to contribute.
  */
 export function computeL2ReconcileEnqueues(
   local: readonly LocalL2CellRow[],
@@ -291,6 +302,7 @@ export function computeL2ReconcileEnqueues(
   const out: L2ReconcileEnqueue[] = []
   for (const row of local) {
     if (isEmpty(row.value)) continue
+    if (isCloudOwnedColumn(row.columnName)) continue
     const key = `${row.deviceCloudId}-${row.columnCloudId}`
     if (existingQueuedKeys.has(key)) continue
     const cloud = cloudByKey.get(key)
@@ -347,7 +359,7 @@ export async function reconcileOrphanedL2Cells(subsystemId: number): Promise<L2R
 
   const local = db.prepare(
     `SELECT d.CloudId as deviceCloudId, c.CloudId as columnCloudId,
-            v.Value as value, v.UpdatedBy as updatedBy
+            v.Value as value, v.UpdatedBy as updatedBy, c.Name as columnName
        FROM L2CellValues v
        JOIN L2Devices d ON d.id = v.DeviceId
        JOIN L2Columns c ON c.id = v.ColumnId

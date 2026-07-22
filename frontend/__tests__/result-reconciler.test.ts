@@ -134,3 +134,40 @@ describe('computeL2ReconcileEnqueues (F9 — FV orphans)', () => {
     )).toHaveLength(0)
   })
 })
+
+// ── Cloud-owned columns must never be re-pushed (belt untrack, 2026-07-22) ──
+describe('computeL2ReconcileEnqueues — cloud-owned columns', () => {
+  const owned = (value: string, name = 'Belt Tracked'): LocalL2CellRow => ({
+    deviceCloudId: 10, columnCloudId: 20, value, updatedBy: 'kev', columnName: name,
+  })
+
+  it('does NOT re-enqueue a "Belt Tracked" cell the cloud deliberately CLEARED', () => {
+    // Without this the reconciler reads local 'Yes' + cloud '' as "the cloud is
+    // missing my work", pushes 'Yes' back UP at the cloud's current version, and
+    // silently RE-TRACKS the belt — undoing the pull/SSE clears next cycle.
+    expect(computeL2ReconcileEnqueues(
+      [owned('Yes')],
+      [{ deviceId: 10, columnId: 20, value: '', version: 7 }],
+      NOKEYS,
+    )).toHaveLength(0)
+  })
+
+  it('does NOT re-enqueue a "Belt Tracked" cell the cloud payload omits entirely', () => {
+    expect(computeL2ReconcileEnqueues([owned('Yes')], [], NOKEYS)).toHaveLength(0)
+  })
+
+  it('matches the cloud-owned column name case-insensitively', () => {
+    expect(computeL2ReconcileEnqueues([owned('Yes', 'belt tracked')], [], NOKEYS)).toHaveLength(0)
+    expect(computeL2ReconcileEnqueues([owned('Yes', ' BELT TRACKED ')], [], NOKEYS)).toHaveLength(0)
+  })
+
+  it('STILL re-enqueues an orphaned FIELD-owned cell (regression guard)', () => {
+    expect(computeL2ReconcileEnqueues(
+      [owned('Passed', 'Check')],
+      [{ deviceId: 10, columnId: 20, value: '', version: 7 }],
+      NOKEYS,
+    )).toHaveLength(1)
+    // and a row with no column name at all is treated as field-owned
+    expect(computeL2ReconcileEnqueues([cell(10, 20, 'Passed')], [], NOKEYS)).toHaveLength(1)
+  })
+})

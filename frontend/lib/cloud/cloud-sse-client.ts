@@ -10,6 +10,7 @@
 
 import { db } from '@/lib/db-sqlite'
 import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
+import { isCloudOwnedColumn } from '@/lib/cloud/column-ownership'
 import { getBroadcastUrl } from '@/lib/broadcast-config'
 
 // SSE connection states
@@ -48,6 +49,41 @@ export interface SseLocalIo { Result: string | null; Version: number }
  * (lib/cloud/pull-guard.ts / delta-sync isProtectedClear) to the live SSE path
  * so the MCM04 "keeps getting reset" loss can't reopen via SSE.
  */
+/** What handleL2CellUpdated should do with an incoming cloud L2 cell event. */
+export type SseL2CellDecision = 'insert' | 'update' | 'broadcast-only' | 'skip'
+
+/**
+ * Pure decision for the live cloud→field L2 cell merge.
+ *
+ * Same rule as the pull (2026-07-08): a FILLED local cell is field-authored test
+ * data and is NEVER overwritten or blanked by a cloud event; a cloud value may
+ * still land in a MISSING or EMPTY local cell (the belt-tracking handoff — mech
+ * fills "Belt Tracked" on the cloud page and the field wizard waits for it).
+ *
+ * EXCEPTION — cloud-OWNED columns (2026-07-22 untrack incident): there the cloud
+ * is the author, so an EMPTY event is a real "clear this" instruction and MUST
+ * land even over a filled local cell. Without this a coordinator's untrack never
+ * reaches the tablet, which keeps asserting Tracking_Finished into the PLC and
+ * locks mech out of the keypad (it did, for four hours).
+ *
+ * A value-identical event writes nothing but still returns 'broadcast-only' so
+ * an open UI repaints — the old code returned early and left the grid stale.
+ */
+export function computeSseL2CellApply(
+  incomingValue: string | null,
+  localValue: string | null,
+  columnName: string | null | undefined,
+  missingLocally: boolean,
+): SseL2CellDecision {
+  if (missingLocally) return 'insert'
+  const incomingFilled = incomingValue != null && String(incomingValue).trim() !== ''
+  const localFilled = localValue != null && String(localValue).trim() !== ''
+  const mayApply = isCloudOwnedColumn(columnName) || (!localFilled && incomingFilled)
+  if (!mayApply) return 'skip'
+  const sameValue = String(incomingValue ?? '') === String(localValue ?? '')
+  return sameValue ? 'broadcast-only' : 'update'
+}
+
 export function computeSseIoUpdate(
   event: any,
   localIo: SseLocalIo,
@@ -510,29 +546,23 @@ export class CloudSseClient {
     try {
       // Look up local IDs via CloudId columns
       const localDev = db.prepare('SELECT id FROM L2Devices WHERE CloudId = ?').get(data.deviceId) as { id: number } | undefined
-      const localCol = db.prepare('SELECT id FROM L2Columns WHERE CloudId = ?').get(data.columnId) as { id: number } | undefined
+      const localCol = db.prepare('SELECT id, Name FROM L2Columns WHERE CloudId = ?').get(data.columnId) as { id: number; Name: string | null } | undefined
       if (!localDev || !localCol) return // Cell not in local DB (different subsystem)
 
       // Find existing cell value
       const existing = db.prepare('SELECT id, Value FROM L2CellValues WHERE DeviceId = ? AND ColumnId = ?').get(localDev.id, localCol.id) as { id: number; Value: string | null } | undefined
 
-      // Same rule as the pull (2026-07-08): a FILLED local cell is field-authored
-      // test data and is NEVER overwritten by a cloud event. But a cloud-authored
-      // value must still land in a MISSING or EMPTY local cell — this is the belt-
-      // tracking handoff (the mechanical fills "Belt Tracked" on the cloud page and
-      // the field wizard waits for it). So: insert if missing; fill if empty; keep
-      // if filled.
-      const incomingFilled = data.value != null && String(data.value).trim() !== ''
-      if (!existing) {
+      const decision = computeSseL2CellApply(data.value, existing?.Value ?? null, localCol.Name, !existing)
+      if (decision === 'skip') return
+      if (decision === 'insert') {
         db.prepare(`INSERT INTO L2CellValues (DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?)`)
           .run(localDev.id, localCol.id, data.value, data.updatedBy, data.updatedAt, data.version)
-      } else {
-        const localFilled = existing.Value != null && String(existing.Value).trim() !== ''
-        if (localFilled) return // never overwrite operator-entered test data
-        if (!incomingFilled) return // empty→empty is a no-op
+      } else if (decision === 'update') {
         db.prepare(`UPDATE L2CellValues SET Value = ?, UpdatedBy = ?, UpdatedAt = ?, Version = ? WHERE id = ?`)
-          .run(data.value, data.updatedBy, data.updatedAt, data.version, existing.id)
+          .run(data.value, data.updatedBy, data.updatedAt, data.version, existing!.id)
       }
+      // decision === 'broadcast-only' falls through: nothing to write, but an
+      // open UI still gets the repaint below.
 
       // Recount completed checks for the device
       const completedCount = db.prepare(`SELECT COUNT(*) as cnt FROM L2CellValues cv JOIN L2Columns lc ON cv.ColumnId = lc.id WHERE cv.DeviceId = ? AND lc.IncludeInProgress = 1 AND cv.Value IS NOT NULL AND cv.Value != ''`).get(localDev.id) as { cnt: number } | undefined

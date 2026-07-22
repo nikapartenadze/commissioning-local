@@ -10,6 +10,7 @@
 import { Request, Response } from 'express'
 import { db } from '@/lib/db-sqlite'
 import { computeAtRiskL2Cells, parseDbTimestamp, type LocalL2Cell } from '@/lib/cloud/pull-guard'
+import { isCloudOwnedColumn } from '@/lib/cloud/column-ownership'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { configService } from '@/lib/config'
 import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
@@ -198,6 +199,7 @@ export async function POST(req: Request, res: Response) {
         'UPDATE L2PendingSyncs SET Orphaned = 0, DeadLettered = 0, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, ' +
         'RetryCount = 0, LastError = NULL WHERE CloudDeviceId = ? AND Orphaned = 1',
       )
+      const getColName = db.prepare('SELECT Name FROM L2Columns WHERE id = ?')
       const getCell = db.prepare('SELECT id, Value, UpdatedAt, Version FROM L2CellValues WHERE DeviceId=? AND ColumnId=?')
       const insertCell = db.prepare('INSERT INTO L2CellValues (CloudCellId, DeviceId, ColumnId, Value, UpdatedBy, UpdatedAt, Version) VALUES (?, ?, ?, ?, ?, ?, ?)')
       const fillCell = db.prepare('UPDATE L2CellValues SET CloudCellId=?, Value=?, UpdatedBy=?, UpdatedAt=?, Version=? WHERE id=?')
@@ -205,6 +207,9 @@ export async function POST(req: Request, res: Response) {
       const sheetIdMap = new Map<number, number>()
       const columnIdMap = new Map<number, number>()
       const deviceIdMap = new Map<number, number>()
+      // cloud columnId → column NAME, so the cell merge below can ask
+      // isCloudOwnedColumn() without a second query.
+      const columnNameMap = new Map<number, string>()
 
       for (const sheet of data.sheets) {
         const existing = findSheet.get(sheet.id) as { id: number } | undefined
@@ -231,6 +236,7 @@ export async function POST(req: Request, res: Response) {
             localColId = insertCol.run(col.id, ...colArgs).lastInsertRowid as number
           }
           columnIdMap.set(col.id, localColId)
+          if (col.name != null) columnNameMap.set(col.id, String(col.name))
         }
       }
 
@@ -271,6 +277,15 @@ export async function POST(req: Request, res: Response) {
         const lc = columnIdMap.get(cell.columnId)
         if (!ld || !lc) continue
         const cloudFilled = cell.value != null && String(cell.value).trim() !== ''
+        // Cloud-OWNED column (e.g. "Belt Tracked"): an EMPTY cloud value is a
+        // real instruction ("untrack this belt"), not missing data, so it is
+        // allowed to arrive empty and CLEAR the local cell. Field-owned columns
+        // keep the never-blank protection. Name comes from the payload; fall
+        // back to the local row for a payload that omits it.
+        const colName = columnNameMap.get(cell.columnId)
+          ?? (getColName.get(lc) as { Name: string } | undefined)?.Name
+        const cloudOwned = isCloudOwnedColumn(colName)
+        const cloudAuthoritative = cloudFilled || cloudOwned
         const ver = Number(cell.version) || 0
         const ex = getCell.get(ld, lc) as { id: number; Value: string | null; UpdatedAt: string | null; Version: number | null } | undefined
         if (!ex) {
@@ -304,7 +319,7 @@ export async function POST(req: Request, res: Response) {
             const localTs = parseDbTimestamp(ex.UpdatedAt)
             cloudNewer = Number.isFinite(cloudTs) && Number.isFinite(localTs) && cloudTs > localTs
           }
-          if (!hasPendingEdit && cloudFilled && String(cell.value) !== String(ex.Value) && cloudNewer) {
+          if (!hasPendingEdit && cloudAuthoritative && String(cell.value ?? '') !== String(ex.Value) && cloudNewer) {
             fillCell.run(cell.id, cell.value, cell.updatedBy, cell.updatedAt, ver, ex.id)
             cellsOverwritten++; l2CellsPulled++
             continue
@@ -318,7 +333,7 @@ export async function POST(req: Request, res: Response) {
         // it to arrive here. Filling a blank never destroys operator work. Guard
         // the rare "operator just cleared this cell" case: only accept the cloud
         // value if the local blank is NOT strictly newer than the cloud value.
-        if (cloudFilled) {
+        if (cloudAuthoritative) {
           const localTs = parseDbTimestamp(ex.UpdatedAt)
           const cloudTs = parseDbTimestamp(cell.updatedAt)
           const localBlankIsNewer = Number.isFinite(localTs) && Number.isFinite(cloudTs) && localTs > cloudTs
