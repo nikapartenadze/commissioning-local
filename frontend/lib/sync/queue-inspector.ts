@@ -27,7 +27,14 @@ export type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' 
 
 export interface QueueItem {
   kind: QueueKind
+  /** The QUEUE ROW's own id — NOT the id of whatever it targets. */
   id: number
+  /**
+   * The Ios row this queue row targets. Set ONLY for kind==='io'; the other four
+   * queues key on device/column/zone/task, which are not IOs. Kept distinct from
+   * `id` so a queue-row id can never be mistaken for (or reported as) an IO id.
+   */
+  ioId: number | null
   // Owning MCM/subsystem so the Sync Center can attribute + filter + scope bulk
   // actions per MCM. NULL only for legacy single-MCM rows (e.g. an L2 device
   // that predates per-MCM scoping) — those show as "Unassigned".
@@ -67,7 +74,15 @@ const TABLE_BY_KIND: Record<QueueKind, string> = {
 // pending or parked (never orphaned).
 const KINDS_WITH_ORPHANED: ReadonlySet<QueueKind> = new Set<QueueKind>(['io', 'l2', 'blocker'])
 
-const REASONS: Record<Classification, string> = {
+/**
+ * Canonical per-classification reason text.
+ *
+ * Exported (text UNCHANGED) so the heartbeat's held-back telemetry can ship the
+ * SAME explanation the operator sees WITHOUT the raw-LastError interpolation
+ * that `classify()` appends for the cloud_rejected/unknown cases — see
+ * lib/heartbeat/queue-stats.ts. Reuse this map; do not restate it.
+ */
+export const REASONS: Record<Classification, string> = {
   gone_on_cloud:
     'This device/IO no longer exists on the cloud (it was removed). Nothing to sync to — safe to discard.',
   version_conflict:
@@ -165,6 +180,8 @@ function buildItem(
   return {
     kind,
     id,
+    // Overridden by readIoRows with the real IoId; every other queue has none.
+    ioId: null,
     subsystemId: sid != null && Number.isFinite(sid) ? sid : null,
     mcm: mcm ?? null,
     title,
@@ -198,7 +215,11 @@ function readIoRows(): QueueItem[] {
   return rows.map((r) => {
     const title = (r.IoName && String(r.IoName)) || `IO #${r.IoId}`
     const subtitle = r.IoDescription != null ? String(r.IoDescription) : null
-    return buildItem('io', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned, r.Resolved)
+    const ioId = r.IoId == null ? null : Number(r.IoId)
+    return {
+      ...buildItem('io', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned, r.Resolved),
+      ioId: ioId != null && Number.isFinite(ioId) ? ioId : null,
+    }
   })
 }
 

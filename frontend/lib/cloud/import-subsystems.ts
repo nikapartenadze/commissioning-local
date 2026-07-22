@@ -12,6 +12,7 @@
  */
 
 import { configService } from '@/lib/config';
+import { noteCloudProjectId } from '@/lib/sync/cloud-project';
 
 export interface ImportSubsystemsResult {
   success: boolean;
@@ -65,6 +66,11 @@ export async function fetchCloudProjectInfo(): Promise<CloudProjectInfo> {
     }
     if (!res.ok) return { ok: false, error: `Cloud returned ${res.status}` };
     const data = await res.json();
+    // Bank the project this API key resolves to — the only truthful source of
+    // the cloud project id on the tablet (see lib/sync/cloud-project.ts). It
+    // makes the heartbeat's held-back rows attributable to a project exactly,
+    // instead of the cloud inferring one. Best-effort; never affects the probe.
+    noteCloudProjectId(data?.projectId);
     const subs = Array.isArray(data?.subsystems) ? data.subsystems : [];
     return {
       ok: true,
@@ -107,6 +113,7 @@ export async function importSubsystemsFromCloud(): Promise<ImportSubsystemsResul
       return { success: false, error: `Cloud returned ${res.status}` };
     }
     data = await res.json();
+    noteCloudProjectId(data?.projectId); // see fetchCloudProjectInfo above
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : 'Cloud request failed' };
   }
