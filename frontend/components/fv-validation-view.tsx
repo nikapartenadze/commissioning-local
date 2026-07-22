@@ -126,8 +126,6 @@ interface FVPersistedState {
   fixedFilters: { device: string[] | null; mcm: string[] | null; subsystem: string[] | null }
   searchQuery: string
   viewMode: 'sheets' | 'overview'
-  plannedBucket: PlannedBucket
-  plannedExactDate: string
 }
 
 // `scope` distinguishes persisted filter state per subsystem AND per mode, so the
@@ -207,16 +205,20 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
   // odd one out ("my search came back but the date didn't"). A restored exact
   // date does go stale, so the trigger always spells the active filter out and
   // the all-rows-hidden panel names this filter by name.
-  const [plannedBucket, setPlannedBucket] = useState<PlannedBucket>((_saved.current.plannedBucket as PlannedBucket) ?? "all")
-  const [plannedExactDate, setPlannedExactDate] = useState(_saved.current.plannedExactDate ?? "")
+  // Deliberately NOT restored from saved state, unlike its neighbours: a tech
+  // opening this page tomorrow wants today's work, not yesterday's filter, and
+  // a restored date filter silently hid every row on arrival (0 of 72) with no
+  // obvious cause. Matches the I/O grid, which also starts unfiltered.
+  const [plannedBucket, setPlannedBucket] = useState<PlannedBucket>("all")
+  const [plannedExactDate, setPlannedExactDate] = useState("")
   const [columnFilters, setColumnFilters] = useState<Record<string, any>>(_saved.current.columnFilters ?? {})
   const [fixedFilters, setFixedFilters] = useState<{ device: string[] | null; mcm: string[] | null; subsystem: string[] | null }>(_saved.current.fixedFilters ?? { device: null, mcm: null, subsystem: null })
   const [searchQuery, setSearchQuery] = useState(_saved.current.searchQuery ?? "")
 
   // Persist filter state whenever it changes
   useEffect(() => {
-    saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, plannedBucket, plannedExactDate }, persistScope)
-  }, [activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, plannedBucket, plannedExactDate, persistScope])
+    saveFVState({ activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode }, persistScope)
+  }, [activeSheet, quickFilter, columnFilters, fixedFilters, searchQuery, viewMode, persistScope])
 
   // Detect narrow viewport (tablet)
   useEffect(() => {
