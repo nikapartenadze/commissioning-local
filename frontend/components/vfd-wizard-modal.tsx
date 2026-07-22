@@ -17,6 +17,10 @@ import { VfdBumpFailDialog } from '@/components/vfd-bump-fail-dialog'
 import { toast } from '@/hooks/use-toast'
 import { type VfdBlockerParty } from '@/lib/blockers'
 import { formatBumpBlockerCell, parseBumpBlockerCell, shouldClearBlockerOnTestRunPass, isMissingColumnDrop } from '@/lib/vfd-bump-blocker'
+import {
+  deriveWizardCellState, mergeLiveWizardCellState, applyBeltGate,
+  shouldRaiseUntrackNotice, type WizardCellState,
+} from '@/lib/vfd-wizard-gate'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -1798,6 +1802,40 @@ const STEPS = [
   { num: 5, label: 'Calibrate Speed', icon: Gauge },
 ]
 
+/**
+ * Tracking-in-the-middle GATE panel, shown in place of a belt-gated step's
+ * controls while the "Belt Tracked" cell is empty.
+ *
+ * Used by BOTH step 4 (Bump Test / polarity) and step 5 (Calibrate Speed).
+ * Step 5 previously had no render-level gate at all and leaned entirely on the
+ * cascade, which the one-way `beltTrackedDone` latch could not close.
+ *
+ * The AOI on the drive already refuses to validate direction before the belt is
+ * tracked, so this is not the only line of defence — but the wizard writing the
+ * validation chain from these steps is what re-asserted the belt-tracking flag
+ * onto a shared controller, so the controls must not be reachable.
+ */
+function BeltNotTrackedPanel({ stepLabel }: { stepLabel: string }) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 space-y-2">
+        <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm font-semibold">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          Waiting for the mechanical team to track this belt
+        </div>
+        <p className="text-xs text-amber-800/90 dark:text-amber-300/90 leading-relaxed">
+          {stepLabel} stays locked until the mechanical team marks{' '}
+          <strong>Belt Tracked</strong> on the cloud belt-tracking page. The moment
+          they do, it syncs back to this tool automatically (or pull the latest L2
+          data) and this step unlocks. If this belt was tracked earlier and has
+          just been marked not tracked again, the mechanical team is working on it
+          — leave the drive alone until they finish.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ── Main Modal Component ───────────────────────────────────────────
 
 export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, onClose }: VfdWizardModalProps) {
@@ -1811,6 +1849,11 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // wizard until the operator reloaded the page.
   const signalR = useSignalR()
   const [activeStep, setActiveStep] = useState(0)
+  // Read by the FV-cell callback (which is registered once and must not be
+  // re-registered on every step change) to decide whether a gate closing needs
+  // an explanation banner.
+  const activeStepRef = useRef(0)
+  activeStepRef.current = activeStep
   const [sts, setSts] = useState<StsState>({
     Check_Allowed: null, Valid_Map: null, Valid_HP: null,
     Valid_Direction: null, Jogging: null, Starting: null, RVS: null,
@@ -1852,6 +1895,10 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // PLC). In the reworked flow BOTH the Bump Test (index 4) and Calibrate Speed
   // (index 5) steps are locked until the Belt Tracked L2 cell is filled.
   const [beltTrackedDone, setBeltTrackedDone] = useState(false)
+  // Raised when the belt-tracking gate CLOSES under the operator's feet (i.e.
+  // somebody marked the belt not tracked while this wizard was open on a step
+  // past the gate). Purely informational — the cascade does the actual locking.
+  const [untrackNotice, setUntrackNotice] = useState(false)
   // Speed Set Up tracks whether Calibrate Speed (index 5) was completed.
   const [speedSetUpDone, setSpeedSetUpDone] = useState(false)
   // ── Clear Test button (header) ───────────────────────────────────
@@ -1862,6 +1909,51 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   const [clearing, setClearing] = useState(false)
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => { if (clearTimerRef.current) clearTimeout(clearTimerRef.current) }, [])
+  // Mirror of the last cell-derived flags, so the live path can run the pure
+  // merge policy. Children still call the individual setters directly; a stale
+  // entry here is harmless because the live path is upgrade-only for every
+  // field except `beltTrackedDone`, which is taken from the fresh read outright.
+  const cellStateRef = useRef<WizardCellState>({
+    beltTrackedDone: false, testRunDone: false, identityDone: false,
+    directionDone: false, speedSetUpDone: false, hpFieldsFilled: false,
+  })
+  /**
+   * Push a fresh cell read into the wizard's flags.
+   *
+   * `live: false` (open / Clear Test) — nothing of ours is in flight, so the
+   * cells are taken at face value in BOTH directions. These used to be one-way
+   * `if (x) set(true)` latches; from a false baseline that was equivalent, but
+   * the latch is what let a cleared Belt Tracked cell be ignored once open.
+   *
+   * `live: true` — see mergeLiveWizardCellState: only `beltTrackedDone` may
+   * regress, because it is the one flag somebody else owns.
+   */
+  const applyCellState = useCallback((read: WizardCellState, live: boolean) => {
+    const prev = cellStateRef.current
+    const next = live ? mergeLiveWizardCellState(prev, read) : read
+    cellStateRef.current = next
+    if (live && shouldRaiseUntrackNotice(prev.beltTrackedDone, next.beltTrackedDone, activeStepRef.current)) {
+      console.warn(`[VFD Wizard] Belt Tracked cleared for ${device.deviceName} while the wizard was open on step ${activeStepRef.current} — closing the gate.`)
+      setUntrackNotice(true)
+    }
+    // Re-tracked: the gate reopens, so retire the notice.
+    if (next.beltTrackedDone) setUntrackNotice(false)
+    setBeltTrackedDone(next.beltTrackedDone)
+    setCheck4Complete(next.testRunDone)
+    setIdentityDone(next.identityDone)
+    setDirectionDone(next.directionDone)
+    setSpeedSetUpDone(next.speedSetUpDone)
+    setHpFieldsFilled(next.hpFieldsFilled)
+  }, [device.deviceName])
+  /**
+   * Record a flag the operator just earned locally, BEFORE its L2 write has
+   * landed. Keeps `cellStateRef` honest so a live re-read arriving in that
+   * window merges against the truth instead of undoing the click.
+   */
+  const markCellFlagEarned = useCallback((key: keyof WizardCellState) => {
+    cellStateRef.current = { ...cellStateRef.current, [key]: true }
+  }, [])
+
   useEffect(() => {
     readL2CellsForDevice(subsystemId, device.deviceName).then(cells => {
       console.log(`[VFD Wizard] Restoring state for ${device.deviceName}:`, {
@@ -1870,11 +1962,6 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
         controlsVerified: cells?.controlsVerified ?? null,
         speedSetUp: cells?.speedSetUp ?? null,
       })
-      // Step 1 "Verify Identity" / Step 3 "Check Direction" — durable proof the
-      // step was completed once. Lets the cascade keep them done even when the
-      // live STS read times out on a busy controller.
-      if (cells?.verifyIdentity?.trim()) setIdentityDone(true)
-      if (cells?.checkDirection?.trim()) setDirectionDone(true)
       // Step 4 "Polarity" — restore from L2 cell. Tolerates legacy stamps.
       const parsedPolarity = parsePolarityStamp(cells?.polarity)
       if (parsedPolarity) setPolaritySetDone(parsedPolarity)
@@ -1882,29 +1969,61 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       // of the column being absent (cells.bumpBlocker stays null → no banner).
       const parsedBlocker = parseBumpBlockerCell(cells?.bumpBlocker)
       setBumpBlocker(parsedBlocker ? { party: parsedBlocker.party as VfdBlockerParty, description: parsedBlocker.description } : null)
-      // Step 2 HP cell completeness — both must be non-empty for the cascade
-      // to consider the step done.
-      setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
-
-      if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
-      // Test Run / Verify Controls (step 3) — now has a cloud-synced "Run
-      // Verified" L2 cell, so it restores durably across laptops (the local
-      // VfdControlsVerified stamp is a same-laptop fallback). Also infer from
-      // downstream proof: if Belt Tracked or Speed Set Up are filled, Test Run
-      // *must* have happened — those steps gate on it. (The "Run Verified" cell
-      // is itself a ready-gate control, but unlike Check Direction it is ONLY
-      // ever written by this step, so trusting it does not create the
-      // false-positive the old four-cell inference avoided.)
-      const inferredTestRunDone =
-        Boolean(cells?.runVerified?.trim()) ||
-        Boolean(cells?.controlsVerified) ||
-        Boolean(cells?.beltTracked?.trim()) ||
-        Boolean(cells?.speedSetUp?.trim())
-      if (inferredTestRunDone) setCheck4Complete(true)
-      // Calibrate Speed (step 5) — mark done if the L2 cell already has a value.
-      if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
+      // A failed/absent read is NOT proof of anything — leave the flags alone
+      // rather than regressing the operator on a network blip.
+      if (!cells) return
+      // Identity / Check Direction / HP / Test Run / Speed Set Up / Belt Tracked
+      // all derive from the cells here. Test Run additionally infers from
+      // downstream proof (Belt Tracked or Speed Set Up filled ⇒ it happened).
+      applyCellState(deriveWizardCellState(cells), false)
     })
-  }, [device.deviceName])
+  }, [device.deviceName, subsystemId, applyCellState])
+
+  // ── Live L2 cell updates while the wizard is OPEN ─────────────────
+  //
+  // The restore effect above is keyed on the device, so it runs once. That was
+  // the whole bug: a coordinator marking a belt "not tracked" in the cloud
+  // cleared the local Belt Tracked cell and the writer retracted the flag on
+  // the controller, but this modal carried on showing steps 4/5 unlocked — and
+  // pressing Normal/Inverter there re-asserted the belt-tracking flag onto a
+  // controller four tool instances share.
+  //
+  // We reuse the EXISTING FV cell channel (`L2CellUpdated` → `onFVCellUpdate`),
+  // the same one fv-validation-view.tsx listens on. Nothing about the FV grid
+  // changes; we just add a second subscriber.
+  //
+  // The push carries numeric local device/column IDs, not names, and this modal
+  // only ever knows names — so rather than duplicating the ID mapping we simply
+  // re-read this device's commissioning cells and re-derive. Coalesced, because
+  // a cloud batch can deliver dozens of cell updates back to back.
+  const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const refresh = () => {
+      readL2CellsForDevice(subsystemId, device.deviceName).then(cells => {
+        // A failed read is not evidence the belt was untracked — leave the gate
+        // as-is rather than locking the operator out on a blip.
+        if (cancelled || !cells) return
+        applyCellState(deriveWizardCellState(cells), true)
+      })
+    }
+    const handleFVCellUpdate = () => {
+      if (refreshDebounceRef.current) clearTimeout(refreshDebounceRef.current)
+      refreshDebounceRef.current = setTimeout(refresh, 250)
+    }
+    signalR.onFVCellUpdate(handleFVCellUpdate)
+    // Safety net for the OFFLINE-recovery route: `/api/cloud/pull-l2` applies a
+    // cloud untrack to SQLite but does NOT broadcast L2CellUpdated, so a wizard
+    // left open across a reconnect would otherwise never hear about it. Cheap
+    // local read; the wizard is only open for one device at a time.
+    const poll = setInterval(refresh, 30_000)
+    return () => {
+      cancelled = true
+      signalR.offFVCellUpdate(handleFVCellUpdate)
+      clearInterval(poll)
+      if (refreshDebounceRef.current) { clearTimeout(refreshDebounceRef.current); refreshDebounceRef.current = null }
+    }
+  }, [signalR.onFVCellUpdate, signalR.offFVCellUpdate, subsystemId, device.deviceName, applyCellState])
   // Server-side reader pushes VFD STS updates every ~50 ms while the wizard is
   // open. We:
   //   1. Open the reader via HTTP (server creates persistent handles + starts polling)
@@ -2119,14 +2238,24 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
   // criterion. The moment any step regresses, every downstream step
   // collapses to "locked" so the operator can't keep mashing buttons
   // past a broken prerequisite.
-  const stepDone: boolean[] = []
+  const rawStepDone: boolean[] = []
   {
     let ok = true
     for (let i = 0; i < 6; i++) {
       ok = ok && lastTrueRef.current[i]
-      stepDone.push(ok)
+      rawStepDone.push(ok)
     }
   }
+  // HARD belt-tracking gate over the cascade output.
+  //
+  // Dropping steps 4/5 to `null` in `stepDoneOwn` is NOT sufficient on its own:
+  // `lastTrueRef` deliberately ignores nulls (so a transient PLC read can't
+  // flash the cascade red), so an already-green step 4 stays green and
+  // `firstBadIndex` stays -1 — which is precisely how an operator kept a
+  // fully-unlocked wizard after the belt was untracked. Forcing the gated steps
+  // to false here makes `firstBadIndex` land on the gate step, which in turn
+  // drives the auto-snap below AND `canGoTo`.
+  const stepDone = applyBeltGate(rawStepDone, beltTrackedDone)
   const firstBadIndex = stepDone.findIndex(d => !d) // -1 = all done
 
   // Auto-snap activeStep back if it sits past a broken prerequisite.
@@ -2169,6 +2298,13 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
       setHpFieldsFilled(false)
       setIdentityDone(false)
       setDirectionDone(false)
+      cellStateRef.current = {
+        beltTrackedDone: false, testRunDone: false, identityDone: false,
+        directionDone: false, speedSetUpDone: false, hpFieldsFilled: false,
+      }
+      // A Clear Test is a deliberate reset, not an untrack — don't show the
+      // "belt was marked not tracked" notice for it.
+      setUntrackNotice(false)
       // Re-arm the L2-cell auto-backfill so it can run again if STS is still high.
       backfilledRef.current = false
       // (The on-open speed backfill was removed — see note above the L2-cell
@@ -2181,24 +2317,15 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
         if (parsedPolarity) setPolaritySetDone(parsedPolarity)
         const parsedBlocker = parseBumpBlockerCell(cells?.bumpBlocker)
         setBumpBlocker(parsedBlocker ? { party: parsedBlocker.party as VfdBlockerParty, description: parsedBlocker.description } : null)
-        if (cells?.verifyIdentity?.trim()) setIdentityDone(true)
-        if (cells?.checkDirection?.trim()) setDirectionDone(true)
-        setHpFieldsFilled(Boolean(cells?.motorHpField?.trim() && cells?.vfdHpField?.trim()))
-        if (cells?.beltTracked?.trim()) setBeltTrackedDone(true)
-        const inferredTestRunDone =
-          Boolean(cells?.runVerified?.trim()) ||
-          Boolean(cells?.controlsVerified) ||
-          Boolean(cells?.beltTracked?.trim()) ||
-          Boolean(cells?.speedSetUp?.trim())
-        if (inferredTestRunDone) setCheck4Complete(true)
-        if (cells?.speedSetUp?.trim()) setSpeedSetUpDone(true)
+        if (!cells) return
+        applyCellState(deriveWizardCellState(cells), false)
       })
     } catch (err) {
       console.error('[VfdWizard] Clear failed:', err)
     } finally {
       setClearing(false)
     }
-  }, [clearArmed, device.deviceName, sheetName, plcConnected, userName])
+  }, [clearArmed, device.deviceName, sheetName, plcConnected, userName, subsystemId, applyCellState])
 
   const getStepStatus = (stepNum: number): 'locked' | 'active' | 'done' | 'failed' => {
     if (stepNum === activeStep) return 'active'
@@ -2456,13 +2583,40 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
 
           {/* Step content */}
           <div className="flex-1 overflow-y-auto px-6 py-5">
+            {/* The gate closed under the operator's feet. Say what happened in
+                words, with an icon — never colour alone — and no jargon. */}
+            {untrackNotice && (
+              <div className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 p-4 flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-0.5 text-amber-700 dark:text-amber-400" />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                    This belt was marked not tracked
+                  </p>
+                  <p className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-300/90">
+                    Someone marked this belt as not tracked just now, so the bump test and
+                    speed calibration have been closed and you have been moved back. The
+                    mechanical team needs to track the belt before these steps can run.
+                    Nothing you already finished was lost.
+                  </p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setUntrackNotice(false)}
+                    className="h-7 px-2 text-xs text-amber-800 dark:text-amber-300"
+                  >
+                    Got it
+                  </Button>
+                </div>
+              </div>
+            )}
             {activeStep === 0 && <Step0Content sts={sts} loading={stsLoading} />}
             {activeStep === 1 && <Step1Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} />}
-            {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onHpFilled={() => setHpFieldsFilled(true)} />}
+            {activeStep === 2 && <Step2Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onHpFilled={() => { markCellFlagEarned('hpFieldsFilled'); setHpFieldsFilled(true) }} />}
             {/* REWORKED ORDER: index 3 = Test Run / Verify Controls (Step4Content),
                 index 4 = Bump Test / Polarity (Step3Content, now post-track). The
                 component names are unchanged for a reviewable diff. */}
             {activeStep === 3 && <Step4Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onComplete={() => {
+              markCellFlagEarned('testRunDone')
               setCheck4Complete(true)
               // Persist to local DB so reopening the wizard remembers this even
               // if the cloud-synced "Run Verified" L2 cell didn't land (column
@@ -2481,31 +2635,17 @@ export function VfdWizardModal({ device, subsystemId, plcConnected, sheetName, o
             {activeStep === 4 && (beltTrackedDone ? (
               <Step3Content sts={sts} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} initialPolarity={polaritySetDone} onPolaritySet={(p) => setPolaritySetDone(p)} initialBumpBlocker={bumpBlocker} onBumpBlockerChange={setBumpBlocker} />
             ) : (
-              // Tracking-in-the-middle GATE: Bump / polarity must not open until the
-              // mechanical team has marked "Belt Tracked" (which the field syncs and
-              // the writer bridges to CMD.Tracking_Finished). The AOI already gates
-              // Valid_Direction on Tracking_Finished, so bumping early can never
-              // latch direction — this just stops the operator seeing the bump
-              // controls before the belt is actually tracked.
-              <div className="space-y-4">
-                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4 space-y-2">
-                  <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-sm font-semibold">
-                    <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                    Waiting for the mechanical team to track this belt
-                  </div>
-                  <p className="text-xs text-amber-800/90 dark:text-amber-300/90 leading-relaxed">
-                    Bump Test / polarity and speed calibration stay locked until the
-                    mechanical team marks <strong>Belt Tracked</strong> on the cloud
-                    belt-tracking page. The moment they do, it syncs back to this tool
-                    automatically (or pull the latest L2 data) and this step unlocks.
-                    The drive&apos;s AOI also gates <code className="font-mono">Valid_Direction</code> on{' '}
-                    <code className="font-mono">Tracking_Finished</code>, so direction cannot be
-                    validated before the belt is tracked.
-                  </p>
-                </div>
-              </div>
+              <BeltNotTrackedPanel stepLabel="Bump Test / polarity" />
             ))}
-            {activeStep === 5 && <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => setSpeedSetUpDone(true)} />}
+            {/* Step 5 had NO render-level gate — it relied purely on canGoTo,
+                which the one-way `beltTrackedDone` latch kept open. Gated the
+                same way step 4 is, so an untracked belt can neither be reached
+                nor actioned here. */}
+            {activeStep === 5 && (beltTrackedDone ? (
+              <Step5Content sts={sts} stsErrors={stsErrors} loading={stsLoading} deviceName={device.deviceName} subsystemId={subsystemId} plcConnected={plcConnected} sheetName={sheetName} userName={userName} onSpeedLogged={() => { markCellFlagEarned('speedSetUpDone'); setSpeedSetUpDone(true) }} />
+            ) : (
+              <BeltNotTrackedPanel stepLabel="Speed calibration" />
+            ))}
           </div>
 
           {/* Footer navigation */}
