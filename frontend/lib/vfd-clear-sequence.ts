@@ -50,9 +50,15 @@
  *
  * Consequences that shape the code below:
  *
- *  1. ORDER IS THE FIX. Invalidate_HP must go LAST, because it kills the rung
- *     that clears the tracking latch. Invalidate_Map likewise feeds Valid_HP's
- *     OTL seal on rung 1, so it keeps HP company at the end.
+ *  1. ORDER IS THE FIX — and Invalidate_HP IS NOT SENT AT ALL. It used to go
+ *     last (going first killed the rung that clears the tracking latch), but
+ *     "last" still left Valid_HP at 0, and rungs 2/3/4/5 are ALL gated on
+ *     XIC(Valid_HP): that single bit is the master enable for every operator
+ *     keypad function. Clear Test was handing mechanics a drive they could
+ *     neither start nor reverse. Invalidate_Map still goes last — it is rung
+ *     1's precondition for the NEXT OTL(Valid_HP), so re-commissioning is
+ *     still properly re-sequenced, and no rung gates on Valid_Map itself.
+ *     See CLEAR_WRITE_ORDER for the full justification.
  *
  *  2. ONE FIELD PER ROUND-TRIP, never a batch. rung 8 zeroes all of CTRL.CMD
  *     every scan, so each CMD bit is a self-clearing one-scan pulse. Worse,
@@ -83,10 +89,13 @@
  * Reverse_Polarity onto DirectionCmd UNCONDITIONALLY. On a running belt with
  * Start still asserted, that is a DIRECTION REVERSAL.
  *
- * Invalidate_HP is independently dangerous under motion: rung 5 gates
- * OTE(Track_Belt) on Valid_HP, so dropping it de-asserts Drive_Outputs.Start —
- * while the Stop branch of the same rung is ALSO gated on Valid_HP and so does
- * NOT assert. The drive is left coasting with no stop command.
+ * (Invalidate_HP was independently dangerous under motion for the same family
+ * of reasons — rung 5 gates OTE(Track_Belt) on Valid_HP, so dropping it
+ * de-asserts Drive_Outputs.Start while the Stop branch, also gated on
+ * Valid_HP, does NOT assert, leaving the drive coasting uncommanded. It is no
+ * longer emitted by this module at all, which removes that hazard along with
+ * the keypad lockout. The stopped-drive guard below stands on the polarity
+ * hazard alone, which is sufficient on its own.)
  *
  * Therefore NOTHING is written unless the drive is provably stopped, and
  * "provably" is strict: a missing STS member or an unreadable value ABORTS.
@@ -113,19 +122,53 @@ export type { RetractionSts }
  *   2. Invalidate_Direction         — rung 6, its own pulse
  *   3. Invalidate_Tracking_Finished — rung 3, the latch
  *   4. Invalidate_Map               — rung 1
- *   5. Invalidate_HP                — rung 1, LAST: it kills rung 3's gate
+ *
+ * ── WHY Invalidate_HP IS NOT HERE ────────────────────────────────────────
+ * It used to be, last. Ordering it last stopped Clear Test STRANDING belts
+ * (it kills rung 3, the only rung that can clear the tracking latch) — but it
+ * still left Valid_HP at 0, and rungs 2, 3, 4 and 5 are ALL gated
+ * XIC(Valid_HP). Valid_HP=1 is the master enable for every operator keypad
+ * function: F1 start/stop, F0+F2 direction, F0/F2 speed.
+ *
+ * So a "Clear Test" handed the mechanic a drive they could neither start nor
+ * reverse from the keypad — the exact outcome the whole belt-tracking effort
+ * exists to prevent — and, per rung 3, one whose tracking latch could no
+ * longer be cleared either if anything had re-set it. Clear Test is pressed to
+ * hand a belt BACK; taking the keypad away on the way out is backwards.
+ *
+ * Nothing depends on Valid_HP being dropped:
+ *   - Invalidate_Map (still sent) unlatches Valid_Map, which is rung 1's
+ *     precondition for the next OTL(Valid_HP). Re-commissioning therefore
+ *     still has to walk identity -> HP in order; the wizard pulses
+ *     Valid_Map then Valid_HP on Confirm HP regardless, so a still-latched
+ *     Valid_HP is idempotent, not a shortcut.
+ *   - No rung tests Valid_Map except rung 1's own OTL, so Valid_Map=0 with
+ *     Valid_HP=1 is not an inconsistent controller state.
+ *   - The wizard derives step completion from L2 cells (all NULLed by this
+ *     route), not from STS.Valid_HP, so the UI still resets.
+ *   - vfd-validation-writer stops re-asserting Valid_HP for this device once
+ *     the identity/HP cells are cleared, so leaving the latch alone does not
+ *     fight the sweep — it simply persists until someone invalidates it
+ *     deliberately.
+ *
+ * Invalidate_HP is still a legitimate write; it is just not part of resetting
+ * a test. Nothing in this module emits it.
  */
 export const CLEAR_WRITE_ORDER: readonly string[] = [
   ...RETRACTION_WRITE_ORDER,
   'Invalidate_Map',
-  'Invalidate_HP',
 ]
 
 /** The rung-3-gated prefix — dead writes whenever STS.Valid_HP is already 0. */
 export const LATCH_WRITE_FIELDS: readonly string[] = RETRACTION_WRITE_ORDER
 
-/** The rung-1 writes, which work regardless of Valid_HP. */
-export const VALIDITY_WRITE_FIELDS: readonly string[] = ['Invalidate_Map', 'Invalidate_HP']
+/**
+ * The rung-1 writes, which work regardless of Valid_HP.
+ *
+ * Invalidate_Map only. Invalidate_HP is deliberately absent — see
+ * CLEAR_WRITE_ORDER above: it drops the master keypad enable.
+ */
+export const VALIDITY_WRITE_FIELDS: readonly string[] = ['Invalidate_Map']
 
 export type ClearPlcAction =
   /** Everything is writable: full CLEAR_WRITE_ORDER. */
@@ -273,13 +316,12 @@ export interface ClearPlcResult {
  * bug) let Invalidate_HP kill rung 3 in the same scan as the invalidate that
  * needed it.
  *
- * Failure handling is asymmetric on purpose:
- *   - A failure anywhere in the rung-3 triad ABORTS the rest, INCLUDING
- *     Invalidate_Map/HP. Sending Invalidate_HP after a failed
- *     Invalidate_Tracking_Finished is exactly how a belt gets stranded: the
- *     latch is still set and rung 3 is now dead.
- *   - A failure on Invalidate_Map does not stop Invalidate_HP; they are
- *     independent rung-1 branches and the latch is already safely cleared.
+ * A failure anywhere in the rung-3 triad ABORTS the rest, including
+ * Invalidate_Map. With Invalidate_HP no longer emitted this is no longer the
+ * difference between a clearable and a stranded belt, but it is still the
+ * right call: if the latch could not be cleared, the reset did not happen, and
+ * tearing down Valid_Map on the way out would only make the operator's next
+ * attempt re-walk identity for no benefit. Report the failure instead.
  */
 export async function runClearPlcSequence(
   sts: RetractionSts,
@@ -298,7 +340,8 @@ export async function runClearPlcSequence(
       const r = await writeOne(field)
       writes.push({ field, ok: r.ok, error: r.error })
       if (!r.ok) {
-        // ABORT — do not touch Valid_Map/Valid_HP with the latch still set.
+        // ABORT — the reset did not happen, so do not tear down Valid_Map on
+        // the way out.
         for (const rest of CLEAR_WRITE_ORDER.slice(writes.length)) {
           writes.push({
             field: rest,
@@ -306,7 +349,7 @@ export async function runClearPlcSequence(
             skipped: true,
             error:
               `not issued: CMD.${field} failed, so the tracking latch may still be set — ` +
-              'sending Invalidate_HP now would kill AOI rung 3 and strand it permanently',
+              'the clear did not complete, report it instead of half-resetting the drive',
           })
         }
         return { action: plan.action, reason: plan.reason, writes, latchCleared: false }
