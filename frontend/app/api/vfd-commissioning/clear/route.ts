@@ -11,9 +11,18 @@ import {
   plc_tag_write,
   plc_tag_destroy,
   plc_tag_set_int8,
+  plc_tag_get_bit,
+  plc_tag_get_float32,
   PlcTagStatus,
   getStatusMessage,
 } from '@/lib/plc'
+import {
+  runClearPlcSequence,
+  clearStsReads,
+  resolveStsFromTypedReads,
+  type RetractionSts,
+  type ClearPlcResult,
+} from '@/lib/vfd-clear-sequence'
 
 /**
  * POST /api/vfd-commissioning/clear
@@ -21,16 +30,29 @@ import {
  * Resets one VFD so it can be re-tested from scratch. This is the inverse of
  * what the wizard does. Because L2 cells are now the single source of truth,
  * "clear" means clearing those L2 cells (NULL-ing the Value) AND syncing the
- * deletion to the cloud, plus an optional set of PLC invalidate pulses so
- * STS.Valid_Map / Valid_HP / Valid_Direction drop back to false. The PLC
- * polarity latch (CTRL.Reverse_Polarity in the AOI) is also reset to its
- * default-forward state by writing Normal_Polarity=1, Reverse_Polarity=0.
+ * deletion to the cloud, plus an optional PLC reset sequence that drops
+ * STS.Valid_Map / Valid_HP / Valid_Direction, restores default-forward
+ * polarity, and — new — actually invalidates the belt-tracking latch.
+ *
+ * The PLC part is delegated to lib/vfd-clear-sequence.ts, which owns both the
+ * write ORDER and the stopped-drive guard. In brief:
+ *
+ *   Normal_Polarity → Invalidate_Direction → Invalidate_Tracking_Finished
+ *                   → Invalidate_Map → Invalidate_HP
+ *
+ * one field per round-trip, and only when the drive is PROVABLY not commanded
+ * to move. This route previously sent Invalidate_HP FIRST and never sent
+ * Invalidate_Tracking_Finished at all, which left belts latched with the
+ * clearing rung dead — permanently unclearable. Do not reorder these without
+ * reading the AOI ground truth quoted in vfd-clear-sequence.ts.
  *
  * Request body:
- *   { deviceName, sheetName?, clearPlc?: true }
+ *   { deviceName, sheetName?, clearPlc?: true, updatedBy?, subsystemId? }
  *
  * Response:
- *   { success, deviceName, sheetName, cellsCleared, plcAttempted, plcWrites }
+ *   { success, deviceName, sheetName, cellsCleared, plcAttempted, plcConnected,
+ *     plcResetSkipped, plcAction, plcReason, plcAborted, trackingLatchCleared,
+ *     plcWrites }
  */
 
 const COMMISSIONING_COLUMNS = [
@@ -67,11 +89,17 @@ const stmts = {
   clearControlsVerified: db.prepare('DELETE FROM VfdControlsVerified WHERE deviceName = ?'),
 }
 
-async function pulseInvalidate(
+// Pulse ONE CTRL.CMD bit to 1. Every CMD bit is a self-clearing one-scan pulse
+// (AOI rung 8 is FLL(0, CTRL.CMD, 1)), so there is never a matching write of 0
+// — see lib/vfd-clear-sequence.ts for why CMD.Reverse_Polarity=0 was dropped.
+//
+// Deliberately ONE FIELD PER CALL: the sequence in vfd-clear-sequence.ts relies
+// on each pulse landing in a DIFFERENT controller scan. Do not batch these.
+async function pulseCmdBit(
   gateway: string,
   path: string,
   deviceName: string,
-  field: 'Invalidate_Map' | 'Invalidate_HP' | 'Invalidate_Direction',
+  field: string,
   timeoutMs: number,
 ): Promise<{ ok: boolean; error?: string }> {
   const tagPath = `CBT_${deviceName}.CTRL.CMD.${field}`
@@ -92,45 +120,53 @@ async function pulseInvalidate(
   }
 }
 
-// Drop the AOI's Reverse_Polarity latch back to default-forward by setting
-// CMD.Normal_Polarity=1 and CMD.Reverse_Polarity=0. Per rung 13 of
-// AOI_IOCT_BELT_TRACKING the latch only clears when Normal_Polarity is high
-// AND Reverse_Polarity is low, so both writes are required.
-async function writeBoolBit(
+// Read one STS member. Returns null when the member does not exist on this AOI
+// revision, or is otherwise unreadable — never throws. null propagates into
+// planClearPlcSequence as "unprovable", which ABORTS.
+function readStsMember(
   gateway: string,
   path: string,
   tagPath: string,
-  value: 0 | 1,
+  kind: 'BOOL' | 'REAL',
   timeoutMs: number,
-): Promise<{ ok: boolean; error?: string }> {
+): number | null {
   const handle = createTag({
-    gateway, path, name: tagPath, elemSize: 1, elemCount: 1, timeout: timeoutMs,
+    gateway, path, name: tagPath, elemSize: kind === 'REAL' ? 4 : 1, elemCount: 1, timeout: timeoutMs,
   })
-  if (handle < 0) return { ok: false, error: `createTag ${tagPath}: ${getStatusMessage(handle)}` }
+  if (handle < 0) return null
   try {
-    const r = plc_tag_read(handle, timeoutMs)
-    if (r !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `read: ${getStatusMessage(r)}` }
-    const s = plc_tag_set_int8(handle, 0, value)
-    if (s !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `set: ${getStatusMessage(s)}` }
-    const w = plc_tag_write(handle, timeoutMs)
-    if (w !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `write: ${getStatusMessage(w)}` }
-    return { ok: true }
+    if (plc_tag_read(handle, timeoutMs) !== PlcTagStatus.PLCTAG_STATUS_OK) return null
+    if (kind === 'REAL') {
+      const v = plc_tag_get_float32(handle, 0)
+      return Number.isFinite(v) ? v : null
+    }
+    // plc_tag_get_bit, NOT get_int8: get_int8 is declared I32 over a C int8_t
+    // return, so the upper register bytes are ABI garbage (same convention as
+    // vfd-validation-writer / tag-reader).
+    const bit = plc_tag_get_bit(handle, 0)
+    return bit < 0 ? null : (bit === 0 ? 0 : 1)
+  } catch {
+    return null
   } finally {
     try { plc_tag_destroy(handle) } catch { /* ignore */ }
   }
 }
 
-async function resetPolarityLatch(
+// Build the stopped-proof snapshot on the legacy singleton path, probing BOTH
+// AOI revisions' belt-tracking member names (AOI222: STS.Belt_Tracking_ON;
+// older rev: STS.Track_Belt). A missing member yields null, never a throw.
+function readStsForFfi(
   gateway: string,
   path: string,
   deviceName: string,
   timeoutMs: number,
-): Promise<{ ok: boolean; error?: string }> {
-  const normal = await writeBoolBit(gateway, path, `CBT_${deviceName}.CTRL.CMD.Normal_Polarity`, 1, timeoutMs)
-  if (!normal.ok) return { ok: false, error: `Normal_Polarity: ${normal.error}` }
-  const reverse = await writeBoolBit(gateway, path, `CBT_${deviceName}.CTRL.CMD.Reverse_Polarity`, 0, timeoutMs)
-  if (!reverse.ok) return { ok: false, error: `Reverse_Polarity: ${reverse.error}` }
-  return { ok: true }
+): RetractionSts {
+  const reads = clearStsReads(deviceName)
+  const results = reads.map(rd => {
+    const value = readStsMember(gateway, path, rd.name, rd.dataType, timeoutMs)
+    return value === null ? { success: false } : { success: true, value }
+  })
+  return resolveStsFromTypedReads(results)
 }
 
 export async function POST(req: Request, res: Response) {
@@ -301,14 +337,20 @@ export async function POST(req: Request, res: Response) {
       })
     }
 
-    // 4. Optional: PLC invalidate pulses + polarity latch reset.
+    // 4. Optional: PLC reset pulses.
     //    MCM-aware (central server): when the caller names a registry MCM,
     //    pulse THAT controller; otherwise the legacy active-subsystem
     //    singleton (hasMcm gate — same convention as /api/ios — so a legacy
     //    tablet sending its active subsystemId still uses the singleton).
     //    Best-effort either way: L2 cells are already cleared above.
-    const plcWrites: Array<{ field: string; ok: boolean; error?: string }> = []
+    //
+    //    BOTH branches now go through runClearPlcSequence (lib/vfd-clear-
+    //    sequence.ts), which owns the write ORDER and the stopped-drive guard.
+    //    Read that file before changing anything here — the order is load-
+    //    bearing against the AOI's rung structure, not cosmetic.
+    const plcWrites: Array<{ field: string; ok: boolean; error?: string; skipped?: boolean }> = []
     let plcAttempted = false
+    let plcSequence: ClearPlcResult | null = null
     // Whether the target PLC was actually reachable when clearPlc was requested.
     // Distinct from plcAttempted (which is only ever true when connected): it
     // lets the client tell "PLC reset not requested" from "requested but the
@@ -317,29 +359,33 @@ export async function POST(req: Request, res: Response) {
     let plcConnected = false
     if (clearPlc) {
       if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
-        // Registry MCM: pulse through the mode-aware typed batch ops — same
-        // read-set-write semantics as the FFI helpers below, executed
-        // in-process (embedded) or in the plc-gateway (PLC_MODE=remote,
-        // Phase 1.1). One batch carries the three Invalidate pulses AND the
-        // polarity-latch reset (Normal=1, Reverse=0 — rung 13 of
-        // AOI_IOCT_BELT_TRACKING clears the latch only with both).
-        const { writeTypedTagsForMcm } = await import('@/lib/mcm-registry')
-        const base = `CBT_${deviceName}.CTRL.CMD.`
-        const batch: Array<{ name: string; value: number; dataType: 'BOOL'; label: string }> = [
-          { name: `${base}Invalidate_Map`, value: 1, dataType: 'BOOL', label: 'Invalidate_Map' },
-          { name: `${base}Invalidate_HP`, value: 1, dataType: 'BOOL', label: 'Invalidate_HP' },
-          { name: `${base}Invalidate_Direction`, value: 1, dataType: 'BOOL', label: 'Invalidate_Direction' },
-          { name: `${base}Normal_Polarity`, value: 1, dataType: 'BOOL', label: 'Polarity_Reset(Normal=1)' },
-          { name: `${base}Reverse_Polarity`, value: 0, dataType: 'BOOL', label: 'Polarity_Reset(Reverse=0)' },
-        ]
-        const r = await writeTypedTagsForMcm(String(subsystemId), batch.map(({ name, value, dataType }) => ({ name, value, dataType })))
-        if (r.connected) {
+        // Registry MCM: read the stopped-proof snapshot, then pulse through the
+        // mode-aware typed ops — executed in-process (embedded) or in the
+        // plc-gateway (PLC_MODE=remote, Phase 1.1).
+        //
+        // ONE FIELD PER CALL, sequentially. This used to be a single 5-tag
+        // batch; the gateway is free to order a batch as it likes, and even a
+        // faithfully-ordered batch can land inside ONE controller scan, where
+        // Invalidate_HP kills rung 3's XIC(Valid_HP) gate before the
+        // invalidate on that same rung is evaluated.
+        const { writeTypedTagsForMcm, readTypedTagsForMcm } = await import('@/lib/mcm-registry')
+        const sid = String(subsystemId)
+        const stsBatch = await readTypedTagsForMcm(sid, clearStsReads(deviceName))
+        if (stsBatch.connected) {
           plcConnected = true
           plcAttempted = true
-          for (let i = 0; i < batch.length; i++) {
-            const w = r.results[i]
-            plcWrites.push({ field: batch[i].label, ok: !!w?.success, error: w?.error })
-          }
+          plcSequence = await runClearPlcSequence(
+            resolveStsFromTypedReads(stsBatch.results),
+            async (field) => {
+              const w = await writeTypedTagsForMcm(sid, [
+                { name: `CBT_${deviceName}.CTRL.CMD.${field}`, value: 1, dataType: 'BOOL' },
+              ])
+              if (!w.connected) return { ok: false, error: `MCM ${sid} disconnected mid-sequence` }
+              const res = w.results[0]
+              return { ok: !!res?.success, error: res?.error }
+            },
+          )
+          plcWrites.push(...plcSequence.writes)
         }
         // Not connected → best-effort skip: L2 cells are already cleared.
       } else {
@@ -349,18 +395,19 @@ export async function POST(req: Request, res: Response) {
           plcConnected = true
           plcAttempted = true
           const timeoutMs = connectionConfig.timeout || 5000
-          const fields: Array<'Invalidate_Map' | 'Invalidate_HP' | 'Invalidate_Direction'> = [
-            'Invalidate_Map', 'Invalidate_HP', 'Invalidate_Direction',
-          ]
-          for (const field of fields) {
-            const r = await pulseInvalidate(connectionConfig.ip, connectionConfig.path, deviceName, field, timeoutMs)
-            plcWrites.push({ field, ok: r.ok, error: r.error })
-          }
-          // Reset Reverse_Polarity latch back to default-forward (older AOIs
-          // without these CMD bits will fail with tag-not-found — logged, not fatal).
-          const polarity = await resetPolarityLatch(connectionConfig.ip, connectionConfig.path, deviceName, timeoutMs)
-          plcWrites.push({ field: 'Polarity_Reset', ok: polarity.ok, error: polarity.error })
+          const { ip, path } = connectionConfig
+          plcSequence = await runClearPlcSequence(
+            readStsForFfi(ip, path, deviceName, timeoutMs),
+            (field) => pulseCmdBit(ip, path, deviceName, field, timeoutMs),
+          )
+          plcWrites.push(...plcSequence.writes)
         }
+      }
+
+      if (plcSequence && plcSequence.action !== 'proceed') {
+        console.warn(
+          `[VFD Clear] ${deviceName}: PLC sequence ${plcSequence.action} — ${plcSequence.reason}`,
+        )
       }
     }
 
@@ -376,6 +423,16 @@ export async function POST(req: Request, res: Response) {
       // cells are cleared either way; the client should warn the operator to
       // reset the latches once the PLC is back.
       plcResetSkipped: clearPlc === true && !plcConnected,
+      // The stopped-drive guard's verdict. 'abort' means NOTHING was written:
+      // the drive was running, or we could not PROVE it was stopped. The
+      // operator must stop the belt and clear again — the L2 cells are already
+      // cleared, but the controller still holds its latches.
+      plcAction: plcSequence?.action ?? null,
+      plcReason: plcSequence?.reason ?? null,
+      plcAborted: plcSequence?.action === 'abort',
+      // True only when Invalidate_Tracking_Finished actually went out. When
+      // false with plcAttempted true, the belt-tracking latch is still set.
+      trackingLatchCleared: plcSequence?.latchCleared ?? false,
       plcWrites,
     })
   } catch (error) {
