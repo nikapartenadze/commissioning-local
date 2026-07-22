@@ -32,6 +32,8 @@ interface FVDevice {
   DeviceName: string
   Mcm: string
   Subsystem: string
+  /** Owning MCM. Null only on legacy rows a scoped pull hasn't re-stamped. */
+  SubsystemId: number | null
   CompletedChecks: number
   TotalChecks: number
 }

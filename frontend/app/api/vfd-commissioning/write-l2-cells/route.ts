@@ -16,7 +16,9 @@ import { getBroadcastUrl } from '@/lib/broadcast-config'
  *   {
  *     deviceName: "BYAB_10",        // matches L2Devices.DeviceName
  *     sheetName?: "APF",             // optional: filter by sheet name (DisplayName or Name)
- *     subsystemId?: 16,              // optional: not used for L2 lookup directly
+ *     subsystemId?: 16,              // owning MCM — scopes the device lookup.
+ *                                    // Omitting it is an error when the name
+ *                                    // exists on more than one MCM.
  *     updatedBy: "ASH",
  *     cells: [
  *       { columnName: "Motor HP (Field)", value: "5.0" },
@@ -60,7 +62,8 @@ interface CellWrite {
 
 export async function POST(req: Request, res: Response) {
   try {
-    const { deviceName, sheetName, updatedBy, cells } = req.body as {
+    const { subsystemId, deviceName, sheetName, updatedBy, cells } = req.body as {
+      subsystemId?: number
       deviceName?: string
       sheetName?: string
       updatedBy?: string
@@ -74,12 +77,36 @@ export async function POST(req: Request, res: Response) {
     // Find candidate device rows. A VFD might appear in multiple sheets — prefer
     // the one matching sheetName if provided, otherwise take the first APF sheet,
     // otherwise the first match.
-    const allMatches = stmts.findDevice.all(deviceName) as Array<{
+    let allMatches = stmts.findDevice.all(deviceName) as Array<{
       deviceId: number; SheetId: number; subsystemId: number | null; sheetName: string; sheetDisplayName: string
     }>
 
     if (allMatches.length === 0) {
       return res.status(404).json({ error: `No L2 device found with name "${deviceName}"` })
+    }
+
+    // Narrow to the caller's MCM FIRST. Belt names repeat across MCMs, and
+    // sheets are project-global templates, so the sheetName tie-break below
+    // cannot separate two machines' same-named devices — it would silently
+    // write this MCM's value onto whichever row happened to sort first.
+    const sid = Number(subsystemId)
+    if (Number.isFinite(sid) && sid > 0) {
+      const scoped = allMatches.filter(d => d.subsystemId === sid || d.subsystemId == null)
+      if (scoped.length > 0) {
+        allMatches = scoped
+      } else {
+        return res.status(404).json({
+          error: `No L2 device named "${deviceName}" belongs to subsystem ${sid}`,
+        })
+      }
+    } else if (allMatches.length > 1) {
+      // Ambiguous and unscoped: refuse rather than guess. Writing a
+      // commissioning value onto the wrong machine's row is unrecoverable
+      // without an audit trail.
+      const owners = Array.from(new Set(allMatches.map(d => d.subsystemId ?? 'unstamped'))).join(', ')
+      return res.status(400).json({
+        error: `Ambiguous device "${deviceName}": it exists on multiple MCMs (${owners}). Send subsystemId to disambiguate.`,
+      })
     }
 
     let target = allMatches[0]

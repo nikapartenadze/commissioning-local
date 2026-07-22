@@ -667,6 +667,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              // Scope the write: the server resolves the target device by NAME,
+              // and belt names repeat across MCMs — without this the value can
+              // land on another machine's row.
+              subsystemId,
               deviceName: effectiveTask.deviceName,
               updatedBy: initialsOf(currentUser?.fullName) || currentUser?.fullName,
               cells: [{ columnName: step.l2Column, value }],
@@ -697,7 +701,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         setBusy(false)
       }
     },
-    [currentStep, effectiveTask, currentUser, advanceStep, showToast],
+    [currentStep, effectiveTask, currentUser, advanceStep, showToast, subsystemId],
   )
 
   const recordVfdControls = useCallback(async () => {
@@ -714,7 +718,10 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
         const res = await fetch('/api/vfd-commissioning/controls-verified', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceName: effectiveTask.deviceName, completedBy: initialsOf(currentUser?.fullName) }),
+          // subsystemId is REQUIRED: the stamp is keyed per MCM, because VFD
+          // names repeat across machines and a name-only stamp marked every
+          // MCM's same-named drive controls-verified.
+          body: JSON.stringify({ subsystemId, deviceName: effectiveTask.deviceName, completedBy: initialsOf(currentUser?.fullName) }),
         })
         ok = res.ok
       } catch {
@@ -735,7 +742,7 @@ export function GuidedTaskRunner({ subsystemId }: { subsystemId: number }) {
     } finally {
       setBusy(false)
     }
-  }, [effectiveTask, currentUser, advanceStep])
+  }, [effectiveTask, currentUser, advanceStep, subsystemId])
 
   /** Functional number/text cell → advance, no popup. */
   const recordFunctionalValue = useCallback(

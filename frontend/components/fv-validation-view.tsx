@@ -766,7 +766,7 @@ export function FVValidationView({ subsystemId, plcConnected = false, vfdMode = 
     ? activeColumns.filter(c => ((c.Name || '').trim().toLowerCase()) in VFD_COL_RANK).map(c => c.id)
     : []
   const rowTone = vfdMode
-    ? (device: { id: number; DeviceName: string; Mcm: string }): 'blocked' | 'complete' | null => {
+    ? (device: { id: number; DeviceName: string; Mcm: string; SubsystemId: number | null }): 'blocked' | 'complete' | null => {
         if (vfdAnnotations.get(vfdAnnotationKey(device.SubsystemId, device.Mcm, device.DeviceName))?.blocked) return 'blocked'
         if (
           vfdCheckColIds.length > 0 &&

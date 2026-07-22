@@ -47,9 +47,12 @@ import { listVfdBlockerStates } from '@/lib/db/repositories/vfd-blocker-mirror-r
  *     ]
  *   }
  *
- * The optional ?subsystemId=N query param is accepted for backward compatibility
- * but ignored — L2 device rows aren't keyed by IO-subsystem id, and the caller
- * (the VFD list) already filters its own device set.
+ * ?subsystemId=N scopes the response to ONE MCM and should always be sent.
+ * Without it every MCM's VFD state is returned, and because belt names repeat
+ * across MCMs the pivot below collapses same-named devices from different
+ * machines into one record — the second MCM's blockers then render as "ready".
+ * Omitting it stays supported only for a single-MCM tablet, where there is
+ * exactly one subsystem and the distinction is moot.
  */
 
 const COMMISSIONING_COLUMNS = [
@@ -113,7 +116,7 @@ const emptyCells = (): CellSet => ({
 // commissioning column values (NULL if the cell hasn't been written, or if
 // the column itself doesn't exist yet on this sheet — `Polarity` only exists
 // once cloud has been updated, but the LEFT JOIN tolerates its absence).
-const stmtAllCells = db.prepare(`
+const ALL_CELLS_SELECT = `
   SELECT
     d.id            AS deviceId,
     d.DeviceName    AS deviceName,
@@ -131,16 +134,28 @@ const stmtAllCells = db.prepare(`
   LEFT JOIN Subsystems   sub ON sub.Name = d.Subsystem
   WHERE c.Name IN ('Verify Identity', 'Motor HP (Field)', 'VFD HP (Field)', 'Run Verified', 'Check Direction', 'Polarity', 'Belt Tracked', 'Speed Set Up', 'Bump Blocker')
     AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
-`)
+`
 
-// Step 4 "Controls Verified" is stored locally (no L2 column).
-const stmtControlsVerified = db.prepare(
-  `SELECT deviceName, completedBy, completedAt FROM VfdControlsVerified`
+const stmtAllCells = db.prepare(ALL_CELLS_SELECT)
+// Scoped variant: one MCM only. Devices carry SubsystemId directly; the
+// name-matched Subsystems fallback covers legacy rows a scoped pull hasn't
+// re-stamped yet, so scoping never blanks a grid that used to render.
+const stmtCellsScoped = db.prepare(
+  `${ALL_CELLS_SELECT} AND (d.SubsystemId = ? OR (d.SubsystemId IS NULL AND sub.id = ?))`,
 )
 
-export async function GET(_req: Request, res: Response) {
+// Step 4 "Controls Verified" is stored locally (no L2 column), keyed per MCM.
+const stmtControlsVerified = db.prepare(
+  `SELECT SubsystemId, deviceName, completedBy, completedAt FROM VfdControlsVerified`,
+)
+
+export async function GET(req: Request, res: Response) {
   try {
-    const rows = stmtAllCells.all() as Array<{
+    const sidRaw = req.query.subsystemId
+    const sid = sidRaw != null ? parseInt(String(sidRaw), 10) : NaN
+    const scoped = Number.isFinite(sid) && sid > 0
+
+    const rows = (scoped ? stmtCellsScoped.all(sid, sid) : stmtAllCells.all()) as Array<{
       deviceId: number
       deviceName: string
       mcm: string | null
@@ -152,11 +167,15 @@ export async function GET(_req: Request, res: Response) {
       value: string | null
     }>
 
-    // Load all controls-verified stamps (local-only, keyed by deviceName)
+    // Controls-verified stamps (local-only), keyed subsystemId::deviceName.
+    // Keying on deviceName alone marked every MCM's identically-named VFD as
+    // controls-verified off one machine's check.
     const cvRows = stmtControlsVerified.all() as Array<{
-      deviceName: string; completedBy: string | null; completedAt: string | null
+      SubsystemId: number; deviceName: string; completedBy: string | null; completedAt: string | null
     }>
-    const cvMap = new Map(cvRows.map(r => [r.deviceName, r.completedBy || r.completedAt || 'yes']))
+    const cvMap = new Map(
+      cvRows.map(r => [`${r.SubsystemId}::${r.deviceName}`, r.completedBy || r.completedAt || 'yes']),
+    )
 
     // Cloud-authoritative ADDRESSED mirror (read-only on the field tool), keyed
     // by (subsystemId, deviceName) — the same key the cloud resolves on.
@@ -201,7 +220,16 @@ export async function GET(_req: Request, res: Response) {
     }
     const byKey = new Map<string, Acc>()
     for (const row of rows) {
-      const key = `${row.deviceName}::${row.sheetName}`
+      // Fallback chain: explicit per-MCM id → name-matched subsystem → 0.
+      // A 0 here means the device could not be attributed to any MCM; it
+      // cannot match a blocker/addressed mirror key and is reported below.
+      const rowSubsystemId = row.deviceSubsystemId ?? row.resolvedSubsystemId ?? 0
+      // Key MUST include the subsystem. Sheets are project-global templates, so
+      // MCM02's BYCB_1_VFD and MCM04's BYCB_1_VFD share a sheet row and collapse
+      // into one Acc on a name+sheet key — whichever arrives first wins and the
+      // other MCM's cells are silently discarded, rendering its blockers as
+      // ready. That is the MCM15 divergence class, one layer up.
+      const key = `${rowSubsystemId}::${row.deviceName}::${row.sheetName}`
       let acc = byKey.get(key)
       if (!acc) {
         acc = {
@@ -210,8 +238,7 @@ export async function GET(_req: Request, res: Response) {
           mcm: row.mcm,
           subsystem: row.subsystem,
           sheetName: row.sheetName,
-          // Fallback chain: explicit per-MCM id → name-matched subsystem → 0.
-          subsystemId: row.deviceSubsystemId ?? row.resolvedSubsystemId ?? 0,
+          subsystemId: rowSubsystemId,
           cells: emptyCells(),
         }
         byKey.set(key, acc)
@@ -220,10 +247,23 @@ export async function GET(_req: Request, res: Response) {
       if (colKey) acc.cells[colKey] = row.value
     }
 
-    // Merge controls-verified into each device's cell set
+    // Merge controls-verified into each device's cell set (per-MCM key)
     for (const acc of byKey.values()) {
-      const cv = cvMap.get(acc.deviceName)
+      const cv = cvMap.get(`${acc.subsystemId}::${acc.deviceName}`)
       if (cv) acc.cells.controlsVerified = cv
+    }
+
+    // A device that resolved to subsystem 0 cannot be matched against the
+    // blocker/addressed mirrors (their keys carry a real SubsystemId), so a
+    // cloud-authoritative blocker on it would silently read as unblocked.
+    // Surface it rather than letting it fail quietly.
+    const unattributed = Array.from(byKey.values()).filter(a => a.subsystemId === 0)
+    if (unattributed.length > 0) {
+      console.warn(
+        `[VFD State GET] ${unattributed.length} device(s) have no resolvable SubsystemId — ` +
+        `blocker/addressed mirrors cannot bind to them: ${unattributed.slice(0, 10).map(a => a.deviceName).join(', ')}` +
+        `${unattributed.length > 10 ? ' …' : ''}. Run a scoped L2 pull to re-stamp them.`,
+      )
     }
 
     // Build the response: cells + device meta + blocked/addressed annotations so
