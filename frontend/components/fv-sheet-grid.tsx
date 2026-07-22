@@ -36,6 +36,41 @@ interface FVDevice {
   SubsystemId: number | null
   CompletedChecks: number
   TotalChecks: number
+  /** Cloud-owned planned date ("YYYY-MM-DD"|null). Read-only here — PMs set it
+   *  in the cloud; the field only shows and filters by it. */
+  PlannedDate?: string | null
+}
+
+/** Small read-only date chip. Overdue and today are called out in WORDS via the
+ *  title as well as colour, so colour never carries the meaning alone. */
+function PlannedChip({ date }: { date: string }) {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, "0")
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  const overdue = date < today
+  const isToday = date === today
+  const [y, m, d] = date.split("-")
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-sm border px-1 py-0.5 text-[10px] font-medium tabular-nums",
+        overdue
+          ? "border-red-500/50 text-red-600 dark:text-red-400"
+          : isToday
+            ? "border-primary/50 text-primary"
+            : "border-border text-muted-foreground",
+      )}
+      title={
+        overdue
+          ? `Planned ${m}/${d}/${y.slice(2)} — overdue`
+          : isToday
+            ? `Planned ${m}/${d}/${y.slice(2)} — due today`
+            : `Planned ${m}/${d}/${y.slice(2)}`
+      }
+    >
+      {m}/{d}
+    </span>
+  )
 }
 
 interface FVSheetGridProps {
@@ -748,14 +783,16 @@ export function FVSheetGrid({
                       >
                         <Zap className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                         <span className="truncate">{device.DeviceName}</span>
+                        {device.PlannedDate && <PlannedChip date={device.PlannedDate} />}
                       </button>
                     ) : (
                       <div
-                        className="flex items-center px-3 text-xs font-medium border-r truncate"
+                        className="flex items-center gap-1.5 px-3 text-xs font-medium border-r"
                         style={{ width: fixedW.deviceName }}
                         title={device.DeviceName}
                       >
-                        {device.DeviceName}
+                        <span className="truncate">{device.DeviceName}</span>
+                        {device.PlannedDate && <PlannedChip date={device.PlannedDate} />}
                       </div>
                     )}
                     <div
