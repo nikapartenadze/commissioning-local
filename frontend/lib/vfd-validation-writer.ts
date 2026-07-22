@@ -436,8 +436,17 @@ export function isDefinitiveMissingTagStatus(status: number): boolean {
  * this, the writer permanently skipped those CMD flags until a tool restart,
  * leaving polarity/validation bits unrestored after a download (CDW5, June 2026).
  */
-export function clearKnownMissingTags(reason: string): void {
+export function clearKnownMissingTags(reason: string, resetLocalControl = true): void {
   lastKnownMissingClearMs = Date.now()
+  // A (re)connect usually means a program download just landed, which drops
+  // Valid_Map/Valid_HP and reinitialises the AOI's local tags — so every
+  // untracked belt's keypad may have just gone dead. Forget the local-control
+  // backoff so the next pass re-evaluates immediately instead of leaving
+  // mechanics without a keypad for up to LOCAL_CONTROL_REASSERT_MS.
+  // The periodic TTL sweep passes false: it is not evidence of anything
+  // changing on the controller, and letting it reset the backoff would
+  // silently shorten the rate limit to KNOWN_MISSING_TTL_MS.
+  if (resetLocalControl) resetLocalControlBackoff()
   if (knownMissingTags.size === 0) return
   console.log(`[VfdValidationWriter] Cleared ${knownMissingTags.size} known-missing tag(s): ${reason}`)
   knownMissingTags.clear()
@@ -456,7 +465,7 @@ function expireKnownMissingTags(): void {
   const now = Date.now()
   if (now - lastKnownMissingClearMs < KNOWN_MISSING_TTL_MS) return
   lastKnownMissingClearMs = now
-  clearKnownMissingTags('periodic TTL expiry — re-probing tags previously reported missing')
+  clearKnownMissingTags('periodic TTL expiry — re-probing tags previously reported missing', false)
 }
 
 // ── Mass-failure circuit breaker ────────────────────────────────────
@@ -1532,6 +1541,578 @@ export async function runRetractionPass(
   return outcomes
 }
 
+// ── Local-control restore (LEVEL-based) ────────────────────────────
+//
+// WHAT MECH ACTUALLY NEEDS. Mechanics run the drive from the VFD keypad:
+//   F1              start / stop
+//   F0 + F2, held 5 s   reverse direction
+//   F0 / F2         speed trim
+// In AOI_IOCT_BELT_TRACKING_AOI222.L5X the rungs that implement those are
+// rung 2 (keypad direction toggle), rung 4 (keypad speed) and rung 5 (F1
+// start/stop via Track_Belt) — and ALL THREE are gated `XIC(Valid_HP)`, as is
+// the whole of rung 3. So:
+//
+//     Valid_HP = 1 is the MASTER ENABLE for every local control.
+//     A belt with Valid_HP=0 has a DEAD KEYPAD: the mechanic can neither start
+//     it nor change its direction.
+//
+// And rung 3's `XIO(Tracking_Finished)[XIC(Flip_Polarity) OTL(Reverse_Polarity),
+// XIO(Flip_Polarity) OTU(Reverse_Polarity)]` means the keypad only owns
+// DIRECTION while Tracking_Finished is CLEAR.
+//
+// Hence, for an untracked belt, "hand control back to the mechanics" is three
+// bits, in this order (LOCAL_CONTROL_WRITE_ORDER):
+//   1. STS.Valid_Map  must be 1 — else pulse CMD.Valid_Map.
+//      rung 1: `XIC(Check_Allowed) XIC(CMD.Valid_Map) ONS OTL(Valid_Map)`, so
+//      this needs STS.Check_Allowed=1. Check_Allowed low means the drive's
+//      comms are faulted / it is not in RunMode — we log and SKIP rather than
+//      fight the controller.
+//   2. STS.Valid_HP   must be 1 — else pulse CMD.Valid_HP.
+//      rung 1: `XIC(Valid_Map) XIC(CMD.Valid_HP) ONS OTL(Valid_HP)` — Valid_Map
+//      must be LATCHED FIRST, which is why the writes are strictly ordered and
+//      each is confirmed before the next is issued. (Both landing in one scan
+//      is also safe: rung 1's Valid_Map OTL executes before the Valid_HP branch
+//      of the same rung. The ordering is belt-and-braces.)
+//   3. CMD.Invalidate_Tracking_Finished — rung 3's OTU, which hands polarity
+//      back to the keypad.
+//
+// NEVER `Invalidate_HP` or `Invalidate_Map` from this path: those are exactly
+// what DISABLE the keypad. `Stop_Belt_Tracking` is a dead tag (0 of 11 rungs).
+//
+// WHY LEVEL, NOT EDGE (this is the fix over 948c70e):
+// The edge-triggered retraction only fires on a real tracked→untracked
+// transition recorded by THIS instance. If Tracking_Finished reappears from any
+// other source — the wizard re-asserting, one of the other three tool instances
+// sharing MCM15, a state that predates the durable baseline, or a manual change
+// in Studio — the edge never fires and the belt stays locked out forever. So we
+// also reconcile on STATE: every sweep, every device whose 'Belt Tracked' cell
+// is empty gets its local-control bits verified and, where wrong, corrected.
+//
+// This is only safe because of the shape of the writes:
+//   - Valid_Map / Valid_HP are READ BACK from STS first, so once correct they
+//     produce ZERO writes. Self-converging.
+//   - Invalidate_Tracking_Finished is an OTU. Pulsing it when the latch is
+//     already clear is a genuine no-op in the ladder. That is what makes
+//     level-based reconciliation of an UNREADABLE latch safe at all.
+//     (`Tracking_Finished` and `Flip_Polarity` are LocalTags with
+//     ExternalAccess="None" — we can never confirm the latch. Design for that.)
+//
+// SCOPE: only devices on sheets that actually DEFINE a 'Belt Tracked' column.
+// On a legacy template there is no notion of tracking, every device would read
+// as "untracked", and flagsForDevice() still asserts Valid_Direction there — we
+// would be pulsing invalidates at the entire legacy fleet forever and fighting
+// our own assert pass. Legacy sheets are left alone.
+
+/**
+ * Bits written to hand local control back, in ladder-mandated order. Only ever
+ * written as 1 — rung 8's `FLL(0,CTRL.CMD,1)` runs every scan, so every CMD
+ * write is a self-clearing one-shot pulse. Writing a 0 would be meaningless.
+ */
+export const LOCAL_CONTROL_WRITE_ORDER: readonly string[] = [
+  'Valid_Map',
+  'Valid_HP',
+  'Invalidate_Tracking_Finished',
+]
+
+/** STS snapshot the local-control decision is made from. `null` = unreadable. */
+export interface LocalControlSts {
+  /** STS.Check_Allowed — the AOI's own permissive for latching Valid_Map. */
+  checkAllowed: number | null
+  /** STS.Valid_Map, 0/1, or null when unreadable. */
+  validMap: number | null
+  /** STS.Valid_HP, 0/1, or null when unreadable. THE master keypad enable. */
+  validHp: number | null
+  /** STS.Belt_Tracking_ON or STS.Track_Belt, 0/1, or null when NEITHER exists. */
+  beltTrackingOn: number | null
+  /** STS.RVS (REAL), or null when unreadable. */
+  rvs: number | null
+}
+
+export type LocalControlAction = 'restore' | 'defer' | 'skip'
+
+export interface LocalControlPlan {
+  action: LocalControlAction
+  /** Subset of LOCAL_CONTROL_WRITE_ORDER to issue, in order. */
+  writes: string[]
+  reason: string
+}
+
+/**
+ * PURE decision: what must we write to give this untracked belt's keypad back?
+ *
+ *   defer     — the drive is (or may be) moving, or STS is unreadable. Never
+ *               proceed on unprovable stopped-ness.
+ *   skip      — Check_Allowed=0: the drive's comms are faulted, Valid_Map
+ *               cannot latch, and without Valid_Map there is no Valid_HP and no
+ *               live rung 3. Log it; do not fight the controller.
+ *   restore   — issue `writes`, in order.
+ *
+ * There is deliberately NO "already satisfied, nothing to do" verdict: even
+ * when Valid_Map and Valid_HP both read 1 we still pulse the invalidate,
+ * because Tracking_Finished is UNREADABLE and we can never know the keypad owns
+ * direction. The rate limiter, not a verdict, is what stops that repeating.
+ *
+ * WHY THE MOTION GUARD COVERS EVERYTHING, not just the invalidate: rung 7
+ * (`[XIO(Reverse_Polarity) OTE(DirectionCmd_0), XIC(Reverse_Polarity)
+ * OTE(DirectionCmd_1)]`) is UNCONDITIONAL, so clearing Tracking_Finished on a
+ * MOVING belt hands Reverse_Polarity to the keypad and can reverse the belt
+ * under power. One rule — prove it is stopped, or do nothing — is easier to
+ * audit than a per-write exemption, and enabling a keypad mid-motion is not
+ * something we want to be clever about either.
+ *
+ * CAVEAT worth stating out loud: STS.RVS is a MOVE of
+ * Drive_Outputs.CommandedVelocity (rung 9) — COMMANDED, not measured. It reads
+ * 0.0 on a belt that is still COASTING to a stop after the command dropped. The
+ * belt-tracking-off check is the primary evidence; RVS is corroboration only.
+ */
+export function planLocalControlRestore(sts: LocalControlSts): LocalControlPlan {
+  if (sts.beltTrackingOn == null) {
+    return {
+      action: 'defer',
+      writes: [],
+      reason: 'neither STS.Belt_Tracking_ON nor STS.Track_Belt is readable — cannot prove the drive is stopped',
+    }
+  }
+  if (sts.beltTrackingOn !== 0) {
+    return {
+      action: 'defer',
+      writes: [],
+      reason: 'belt tracking is still RUNNING — enabling local control / clearing the ' +
+        'tracking latch now could reverse a moving belt (AOI rung 7 is unconditional)',
+    }
+  }
+  if (sts.rvs == null) {
+    return { action: 'defer', writes: [], reason: 'STS.RVS unreadable — cannot prove commanded velocity is zero' }
+  }
+  if (Math.abs(sts.rvs) >= RVS_STOPPED_EPSILON) {
+    return { action: 'defer', writes: [], reason: `STS.RVS=${sts.rvs} — drive still commanded to move` }
+  }
+
+  if (sts.validHp == null) {
+    return { action: 'defer', writes: [], reason: 'STS.Valid_HP unreadable — cannot tell whether the keypad is enabled' }
+  }
+  // Valid_Map is only load-bearing when we actually have to latch something.
+  // If Valid_HP already reads 1 the keypad is live and Valid_Map must have
+  // latched at some point, so an unreadable Valid_Map is not a blocker.
+  if (sts.validMap == null && sts.validHp !== 1) {
+    return { action: 'defer', writes: [], reason: 'STS.Valid_Map unreadable and Valid_HP is not set — no safe way to enable the keypad' }
+  }
+
+  const needMap = sts.validMap === 0
+  const needHp = sts.validHp === 0
+  if (needMap && sts.checkAllowed !== 1) {
+    return {
+      action: 'skip',
+      writes: [],
+      reason: sts.checkAllowed == null
+        ? 'STS.Check_Allowed unreadable — rung 1 needs XIC(Check_Allowed) to latch Valid_Map'
+        : 'STS.Check_Allowed=0 — the drive is comms-faulted / not in RunMode, so rung 1 ' +
+          'cannot latch Valid_Map and no local control can be granted. Not fighting it.',
+    }
+  }
+
+  const writes: string[] = []
+  if (needMap) writes.push('Valid_Map')
+  if (needHp) writes.push('Valid_HP')
+  // ALWAYS, even when the keypad already looks enabled: Tracking_Finished is a
+  // LocalTag with ExternalAccess="None", so we can never read it back to know
+  // whether the keypad owns direction. It is an OTU — a redundant pulse costs
+  // one CIP write and does nothing to the ladder.
+  writes.push('Invalidate_Tracking_Finished')
+
+  const enableNote = needHp
+    ? 'keypad was DEAD (STS.Valid_HP=0) — restoring the master enable'
+    : 'keypad already enabled; re-handing direction ownership only'
+  return {
+    action: 'restore',
+    writes,
+    reason: `drive stopped (tracking off, RVS~0); ${enableNote}`,
+  }
+}
+
+// ── Rate limit / backoff ───────────────────────────────────────────
+//
+// The whole point of level-based reconciliation is that it runs EVERY sweep.
+// Without a limiter that is one CIP pulse per untracked device every 5 minutes,
+// forever, on a controller we share with three other tool instances — and we
+// can never read Tracking_Finished back to know we are done.
+//
+// So the backoff is on the DEVICE EVALUATION, not just the write: a device that
+// was fully handled is not even STS-probed again until it is due. Steady-state
+// cost for an untracked fleet is therefore zero between windows.
+//
+//   handled (writes all confirmed) → next due in LOCAL_CONTROL_REASSERT_MS
+//                                    (default 30 min)
+//   defer / skip / write failure   → next due in LOCAL_CONTROL_RETRY_MS
+//                                    (default 60 s, i.e. effectively the next
+//                                    sweep — a belt that stops must get its
+//                                    keypad back in minutes, not half an hour)
+//
+// The memo is IN-MEMORY ON PURPOSE. A restart or a program download changes
+// what the controller holds (a download reinitialises the AOI's local tags AND
+// drops Valid_Map/Valid_HP), so a durable memo could permanently suppress the
+// very pulse the download made necessary. One extra pulse per device after a
+// restart is the cheap side of that trade. It is also reset on PLC reconnect
+// (see clearKnownMissingTags) so a post-download restore is immediate, not
+// delayed by up to REASSERT_MS.
+
+export const LOCAL_CONTROL_REASSERT_MS = (() => {
+  const n = parseInt(process.env.VFD_LOCAL_CONTROL_REASSERT_MS || '', 10)
+  return Number.isFinite(n) && n >= 60_000 ? n : 30 * 60_000
+})()
+
+export const LOCAL_CONTROL_RETRY_MS = (() => {
+  const n = parseInt(process.env.VFD_LOCAL_CONTROL_RETRY_MS || '', 10)
+  return Number.isFinite(n) && n >= 10_000 ? n : 60_000
+})()
+
+/** deviceName → epoch ms before which we will not touch it again. */
+const localControlNextDueMs = new Map<string, number>()
+
+/**
+ * Forget every local-control backoff. Called on PLC (re)connect: a program
+ * download drops Valid_Map/Valid_HP and reinitialises the tracking latch, so
+ * every untracked belt must be re-evaluated at once rather than waiting out a
+ * 30-minute window with a dead keypad.
+ */
+export function resetLocalControlBackoff(): void {
+  localControlNextDueMs.clear()
+}
+
+/** PURE: may we touch this device now? */
+export function isLocalControlDue(deviceName: string, nowMs: number): boolean {
+  const due = localControlNextDueMs.get(deviceName)
+  return due === undefined || nowMs >= due
+}
+
+/** Record the outcome and schedule the next evaluation. */
+function noteLocalControlDone(deviceName: string, action: LocalControlAction | 'failed', nowMs: number): void {
+  const backoff = action === 'restore' ? LOCAL_CONTROL_REASSERT_MS : LOCAL_CONTROL_RETRY_MS
+  localControlNextDueMs.set(deviceName, nowMs + backoff)
+}
+
+/**
+ * Read the STS snapshot needed for the local-control decision, probing BOTH AOI
+ * revisions' names for the belt-tracking-on bit. A missing member yields null,
+ * never a throw.
+ */
+export async function readLocalControlSts(
+  ops: PlcRetractOps,
+  gateway: string,
+  path: string,
+  deviceName: string,
+): Promise<LocalControlSts> {
+  const base = `CBT_${deviceName}.CTRL.STS.`
+  const checkAllowed = await readStsBool(ops, gateway, path, `${base}Check_Allowed`)
+  const validMap = await readStsBool(ops, gateway, path, `${base}Valid_Map`)
+  const validHp = await readStsBool(ops, gateway, path, `${base}Valid_HP`)
+
+  let beltTrackingOn: number | null = null
+  for (const member of BELT_TRACKING_ON_MEMBERS) {
+    beltTrackingOn = await readStsBool(ops, gateway, path, `${base}${member}`)
+    if (beltTrackingOn !== null) break
+  }
+
+  const rvs = await readStsReal(ops, gateway, path, `${base}RVS`)
+  return { checkAllowed, validMap, validHp, beltTrackingOn, rvs }
+}
+
+export interface LocalControlOutcome {
+  deviceName: string
+  action: LocalControlAction | 'failed'
+  reason: string
+  /** CMD fields successfully written, in the order they were issued. */
+  written: string[]
+}
+
+/**
+ * Hand local control back on ONE device, FFI target.
+ *
+ * Writes are strictly sequential — each confirmed before the next is issued —
+ * because rung 1 latches Valid_HP only `XIC(Valid_Map)`. Aborts on the first
+ * failure: pulsing Invalidate_Tracking_Finished when Valid_HP never latched is
+ * a silent no-op (rung 3 is gated on Valid_HP), and we would rather report the
+ * failure and retry than log a success we cannot verify.
+ */
+export async function restoreLocalControlOnFfi(
+  ops: PlcRetractOps,
+  gateway: string,
+  path: string,
+  deviceName: string,
+): Promise<LocalControlOutcome> {
+  const sts = await readLocalControlSts(ops, gateway, path, deviceName)
+  const plan = planLocalControlRestore(sts)
+  if (plan.action !== 'restore') {
+    return { deviceName, action: plan.action, reason: plan.reason, written: [] }
+  }
+
+  const written: string[] = []
+  for (const field of LOCAL_CONTROL_WRITE_ORDER) {
+    if (!plan.writes.includes(field)) continue
+    const okWrite = await writeCmdBit(ops, gateway, path, `CBT_${deviceName}.CTRL.CMD.${field}`, 1)
+    if (!okWrite) {
+      return {
+        deviceName,
+        action: 'failed',
+        reason: `write of CMD.${field} failed after [${written.join(', ') || 'none'}] — ` +
+          'sequence ABORTED; the keypad may still be disabled. Will retry.',
+        written,
+      }
+    }
+    written.push(field)
+  }
+  return { deviceName, action: 'restore', reason: plan.reason, written }
+}
+
+/**
+ * Hand local control back on ONE device, REMOTE (plc-gateway) target. Same
+ * guards, same ordering; each write is its own sequential batch so the gateway
+ * cannot reorder them.
+ */
+export async function restoreLocalControlOnRemote(
+  subsystemId: string,
+  deviceName: string,
+  io: {
+    readTyped: (sid: string, reads: Array<{ name: string; dataType: 'BOOL' | 'REAL' }>) => Promise<{
+      connected: boolean
+      results: Array<{ success: boolean; value?: unknown; error?: string }>
+    }>
+    writeTyped: (sid: string, writes: Array<{ name: string; value: number; dataType: 'BOOL' }>) => Promise<{
+      connected: boolean
+      results: Array<{ success: boolean; error?: string }>
+    }>
+  },
+): Promise<LocalControlOutcome> {
+  const base = `CBT_${deviceName}.CTRL.STS.`
+  const reads: Array<{ name: string; dataType: 'BOOL' | 'REAL' }> = [
+    { name: `${base}Check_Allowed`, dataType: 'BOOL' },
+    { name: `${base}Valid_Map`, dataType: 'BOOL' },
+    { name: `${base}Valid_HP`, dataType: 'BOOL' },
+    ...BELT_TRACKING_ON_MEMBERS.map(m => ({ name: `${base}${m}`, dataType: 'BOOL' as const })),
+    { name: `${base}RVS`, dataType: 'REAL' },
+  ]
+  const batch = await io.readTyped(subsystemId, reads)
+  if (!batch.connected) {
+    return { deviceName, action: 'defer', reason: 'MCM not connected', written: [] }
+  }
+
+  const bool = (i: number): number | null => {
+    const r = batch.results[i]
+    if (!r?.success) return null
+    return r.value === true || r.value === 1 ? 1 : 0
+  }
+  let beltTrackingOn: number | null = null
+  for (let i = 0; i < BELT_TRACKING_ON_MEMBERS.length; i++) {
+    const v = bool(3 + i)
+    if (v !== null) { beltTrackingOn = v; break }
+  }
+  const rvsRes = batch.results[3 + BELT_TRACKING_ON_MEMBERS.length]
+  const rvs = rvsRes?.success && typeof rvsRes.value === 'number' ? rvsRes.value : null
+
+  const plan = planLocalControlRestore({
+    checkAllowed: bool(0),
+    validMap: bool(1),
+    validHp: bool(2),
+    beltTrackingOn,
+    rvs,
+  })
+  if (plan.action !== 'restore') {
+    return { deviceName, action: plan.action, reason: plan.reason, written: [] }
+  }
+
+  const written: string[] = []
+  for (const field of LOCAL_CONTROL_WRITE_ORDER) {
+    if (!plan.writes.includes(field)) continue
+    const w = await io.writeTyped(subsystemId, [
+      { name: `CBT_${deviceName}.CTRL.CMD.${field}`, value: 1, dataType: 'BOOL' },
+    ])
+    if (!w.connected || !w.results[0]?.success) {
+      return {
+        deviceName,
+        action: 'failed',
+        reason: `write of CMD.${field} failed after [${written.join(', ') || 'none'}] — sequence ABORTED`,
+        written,
+      }
+    }
+    written.push(field)
+  }
+  return { deviceName, action: 'restore', reason: plan.reason, written }
+}
+
+/**
+ * Devices whose local 'Belt Tracked' cell is NOT 'Yes', restricted to sheets
+ * that actually define the column (see SCOPE in the section header).
+ *
+ * LEFT JOIN on the cell so a device with no cell row at all — never touched by
+ * anyone — still counts as untracked, which is the common case and precisely
+ * the belt whose keypad must work.
+ *
+ * On query failure this returns an EMPTY set: doing nothing is the safe
+ * failure. (Contrast trackedDeviceNames(), which must THROW on failure, because
+ * there an empty result would manufacture an untrack edge for every device.)
+ */
+function untrackedDeviceNames(): Set<string> {
+  try {
+    const rows = db.prepare(`
+      SELECT DISTINCT d.DeviceName AS deviceName
+      FROM L2Devices d
+      JOIN L2Sheets s   ON s.id = d.SheetId
+      JOIN L2Columns c  ON c.SheetId = d.SheetId AND c.Name = '${BELT_TRACKED_COLUMN_NAME}'
+      LEFT JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
+      WHERE (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
+        AND LOWER(TRIM(COALESCE(cv.Value, ''))) <> '${BELT_TRACKED_VALUE.toLowerCase()}'
+    `).all() as Array<{ deviceName: string }>
+    return new Set(rows.map(r => r.deviceName))
+  } catch (err) {
+    console.error('[VfdValidationWriter] untracked-device query failed:', err)
+    return new Set()
+  }
+}
+
+/** Injectable per-device restore, so the pass is testable without a DLL. */
+export interface LocalControlDeps {
+  restoreOnFfi: (gateway: string, path: string, deviceName: string) => Promise<LocalControlOutcome>
+  restoreOnRemote: (subsystemId: string, deviceName: string) => Promise<LocalControlOutcome>
+}
+
+const realLocalControlDeps: LocalControlDeps = {
+  restoreOnFfi: (gateway, path, deviceName) =>
+    restoreLocalControlOnFfi(realRetractOps, gateway, path, deviceName),
+  restoreOnRemote: async (subsystemId, deviceName) => {
+    const { readTypedTagsForMcm, writeTypedTagsForMcm } = await import('@/lib/mcm-registry')
+    return restoreLocalControlOnRemote(subsystemId, deviceName, {
+      readTyped: (sid, reads) => readTypedTagsForMcm(sid, reads as any) as any,
+      writeTyped: (sid, writes) => writeTypedTagsForMcm(sid, writes as any) as any,
+    })
+  },
+}
+
+/**
+ * Route a device to the controller that owns it: the registry MCM for its
+ * subsystem, else the target that already lists it among its validated devices,
+ * else the legacy active singleton. Undefined = no connected controller owns
+ * it this pass; we simply do nothing (and do NOT burn its backoff).
+ */
+function routeLocalControlDevice(
+  deviceName: string,
+  targets: WriteTarget[],
+  subsystemByDevice: Map<string, string>,
+): WriteTarget | undefined {
+  const owner = subsystemByDevice.get(deviceName.toUpperCase())
+  if (owner !== undefined) {
+    const byOwner = targets.find(t => t.subsystemId === owner)
+    if (byOwner) return byOwner
+  }
+  const byDeviceList = targets.find(t => t.devices.some(d => d.deviceName === deviceName))
+  if (byDeviceList) return byDeviceList
+  return targets.find(t => t.label === 'active-plc')
+}
+
+/**
+ * LEVEL-based reconciliation pass: for EVERY untracked belt, make sure the
+ * mechanics' keypad actually works.
+ *
+ * Unlike runRetractionPass this holds no durable state and needs no edge — it
+ * is pure "is the world how it should be right now". That is the point: an
+ * edge-only retraction can never recover a Tracking_Finished latch that
+ * reappeared from the wizard, a peer instance, a pre-baseline state, or a
+ * manual Studio change.
+ *
+ * The freshness gate still applies. An instance that has not confirmed its L2
+ * copy against the cloud recently does NOT act — its "untracked" may itself be
+ * stale, and writing on a shared controller from stale truth is the original
+ * MCM15 bug wearing a different hat. Silence stays the safe failure.
+ */
+export async function runLocalControlRestorePass(
+  targets: WriteTarget[],
+  freshBySubsystem: Map<string, boolean>,
+  untracked: Set<string>,
+  subsystemByDevice: Map<string, string>,
+  nowMs: number = Date.now(),
+  deps: LocalControlDeps = realLocalControlDeps,
+): Promise<LocalControlOutcome[]> {
+  // Drop backoff memos for devices that are no longer untracked, so a belt that
+  // is tracked and later untracked again is acted on IMMEDIATELY rather than
+  // inheriting a stale 30-minute window.
+  for (const name of Array.from(localControlNextDueMs.keys())) {
+    if (!untracked.has(name)) localControlNextDueMs.delete(name)
+  }
+  if (untracked.size === 0) return []
+
+  const outcomes: LocalControlOutcome[] = []
+  let restored = 0
+  let enabled = 0
+  let deferred = 0
+  let skipped = 0
+
+  for (const deviceName of Array.from(untracked).sort()) {
+    if (!isLocalControlDue(deviceName, nowMs)) continue
+
+    const target = routeLocalControlDevice(deviceName, targets, subsystemByDevice)
+    // No connected controller owns this device this pass. Don't consume the
+    // backoff — we never actually looked.
+    if (!target) continue
+
+    const key = target.subsystemId ?? 'active'
+    // FAIL CLOSED: only an explicit `true` lets us write. A subsystem with no
+    // verdict at all was never judged, and an unjudged instance is exactly the
+    // one that must stay quiet. Don't burn the backoff either — we never looked.
+    if (freshBySubsystem.get(key) !== true) continue
+
+    let outcome: LocalControlOutcome
+    try {
+      if (target.kind === 'remote') {
+        outcome = await deps.restoreOnRemote(target.subsystemId!, deviceName)
+      } else {
+        if (!target.isConnected()) continue
+        outcome = await deps.restoreOnFfi(target.ip, target.path, deviceName)
+      }
+    } catch (err) {
+      outcome = { deviceName, action: 'failed', reason: `restore threw: ${String(err)}`, written: [] }
+    }
+    outcomes.push(outcome)
+    noteLocalControlDone(deviceName, outcome.action, nowMs)
+
+    if (outcome.action === 'restore') {
+      restored++
+      if (outcome.written.includes('Valid_HP')) {
+        enabled++
+        console.log(
+          `[VfdValidationWriter] LOCAL CONTROL RESTORED on ${deviceName} (${target.label}): ` +
+          `keypad was disabled (STS.Valid_HP=0) on an UNTRACKED belt — wrote ` +
+          `${outcome.written.join(' → ')}. F1 start/stop, F0+F2 reverse and speed trim are live again.`,
+        )
+      }
+    } else if (outcome.action === 'skip') {
+      skipped++
+      logRetractOnce(
+        `lc:${deviceName}`,
+        `[VfdValidationWriter] Local-control restore SKIPPED for ${deviceName}: ${outcome.reason}`,
+        nowMs,
+      )
+    } else if (outcome.action === 'defer') {
+      deferred++
+    } else {
+      logRetractOnce(
+        `lc:${deviceName}`,
+        `[VfdValidationWriter] Local-control restore FAILED for ${deviceName}: ${outcome.reason}`,
+        nowMs,
+      )
+    }
+  }
+
+  if (outcomes.length > 0) {
+    console.log(
+      `[VfdValidationWriter] Local-control reconcile: ${outcomes.length} untracked belt(s) evaluated, ` +
+      `${restored} reconciled (${enabled} had a DEAD keypad), ${deferred} deferred (running/unreadable), ` +
+      `${skipped} skipped (Check_Allowed low). ` +
+      `Next evaluation in ${Math.round(LOCAL_CONTROL_REASSERT_MS / 60_000)} min ` +
+      `(${Math.round(LOCAL_CONTROL_RETRY_MS / 1000)} s for deferred/failed).`,
+    )
+  }
+  return outcomes
+}
+
 // ── Main sync function ─────────────────────────────────────────────
 
 /**
@@ -1664,11 +2245,15 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
     // devices, or devices whose owning MCM isn't a connected registry
     // entry — keeps the legacy behavior and goes through the active
     // singleton PLC when one is connected.
+    // Hoisted: the local-control reconcile pass routes UNTRACKED devices too,
+    // and those may have no wizard progress at all (so they never appear in any
+    // target's `devices` list) — it needs the same deviceName→subsystem map.
+    let subsystemByDevice = new Map<string, string>()
     if (mcmTargetById.size === 0) {
       // Legacy single-PLC deployment: exact pre-multi-MCM behavior.
       singletonTarget!.devices = devices
     } else {
-      const subsystemByDevice = getDeviceSubsystemMap()
+      subsystemByDevice = getDeviceSubsystemMap()
       let unrouted = 0
       for (const device of devices) {
         const owner = subsystemByDevice.get(device.deviceName.toUpperCase())
@@ -1701,7 +2286,10 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
 
     const freshBySubsystem = new Map<string, boolean>()
     for (const target of targets) {
-      if (target.devices.length === 0) continue
+      // NOTE: judged for EVERY target, including ones with no validated
+      // devices. The local-control reconcile pass acts on untracked belts that
+      // may have zero wizard progress, so their controller still needs a
+      // verdict — and that pass fails closed on a missing one.
       const key = target.subsystemId ?? 'active'
       const verdict = judgeBeltTrackingFreshness(await probeFreshness(key), Date.now())
       freshBySubsystem.set(key, verdict.fresh)
@@ -1725,6 +2313,28 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
       await runRetractionPass(targets, freshBySubsystem)
     } catch (err) {
       console.error('[VfdValidationWriter] Retraction pass error (non-fatal):', err)
+    }
+
+    // ── Local-control restore (LEVEL-based) ──────────────────────────
+    // Runs AFTER the edge retraction on purpose: the edge path's
+    // CMD.Normal_Polarity is only honoured while Tracking_Finished is STILL
+    // LATCHED (rung 3), so it must get its chance before this pass drops the
+    // latch. Runs BEFORE the assert pass so an untracked belt is never
+    // re-asserted-then-reconciled inside the same sweep.
+    //
+    // This is the level-triggered safety net the edge path cannot be: it does
+    // not care HOW Tracking_Finished came to be set, only that this belt is
+    // untracked and therefore its keypad must work.
+    try {
+      await runLocalControlRestorePass(
+        targets,
+        freshBySubsystem,
+        untrackedDeviceNames(),
+        subsystemByDevice.size > 0 ? subsystemByDevice : getDeviceSubsystemMap(),
+        Date.now(),
+      )
+    } catch (err) {
+      console.error('[VfdValidationWriter] Local-control restore pass error (non-fatal):', err)
     }
 
     // ── One convergence pass per target, sequential ──────────────────
