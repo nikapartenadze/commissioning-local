@@ -298,20 +298,108 @@ export async function apiCall<T = unknown>(
 }
 
 /**
+ * Tells a genuine caller cancellation apart from an expired timeout budget.
+ *
+ * Callers pass `signal: AbortSignal.timeout(15000)`, which is a per-request
+ * BUDGET, not a cancellation — and that is exactly what killed the retry loop
+ * (see fetchWithRetry). A spec-compliant AbortSignal.timeout aborts with a
+ * reason whose name is 'TimeoutError', whereas an AbortController aborted for
+ * unmount/navigation gives 'AbortError' (or a caller-chosen reason). So:
+ *   - reason.name === 'TimeoutError'  -> the attempt's budget ran out (retryable)
+ *   - anything else                   -> the caller really wants us to stop
+ * Anything without a reason is treated as a real cancellation, which is the
+ * safe default: we stop rather than keep hammering the PLC/server.
+ */
+function isCallerCancelled(signal: AbortSignal | null): boolean {
+  if (!signal?.aborted) return false
+  const reason = signal.reason as { name?: string } | undefined
+  return reason?.name !== 'TimeoutError'
+}
+
+function callerCancelReason(signal: AbortSignal | null): Error {
+  const reason = signal?.reason
+  if (reason instanceof Error) return reason
+  return new DOMException('fetchWithRetry cancelled by caller', 'AbortError')
+}
+
+/**
+ * Backoff sleep that wakes early only on a REAL caller cancellation, so an
+ * unmounted page does not sit in a 4s timer before noticing. A TimeoutError on
+ * the caller's signal deliberately does NOT shorten the backoff — the whole
+ * point of the backoff is to wait out whatever made the attempt time out.
+ */
+function sleepUnlessCancelled(ms: number, signal: AbortSignal | null): Promise<void> {
+  return new Promise(resolve => {
+    if (isCallerCancelled(signal)) {
+      resolve()
+      return
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }
+    const onAbort = () => { if (isCallerCancelled(signal)) finish() }
+    timer = setTimeout(finish, ms)
+    signal?.addEventListener('abort', onAbort)
+  })
+}
+
+/**
  * Fetch with retry for read-only GET calls.
  * 3 retries with exponential backoff (1s, 2s, 4s).
  * Only use for idempotent read operations, NOT mutations.
+ *
+ * Timeouts are PER ATTEMPT. Previously every attempt reused the one signal the
+ * caller passed in `options.signal`; once `AbortSignal.timeout(15000)` fired,
+ * attempts 2..N rejected instantly with AbortError, so on a slow/flapping
+ * on-site link the retries were dead code and this degraded to a single try.
+ * Each attempt now gets a freshly minted timer, while a caller-supplied signal
+ * is still honoured for real cancellation and ends the loop immediately.
+ *
+ * perAttemptTimeoutMs defaults to 15s to match what every caller was already
+ * asking for, so their existing `AbortSignal.timeout(15000)` stays accurate.
  */
 export async function fetchWithRetry(
   endpoint: string,
   options: RequestInit = {},
-  maxRetries = 3
+  maxRetries = 3,
+  perAttemptTimeoutMs = 15000
 ): Promise<Response> {
+  const callerSignal = options.signal ?? null
   let lastError: Error | null = null
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Don't burn an attempt if the caller already walked away.
+    if (isCallerCancelled(callerSignal)) {
+      throw callerCancelReason(callerSignal)
+    }
+
+    const attemptController = new AbortController()
+    const timer = setTimeout(() => {
+      attemptController.abort(
+        new DOMException(`fetchWithRetry attempt timed out after ${perAttemptTimeoutMs}ms`, 'TimeoutError')
+      )
+    }, perAttemptTimeoutMs)
+
+    // Manual linkage instead of AbortSignal.any(): `any` needs Chrome 116+ /
+    // Node 20.3+, and the field tablets are not pinned to a browser version.
+    // addEventListener/removeEventListener works anywhere AbortController does.
+    // Note this forwards ONLY real cancellations — an already-fired caller
+    // timeout is ignored, which is what lets attempt 2 actually run.
+    const forwardCancel = () => {
+      if (isCallerCancelled(callerSignal)) {
+        attemptController.abort(callerCancelReason(callerSignal))
+      }
+    }
+    if (callerSignal) {
+      forwardCancel() // an already-aborted signal never fires the event
+      callerSignal.addEventListener('abort', forwardCancel)
+    }
+
     try {
-      const response = await authFetch(endpoint, options)
+      const response = await authFetch(endpoint, { ...options, signal: attemptController.signal })
       if (response.ok || response.status === 401 || response.status === 403) {
         return response
       }
@@ -319,11 +407,26 @@ export async function fetchWithRetry(
       lastError = new Error(`HTTP ${response.status}`)
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
+      // A real cancellation is terminal: never keep retrying after an unmount
+      // or navigation, and never bury it under a generic retry error.
+      if (isCallerCancelled(callerSignal)) {
+        throw callerCancelReason(callerSignal)
+      }
+      // Everything else — including this attempt's own TimeoutError — is a
+      // retryable failure and falls through to the backoff below.
+    } finally {
+      // Always drop the timer and the listener, otherwise a long-lived caller
+      // signal accumulates one listener per attempt.
+      clearTimeout(timer)
+      callerSignal?.removeEventListener('abort', forwardCancel)
     }
 
     if (attempt < maxRetries) {
       const delay = 1000 * Math.pow(2, attempt)
-      await new Promise(resolve => setTimeout(resolve, delay))
+      await sleepUnlessCancelled(delay, callerSignal)
+      if (isCallerCancelled(callerSignal)) {
+        throw callerCancelReason(callerSignal)
+      }
     }
   }
 
