@@ -176,8 +176,10 @@ export async function POST(req: Request, res: Response) {
       // by CloudId and UPDATED in place (no delete); cells merged last-write-wins
       // by (DeviceId, ColumnId) — never deleted, never blanked.
       const findDev = db.prepare('SELECT id FROM L2Devices WHERE CloudId = ?')
-      const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SubsystemId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      const updateDev = db.prepare('UPDATE L2Devices SET SubsystemId=?, SheetId=?, DeviceName=?, Mcm=?, Subsystem=?, DisplayOrder=?, CompletedChecks=?, TotalChecks=? WHERE id=?')
+      const insertDev = db.prepare('INSERT INTO L2Devices (CloudId, SubsystemId, SheetId, DeviceName, Mcm, Subsystem, DisplayOrder, CompletedChecks, TotalChecks, PlannedDate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      // PlannedDate is cloud-owned and field-read-only: applied directly,
+      // including null (a genuine unschedule). Nothing local to protect.
+      const updateDev = db.prepare('UPDATE L2Devices SET SubsystemId=?, SheetId=?, DeviceName=?, Mcm=?, Subsystem=?, DisplayOrder=?, CompletedChecks=?, TotalChecks=?, PlannedDate=? WHERE id=?')
       // Auto-requeue: a device that reappears on cloud un-orphans its queue
       // rows (Orphaned→0, back to Active) so held local FV values drain again,
       // values intact. Keyed by CloudDeviceId (= the cloud device id).
@@ -240,9 +242,9 @@ export async function POST(req: Request, res: Response) {
         let localDevId: number
         if (ex) {
           localDevId = ex.id
-          updateDev.run(sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0, localDevId)
+          updateDev.run(sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0, dev.plannedDate ?? null, localDevId)
         } else {
-          localDevId = insertDev.run(dev.id, sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0).lastInsertRowid as number
+          localDevId = insertDev.run(dev.id, sid, localSheetId, dev.deviceName, dev.mcm, dev.subsystem, dev.displayOrder, dev.completedChecks || 0, dev.totalChecks || 0, dev.plannedDate ?? null).lastInsertRowid as number
         }
         // This device is present on cloud → un-orphan any queue rows that were
         // orphaned when it had been deleted (delete-then-restore recovery).

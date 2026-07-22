@@ -124,6 +124,9 @@ try {
     // upserts, never pushed, never enters PendingSyncs. See
     // docs/PLANNED-DATES-CONTRACT.md at the workspace root.
     'ALTER TABLE Ios ADD COLUMN PlannedDate TEXT',
+      // Cloud-owned FV scheduling date (l2_devices.planned_date). Field is
+      // read-only for it, same class as Ios.PlannedDate.
+      'ALTER TABLE L2Devices ADD COLUMN PlannedDate TEXT',
     // Dead-letter flag: a pending row that the cloud permanently rejected, or
     // that exhausted the retry cap, is PARKED (DeadLettered=1) instead of
     // DELETEd. Deleting it left zero trace — the queue count hit 0 and the UI
@@ -1002,13 +1005,74 @@ export function initializeSchema() {
   // Step 4 "Controls Verified" has no L2 column — it's a manual confirmation
   // that keypad controls (F0/F1/F2) work. Persisted locally so reopening the
   // wizard remembers the tech already verified controls for this VFD.
+  //
+  // Keyed (SubsystemId, deviceName). The original shape had deviceName as a
+  // lone PRIMARY KEY, which made the stamp GLOBAL: verifying controls on
+  // MCM02's NCP1_7_VFD marked MCM04's identically-named VFD verified too — a
+  // false pass on untested hardware. Belt/VFD names repeat across MCMs by
+  // design, so the subsystem must be part of the key.
   db.exec(`
     CREATE TABLE IF NOT EXISTS VfdControlsVerified (
-      deviceName TEXT PRIMARY KEY,
+      SubsystemId INTEGER NOT NULL DEFAULT 0,
+      deviceName TEXT NOT NULL,
       completedBy TEXT,
-      completedAt TEXT DEFAULT (datetime('now'))
+      completedAt TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (SubsystemId, deviceName)
     )
   `)
+
+  // One-time rebuild for boxes created before the composite key. SQLite cannot
+  // ALTER a PRIMARY KEY, so detect the old single-column shape and rebuild.
+  try {
+    const cvCols = db.prepare('PRAGMA table_info(VfdControlsVerified)').all() as Array<{ name: string }>
+    if (!cvCols.some(c => c.name === 'SubsystemId')) {
+      const legacy = db.prepare('SELECT deviceName, completedBy, completedAt FROM VfdControlsVerified').all() as Array<{
+        deviceName: string; completedBy: string | null; completedAt: string | null
+      }>
+      const resolveOwners = db.prepare(
+        'SELECT DISTINCT SubsystemId, Mcm FROM L2Devices WHERE LOWER(DeviceName) = LOWER(?) AND SubsystemId IS NOT NULL',
+      )
+
+      db.exec('ALTER TABLE VfdControlsVerified RENAME TO VfdControlsVerified_legacy')
+      db.exec(`
+        CREATE TABLE VfdControlsVerified (
+          SubsystemId INTEGER NOT NULL DEFAULT 0,
+          deviceName TEXT NOT NULL,
+          completedBy TEXT,
+          completedAt TEXT DEFAULT (datetime('now')),
+          PRIMARY KEY (SubsystemId, deviceName)
+        )
+      `)
+      const insert = db.prepare(
+        'INSERT OR IGNORE INTO VfdControlsVerified (SubsystemId, deviceName, completedBy, completedAt) VALUES (?, ?, ?, ?)',
+      )
+
+      let carried = 0
+      let dropped = 0
+      for (const row of legacy) {
+        const owners = resolveOwners.all(row.deviceName) as Array<{ SubsystemId: number; Mcm: string | null }>
+        // Attribute the stamp only when it is unambiguous about WHICH PHYSICAL
+        // machine it belongs to. Several subsystem rows sharing one Mcm label
+        // are the same machine duplicated across projects — carry the stamp to
+        // each. Owners spanning DIFFERENT Mcms (or none at all) cannot be
+        // attributed: drop the stamp so the tech re-verifies. Losing a stamp
+        // costs a re-check; keeping a wrong one passes untested hardware.
+        const distinctMcms = new Set(owners.map(o => (o.Mcm ?? '').trim().toUpperCase()))
+        if (owners.length > 0 && distinctMcms.size === 1) {
+          for (const o of owners) insert.run(o.SubsystemId, row.deviceName, row.completedBy, row.completedAt)
+          carried++
+        } else {
+          dropped++
+        }
+      }
+      db.exec('DROP TABLE VfdControlsVerified_legacy')
+      console.log(
+        `[migrate] VfdControlsVerified → per-MCM key: ${carried} stamp(s) carried, ${dropped} unattributable stamp(s) dropped (re-verification required)`,
+      )
+    }
+  } catch (err) {
+    console.error('[migrate] VfdControlsVerified per-MCM rebuild failed:', err)
+  }
 }
 
 // ── Type definitions ─────────────────────────────────────────────
