@@ -1,6 +1,7 @@
 import { Request, Response } from 'express'
 import { configService } from '@/lib/config'
 import { EMBEDDED_REMOTE_URL, type PlcProfile } from '@/lib/config/types'
+import { noteCloudProjectId } from '@/lib/sync/cloud-project'
 
 /**
  * GET /api/subsystems/list
@@ -64,9 +65,15 @@ export async function GET(req: Request, res: Response) {
       clearTimeout(timeout)
       if (cloudRes.ok) {
         const json = (await cloudRes.json()) as {
+          projectId?: number
           projectName?: string
           subsystems?: CloudSubsystem[]
         }
+        // This route runs on ordinary setup/picker traffic, so it is the most
+        // frequently-hit place the cloud tells us which project the API key
+        // unlocks. Bank it for held-back telemetry attribution — see
+        // lib/sync/cloud-project.ts. Best-effort, never affects the response.
+        noteCloudProjectId(json.projectId)
         cloudReachable = true
         projectName = json.projectName
         cloudSubsystems = Array.isArray(json.subsystems) ? json.subsystems : []

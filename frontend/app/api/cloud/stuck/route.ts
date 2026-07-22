@@ -8,6 +8,9 @@ import { db } from '@/lib/db-sqlite'
  * it to the cloud (the field complaint: deployed tools "gave up pushing and
  * didn't display"). A row is stuck if it was parked (DeadLettered=1) or has
  * failed at least once (RetryCount>0). Scoped to a subsystem when given.
+ * RESOLVED rows are excluded everywhere below: their cloud target is provably
+ * gone, so they are terminal, not stuck — listing them would ask an operator to
+ * act on something that can never be acted on. The rows themselves are kept.
  *
  * F8 (2026-07-03 sync audit): this used to cover ONLY the IO queue, so parked
  * L2/e-stop/guided/device-blocker rows were invisible and unrecoverable —
@@ -29,7 +32,7 @@ export async function GET(req: Request, res: Response) {
              ps.LastError AS lastError, ps.CreatedAt AS createdAt, i.Result AS ioResult
       FROM PendingSyncs ps
       LEFT JOIN Ios i ON i.id = ps.IoId
-      ${scoped ? 'WHERE i.SubsystemId = ? AND (ps.DeadLettered = 1 OR ps.RetryCount > 0)' : 'WHERE (ps.DeadLettered = 1 OR ps.RetryCount > 0)'}
+      ${scoped ? 'WHERE i.SubsystemId = ? AND ps.Resolved = 0 AND (ps.DeadLettered = 1 OR ps.RetryCount > 0)' : 'WHERE ps.Resolved = 0 AND (ps.DeadLettered = 1 OR ps.RetryCount > 0)'}
       ORDER BY ps.DeadLettered DESC, ps.CreatedAt ASC
     `).all(...(scoped ? [subsystemId] : [])) as Array<Record<string, unknown>>
     const io = ioRows.map((r) => ({ ...r, queue: 'io', forcePushSupported: true }))
@@ -40,7 +43,7 @@ export async function GET(req: Request, res: Response) {
              Result AS localResult, TestedBy AS testedBy, Version AS localVersion,
              RetryCount AS retryCount, DeadLettered AS deadLettered, LastError AS lastError, CreatedAt AS createdAt
       FROM EStopCheckPendingSyncs
-      ${scoped ? 'WHERE SubsystemId = ? AND (DeadLettered = 1 OR RetryCount > 0)' : 'WHERE (DeadLettered = 1 OR RetryCount > 0)'}
+      ${scoped ? 'WHERE SubsystemId = ? AND Resolved = 0 AND (DeadLettered = 1 OR RetryCount > 0)' : 'WHERE Resolved = 0 AND (DeadLettered = 1 OR RetryCount > 0)'}
       ORDER BY DeadLettered DESC, CreatedAt ASC
     `).all(...(scoped ? [subsystemId] : [])) as Array<Record<string, unknown>>)
       .map((r) => ({ ...r, queue: 'estop', forcePushSupported: false }))
@@ -51,7 +54,7 @@ export async function GET(req: Request, res: Response) {
              ActorName AS testedBy, RetryCount AS retryCount, DeadLettered AS deadLettered,
              LastError AS lastError, CreatedAt AS createdAt
       FROM GuidedTaskStatePendingSyncs
-      ${scoped ? 'WHERE SubsystemId = ? AND (DeadLettered = 1 OR RetryCount > 0)' : 'WHERE (DeadLettered = 1 OR RetryCount > 0)'}
+      ${scoped ? 'WHERE SubsystemId = ? AND Resolved = 0 AND (DeadLettered = 1 OR RetryCount > 0)' : 'WHERE Resolved = 0 AND (DeadLettered = 1 OR RetryCount > 0)'}
       ORDER BY DeadLettered DESC, CreatedAt ASC
     `).all(...(scoped ? [subsystemId] : [])) as Array<Record<string, unknown>>)
       .map((r) => ({ ...r, queue: 'guided', forcePushSupported: false }))
@@ -64,7 +67,7 @@ export async function GET(req: Request, res: Response) {
              UpdatedBy AS testedBy, RetryCount AS retryCount, DeadLettered AS deadLettered,
              LastError AS lastError, CreatedAt AS createdAt
       FROM DeviceBlockerPendingSyncs
-      ${scoped ? 'WHERE SubsystemId = ? AND (DeadLettered = 1 OR RetryCount > 0)' : 'WHERE (DeadLettered = 1 OR RetryCount > 0)'}
+      ${scoped ? 'WHERE SubsystemId = ? AND Resolved = 0 AND (DeadLettered = 1 OR RetryCount > 0)' : 'WHERE Resolved = 0 AND (DeadLettered = 1 OR RetryCount > 0)'}
       ORDER BY DeadLettered DESC, CreatedAt ASC
     `).all(...(scoped ? [subsystemId] : [])) as Array<Record<string, unknown>>)
       .map((r) => ({ ...r, queue: 'device-blocker', forcePushSupported: false }))
@@ -78,7 +81,7 @@ export async function GET(req: Request, res: Response) {
              lp.CreatedAt AS createdAt, d.SubsystemId AS subsystemId, d.DeviceName AS deviceName
       FROM L2PendingSyncs lp
       LEFT JOIN L2Devices d ON d.CloudId = lp.CloudDeviceId
-      WHERE (lp.DeadLettered = 1 OR lp.RetryCount > 0)
+      WHERE lp.Resolved = 0 AND (lp.DeadLettered = 1 OR lp.RetryCount > 0)
       ORDER BY lp.DeadLettered DESC, lp.CreatedAt ASC
     `).all() as Array<Record<string, unknown>>
     const l2 = l2Rows

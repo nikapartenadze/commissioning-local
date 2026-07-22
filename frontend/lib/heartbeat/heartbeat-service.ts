@@ -93,9 +93,14 @@ export async function buildHeartbeatPayload(): Promise<HeartbeatPayload> {
     const { db } = await import('@/lib/db-sqlite')
     const io = (db.prepare('SELECT COUNT(*) c FROM PendingSyncs WHERE DeadLettered = 0').get() as { c: number }).c
     let l2 = 0
-    try { l2 = (db.prepare('SELECT COUNT(*) c FROM L2PendingSyncs').get() as { c: number }).c } catch { /* table may not exist */ }
+    // (This L2 leg has never filtered DeadLettered — left as-is. It DOES exclude
+    // Resolved: a terminal row must not inflate the fleet's pending number.)
+    try { l2 = (db.prepare('SELECT COUNT(*) c FROM L2PendingSyncs WHERE Resolved = 0').get() as { c: number }).c } catch { /* table may not exist */ }
     pendingSyncCount = io + l2
-    attentionSyncCount = (db.prepare('SELECT COUNT(*) c FROM PendingSyncs WHERE DeadLettered = 1').get() as { c: number }).c
+    // AND Resolved = 0: a resolved row is terminal (the cloud proved its IO is
+    // gone), so it is not something anyone needs to act on and must not inflate
+    // the fleet's needs-a-human number.
+    attentionSyncCount = (db.prepare('SELECT COUNT(*) c FROM PendingSyncs WHERE DeadLettered = 1 AND Resolved = 0').get() as { c: number }).c
   } catch { /* DB not ready — omit, cloud keeps prior value */ }
 
   return {

@@ -88,3 +88,50 @@ export function isPermanentRejectionStatus(httpStatus: number | undefined): bool
 export function permanentRejectionReason(httpStatus: number): string {
   return `HTTP ${httpStatus} — target no longer exists on cloud (removed); parked without further retries`
 }
+
+/**
+ * MACHINE-READABLE rejection codes the cloud's /api/sync/update puts on each
+ * `rejected[]` entry (added 2026-07-22 alongside the existing English `reason`).
+ *
+ * Why this exists: a DELETED IO never comes back as an HTTP 404. The route
+ * answers HTTP **200** with `rejected: [{ id, reason: 'IO not found',
+ * permanent: true }]`, so isPermanentRejectionStatus (which only knows 404/410)
+ * never fired and the row fell through to deadLetter() — the "a human must look
+ * at this" bucket — and sat there forever. That was the bulk of the standing
+ * backlog. Classifying on the English string is how this breaks again; the code
+ * is the contract.
+ */
+export type CloudRejectionCode =
+  | 'io_not_found'       // the IO row does not exist (deleted on cloud)
+  | 'io_wrong_project'   // the IO belongs to another project (API-key misconfig)
+  | 'io_disappeared'     // vanished mid-transaction
+  | 'version_conflict'   // stale version
+
+/**
+ * True when the code means the cloud target is CONFIRMED GONE — the same
+ * verdict a 404/410 carries, so the row must ORPHAN (self-healing, auto-requeues
+ * if the IO reappears via a delta upsert), not dead-letter.
+ *
+ * `io_wrong_project` is deliberately EXCLUDED: it is an API-key/project
+ * misconfiguration on the tool, not a removal. Orphaning it would tombstone
+ * genuinely-unsynced local work (Ios.CloudRemoved=1) and hide it from the
+ * attention surface — the exact class of silent loss the 403 handling above was
+ * fixed for on 2026-07-17. It stays PARKED so a human sees it.
+ *
+ * Unknown/absent codes return false so an OLDER cloud (which sends no `code`)
+ * keeps EXACTLY today's behaviour — field tablets run against it for weeks.
+ */
+export function isRemovedOnCloudCode(code: string | null | undefined): boolean {
+  return code === 'io_not_found' || code === 'io_disappeared'
+}
+
+/**
+ * Human-readable LastError for a row orphaned/parked on a coded rejection.
+ * Keeps the cloud's own `reason` text so the Sync Center shows what it said.
+ */
+export function rejectionCodeReason(code: string, reason: string | undefined): string {
+  const said = reason ? ` (cloud said: ${reason})` : ''
+  return isRemovedOnCloudCode(code)
+    ? `${code} — IO no longer exists on cloud (removed)${said}; orphaned, auto-restores if it reappears`
+    : `${code} — cloud permanently rejected this row${said}`
+}

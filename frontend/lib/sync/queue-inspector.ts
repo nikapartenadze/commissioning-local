@@ -27,7 +27,14 @@ export type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' 
 
 export interface QueueItem {
   kind: QueueKind
+  /** The QUEUE ROW's own id — NOT the id of whatever it targets. */
   id: number
+  /**
+   * The Ios row this queue row targets. Set ONLY for kind==='io'; the other four
+   * queues key on device/column/zone/task, which are not IOs. Kept distinct from
+   * `id` so a queue-row id can never be mistaken for (or reported as) an IO id.
+   */
+  ioId: number | null
   // Owning MCM/subsystem so the Sync Center can attribute + filter + scope bulk
   // actions per MCM. NULL only for legacy single-MCM rows (e.g. an L2 device
   // that predates per-MCM scoping) — those show as "Unassigned".
@@ -36,11 +43,14 @@ export interface QueueItem {
   title: string
   subtitle: string | null
   value: string | null
-  // Three outbound-sync states (Orphaned layered on DeadLettered):
-  //   pending  = DeadLettered=0                (auto-sync keeps retrying)
-  //   parked   = DeadLettered=1 AND Orphaned=0 (stopped — needs a human)
-  //   orphaned = Orphaned=1                    (cloud target removed; auto-restores)
-  status: 'pending' | 'parked' | 'orphaned'
+  // Four outbound-sync states (each layered on the previous):
+  //   pending  = DeadLettered=0                             (auto-sync keeps retrying)
+  //   parked   = DeadLettered=1 AND Orphaned=0              (stopped — needs a human)
+  //   orphaned = Orphaned=1 AND Resolved=0                  (cloud target removed; auto-restores)
+  //   resolved = Resolved=1                                 (TERMINAL — nobody owes it anything)
+  // `resolved` is EXCLUDED from listQueue unless asked for by name, so it never
+  // reaches the default view or the summary counts. The row itself is kept.
+  status: 'pending' | 'parked' | 'orphaned' | 'resolved'
   classification: Classification
   reason: string
   lastError: string | null
@@ -64,7 +74,15 @@ const TABLE_BY_KIND: Record<QueueKind, string> = {
 // pending or parked (never orphaned).
 const KINDS_WITH_ORPHANED: ReadonlySet<QueueKind> = new Set<QueueKind>(['io', 'l2', 'blocker'])
 
-const REASONS: Record<Classification, string> = {
+/**
+ * Canonical per-classification reason text.
+ *
+ * Exported (text UNCHANGED) so the heartbeat's held-back telemetry can ship the
+ * SAME explanation the operator sees WITHOUT the raw-LastError interpolation
+ * that `classify()` appends for the cloud_rejected/unknown cases — see
+ * lib/heartbeat/queue-stats.ts. Reuse this map; do not restate it.
+ */
+export const REASONS: Record<Classification, string> = {
   gone_on_cloud:
     'This device/IO no longer exists on the cloud (it was removed). Nothing to sync to — safe to discard.',
   version_conflict:
@@ -134,9 +152,10 @@ function ageMinutesOf(createdAt: string | null | undefined): number | null {
   return mins < 0 ? 0 : mins
 }
 
-function statusOf(deadLettered: unknown, orphaned: unknown): 'pending' | 'parked' | 'orphaned' {
-  // Orphaned wins (it's a subset of DeadLettered — the invariant guarantees
-  // DeadLettered=1 here too), then parked, then pending.
+function statusOf(deadLettered: unknown, orphaned: unknown, resolved: unknown): QueueItem['status'] {
+  // Most specific first: Resolved ⊂ Orphaned ⊂ DeadLettered, so the invariants
+  // guarantee the outer flags are set too whenever an inner one is.
+  if (Number(resolved) === 1) return 'resolved'
   if (Number(orphaned) === 1) return 'orphaned'
   return Number(deadLettered) === 1 ? 'parked' : 'pending'
 }
@@ -154,18 +173,21 @@ function buildItem(
   retryCount: unknown,
   createdAt: string | null,
   orphaned: unknown,
+  resolved: unknown,
 ): QueueItem {
   const { classification, reason } = classify(lastError)
   const sid = subsystemId == null ? null : Number(subsystemId)
   return {
     kind,
     id,
+    // Overridden by readIoRows with the real IoId; every other queue has none.
+    ioId: null,
     subsystemId: sid != null && Number.isFinite(sid) ? sid : null,
     mcm: mcm ?? null,
     title,
     subtitle,
     value,
-    status: statusOf(deadLettered, orphaned),
+    status: statusOf(deadLettered, orphaned, resolved),
     classification,
     reason,
     lastError: lastError ?? null,
@@ -180,7 +202,7 @@ function readIoRows(): QueueItem[] {
   const rows = db
     .prepare(
       `SELECT ps.id AS id, ps.IoId AS IoId, ps.TestResult AS TestResult,
-              ps.DeadLettered AS DeadLettered, ps.Orphaned AS Orphaned, ps.LastError AS LastError,
+              ps.DeadLettered AS DeadLettered, ps.Orphaned AS Orphaned, ps.Resolved AS Resolved, ps.LastError AS LastError,
               ps.RetryCount AS RetryCount, ps.CreatedAt AS CreatedAt,
               i.Name AS IoName, i.Description AS IoDescription,
               i.SubsystemId AS SubsystemId, s.Name AS Mcm
@@ -193,7 +215,11 @@ function readIoRows(): QueueItem[] {
   return rows.map((r) => {
     const title = (r.IoName && String(r.IoName)) || `IO #${r.IoId}`
     const subtitle = r.IoDescription != null ? String(r.IoDescription) : null
-    return buildItem('io', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
+    const ioId = r.IoId == null ? null : Number(r.IoId)
+    return {
+      ...buildItem('io', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.TestResult ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned, r.Resolved),
+      ioId: ioId != null && Number.isFinite(ioId) ? ioId : null,
+    }
   })
 }
 
@@ -202,7 +228,7 @@ function readL2Rows(): QueueItem[] {
   const rows = db
     .prepare(
       `SELECT lp.id AS id, lp.CloudDeviceId AS CloudDeviceId, lp.CloudColumnId AS CloudColumnId,
-              lp.Value AS Value, lp.DeadLettered AS DeadLettered, lp.Orphaned AS Orphaned, lp.LastError AS LastError,
+              lp.Value AS Value, lp.DeadLettered AS DeadLettered, lp.Orphaned AS Orphaned, lp.Resolved AS Resolved, lp.LastError AS LastError,
               lp.RetryCount AS RetryCount, lp.CreatedAt AS CreatedAt,
               d.DeviceName AS DeviceName, d.Mcm AS Mcm, d.SubsystemId AS SubsystemId,
               COALESCE(s.Name, d.Mcm) AS McmName, c.Name AS ColumnName
@@ -217,7 +243,7 @@ function readL2Rows(): QueueItem[] {
     const name = r.DeviceName ? String(r.DeviceName) : `Device #${r.CloudDeviceId}`
     const title = r.Mcm ? `${name} · ${r.Mcm}` : name
     const subtitle = r.ColumnName != null ? String(r.ColumnName) : `Column #${r.CloudColumnId}`
-    return buildItem('l2', r.id, r.SubsystemId, r.McmName ?? null, title, subtitle, r.Value ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
+    return buildItem('l2', r.id, r.SubsystemId, r.McmName ?? null, title, subtitle, r.Value ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned, r.Resolved)
   })
 }
 
@@ -227,7 +253,7 @@ function readBlockerRows(): QueueItem[] {
     .prepare(
       `SELECT bp.id AS id, bp.DeviceName AS DeviceName, bp.Op AS Op,
               bp.BlockerResponsibleParty AS BlockerResponsibleParty, bp.BlockerDescription AS BlockerDescription,
-              bp.DeadLettered AS DeadLettered, bp.Orphaned AS Orphaned, bp.LastError AS LastError,
+              bp.DeadLettered AS DeadLettered, bp.Orphaned AS Orphaned, bp.Resolved AS Resolved, bp.LastError AS LastError,
               bp.RetryCount AS RetryCount, bp.CreatedAt AS CreatedAt,
               bp.SubsystemId AS SubsystemId, s.Name AS Mcm
          FROM DeviceBlockerPendingSyncs bp
@@ -240,7 +266,7 @@ function readBlockerRows(): QueueItem[] {
     const party = r.BlockerResponsibleParty ? String(r.BlockerResponsibleParty) : null
     const op = r.Op ? String(r.Op) : ''
     const subtitle = [op, party].filter(Boolean).join(' · ') || null
-    return buildItem('blocker', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.BlockerDescription ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned)
+    return buildItem('blocker', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.BlockerDescription ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, r.Orphaned, r.Resolved)
   })
 }
 
@@ -260,8 +286,9 @@ function readEstopRows(): QueueItem[] {
   return rows.map((r) => {
     const title = r.ZoneName ? String(r.ZoneName) : (r.CheckTag ? String(r.CheckTag) : `E-stop check #${r.id}`)
     const subtitle = [r.CheckType ? String(r.CheckType) : null, r.CheckTag ? String(r.CheckTag) : null].filter(Boolean).join(' · ') || null
-    // No Orphaned column → pass 0 (never orphaned; only pending/parked).
-    return buildItem('estop', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.Result ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, 0)
+    // No Orphaned column → pass 0 for both (never orphaned, never resolved;
+    // only pending/parked). Resolved ⊂ Orphaned, so 0 is the correct constant.
+    return buildItem('estop', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.Result ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, 0, 0)
   })
 }
 
@@ -280,12 +307,18 @@ function readGuidedRows(): QueueItem[] {
   return rows.map((r) => {
     const title = r.TaskId ? String(r.TaskId) : `Guided task #${r.id}`
     const subtitle = r.Status ? String(r.Status) : null
-    return buildItem('guided', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.Reason ?? r.Status ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, 0)
+    return buildItem('guided', r.id, r.SubsystemId, r.Mcm ?? null, title, subtitle, r.Reason ?? r.Status ?? null, r.DeadLettered, r.LastError ?? null, r.RetryCount, r.CreatedAt ?? null, 0, 0)
   })
 }
 
 export function listQueue(opts?: {
-  status?: 'all' | 'pending' | 'parked' | 'orphaned'
+  /**
+   * 'all' means all NON-RESOLVED rows. Resolved rows are terminal (their cloud
+   * target is provably gone) and are only returned when asked for BY NAME, so
+   * they can never leak into the default view, the summary, or a bulk selector.
+   * They remain fully queryable here for forensics — never deleted.
+   */
+  status?: 'all' | 'pending' | 'parked' | 'orphaned' | 'resolved'
   /**
    * Restrict to ONE MCM. This is the per-MCM scoping that makes bulk actions
    * safe: an operator filtered to MCM05 sees + retries + discards ONLY MCM05's
@@ -293,7 +326,7 @@ export function listQueue(opts?: {
    */
   subsystemId?: number
 }): {
-  summary: { pending: number; parked: number; orphaned: number; byClassification: Record<Classification, number> }
+  summary: { pending: number; parked: number; orphaned: number; resolved: number; byClassification: Record<Classification, number> }
   items: QueueItem[]
 } {
   const wantStatus = opts?.status ?? 'all'
@@ -320,16 +353,22 @@ export function listQueue(opts?: {
     pending: 0,
     parked: 0,
     orphaned: 0,
+    resolved: 0,
     byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, cloud_rejected: 0, unknown: 0 } as Record<Classification, number>,
   }
   for (const it of items) {
+    if (it.status === 'resolved') { summary.resolved++; continue }  // terminal — counted, never classified into the to-do buckets
     if (it.status === 'orphaned') summary.orphaned++
     else if (it.status === 'parked') summary.parked++
     else summary.pending++
     summary.byClassification[it.classification]++
   }
 
-  const filtered = wantStatus === 'all' ? items : items.filter((i) => i.status === wantStatus)
+  // Resolved rows are terminal: excluded from 'all' (the default view + every
+  // bulk selector that runs through it), returned only on an explicit ask.
+  const filtered = wantStatus === 'all'
+    ? items.filter((i) => i.status !== 'resolved')
+    : items.filter((i) => i.status === wantStatus)
 
   // Order: parked (needs a human) first, then orphaned (removed on cloud), then
   // pending; oldest first within each group.
@@ -353,9 +392,12 @@ export function retry(refs: { kind: QueueKind; id: number }[]): { affected: numb
     if (!table || !Number.isInteger(ref.id)) continue
     try {
       // e-stop + guided have no Orphaned column — don't reference it there.
+      // Resolved exists on all five (added for parity) and MUST be cleared here:
+      // un-parking a row while it stays Resolved would leave it invisible to
+      // every active-queue read, i.e. a retry that silently does nothing.
       const orphanClause = KINDS_WITH_ORPHANED.has(ref.kind) ? ', Orphaned = 0' : ''
       const info = db
-        .prepare(`UPDATE ${table} SET DeadLettered = 0${orphanClause}, RetryCount = 0, LastError = NULL WHERE id = ?`)
+        .prepare(`UPDATE ${table} SET DeadLettered = 0${orphanClause}, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, RetryCount = 0, LastError = NULL WHERE id = ?`)
         .run(ref.id)
       affected += info.changes
     } catch (e) {

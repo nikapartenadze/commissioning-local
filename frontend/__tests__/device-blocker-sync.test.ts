@@ -38,7 +38,7 @@ const { memDb } = vi.hoisted(() => {
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT,
       DeadLettered INTEGER NOT NULL DEFAULT 0
-    );
+    , Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
     CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
   `)
   return { memDb: d }

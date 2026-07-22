@@ -170,6 +170,61 @@ try {
     'ALTER TABLE PendingSyncs ADD COLUMN Orphaned INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE L2PendingSyncs ADD COLUMN Orphaned INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE DeviceBlockerPendingSyncs ADD COLUMN Orphaned INTEGER NOT NULL DEFAULT 0',
+    // Resolved flag — the TERMINAL outbound-sync state (2026-07-22). EXTENDED
+    // INVARIANT: Resolved=1 ⇒ Orphaned=1 ⇒ DeadLettered=1. It marks an orphaned
+    // row whose story is OVER: the cloud proved the target is gone, so there is
+    // nothing left for a human to decide. Resolved rows drop out of EVERY
+    // attention count, the heartbeat, and the Sync Center's default view.
+    //
+    // WHY: a deleted IO used to park in the needs-a-human bucket and sit there
+    // forever (see the rejection-code routing in auto-sync.ts) — an unowned
+    // limbo state nobody could ever clear. Orphaning alone wasn't enough: those
+    // rows then accumulated in the "removed on cloud" tab indefinitely.
+    //
+    // RESOLVED IS NOT DELETED. The row keeps its TestResult/Comments/State
+    // forever and stays queryable — after the 2026-05-21 silent test-loss
+    // incident, destroying field data because the cloud reported a missing id is
+    // unacceptable: if the "deleted" determination is ever wrong, a hard delete
+    // makes it both unrecoverable and undetectable. Hiding is reversible;
+    // deleting is not. The delta-sync reappearance path CLEARS Resolved
+    // alongside Orphaned/DeadLettered, so a returning IO re-syncs normally.
+    //
+    // EStop + Guided carry these columns for schema parity ONLY: they have no
+    // Orphaned column and no confirmed-removal branch, so their Resolved stays
+    // 0 and every `AND Resolved = 0` on them is a no-op that can't drift.
+    'ALTER TABLE PendingSyncs ADD COLUMN Resolved INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE PendingSyncs ADD COLUMN ResolvedAt TEXT',
+    'ALTER TABLE PendingSyncs ADD COLUMN ResolvedReason TEXT',
+    'ALTER TABLE L2PendingSyncs ADD COLUMN Resolved INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE L2PendingSyncs ADD COLUMN ResolvedAt TEXT',
+    'ALTER TABLE L2PendingSyncs ADD COLUMN ResolvedReason TEXT',
+    'ALTER TABLE DeviceBlockerPendingSyncs ADD COLUMN Resolved INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE DeviceBlockerPendingSyncs ADD COLUMN ResolvedAt TEXT',
+    'ALTER TABLE DeviceBlockerPendingSyncs ADD COLUMN ResolvedReason TEXT',
+    'ALTER TABLE EStopCheckPendingSyncs ADD COLUMN Resolved INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE EStopCheckPendingSyncs ADD COLUMN ResolvedAt TEXT',
+    'ALTER TABLE EStopCheckPendingSyncs ADD COLUMN ResolvedReason TEXT',
+    'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN Resolved INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN ResolvedAt TEXT',
+    'ALTER TABLE GuidedTaskStatePendingSyncs ADD COLUMN ResolvedReason TEXT',
+    // ReAdjudicatedAt — the AT-MOST-ONCE marker for the one-time backlog
+    // re-adjudication sweep (2026-07-22). The rejection-code routing added
+    // alongside Resolved only fixes NEW rejections; rows parked by the OLD path
+    // (a deleted IO answered HTTP 200 + rejected:[{reason:'IO not found'}], which
+    // the `HTTP <status>` regex could never match) are DeadLettered=1 and are
+    // therefore never retried — the new code path never sees them, so the
+    // standing backlog would sit there forever.
+    //
+    // The sweep releases those rows ONCE (DeadLettered→0, RetryCount→0,
+    // LastError→NULL) so the cloud re-adjudicates them and returns a TRUSTWORTHY
+    // verdict. It deliberately does NOT bulk-mark them Resolved: that would mean
+    // trusting the English LastError string-matching this whole change exists to
+    // remove, and one false positive silently hides a real unsynced test.
+    //
+    // The stamp is written in the SAME UPDATE that releases the row, so the sweep
+    // is safe to interrupt midway and a row that re-parks is never picked up
+    // again. NULL = never re-adjudicated; never cleared once set.
+    'ALTER TABLE PendingSyncs ADD COLUMN ReAdjudicatedAt TEXT',
     // First-run hardening: the seeded default admin (Admin/111111) is flagged
     // MustChangePin=1 so the UI forces a new PIN on first admin login under
     // enforced auth. Additive + backward-safe: existing users default to 0.
@@ -512,7 +567,21 @@ export function initializeSchema() {
       -- Orphaned flag (third state) — INVARIANT: Orphaned=1 ⇒ DeadLettered=1.
       -- Set only on a CONFIRMED cloud removal (403/404/410 or IO delete-tombstone);
       -- auto-requeues if the target reappears. See the migrations block above.
-      Orphaned INTEGER NOT NULL DEFAULT 0
+      Orphaned INTEGER NOT NULL DEFAULT 0,
+      -- Resolved flag (TERMINAL state) — INVARIANT: Resolved=1 ⇒ Orphaned=1.
+      -- Hidden from every attention count / the heartbeat / the Sync Center
+      -- default view. NEVER deletes the row: the test value survives and the
+      -- delta-sync reappearance path clears this back to 0. See migrations above.
+      Resolved INTEGER NOT NULL DEFAULT 0,
+      ResolvedAt TEXT,
+      ResolvedReason TEXT,
+      -- One-time backlog RE-ADJUDICATION marker (2026-07-22). Stamped the moment
+      -- the one-shot sweep releases a legacy parked row back to the active queue.
+      -- NULL = never re-adjudicated. This is the AT-MOST-ONCE guard: a released
+      -- row that re-parks keeps its stamp, so the next boot's sweep skips it and
+      -- cannot build an infinite requeue loop. Never cleared. See
+      -- lib/sync/backlog-readjudication.ts.
+      ReAdjudicatedAt TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_ioid ON PendingSyncs(IoId);
     CREATE INDEX IF NOT EXISTS idx_pendingsyncs_createdat ON PendingSyncs(CreatedAt);
@@ -733,7 +802,12 @@ export function initializeSchema() {
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
       LastError TEXT,
-      CheckType TEXT NOT NULL DEFAULT 'preliminary'
+      CheckType TEXT NOT NULL DEFAULT 'preliminary',
+      -- Resolved (TERMINAL) — schema parity only. This queue has no Orphaned
+      -- column and no confirmed-removal branch, so it stays 0. See migrations.
+      Resolved INTEGER NOT NULL DEFAULT 0,
+      ResolvedAt TEXT,
+      ResolvedReason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_estopcheckpendingsyncs_createdat ON EStopCheckPendingSyncs(CreatedAt);
 
@@ -753,7 +827,12 @@ export function initializeSchema() {
       UpdatedAt TEXT,
       CreatedAt TEXT DEFAULT (datetime('now')),
       RetryCount INTEGER DEFAULT 0,
-      LastError TEXT
+      LastError TEXT,
+      -- Resolved (TERMINAL) — schema parity only. This queue has no Orphaned
+      -- column and no confirmed-removal branch, so it stays 0. See migrations.
+      Resolved INTEGER NOT NULL DEFAULT 0,
+      ResolvedAt TEXT,
+      ResolvedReason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_guidedtaskstatependingsyncs_createdat ON GuidedTaskStatePendingSyncs(CreatedAt);
 
@@ -864,7 +943,12 @@ export function initializeSchema() {
       -- Orphaned flag (third state) — INVARIANT: Orphaned=1 ⇒ DeadLettered=1.
       -- Set on a CONFIRMED cloud removal (403/404/410 on the L2 batch); auto-
       -- requeues when the device reappears via pull-l2. See migrations above.
-      Orphaned INTEGER NOT NULL DEFAULT 0
+      Orphaned INTEGER NOT NULL DEFAULT 0,
+      -- Resolved (TERMINAL) — INVARIANT: Resolved=1 ⇒ Orphaned=1. Row is kept
+      -- with its cell value; pull-l2's reappearance requeue clears it.
+      Resolved INTEGER NOT NULL DEFAULT 0,
+      ResolvedAt TEXT,
+      ResolvedReason TEXT
     );
 
     -- Device-level blocker sync queue (VFD bump-test failures).
@@ -893,7 +977,12 @@ export function initializeSchema() {
       -- (DeadLettered itself is added by ALTER for this table.) The blocker push
       -- path has no confirmed-removal branch, so this stays 0 today; declared for
       -- schema parity so queue-inspector can SELECT it uniformly.
-      Orphaned INTEGER NOT NULL DEFAULT 0
+      Orphaned INTEGER NOT NULL DEFAULT 0,
+      -- Resolved (TERMINAL) — same parity rationale as Orphaned: nothing sets it
+      -- on this queue today (no confirmed-removal branch), so it stays 0.
+      Resolved INTEGER NOT NULL DEFAULT 0,
+      ResolvedAt TEXT,
+      ResolvedReason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_deviceblockersyncs_createdat ON DeviceBlockerPendingSyncs(CreatedAt);
 
@@ -980,6 +1069,27 @@ export function initializeSchema() {
       SubsystemId INTEGER PRIMARY KEY,
       LastSeq     INTEGER NOT NULL DEFAULT 0,
       UpdatedAt   TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Durable, tool-scoped flags for ONE-TIME / capability-gated sync
+    -- maintenance (2026-07-22). Deliberately a tiny KV table rather than more
+    -- columns: these facts are about the TOOL's relationship with the cloud, not
+    -- about any one queue row, and they must survive restarts (an in-memory
+    -- boolean would re-run a one-shot sweep on every boot).
+    --
+    -- Keys in use (see lib/sync/backlog-readjudication.ts):
+    --   cloud_emits_rejection_code   ISO ts of the FIRST time /api/sync/update
+    --                                answered with a machine-readable "code" on a
+    --                                rejected[] entry. Proves the cloud is new
+    --                                enough to adjudicate a deleted IO properly.
+    --   backlog_readjudication_v1    ISO ts the one-shot sweep completed.
+    --   backlog_readjudication_canary ISO ts + row id of the last canary release.
+    --
+    -- Values are opaque TEXT. Never holds field data.
+    CREATE TABLE IF NOT EXISTS SyncMaintenanceFlags (
+      Key       TEXT PRIMARY KEY,
+      Value     TEXT,
+      UpdatedAt TEXT DEFAULT (datetime('now'))
     );
 
   `)

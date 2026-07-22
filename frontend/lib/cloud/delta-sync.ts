@@ -274,8 +274,15 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   const deleteStmt = db.prepare('DELETE FROM Ios WHERE id = ?')
   // Orphan the queue rows for an IO the cloud just deleted (confirmed removal via
   // delete-tombstone). QUEUE-ROW FLAG ONLY — the Ios row is kept below.
+  // Resolved=1 in the SAME statement: a delete-tombstone is proof the target is
+  // gone, so the row is TERMINAL (out of every attention count / the heartbeat /
+  // the Sync Center default view) rather than sitting in an unowned limbo. The
+  // row and its test value are KEPT — see the requeue below.
   const orphanPendingStmt = db.prepare(
-    "UPDATE PendingSyncs SET DeadLettered = 1, Orphaned = 1, RetryCount = 0, " +
+    "UPDATE PendingSyncs SET DeadLettered = 1, Orphaned = 1, Resolved = 1, " +
+    "ResolvedAt = datetime('now'), " +
+    "ResolvedReason = 'IO removed on cloud (delete tombstone); resolved automatically', " +
+    "RetryCount = 0, " +
     "LastError = 'HTTP 410 — IO removed on cloud (delete tombstone); orphaned, auto-restores if it reappears' " +
     "WHERE IoId = ? AND Orphaned = 0",
   )
@@ -287,8 +294,14 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
   const clearTombstoneStmt = db.prepare(
     'UPDATE Ios SET CloudRemoved = 0 WHERE id = ? AND COALESCE(CloudRemoved,0) = 1',
   )
+  // Resolved MUST be cleared here alongside Orphaned/DeadLettered. It is the
+  // terminal flag, and every active-queue read is gated on it — leaving it set
+  // would mean a returning IO's held test value NEVER re-syncs and silently
+  // stays local forever. This is the load-bearing half of the auto-resolve
+  // design: hiding a row is only safe because reappearance un-hides it.
   const requeueOrphanStmt = db.prepare(
-    'UPDATE PendingSyncs SET Orphaned = 0, DeadLettered = 0, RetryCount = 0, LastError = NULL WHERE IoId = ? AND Orphaned = 1',
+    'UPDATE PendingSyncs SET Orphaned = 0, DeadLettered = 0, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, ' +
+    'RetryCount = 0, LastError = NULL WHERE IoId = ? AND Orphaned = 1',
   )
   const upsert = upsertStmt()
   const upsertKeepClear = upsertKeepClearStmt()

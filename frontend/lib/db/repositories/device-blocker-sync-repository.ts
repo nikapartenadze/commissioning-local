@@ -138,11 +138,12 @@ export function listDeviceBlockerSyncs(limit?: number): DeviceBlockerSyncRow[] {
 
 /**
  * List PARKED (dead-lettered) blocker syncs for the stuck-sync surface.
+ * Resolved rows are terminal and excluded — see the Resolved notes in db-sqlite.
  */
 export function listParkedDeviceBlockerSyncs(subsystemId?: number): DeviceBlockerSyncRow[] {
   const rows = (subsystemId !== undefined
-    ? db.prepare('SELECT * FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 AND SubsystemId = ? ORDER BY CreatedAt ASC').all(subsystemId)
-    : db.prepare('SELECT * FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 ORDER BY CreatedAt ASC').all()) as RawRow[]
+    ? db.prepare('SELECT * FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 AND Resolved = 0 AND SubsystemId = ? ORDER BY CreatedAt ASC').all(subsystemId)
+    : db.prepare('SELECT * FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 AND Resolved = 0 ORDER BY CreatedAt ASC').all()) as RawRow[]
   return rows.map(mapRow)
 }
 
@@ -158,13 +159,15 @@ export function parkDeviceBlockerSync(id: number, error: string): void {
 
 /** Un-park a blocker sync so the push loop retries it (operator action). */
 export function unparkDeviceBlockerSync(id: number): void {
+  // Clear Resolved too — leaving it set would un-park the row into a state every
+  // active-queue read still filters out, i.e. an un-park that does nothing.
   db.prepare(
-    'UPDATE DeviceBlockerPendingSyncs SET DeadLettered = 0, RetryCount = 0 WHERE id = ?',
+    'UPDATE DeviceBlockerPendingSyncs SET DeadLettered = 0, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, RetryCount = 0 WHERE id = ?',
   ).run(id)
 }
 
 export function countParkedDeviceBlockerSyncs(): number {
-  return (db.prepare('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1').get() as { cnt: number }).cnt
+  return (db.prepare('SELECT COUNT(*) as cnt FROM DeviceBlockerPendingSyncs WHERE DeadLettered = 1 AND Resolved = 0').get() as { cnt: number }).cnt
 }
 
 /**

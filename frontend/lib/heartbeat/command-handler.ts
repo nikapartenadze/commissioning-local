@@ -201,7 +201,12 @@ async function handleForceSyncCommand(cmd: IncomingCommand): Promise<CommandResu
     let unparked = 0
     for (const t of tables) {
       try {
-        const r = db.prepare(`UPDATE ${t} SET DeadLettered = 0, RetryCount = 0 WHERE DeadLettered = 1`).run()
+        // Clearing Resolved is required, not cosmetic: an un-parked row that
+        // stays Resolved is filtered out of every active-queue read, so the
+        // force-sync would report rows unparked that can never actually drain.
+        const r = db.prepare(
+          `UPDATE ${t} SET DeadLettered = 0, Resolved = 0, ResolvedAt = NULL, ResolvedReason = NULL, RetryCount = 0 WHERE DeadLettered = 1`,
+        ).run()
         unparked += r.changes
       } catch { /* table missing on old DB */ }
     }

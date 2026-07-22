@@ -34,6 +34,7 @@ import {
   parkDeviceBlockerSync,
 } from '@/lib/db/repositories/device-blocker-sync-repository'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { noteCloudEmitsRejectionCode } from '@/lib/sync/backlog-readjudication'
 
 // Retry cap for device-blocker queue rows (F7, 2026-07-03 sync audit): same
 // 10-strike park policy as every other queue. Before this, a permanently-
@@ -60,6 +61,15 @@ export interface SyncIoResult {
   network?: boolean
   /** Human-readable reason for the failure / rejection. */
   reason?: string
+  /**
+   * MACHINE-READABLE rejection code from the cloud's `rejected[]` entry
+   * ('io_not_found' | 'io_wrong_project' | 'io_disappeared' | 'version_conflict').
+   * UNDEFINED when talking to an older cloud that doesn't send one — callers
+   * MUST fall back to the existing HTTP-status path in that case, since field
+   * tablets run against a pre-`code` cloud for weeks after this ships.
+   * See sync-failure-classification.ts (CloudRejectionCode).
+   */
+  rejectionCode?: string
 }
 
 // =============================================================================
@@ -416,13 +426,28 @@ export class CloudSyncService {
       if (response.ok) {
         type SyncResp = {
           updatedCount?: number
-          rejected?: { id: number; reason: string; permanent?: boolean }[]
+          // `code` is the machine-readable discriminator (added cloud-side
+          // 2026-07-22); OPTIONAL because an older cloud sends only `reason`.
+          rejected?: { id: number; reason: string; permanent?: boolean; code?: string }[]
         }
         let responseData: SyncResp | null = null
         try {
           responseData = await response.json() as SyncResp
         } catch {
           responseData = null
+        }
+
+        // CAPABILITY SIGNAL (2026-07-22). The PRESENCE of a `code` on ANY
+        // rejected[] entry — any code, any id, permanent or not — proves this
+        // cloud is new enough to adjudicate a deleted IO with a machine-readable
+        // verdict rather than the bare English 'IO not found'. Banked durably;
+        // it is the gate on the one-time backlog re-adjudication sweep, which
+        // must NEVER release parked rows against a pre-`code` cloud (they would
+        // re-park through the old path and burn the one retry each row gets).
+        // Checked across the whole array, not just our own id, so an ordinary
+        // batch reveals the capability as early as possible.
+        if (responseData?.rejected?.some(r => r?.code)) {
+          try { noteCloudEmitsRejectionCode() } catch { /* never fail a push on telemetry */ }
         }
 
         // Cloud now surfaces rejections explicitly (added 2026-05-21 after the
@@ -433,12 +458,16 @@ export class CloudSyncService {
         const rejection = responseData?.rejected?.find(r => r.id === update.id)
         if (rejection?.permanent) {
           log.error(
-            `[CloudSync] Cloud PERMANENTLY rejected IO ${update.id}: ${rejection.reason}. ` +
+            `[CloudSync] Cloud PERMANENTLY rejected IO ${update.id}: ${rejection.reason}` +
+            `${rejection.code ? ` [code=${rejection.code}]` : ''}. ` +
             `Payload was: result=${JSON.stringify(update.result)}, version=${update.version}, ` +
             `state=${JSON.stringify(update.state)}, testedBy=${JSON.stringify(update.testedBy)}. ` +
             `Local SQLite still has this IO's state — re-pass/fail/clear in the grid if the value is wrong on cloud.`
           )
-          return { ok: false, permanent: true, reason: `cloud-rejected: ${rejection.reason}` }
+          // Surface the code verbatim (when present) so the push loop can route
+          // a DELETED IO to orphan() instead of the needs-a-human dead-letter
+          // bucket. Absent code → caller falls back to the HTTP-status path.
+          return { ok: false, permanent: true, reason: `cloud-rejected: ${rejection.reason}`, rejectionCode: rejection.code }
         }
 
         if (responseData?.updatedCount !== undefined && responseData.updatedCount < 1) {

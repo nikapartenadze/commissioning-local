@@ -17,22 +17,22 @@ const { memDb } = vi.hoisted(() => {
     CREATE TABLE Ios (id INTEGER PRIMARY KEY, SubsystemId INTEGER, Name TEXT, Result TEXT, CloudRemoved INTEGER DEFAULT 0);
     CREATE TABLE PendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, IoId INTEGER, InspectorName TEXT,
       TestResult TEXT, Comments TEXT, State TEXT, Version INTEGER, CreatedAt TEXT DEFAULT (datetime('now')),
-      RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0);
+      RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0, Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
     CREATE TABLE EStopCheckPendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, SubsystemId INTEGER,
       ZoneName TEXT, CheckTag TEXT, Result TEXT, TestedBy TEXT, Version INTEGER DEFAULT 0,
       CreatedAt TEXT DEFAULT (datetime('now')), RetryCount INTEGER DEFAULT 0, LastError TEXT,
-      DeadLettered INTEGER NOT NULL DEFAULT 0);
+      DeadLettered INTEGER NOT NULL DEFAULT 0, Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
     CREATE TABLE GuidedTaskStatePendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, SubsystemId INTEGER,
       TaskId TEXT, Status TEXT, ActorName TEXT, CreatedAt TEXT DEFAULT (datetime('now')),
-      RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0);
+      RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0, Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
     CREATE TABLE DeviceBlockerPendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, SubsystemId INTEGER,
       DeviceName TEXT, Op TEXT, BlockerResponsibleParty TEXT, BlockerDescription TEXT, UpdatedBy TEXT,
       CreatedAt TEXT DEFAULT (datetime('now')), RetryCount INTEGER DEFAULT 0, LastError TEXT,
-      DeadLettered INTEGER NOT NULL DEFAULT 0);
+      DeadLettered INTEGER NOT NULL DEFAULT 0, Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
     CREATE TABLE L2Devices (id INTEGER PRIMARY KEY AUTOINCREMENT, CloudId INTEGER, SubsystemId INTEGER, DeviceName TEXT);
     CREATE TABLE L2PendingSyncs (id INTEGER PRIMARY KEY AUTOINCREMENT, CloudDeviceId INTEGER, CloudColumnId INTEGER,
       Value TEXT, UpdatedBy TEXT, Version INTEGER DEFAULT 0, CreatedAt TEXT DEFAULT (datetime('now')),
-      RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0);
+      RetryCount INTEGER DEFAULT 0, LastError TEXT, DeadLettered INTEGER NOT NULL DEFAULT 0, Resolved INTEGER NOT NULL DEFAULT 0, ResolvedAt TEXT, ResolvedReason TEXT);
   `)
   return { memDb: d }
 })
