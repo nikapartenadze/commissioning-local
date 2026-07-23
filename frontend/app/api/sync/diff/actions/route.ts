@@ -3,6 +3,25 @@ import { db } from '@/lib/db-sqlite'
 import { configService } from '@/lib/config'
 import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
 import { auditLog } from '@/lib/logging/recovery-log'
+import { sendHeartbeat } from '@/lib/heartbeat/heartbeat-service'
+
+/**
+ * Fire a heartbeat so the cloud's fleet pending-count reflects this action
+ * immediately — a push ADDS active PendingSyncs rows, accept_cloud/tombstone
+ * DROP them, and the heartbeat carries that live count. Without this the fleet
+ * view lags a full auto-sync tick (~10 s). sendHeartbeat already never throws
+ * and self-bounds to 10 s; we additionally cap the wait so a slow heartbeat
+ * can't stall the action's HTTP response, and swallow everything — a heartbeat
+ * must NEVER fail the action it is reporting.
+ */
+async function refreshCloudPresence(): Promise<void> {
+  try {
+    await Promise.race([
+      sendHeartbeat(),
+      new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
+    ])
+  } catch { /* best-effort — a heartbeat failure never fails the action */ }
+}
 
 /**
  * POST /api/sync/diff/actions
@@ -47,6 +66,7 @@ export async function POST(req: Request, res: Response) {
       })
       run(ids)
       auditLog({ type: 'sync.diff.tombstone', subsystemId, detail: { ids, affected } })
+      await refreshCloudPresence()
       return res.json({ success: true, action, affected, message: `Accepted ${affected} removed-on-cloud IO(s) — they will stop warning.` })
     }
 
@@ -94,6 +114,7 @@ export async function POST(req: Request, res: Response) {
       })
       run(locals)
       auditLog({ type: 'sync.diff.push', subsystemId, detail: { ids: locals.map((l) => l.id), queued } })
+      await refreshCloudPresence()
       return res.json({ success: true, action, affected: queued, message: `Queued ${queued} local result(s) for upload.` })
     }
 
@@ -127,6 +148,7 @@ export async function POST(req: Request, res: Response) {
     })
     run(ids.filter((id) => idSet.has(id)))
     auditLog({ type: 'sync.diff.accept_cloud', subsystemId, detail: { ids, affected, backup: backupTaken } })
+    await refreshCloudPresence()
     return res.json({ success: true, action, affected, message: `Accepted the cloud value for ${affected} IO(s); the stale local copy was replaced.` })
   } catch (error) {
     console.error('Sync diff action failed:', error)
