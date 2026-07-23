@@ -18,6 +18,8 @@ import { SyncCompare } from '@/components/sync-compare'
 import { ConnectionHealthBanner } from '@/components/connection-health-banner'
 import { authFetch } from '@/lib/api-config'
 import { toast } from '@/hooks/use-toast'
+import { displayVerdict } from '@/lib/sync/queue-display'
+import type { DisplayTone, Classification } from '@/lib/sync/queue-display'
 
 // ── Contract types (must match the backend /api/sync/queue contract) ──────────
 type Kind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
@@ -25,10 +27,6 @@ type Kind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
 // it from the default listing, so it never reaches this page today — declared so
 // the contract type matches the server's and a resolved row can't be mistyped.
 type QueueStatus = 'pending' | 'parked' | 'orphaned' | 'resolved'
-// Mirrors the server's Classification (lib/sync/queue-inspector.ts). 'auth_error'
-// (HTTP 401/403 — the tablet's cloud key doesn't match this project) is its own
-// bucket: retryable but NEEDS-ACTION (a human fixes the key; it never self-heals).
-type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'cloud_rejected' | 'unknown' | 'auth_error'
 
 interface QueueItem {
   kind: Kind
@@ -174,130 +172,6 @@ const CLASS_META: Record<Classification, ClassMeta> = {
     Icon: ShieldAlert,
     safeToDiscard: false,
   },
-}
-
-// ── displayVerdict — LOCAL MIRROR (do NOT import the lib version) ─────────────
-// A faithful copy of displayVerdict() + its pure helpers from
-// lib/sync/queue-inspector.ts. It is copied, NOT imported, because that module
-// does `import { db } from '@/lib/db-sqlite'` at the top: a value-import of
-// displayVerdict pulls better-sqlite3 into this Vite CLIENT bundle, which opens a
-// real SQLite file at import time and crashes the browser (verified — the /sync
-// chunk began externalizing fs/path/util the moment it was imported). The cloud
-// renders the SAME strings, so KEEP THIS IN SYNC with the lib: drift here
-// reintroduces the exact "the tool lied" bug this page exists to kill. Proper
-// fix: split the pure verdict logic into a client-safe module, import in both.
-type DisplayTone = 'sending' | 'attention' | 'auth' | 'resolved' | 'gone'
-interface DisplayVerdict {
-  tone: DisplayTone
-  headline: string
-  detail: string
-  needsAction: boolean
-}
-
-const STALE_AFTER_MIN = 15
-
-const VERDICT_REASONS: Record<Classification, string> = {
-  gone_on_cloud:
-    'This record was removed on the cloud, so there is nothing left to send it to. Nothing to do — your entry stays saved on this device.',
-  version_conflict:
-    'The cloud already has a newer value for this item. Sending again will start from the cloud’s value.',
-  transient:
-    'A temporary network or cloud problem. Nothing to do — this sends itself once the connection recovers. Retry sends it now.',
-  auth_error:
-    'This tablet’s cloud key does not match this project, so the cloud is refusing everything from it. Someone has to fix the cloud key in Settings — then this sends on its own. Nothing is lost: your entry stays saved on this device.',
-  cloud_rejected:
-    'The cloud would not accept this value, and sending it again will not change that (for example an invalid value, or a SPARE that cannot be marked Passed). Check the value or the target, or Discard it if it is no longer needed.',
-  unknown: 'This did not send and the cloud gave no reason — Retry, or Discard it if it is no longer needed.',
-}
-
-function authStatusFromError(lastError: string | null | undefined): 401 | 403 | null {
-  const e = (lastError || '').toLowerCase()
-  if (!e) return null
-  if (/\b401\b/.test(e) || /unauthori[sz]ed|auth failed|invalid api key/.test(e)) return 401
-  if (/\b403\b/.test(e) || /forbidden|wrong project|project.?key mismatch/.test(e)) return 403
-  return null
-}
-
-function formatDuration(mins: number | null | undefined): string {
-  if (mins == null) return 'a while'
-  if (mins < 1) return 'under a minute'
-  if (mins < 60) return `${Math.round(mins)}m`
-  const h = mins / 60
-  if (h < 24) return `${Math.round(h)}h`
-  return `${Math.round(h / 24)}d`
-}
-
-function parkedHeadline(c: Classification): string {
-  switch (c) {
-    case 'version_conflict': return 'Newer value on cloud'
-    case 'cloud_rejected': return 'Cloud would not accept it'
-    case 'gone_on_cloud': return 'Removed on cloud'             // normally caught earlier — defensive
-    case 'auth_error': return 'Can’t send — cloud key is wrong' // normally caught earlier — defensive
-    default: return 'Needs attention'
-  }
-}
-
-// The honest per-row verdict. Precedence (first match wins): resolved → auth →
-// removed-on-cloud → parked → stale (active but past STALE_AFTER_MIN) → sending.
-// Uses the server-provided classification + ageMinutes on the item directly (the
-// lib's classify()/ageMinutesOf() fallbacks are unnecessary here — every listed
-// item already carries both).
-function displayVerdict(row: QueueItem): DisplayVerdict {
-  const ageMin = row.ageMinutes
-  const classification = row.classification
-
-  if (row.status === 'resolved') {
-    return {
-      tone: 'resolved',
-      headline: 'Cleared automatically',
-      detail: 'The cloud record was removed, so the tool cleared this by itself. Nothing to do.',
-      needsAction: false,
-    }
-  }
-
-  const authStatus = authStatusFromError(row.lastError) ?? (classification === 'auth_error' ? 403 : null)
-  if (authStatus != null) {
-    return {
-      tone: 'auth',
-      headline: 'Can’t send — cloud key is wrong',
-      detail: `This tablet’s cloud key does not match this project (HTTP ${authStatus}). Fix the cloud key in Settings and it sends on its own. Your data is safe on this device.`,
-      needsAction: true,
-    }
-  }
-
-  if (row.status === 'orphaned' || classification === 'gone_on_cloud') {
-    return {
-      tone: 'gone',
-      headline: 'Removed on cloud',
-      detail: 'This record was removed on the cloud, so there is nothing left to send it to. Nothing to do — your entry stays saved on this device.',
-      needsAction: false,
-    }
-  }
-
-  if (row.status === 'parked') {
-    return {
-      tone: 'attention',
-      headline: parkedHeadline(classification),
-      detail: VERDICT_REASONS[classification],
-      needsAction: true,
-    }
-  }
-
-  if (ageMin != null && ageMin >= STALE_AFTER_MIN) {
-    return {
-      tone: 'attention',
-      headline: 'Not reaching the cloud',
-      detail: `This has been retrying for ${formatDuration(ageMin)} without getting through. Check the tablet’s connection — your entry stays saved here meanwhile.`,
-      needsAction: true,
-    }
-  }
-
-  return {
-    tone: 'sending',
-    headline: 'Sending…',
-    detail: 'On its way — no action needed.',
-    needsAction: false,
-  }
 }
 
 // Per-row status now comes from displayVerdict(), which folds status + age +
