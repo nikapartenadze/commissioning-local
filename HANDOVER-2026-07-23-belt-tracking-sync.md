@@ -4,7 +4,43 @@ Consolidated record of a long session across `commissioning-cloud` and
 `commissioning-local`. Everything below is merged to `main` and pushed unless
 stated otherwise.
 
-## LATEST: local tool v2.48.0 — Honest Sync Center (main @ 329096a, released)
+## LATEST: local tool v2.49.0 — Fast, non-blocking Compare (main @ 4782e25, released)
+
+Follows v2.48.0. Research-grounded rebuild of "Compare with cloud" (outbox +
+version manifest + targeted fetch + optimistic per-row UI — Fraser/Dynamo/
+Replicache/TanStack practice, fitted to our version/cursor/heartbeat machinery).
+- **Cloud (deployed, f22ecf3):** two cheap endpoints —
+  `GET /api/sync/subsystem/[id]/versions` (id→version manifest, no payloads) and
+  `POST /api/sync/subsystem/[id]/rows` (full values for only the divergent ids).
+  `testedBy` comes from the newest history row per id (targeted), since it's not
+  an `ios` column — NOT a whole-history dump. IO only.
+- **Tool:** Compare reads the outbox (local-ahead) + the manifest, fetches values
+  only for divergent rows — O(divergent), zero testHistories (was O(all)+all
+  histories = minutes). Compares against **base_version** so an optimistic local
+  edit is "push", never misread as "cloud newer, discard the tech's result".
+  Completeness kept: a local IO absent from the manifest surfaces even with 0 in
+  the queue (the orphan / "0 queued but still stuck" case).
+- **UX:** global `busy` lock deleted → per-row optimistic removal, rollback+Retry
+  on failure, no full re-diff after an action. Panel never freezes.
+- **Cloud freshness:** a heartbeat fires after each Compare action, so the fleet
+  stuck-count updates in ~1s, not ~10s.
+- 1438 tests; both tsc + vite build clean. Requires cloud ≥ f22ecf3 (deployed).
+
+**Scope:** IO Compare only. **L2/FV Compare is a follow-up** — the cloud L2
+change-log is section-level (no per-cell ids) and `L2Device` has no subsystem FK,
+so a correct L2 manifest needs new cloud work; not bolted on here.
+
+**Unrelated pre-existing failing test (NOT this work, do not treat as a
+regression):** `commissioning-cloud tests/sync-health.test.ts > "a viewer on a
+healthy project still gets green"` returns amber. Cause: another session's commit
+`0bd8169` ("trust the tool's itemized queue, not its stale aggregate counters")
+made green require itemized queue evidence; the test fixture reports only
+aggregate `pending:0` with `systemInfo:null`, so it correctly reads amber now.
+The behaviour is more honest; the fixture/expectation is stale. It shipped
+already (0bd8169 is deployed) so CI doesn't gate on it. Owner of 0bd8169 should
+update the fixture (add itemized queue evidence) or the expectation.
+
+## local tool v2.48.0 — Honest Sync Center (main @ 329096a, released)
 
 Follows v2.47.0. Fixes the Sync Center reassuring when it should alarm — a tablet
 that couldn't reach the cloud showed rows as "Sending… temporary… nothing to do"
