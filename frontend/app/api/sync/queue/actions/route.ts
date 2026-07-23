@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { retry, discard, selectRefs, snapshotRefs, type QueueKind, type Classification } from '@/lib/sync/queue-inspector'
+import { performRetryPush } from '@/lib/sync/retry-push'
 import { createBackup } from '@/lib/db/backup'
 import { writeDiscardLog } from '@/lib/sync/discard-log'
 
@@ -17,9 +18,11 @@ const VALID_CLASSIFICATIONS: Classification[] = ['gone_on_cloud', 'version_confl
  *     allParked?: boolean                                  // all parked rows
  *   }
  *
- * DATA SAFETY: retry only clears the parked flag + resets retry/error on the
- * QUEUE row; discard only DELETEs the QUEUE row. Neither ever touches the
- * underlying value in Ios / L2CellValues / Devices.
+ * DATA SAFETY: retry clears the parked flag + resets retry/error on the QUEUE
+ * row and then kicks ONE real background drain, reporting the true outcome
+ * (sent / still_failing / no_connection / still_trying) — it never mutates the
+ * queued VALUE, only re-attempts sending it. discard only DELETEs the QUEUE row.
+ * Neither ever touches the underlying value in Ios / L2CellValues / Devices.
  */
 export async function POST(req: Request, res: Response) {
   try {
@@ -64,7 +67,14 @@ export async function POST(req: Request, res: Response) {
 
     if (action === 'retry') {
       const { affected } = retry(refs)
-      return res.json({ action, affected, message: `Re-queued ${affected} row(s) for sync.` })
+      // retry() ONLY reset the queue-row flags (un-park, clear RetryCount/LastError).
+      // That never re-sent anything by itself — the upload is the background drain —
+      // so the old "Re-queued for sync" toast lied on a dead link ("Retry sends it
+      // now" was false). Kick ONE real drain now (the same entrypoint the cloud
+      // force-sync command uses) and report the TRUE outcome, bounded by a timeout
+      // so a slow/stopped cloud can never hang the request.
+      const push = await performRetryPush(refs)
+      return res.json({ success: true, action, affected, ...push })
     }
 
     // Safety net: a BULK discard (allParked / by-classification — a mass delete)
