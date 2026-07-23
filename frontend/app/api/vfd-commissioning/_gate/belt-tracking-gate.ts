@@ -224,13 +224,17 @@ export function judgeWrite(field: string, state: BeltTrackedState): GateDecision
   }
 
   if (!state.resolved) {
-    if (state.error) {
+    // `'error' in state` rather than `state.error`: the server tsconfig does not
+    // narrow the discriminated union on the boolean `resolved` discriminant, so a
+    // bare property access fails to compile there even though it is safe here.
+    const err = 'error' in state ? state.error : undefined
+    if (err) {
       return {
         allowed: false,
         code: 'gate_unavailable',
         field,
         message:
-          `Cannot check whether this belt is tracked (${state.error}), so ${field} was not sent ` +
+          `Cannot check whether this belt is tracked (${err}), so ${field} was not sent ` +
           'to the PLC. Pull the latest data or restart the tool, then try again.',
       }
     }
