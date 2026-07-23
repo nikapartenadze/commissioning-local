@@ -4,13 +4,30 @@
  * a cloud error text must never read as a bare "Unknown sync error."
  */
 import { describe, it, expect } from 'vitest'
-import { classify } from '@/lib/sync/queue-inspector'
+import { classify, REASONS } from '@/lib/sync/queue-inspector'
 
 describe('classify', () => {
-  it('403/404/410 → gone_on_cloud', () => {
+  it('404/410 → gone_on_cloud (403 is NOT here any more — see auth_error below)', () => {
     expect(classify('HTTP 404').classification).toBe('gone_on_cloud')
     expect(classify('HTTP 410 — target no longer exists on cloud').classification).toBe('gone_on_cloud')
     expect(classify('IO not found').classification).toBe('gone_on_cloud')
+  })
+
+  it('401/403 → auth_error, NOT gone_on_cloud / cloud_rejected / transient', () => {
+    // THE HONESTY FIX: a 403 is the tablet's cloud key not matching this project
+    // (auth), never a removal. It used to hit the \b40[34]\b "gone_on_cloud"
+    // branch ("removed on cloud, safe to discard") and a 401 fell into the
+    // \b4\d\d\b "cloud_rejected" branch — both benign-or-wrong. Neither tells the
+    // human the one true thing: fix the key.
+    for (const e of ['HTTP 403', 'HTTP 403 (network-level, no strike)', 'forbidden — wrong project']) {
+      expect(classify(e).classification, e).toBe('auth_error')
+    }
+    for (const e of ['HTTP 401', 'HTTP 401 auth failed', 'unauthorized']) {
+      expect(classify(e).classification, e).toBe('auth_error')
+    }
+    // The reason is the needs-action auth text, and it is NOT benign.
+    expect(classify('HTTP 403').reason).toBe(REASONS.auth_error)
+    expect(classify('HTTP 403').reason).not.toMatch(/nothing to do|removed on cloud/i)
   })
 
   it('version/409/updatedCount=0 → version_conflict', () => {

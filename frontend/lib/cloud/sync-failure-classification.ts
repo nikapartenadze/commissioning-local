@@ -57,6 +57,34 @@ export function isNetworkLevelFailure(failure: SyncFailureShape): boolean {
 }
 
 /**
+ * True when the failure is specifically an AUTH failure: HTTP 401 (missing/bad
+ * credential) or 403 (the tablet's API key doesn't match THIS record's project —
+ * validateApiKeyForIo fail in the cloud's /api/sync/update).
+ *
+ * This is a STRICT SUBSET of isNetworkLevelFailure, and it deliberately changes
+ * NOTHING about retry behaviour: an auth failure stays network-level for the
+ * drain, so it burns no retry-cap strike, never parks, never orphans, and keeps
+ * retrying — it self-heals the instant the key is corrected. Retry-forever is
+ * correct and must stay (see the 429 / TPA8 incidents above). This predicate
+ * exists ONLY so the operator surface + telemetry can tell an auth failure APART
+ * from a generic connectivity blip, because the two demand OPPOSITE things of a
+ * human:
+ *   - a plain network failure (offline / timeout / 5xx) fixes ITSELF when the
+ *     link returns — nobody has to do anything;
+ *   - a 401/403 is DETERMINISTIC and never recovers until someone fixes the cloud
+ *     key in Settings. Folding it into the generic "temporary — nothing to do"
+ *     bucket is a lie that leaves a tablet silently unable to sync for as long as
+ *     the wrong key sits there.
+ *
+ * So: retry cadence unchanged (still isNetworkLevelFailure ⇒ no strike); this is
+ * a SURFACING signal, not a routing one. The queue-inspector mirrors it on the
+ * stored LastError string via authStatusFromError() for the display layer.
+ */
+export function isAuthFailure(httpStatus: number | undefined): boolean {
+  return httpStatus === 401 || httpStatus === 403
+}
+
+/**
  * DEFINITIVELY-PERMANENT cloud rejection statuses: the target row was REMOVED
  * on the cloud (deleted IO / device / column / subsystem), so every retry
  * returns the same 404/410 forever. There is nothing to reconcile — the

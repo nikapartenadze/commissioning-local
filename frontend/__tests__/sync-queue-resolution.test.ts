@@ -122,7 +122,10 @@ beforeEach(() => {
 
 // ── The classification matrix: two raw LastError strings per class ──
 const MATRIX: Array<{ classification: Classification; errors: Array<{ label: string; value: string | null }> }> = [
-  { classification: 'gone_on_cloud',    errors: [{ label: 'HTTP 404', value: 'HTTP 404' },                     { label: 'HTTP 403', value: 'HTTP 403' }] },
+  // NB: 'HTTP 403' USED to live here (gone_on_cloud), but a 403 is an auth/key
+  // mismatch, not a removal — it now classifies as auth_error (see
+  // queue-inspector-classify.test.ts). Only genuine removals (404/410) belong here.
+  { classification: 'gone_on_cloud',    errors: [{ label: 'HTTP 404', value: 'HTTP 404' },                     { label: 'HTTP 410', value: 'HTTP 410' }] },
   { classification: 'version_conflict', errors: [{ label: 'rebased', value: 'rebased after version conflict' }, { label: 'HTTP 409', value: 'HTTP 409' }] },
   { classification: 'transient',        errors: [{ label: 'timeout', value: 'timeout' },                        { label: 'ECONNREFUSED', value: 'ECONNREFUSED' }] },
   { classification: 'unknown',          errors: [{ label: 'empty/null', value: null },                          { label: 'weird error', value: 'some weird error' }] },
@@ -209,7 +212,7 @@ describe('Sync Center bulk selectors resolve to the right rows and never touch a
 
   it('selectRefs({classification:"gone_on_cloud"}) resolves ONLY the gone rows, and retry un-parks exactly those', () => {
     const ioGone = seedParked('io', 'HTTP 404')       // gone
-    const blkGone = seedParked('blocker', 'HTTP 403') // gone
+    const blkGone = seedParked('blocker', 'HTTP 410') // gone (was 'HTTP 403' — 403 is auth_error now, not gone)
     const l2Conf = seedParked('l2', 'HTTP 409')       // version_conflict — must NOT match
     const ioTrans = seedParked('io', 'timeout')       // transient — must NOT match
 
