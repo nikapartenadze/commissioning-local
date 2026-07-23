@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { authFetch } from '@/lib/api-config'
+import { fetchWithTimeout, isFetchTimeoutError } from '@/lib/fetch-with-timeout'
 import { toast } from '@/hooks/use-toast'
 import { RefreshCw, ArrowUpToLine, CloudDownload, Ban, GitCompareArrows, AlertTriangle } from 'lucide-react'
 
@@ -41,12 +42,17 @@ export function SyncCompare({ subsystemId }: { subsystemId: number | 'all' }) {
     setLoading(true)
     try {
       const qs = subsystemId === 'all' ? '' : `?subsystemId=${subsystemId}`
-      const r = await authFetch(`/api/sync/diff${qs}`)
+      // A bare fetch on a dead link hangs forever (no response, no error), so the
+      // finally below never runs and the spinner never stops. Bound it: on
+      // timeout the request aborts and we show a clear message instead.
+      const r = await fetchWithTimeout((signal) => authFetch(`/api/sync/diff${qs}`, { signal }), 15000)
       const j = (await r.json()) as DiffResp
       if (!r.ok || j.success === false) throw new Error(j.error || `HTTP ${r.status}`)
       setData(j); setError(null)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(isFetchTimeoutError(e)
+        ? "Couldn't reach the cloud to compare — check the connection."
+        : (e instanceof Error ? e.message : String(e)))
     } finally { setLoading(false) }
   }, [subsystemId])
 
@@ -56,16 +62,18 @@ export function SyncCompare({ subsystemId }: { subsystemId: number | 'all' }) {
     if (ids.length === 0) return
     setBusy(`${action}:${sub}`)
     try {
-      const r = await authFetch('/api/sync/diff/actions', {
+      const r = await fetchWithTimeout((signal) => authFetch('/api/sync/diff/actions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, subsystemId: sub, ids }),
-      })
+        body: JSON.stringify({ action, subsystemId: sub, ids }), signal,
+      }), 15000)
       const j = (await r.json()) as { success?: boolean; affected?: number; message?: string; error?: string }
       if (!r.ok || j.success === false) throw new Error(j.error || `HTTP ${r.status}`)
       toast({ title: label, description: j.message })
       await load()
     } catch (e) {
-      toast({ variant: 'destructive', title: `${label} failed`, description: e instanceof Error ? e.message : String(e) })
+      toast({ variant: 'destructive', title: `${label} failed`, description: isFetchTimeoutError(e)
+        ? "Couldn't reach the cloud — check the connection."
+        : (e instanceof Error ? e.message : String(e)) })
     } finally { setBusy(null) }
   }, [load])
 
