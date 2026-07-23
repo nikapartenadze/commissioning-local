@@ -4,6 +4,32 @@ Consolidated record of a long session across `commissioning-cloud` and
 `commissioning-local`. Everything below is merged to `main` and pushed unless
 stated otherwise.
 
+## LATEST: local tool v2.48.0 — Honest Sync Center (main @ 329096a, released)
+
+Follows v2.47.0. Fixes the Sync Center reassuring when it should alarm — a tablet
+that couldn't reach the cloud showed rows as "Sending… temporary… nothing to do"
+for 24h, the Compare tab spun forever, and Retry only reset a flag.
+- **Connection-health banner** at the top: measured reachable / can't-reach /
+  wrong-key(403) / server-error / unknown, + a "Test connection" probe. Reuses
+  the SSE `auth-failed` signal and the heartbeat HTTP status that was being
+  computed every 10s and discarded. Never green on failure or from absence.
+- **Rows stop lying**: failing >15 min → "not reaching the cloud, check
+  connection"; 401/403 → "this tablet's key is wrong, fix it, data safe".
+- **Real bug fixed**: 403 was classified `gone_on_cloud` = "removed, safe to
+  discard" — a path to discarding auth-blocked data. Now `auth_error`.
+- **Retry actually pushes** (via the force-sync `kickPush` entrypoint) and
+  reports the true outcome; **Compare times out** at 15s.
+- Verdict logic extracted to a **client-safe `lib/sync/queue-display.ts`**
+  imported by both the tablet page and the lib — no hand-mirror drift, and no
+  better-sqlite3 in the browser bundle (verified by `vite build`, the only gate
+  that catches that leak; tsc/vitest do not).
+- 1416 tests; both tsc builds + vite build clean.
+
+**Operational note the v2.48 banner will make obvious:** a tablet stuck
+"Sending" for hours is almost always a wrong cloud API key (HTTP 403) or a lost
+connection — check the tablet's `apiPassword` vs the project key, and its
+network to `commissioning.autstand.com`.
+
 ## The problem this solved
 
 Mechanics untrack belts on the cloud belt-tracking page. That was not reaching
