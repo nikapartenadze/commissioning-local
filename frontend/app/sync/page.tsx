@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import {
   ArrowLeft, RefreshCw, Loader2, ShieldCheck, CloudOff, CloudUpload,
   AlertTriangle, CheckCircle2, XCircle, RotateCcw, Trash2, ChevronDown,
-  ChevronRight, Info, Clock, Wifi, HelpCircle,
+  ChevronRight, Info, Clock, Wifi, HelpCircle, ShieldAlert,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import {
 import { ThemeToggle } from '@/components/theme-toggle'
 import { AutstandLogo } from '@/components/autstand-logo'
 import { SyncCompare } from '@/components/sync-compare'
+import { ConnectionHealthBanner } from '@/components/connection-health-banner'
 import { authFetch } from '@/lib/api-config'
 import { toast } from '@/hooks/use-toast'
 
@@ -24,7 +25,10 @@ type Kind = 'io' | 'l2' | 'blocker' | 'estop' | 'guided'
 // it from the default listing, so it never reaches this page today — declared so
 // the contract type matches the server's and a resolved row can't be mistyped.
 type QueueStatus = 'pending' | 'parked' | 'orphaned' | 'resolved'
-type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'cloud_rejected' | 'unknown'
+// Mirrors the server's Classification (lib/sync/queue-inspector.ts). 'auth_error'
+// (HTTP 401/403 — the tablet's cloud key doesn't match this project) is its own
+// bucket: retryable but NEEDS-ACTION (a human fixes the key; it never self-heals).
+type Classification = 'gone_on_cloud' | 'version_conflict' | 'transient' | 'cloud_rejected' | 'unknown' | 'auth_error'
 
 interface QueueItem {
   kind: Kind
@@ -67,6 +71,37 @@ type ActionBody = {
   subsystemId?: number
 }
 
+// The retry action now reports the TRUE push outcome (from performRetryPush on
+// the server), not just a flag reset. `outcome` is absent on older responses —
+// callers fall back to the prior wording. Mirrors RetryPushOutcome in
+// lib/sync/retry-push.ts.
+type RetryOutcome = 'sent' | 'still_failing' | 'no_connection' | 'still_trying'
+
+// Shape returned by POST /api/sync/queue/actions. Retry layers outcome/httpStatus/
+// pushed/failed on top of the discard fields (message/backup/discardLog).
+type ActionResult = {
+  affected: number
+  message?: string
+  backup?: string
+  discardLog?: string
+  outcome?: RetryOutcome
+  httpStatus?: number
+  pushed?: number
+  failed?: number
+}
+
+// Retry outcome → toast title + variant. The default (no `outcome`) keeps the
+// prior single-row "Sending again" wording so an older backend still reads right.
+function retryToast(outcome?: RetryOutcome): { title: string; variant?: 'destructive' } {
+  switch (outcome) {
+    case 'sent': return { title: 'Sent ✓' }
+    case 'still_failing': return { title: "Still can't send", variant: 'destructive' }
+    case 'no_connection': return { title: 'Cloud unreachable', variant: 'destructive' }
+    case 'still_trying': return { title: 'Still sending…' }
+    default: return { title: 'Sending again' }
+  }
+}
+
 const MCM_ALL = 'all' as const
 
 // Recompute the summary from a (possibly MCM-scoped) item set so the counts,
@@ -74,7 +109,7 @@ const MCM_ALL = 'all' as const
 function summarize(items: QueueItem[]): QueueSummary {
   const s: QueueSummary = {
     pending: 0, parked: 0, orphaned: 0, resolved: 0,
-    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, cloud_rejected: 0, unknown: 0 },
+    byClassification: { gone_on_cloud: 0, version_conflict: 0, transient: 0, cloud_rejected: 0, unknown: 0, auth_error: 0 },
   }
   for (const it of items) {
     if (it.status === 'resolved') { s.resolved++; continue }  // terminal — never a to-do
@@ -132,6 +167,150 @@ const CLASS_META: Record<Classification, ClassMeta> = {
     Icon: HelpCircle,
     safeToDiscard: false,
   },
+  auth_error: {
+    label: 'Cloud key is wrong',
+    hint: 'This tablet’s cloud key does not match this project, so the cloud is refusing everything from it. Someone has to fix the cloud key in Settings — then this sends on its own. Nothing is lost: your entry stays saved on this device.',
+    chip: 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400',
+    Icon: ShieldAlert,
+    safeToDiscard: false,
+  },
+}
+
+// ── displayVerdict — LOCAL MIRROR (do NOT import the lib version) ─────────────
+// A faithful copy of displayVerdict() + its pure helpers from
+// lib/sync/queue-inspector.ts. It is copied, NOT imported, because that module
+// does `import { db } from '@/lib/db-sqlite'` at the top: a value-import of
+// displayVerdict pulls better-sqlite3 into this Vite CLIENT bundle, which opens a
+// real SQLite file at import time and crashes the browser (verified — the /sync
+// chunk began externalizing fs/path/util the moment it was imported). The cloud
+// renders the SAME strings, so KEEP THIS IN SYNC with the lib: drift here
+// reintroduces the exact "the tool lied" bug this page exists to kill. Proper
+// fix: split the pure verdict logic into a client-safe module, import in both.
+type DisplayTone = 'sending' | 'attention' | 'auth' | 'resolved' | 'gone'
+interface DisplayVerdict {
+  tone: DisplayTone
+  headline: string
+  detail: string
+  needsAction: boolean
+}
+
+const STALE_AFTER_MIN = 15
+
+const VERDICT_REASONS: Record<Classification, string> = {
+  gone_on_cloud:
+    'This record was removed on the cloud, so there is nothing left to send it to. Nothing to do — your entry stays saved on this device.',
+  version_conflict:
+    'The cloud already has a newer value for this item. Sending again will start from the cloud’s value.',
+  transient:
+    'A temporary network or cloud problem. Nothing to do — this sends itself once the connection recovers. Retry sends it now.',
+  auth_error:
+    'This tablet’s cloud key does not match this project, so the cloud is refusing everything from it. Someone has to fix the cloud key in Settings — then this sends on its own. Nothing is lost: your entry stays saved on this device.',
+  cloud_rejected:
+    'The cloud would not accept this value, and sending it again will not change that (for example an invalid value, or a SPARE that cannot be marked Passed). Check the value or the target, or Discard it if it is no longer needed.',
+  unknown: 'This did not send and the cloud gave no reason — Retry, or Discard it if it is no longer needed.',
+}
+
+function authStatusFromError(lastError: string | null | undefined): 401 | 403 | null {
+  const e = (lastError || '').toLowerCase()
+  if (!e) return null
+  if (/\b401\b/.test(e) || /unauthori[sz]ed|auth failed|invalid api key/.test(e)) return 401
+  if (/\b403\b/.test(e) || /forbidden|wrong project|project.?key mismatch/.test(e)) return 403
+  return null
+}
+
+function formatDuration(mins: number | null | undefined): string {
+  if (mins == null) return 'a while'
+  if (mins < 1) return 'under a minute'
+  if (mins < 60) return `${Math.round(mins)}m`
+  const h = mins / 60
+  if (h < 24) return `${Math.round(h)}h`
+  return `${Math.round(h / 24)}d`
+}
+
+function parkedHeadline(c: Classification): string {
+  switch (c) {
+    case 'version_conflict': return 'Newer value on cloud'
+    case 'cloud_rejected': return 'Cloud would not accept it'
+    case 'gone_on_cloud': return 'Removed on cloud'             // normally caught earlier — defensive
+    case 'auth_error': return 'Can’t send — cloud key is wrong' // normally caught earlier — defensive
+    default: return 'Needs attention'
+  }
+}
+
+// The honest per-row verdict. Precedence (first match wins): resolved → auth →
+// removed-on-cloud → parked → stale (active but past STALE_AFTER_MIN) → sending.
+// Uses the server-provided classification + ageMinutes on the item directly (the
+// lib's classify()/ageMinutesOf() fallbacks are unnecessary here — every listed
+// item already carries both).
+function displayVerdict(row: QueueItem): DisplayVerdict {
+  const ageMin = row.ageMinutes
+  const classification = row.classification
+
+  if (row.status === 'resolved') {
+    return {
+      tone: 'resolved',
+      headline: 'Cleared automatically',
+      detail: 'The cloud record was removed, so the tool cleared this by itself. Nothing to do.',
+      needsAction: false,
+    }
+  }
+
+  const authStatus = authStatusFromError(row.lastError) ?? (classification === 'auth_error' ? 403 : null)
+  if (authStatus != null) {
+    return {
+      tone: 'auth',
+      headline: 'Can’t send — cloud key is wrong',
+      detail: `This tablet’s cloud key does not match this project (HTTP ${authStatus}). Fix the cloud key in Settings and it sends on its own. Your data is safe on this device.`,
+      needsAction: true,
+    }
+  }
+
+  if (row.status === 'orphaned' || classification === 'gone_on_cloud') {
+    return {
+      tone: 'gone',
+      headline: 'Removed on cloud',
+      detail: 'This record was removed on the cloud, so there is nothing left to send it to. Nothing to do — your entry stays saved on this device.',
+      needsAction: false,
+    }
+  }
+
+  if (row.status === 'parked') {
+    return {
+      tone: 'attention',
+      headline: parkedHeadline(classification),
+      detail: VERDICT_REASONS[classification],
+      needsAction: true,
+    }
+  }
+
+  if (ageMin != null && ageMin >= STALE_AFTER_MIN) {
+    return {
+      tone: 'attention',
+      headline: 'Not reaching the cloud',
+      detail: `This has been retrying for ${formatDuration(ageMin)} without getting through. Check the tablet’s connection — your entry stays saved here meanwhile.`,
+      needsAction: true,
+    }
+  }
+
+  return {
+    tone: 'sending',
+    headline: 'Sending…',
+    detail: 'On its way — no action needed.',
+    needsAction: false,
+  }
+}
+
+// Per-row status now comes from displayVerdict(), which folds status + age +
+// classification into ONE honest verdict (escalates a long-failing row off
+// "Sending…" after STALE_AFTER_MIN, and pulls a 401/403 into its own "a human
+// must act" tone). This maps the verdict's `tone` to a badge — colour is NEVER
+// alone: every badge carries an icon AND the verdict's headline words.
+const VERDICT_META: Record<DisplayTone, { chip: string; Icon: React.ComponentType<{ className?: string }> }> = {
+  sending:   { chip: 'border-sky-500/50 bg-sky-500/10 text-sky-600 dark:text-sky-400', Icon: CloudUpload },
+  attention: { chip: 'border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400', Icon: AlertTriangle },
+  auth:      { chip: 'border-red-500/50 bg-red-500/10 text-red-600 dark:text-red-400', Icon: ShieldAlert },
+  resolved:  { chip: 'border-slate-500/50 bg-slate-500/10 text-slate-600 dark:text-slate-400', Icon: CheckCircle2 },
+  gone:      { chip: 'border-border bg-muted/40 text-muted-foreground', Icon: CloudOff },
 }
 
 const KIND_LABEL: Record<Kind, string> = {
@@ -316,7 +495,7 @@ export default function SyncPage() {
   }, [items])
 
   // ── Action runner ───────────────────────────────────────────────────────────
-  const postAction = useCallback(async (body: ActionBody): Promise<{ affected: number; message?: string; backup?: string; discardLog?: string }> => {
+  const postAction = useCallback(async (body: ActionBody): Promise<ActionResult> => {
     const r = await authFetch('/api/sync/queue/actions', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -326,7 +505,7 @@ export default function SyncPage() {
       try { const j = await r.json(); if (j?.error) msg = j.error } catch { /* ignore */ }
       throw new Error(msg)
     }
-    return (await r.json()) as { affected: number; message?: string; backup?: string; discardLog?: string }
+    return (await r.json()) as ActionResult
   }, [])
 
   const rowAction = useCallback(async (item: QueueItem, action: 'retry' | 'discard') => {
@@ -334,13 +513,20 @@ export default function SyncPage() {
     setBusyKeys((s) => new Set(s).add(key))
     try {
       const res = await postAction({ action, ids: [{ kind: item.kind, id: item.id }] })
-      const discardNote = res.discardLog ? ` A record was saved to backups/${res.discardLog}.` : ''
-      toast({
-        title: action === 'retry' ? 'Sending again' : 'Row discarded',
-        description: (res.message ?? (action === 'retry'
-          ? 'The tool will try to send this row again.'
-          : 'Stopped uploading this row. Your data is still saved on this device.')) + (action === 'discard' ? discardNote : ''),
-      })
+      if (action === 'retry') {
+        // Honest outcome from the real drain: title + variant reflect whether it
+        // actually SENT, still can't (e.g. 403 key mismatch), has no connection,
+        // or is still trying — no more "Sending again" on a dead link. The
+        // server's res.message already spells out the specifics.
+        const { title, variant } = retryToast(res.outcome)
+        toast({ variant, title, description: res.message ?? 'The tool will try to send this row again.' })
+      } else {
+        const discardNote = res.discardLog ? ` A record was saved to backups/${res.discardLog}.` : ''
+        toast({
+          title: 'Row discarded',
+          description: (res.message ?? 'Stopped uploading this row. Your data is still saved on this device.') + discardNote,
+        })
+      }
       await load()
     } catch (e) {
       toast({
@@ -364,8 +550,13 @@ export default function SyncPage() {
         res.backup ? `DB backup: ${res.backup}` : null,
         res.discardLog ? `record: backups/${res.discardLog}` : null,
       ].filter(Boolean).join(' · ')
+      // Bulk retry reflects the real push outcome when the backend reports it
+      // (older responses omit `outcome` → keep the prior "Done" wording). Discard
+      // stays "Done".
+      const verdict = body.action === 'retry' && res.outcome ? retryToast(res.outcome) : null
       toast({
-        title: 'Done',
+        variant: verdict?.variant,
+        title: verdict?.title ?? 'Done',
         description: artifacts ? `${base} (${artifacts})` : base,
       })
       await load()
@@ -490,6 +681,12 @@ export default function SyncPage() {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 sm:px-6 py-5 space-y-5">
+        {/* ───────── Cloud connection truth (measured, self-fetching) ─────────
+            First thing under the header: the operator sees whether the cloud is
+            actually reachable BEFORE reading any row, so a page full of
+            "Sending…" is never mistaken for a healthy link. */}
+        <ConnectionHealthBanner />
+
         {/* ───────── Reassurance banner ───────── */}
         <div className="flex items-start gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
           <ShieldCheck className="h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
@@ -730,7 +927,12 @@ export default function SyncPage() {
                   <tbody>
                     {visible.map((item) => {
                       const key = rowKey(item)
-                      const m = CLASS_META[item.classification]
+                      // Honest per-row verdict: folds status + age + classification.
+                      // Handles EVERY classification (incl. auth_error, which has no
+                      // CLASS_META entry and used to throw here) and escalates a
+                      // long-failing row off "Sending…".
+                      const v = displayVerdict(item)
+                      const vm = VERDICT_META[v.tone]
                       const isOpen = expanded.has(key)
                       const busy = busyKeys.has(key)
                       const hasDetail = !!item.lastError || !!item.subtitle
@@ -761,13 +963,12 @@ export default function SyncPage() {
                               {item.value ? <span className="font-mono text-xs">{item.value}</span> : <span className="text-muted-foreground">—</span>}
                             </td>
                             <td className="px-3 py-3">
-                              <StatusBadge status={item.status} />
+                              <Badge variant="outline" className={cn('gap-1 whitespace-nowrap', vm.chip)} title={v.detail}>
+                                <vm.Icon className="h-3 w-3" />{v.headline}
+                              </Badge>
                             </td>
                             <td className="px-3 py-3 hidden sm:table-cell max-w-[280px]">
-                              <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold', m.chip)} title={m.hint}>
-                                <m.Icon className="h-3 w-3" />{m.label}
-                              </span>
-                              <div className="text-[11px] text-muted-foreground mt-1 leading-snug">{item.reason}</div>
+                              <div className="text-[11px] text-muted-foreground leading-snug">{v.detail}</div>
                             </td>
                             <td className="px-3 py-3 hidden lg:table-cell whitespace-nowrap text-muted-foreground">
                               <span className="inline-flex items-center gap-1"><Clock className="h-3 w-3" />{formatAge(item.ageMinutes)}</span>
@@ -801,15 +1002,12 @@ export default function SyncPage() {
                               <td />
                               <td colSpan={6} className="px-3 py-3">
                                 <div className="space-y-2 text-xs">
-                                  {/* on small screens the classification/reason are hidden in the row — surface here */}
-                                  <div className="sm:hidden">
-                                    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-semibold', m.chip)}>
-                                      <m.Icon className="h-3 w-3" />{m.label}
-                                    </span>
-                                    <div className="text-muted-foreground mt-1">{item.reason}</div>
-                                  </div>
+                                  {/* The plain-language verdict detail — the "sub/expanded text". On
+                                      small screens the "What happened" column is hidden, so this is
+                                      where the detail is read; the raw HTTP code stays below in
+                                      "Technical detail", never in the headline. */}
                                   <p className="text-muted-foreground flex items-start gap-1.5">
-                                    <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />{m.hint}
+                                    <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />{v.detail}
                                   </p>
                                   {item.lastError && (
                                     <div>
