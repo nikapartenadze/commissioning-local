@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest'
 import {
   isNetworkLevelFailure,
   isPermanentRejectionStatus,
+  isAuthFailure,
 } from '@/lib/cloud/sync-failure-classification'
 
 describe('isNetworkLevelFailure — transient, no strike, no tombstone', () => {
@@ -70,6 +71,31 @@ describe('disjointness — a status is never BOTH transient and a permanent remo
   it('no status is classified as both network-level and permanent-removal', () => {
     for (const s of [400, 401, 403, 404, 409, 410, 422, 429, 500, 503]) {
       expect(isNetworkLevelFailure({ httpStatus: s }) && isPermanentRejectionStatus(s)).toBe(false)
+    }
+  })
+})
+
+describe('isAuthFailure — 401/403 is its own NEEDS-ACTION category, still retryable', () => {
+  it('is true for exactly 401 and 403', () => {
+    expect(isAuthFailure(401)).toBe(true)
+    expect(isAuthFailure(403)).toBe(true)
+  })
+
+  it('is false for every non-auth status (incl. other transient + removal statuses)', () => {
+    for (const s of [200, 400, 404, 409, 410, 422, 429, 500, 502, 503]) {
+      expect(isAuthFailure(s), `status ${s}`).toBe(false)
+    }
+    expect(isAuthFailure(undefined)).toBe(false)
+  })
+
+  it('is a STRICT SUBSET of isNetworkLevelFailure — retry cadence is unchanged', () => {
+    // The whole point: an auth failure is surfaced differently, but it stays in
+    // the transient/no-strike RETRY bucket (never parks, never orphans, keeps
+    // retrying, self-heals on key fix). So auth ⇒ network-level, always.
+    for (const s of [401, 403]) {
+      expect(isAuthFailure(s)).toBe(true)
+      expect(isNetworkLevelFailure({ httpStatus: s })).toBe(true) // still no strike
+      expect(isPermanentRejectionStatus(s)).toBe(false)           // still never a removal
     }
   })
 })
