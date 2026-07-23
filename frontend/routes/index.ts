@@ -46,6 +46,7 @@ import * as cloudSyncL2 from '@/app/api/cloud/sync-l2/route'
 import * as cloudSyncL2Items from '@/app/api/cloud/sync-l2/items/route'
 import * as cloudSyncPull from '@/app/api/cloud/sync-pull/route'
 import * as cloudStatus from '@/app/api/cloud/status/route'
+import * as cloudConnectionStatus from '@/app/api/cloud/connection-status/route'
 import * as cloudAutoSync from '@/app/api/cloud/auto-sync/route'
 import * as cloudPullNetwork from '@/app/api/cloud/pull-network/route'
 import * as cloudPullEstop from '@/app/api/cloud/pull-estop/route'
@@ -251,6 +252,10 @@ export function createApiRouter(): Router {
   router.get('/api/cloud/sync-pull', asyncHandler(cloudSyncPull.GET))
   router.get('/api/cloud/status', asyncHandler(cloudStatus.GET))
   router.post('/api/cloud/status', asyncHandler(cloudStatus.POST))
+  // Measured cloud-connection-health for the Sync Center banner. GET is passive;
+  // ?probe=1 (or POST) does ONE live authenticated round-trip ("Test connection").
+  router.get('/api/cloud/connection-status', asyncHandler(cloudConnectionStatus.GET))
+  router.post('/api/cloud/connection-status', asyncHandler(cloudConnectionStatus.POST))
   router.post('/api/cloud/auto-sync', asyncHandler(cloudAutoSync.POST))
   router.delete('/api/cloud/auto-sync', asyncHandler(cloudAutoSync.DELETE))
   router.get('/api/cloud/auto-sync', asyncHandler(cloudAutoSync.GET))

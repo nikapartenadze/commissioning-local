@@ -27,6 +27,11 @@ import { getRustDeskId } from './rustdesk-id'
 import { collectSystemInfo, type HeartbeatSystemInfo } from './system-info'
 import { executeCommand, type IncomingCommand, type CommandResult } from './command-handler'
 import { drainResults, enqueueResult, requeue } from './command-queue'
+import {
+  recordCloudSuccess,
+  recordCloudHttpFailure,
+  recordCloudNetworkFailure,
+} from '@/lib/cloud/connection-health'
 
 const HEARTBEAT_TIMEOUT_MS = 10_000
 const HEARTBEAT_PATH = '/api/sync/heartbeat'
@@ -193,6 +198,9 @@ export async function sendHeartbeat(): Promise<void> {
     // the next tick. Put any drained results back so they ship then.
     requeue(drained)
     const msg = err instanceof Error ? err.message : String(err)
+    // Feed the connection-health signal: this is the measured "can't reach the
+    // cloud (network)" case (see lib/cloud/connection-health.ts).
+    recordCloudNetworkFailure(msg)
     if (!msg.includes('fetch failed') && !msg.includes('ECONNREFUSED') && !msg.includes('aborted')) {
       console.warn(`[Heartbeat] Send error: ${msg}`)
     }
@@ -204,6 +212,9 @@ export async function sendHeartbeat(): Promise<void> {
     // 5xx means cloud is having a moment. The drained results never
     // made it to durable storage — requeue so they retry next tick.
     requeue(drained)
+    // Feed the connection-health signal with the REAL status: 401/403 becomes
+    // the deterministic auth_error (needs a human), 5xx becomes server_error.
+    recordCloudHttpFailure(resp.status)
     // Log the response BODY, not just the status: during the 2026-07-11
     // incident every heartbeat 400'd on a Zod validation detail that was
     // invisible in the field logs — the fleet view went blind and nobody
@@ -213,6 +224,10 @@ export async function sendHeartbeat(): Promise<void> {
     console.warn(`[Heartbeat] Cloud responded ${resp.status}${bodyText ? `: ${bodyText}` : ''}`)
     return
   }
+
+  // A 2xx proves a live authenticated round-trip reached the cloud — this is the
+  // measured "connected" signal (recorded even if body parsing below fails).
+  recordCloudSuccess()
 
   // Response handling is best-effort: a malformed body or a misbehaving
   // command executor must never crash the heartbeat loop.
