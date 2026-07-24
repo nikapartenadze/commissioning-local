@@ -66,6 +66,86 @@ export interface DeltaPayload {
     punchlist?: boolean; vfdBlocker?: boolean; changeRequest?: boolean
     roadmap?: boolean; guidedTask?: boolean
   }
+  // Opt-in (caps=subsystem) subsystem change entries — a NEW TOP-LEVEL key,
+  // NOT rows among the regular change set. Typed loose; extractSubsystemEvents
+  // validates each entry. Present-but-empty on resync responses for caps
+  // clients. See SubsystemChangeEntry.
+  subsystems?: unknown[]
+}
+
+/**
+ * Subsystem rename/delete change entry (contract 2026-07-24, rev 2). The cloud
+ * emits these ONLY when the client opts in via `caps=subsystem` on GET
+ * /changes, as the top-level `subsystems` array:
+ *   { entityType: 'subsystem', op: 'renamed' | 'deleted',
+ *     subsystemId: <cloud subsystem id>, name: <new name, renames only> }
+ * Entries are pre-collapsed per subsystem id to the latest op (rename→delete
+ * = delete; rename name is looked up at serve time).
+ *
+ * ROUTING: entries are applied by their PAYLOAD subsystemId, NOT the polled
+ * feed. A delete tombstone for subsystem X arrives on the feeds of X's SIBLING
+ * subsystems (X's own change log is FK-cascade-wiped by the delete, and its
+ * /changes poll 403s forever). A box whose ONLY subsystem was deleted gets no
+ * sibling tombstone — its deletion signal is that permanent 403.
+ */
+export interface SubsystemChangeEntry {
+  entityType: 'subsystem'
+  op: string
+  subsystemId: number
+  name?: string | null
+}
+
+// Forward-compat: entity types / ops this build doesn't know are SKIPPED (never
+// fail the batch) and logged once per unknown value per process.
+const _unknownEntityTypesLogged = new Set<string>()
+const _unknownSubsystemOpsLogged = new Set<string>()
+
+// Entity types already delivered through the aggregate payload (ios.upserts /
+// deletes and the per-section flags). If the cloud ever echoes raw change-log
+// rows for these alongside the aggregate, they are silently skipped here — not
+// "unknown", just not consumed via this path.
+const AGGREGATED_ENTITY_TYPES = new Set([
+  'io', 'network', 'estop', 'safety', 'l2', 'punchlist',
+  'vfd_blocker', 'change_request', 'roadmap', 'guided_task',
+])
+
+/**
+ * Validate + collect subsystem change entries from the top-level `subsystems`
+ * array of a /changes payload. The field only acts on entityType 'subsystem';
+ * every OTHER entityType found in the array is tolerated by skipping it
+ * (logged once) so a newer cloud can ship new entity entries without breaking
+ * older fleet builds. Malformed entries (non-object, missing/invalid id) are
+ * skipped silently — one bad entry never fails the batch.
+ */
+export function extractSubsystemEvents(payload: DeltaPayload): SubsystemChangeEntry[] {
+  const arr = (payload as Record<string, unknown>).subsystems
+  if (!Array.isArray(arr)) return []
+  const out: SubsystemChangeEntry[] = []
+  for (const raw of arr) {
+    if (!raw || typeof raw !== 'object') continue
+    const e = raw as Record<string, unknown>
+    const entityType = typeof e.entityType === 'string' ? e.entityType : null
+    if (!entityType) continue // untagged entry — not a change entry we understand
+    if (entityType !== 'subsystem') {
+      if (AGGREGATED_ENTITY_TYPES.has(entityType)) continue // rides the aggregate payload
+      // Unknown/other entity entry: SKIP without failing the batch (fleet
+      // forward-compat). Log once per type so a new cloud feature is visible.
+      if (!_unknownEntityTypesLogged.has(entityType)) {
+        _unknownEntityTypesLogged.add(entityType)
+        console.warn(`[Delta] Ignoring change entries with unknown entityType '${entityType}' (this build does not handle them; skipped, batch unaffected)`)
+      }
+      continue
+    }
+    const sid = Number(e.subsystemId)
+    if (!Number.isFinite(sid) || sid <= 0) continue
+    out.push({
+      entityType: 'subsystem',
+      op: String(e.op ?? ''),
+      subsystemId: sid,
+      name: typeof e.name === 'string' ? e.name : null,
+    })
+  }
+  return out
 }
 
 export interface ApplyDeltaResult {
@@ -82,6 +162,12 @@ export interface ApplyDeltaResult {
   requeuedOrphans?: number
   /** Set when the mass-delete circuit breaker fired: number of deletes blocked. */
   massDeleteBlocked?: number
+  /** caps=subsystem 'renamed' entries applied this window — BY PAYLOAD id
+   *  (sibling feeds can carry entries for other subsystems). */
+  subsystemRenames?: Array<{ subsystemId: number; name: string }>
+  /** Subsystem ids tombstoned this window by caps=subsystem 'deleted' entries
+   *  (Subsystems.CloudRemoved=1 — NO local data deleted). */
+  subsystemCloudRemoved?: number[]
   sections: {
     network: boolean; estop: boolean; safety: boolean; l2: boolean
     punchlist?: boolean; vfdBlocker?: boolean; changeRequest?: boolean
@@ -225,12 +311,125 @@ function ioToParams(io: DeltaIo, subsystemId: number) {
   }
 }
 
+// ── Subsystem rename/delete apply (caps=subsystem) ──────────────────────────
+
+// Lazy, ADDITIVE, IDEMPOTENT column ensure for the subsystem tombstone —
+// mirrors Ios.CloudRemoved semantics. Never destructive: ALTER TABLE ADD
+// COLUMN with a default only, guarded by PRAGMA table_info, run at most once
+// per process and only when a 'deleted' entry actually arrives. If the
+// Subsystems table doesn't exist (stripped test DBs), it reports false and the
+// caller falls back to audit-only marking.
+let _subsystemsCloudRemovedReady: boolean | null = null
+function ensureSubsystemsCloudRemovedColumn(): boolean {
+  if (_subsystemsCloudRemovedReady !== null) return _subsystemsCloudRemovedReady
+  try {
+    const cols = db.prepare('PRAGMA table_info(Subsystems)').all() as Array<{ name: string }>
+    if (cols.length === 0) {
+      // Table absent — nothing to alter (in-memory test DB / pre-bootstrap).
+      _subsystemsCloudRemovedReady = false
+      return false
+    }
+    if (!cols.some((c) => c.name === 'CloudRemoved')) {
+      db.prepare('ALTER TABLE Subsystems ADD COLUMN CloudRemoved INTEGER NOT NULL DEFAULT 0').run()
+    }
+    _subsystemsCloudRemovedReady = true
+  } catch (e) {
+    console.warn('[Delta] Could not ensure Subsystems.CloudRemoved column:', e instanceof Error ? e.message : e)
+    _subsystemsCloudRemovedReady = false
+  }
+  return _subsystemsCloudRemovedReady
+}
+
+/** Test-only: reset the lazy column-ensure memo (in-memory DBs are per-suite). */
+export function __resetSubsystemsCloudRemovedMemo(): void {
+  _subsystemsCloudRemovedReady = null
+}
+
+/**
+ * Apply caps=subsystem change entries. DATA-SAFE by construction:
+ *   - 'renamed' → UPDATE Subsystems.Name only (display metadata).
+ *   - 'deleted' → NEVER deletes anything. Sets the Subsystems.CloudRemoved
+ *     tombstone (mirrors Ios.CloudRemoved) + a durable audit line + a loud
+ *     console warning. Every Ios/TestHistories/L2 row is left untouched.
+ *   - unknown op → skipped, logged once per op value (forward-compat).
+ * Each entry is applied in its own try/catch so a bad entry can never fail the
+ * IO batch or wedge the cursor.
+ *
+ * ROUTING (contract rev 2): each entry is applied by its PAYLOAD subsystemId,
+ * never the polled feed's id — delete tombstones for a subsystem are fanned
+ * out on its SIBLINGS' feeds (the deleted subsystem's own change log is
+ * cascade-wiped and its poll 403s), so receiving "X was deleted" while polling
+ * Y is the NORMAL delivery path, not an anomaly.
+ */
+export function applySubsystemEvents(
+  polledSubsystemId: number,
+  events: SubsystemChangeEntry[],
+): { renames: Array<{ subsystemId: number; name: string }>; cloudRemoved: number[] } {
+  const out: { renames: Array<{ subsystemId: number; name: string }>; cloudRemoved: number[] } = {
+    renames: [],
+    cloudRemoved: [],
+  }
+  for (const ev of events) {
+    // Apply by the entry's OWN id — sibling fan-out by design (see above).
+    const sid = ev.subsystemId
+    try {
+      if (ev.op === 'renamed') {
+        const name = (ev.name ?? '').trim()
+        if (!name) continue // rename without a name — nothing safe to apply
+        const changed = db.prepare('UPDATE Subsystems SET Name = ? WHERE id = ? AND Name IS NOT ?').run(name, sid, name).changes
+        if (changed > 0) {
+          console.log(`${mcmTag(sid)}[Delta] subsystem ${sid} renamed on cloud → local Subsystems.Name = '${name}'`)
+          auditLog({
+            type: 'sync.subsystem.renamed',
+            subsystemId: sid,
+            reason: 'cloud renamed subsystem — local display name updated',
+            detail: { name },
+          })
+        }
+        out.renames.push({ subsystemId: sid, name })
+      } else if (ev.op === 'deleted') {
+        // Park-don't-delete: flag only. All local rows (Ios, results, history,
+        // FV, queues) are KEPT verbatim — deletes are explicit operator facts.
+        if (ensureSubsystemsCloudRemovedColumn()) {
+          db.prepare('UPDATE Subsystems SET CloudRemoved = 1 WHERE id = ?').run(sid)
+        }
+        console.warn(
+          `${mcmTag(sid)}[Delta] subsystem ${sid} was DELETED on the cloud. NO local data was removed — ` +
+          `the local subsystem is flagged CloudRemoved (tombstone). Its queued work will stop syncing; ` +
+          `review it in the Sync Center before taking any action.`,
+        )
+        auditLog({
+          type: 'sync.subsystem.cloud-removed',
+          subsystemId: sid,
+          reason: 'cloud deleted subsystem — local data KEPT, Subsystems.CloudRemoved=1 tombstone set',
+        })
+        out.cloudRemoved.push(sid)
+      } else {
+        // Unknown subsystem op — skip, log once (forward-compat).
+        if (!_unknownSubsystemOpsLogged.has(ev.op)) {
+          _unknownSubsystemOpsLogged.add(ev.op)
+          console.warn(`[Delta] Ignoring subsystem change entries with unknown op '${ev.op}' (skipped, batch unaffected)`)
+        }
+      }
+    } catch (e) {
+      // One bad entry must never fail the delta batch.
+      console.warn(`${mcmTag(sid)}[Delta] failed to apply subsystem '${ev.op}' entry for ${sid} (skipped):`, e instanceof Error ? e.message : e)
+    }
+  }
+  return out
+}
+
 /**
  * Apply a delta payload to the local DB and advance the cursor. Pure DB work —
  * no network — so it's unit-testable against an in-memory database.
  */
 export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDeltaResult {
   const sections = payload.sections ?? { network: false, estop: false, safety: false, l2: false }
+
+  // caps=subsystem rename/delete entries — applied before the resync early
+  // return so they land on both the delta and the resync→full-pull paths.
+  // Idempotent, so a re-fetch of the same window re-applies them harmlessly.
+  const subsystemEvents = applySubsystemEvents(subsystemId, extractSubsystemEvents(payload))
 
   const upserts = payload.ios?.upserts ?? []
 
@@ -245,6 +444,8 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
       applied: 0,
       deleted: 0,
       skippedDeletes: [],
+      ...(subsystemEvents.renames.length > 0 ? { subsystemRenames: subsystemEvents.renames } : {}),
+      ...(subsystemEvents.cloudRemoved.length > 0 ? { subsystemCloudRemoved: subsystemEvents.cloudRemoved } : {}),
       sections,
       toSeq: typeof payload.toSeq === 'number' ? payload.toSeq : getSyncCursor(subsystemId),
     }
@@ -370,6 +571,8 @@ export function applyDelta(subsystemId: number, payload: DeltaPayload): ApplyDel
     ...(orphanedPendingSyncs > 0 ? { orphanedPendingSyncs } : {}),
     ...(requeuedOrphans > 0 ? { requeuedOrphans } : {}),
     ...(massDeleteBlocked > 0 ? { massDeleteBlocked } : {}),
+    ...(subsystemEvents.renames.length > 0 ? { subsystemRenames: subsystemEvents.renames } : {}),
+    ...(subsystemEvents.cloudRemoved.length > 0 ? { subsystemCloudRemoved: subsystemEvents.cloudRemoved } : {}),
     sections,
     toSeq: payload.toSeq ?? getSyncCursor(subsystemId),
   }
@@ -419,7 +622,10 @@ export async function fetchAndApplyDelta(
   config: { remoteUrl: string; apiPassword?: string },
 ): Promise<ApplyDeltaResult> {
   const since = getSyncCursor(subsystemId)
-  const url = `${config.remoteUrl}/api/sync/subsystem/${subsystemId}/changes?since=${since}`
+  // caps= is the comma-separated capability opt-in list: the cloud only emits
+  // entityType 'subsystem' change entries to clients that declare they can
+  // consume them (older builds never see entries they'd drop on the floor).
+  const url = `${config.remoteUrl}/api/sync/subsystem/${subsystemId}/changes?since=${since}&caps=subsystem`
   const res = await fetch(url, {
     headers: { 'X-API-Key': config.apiPassword || '' },
     signal: AbortSignal.timeout(30_000),
@@ -429,6 +635,35 @@ export async function fetchAndApplyDelta(
   }
   const payload = (await res.json()) as DeltaPayload
   const result = applyDelta(subsystemId, payload)
+
+  // A cloud rename also refreshes the config.json display name (the landing
+  // page / MCM registry read config.mcms[].name, not Subsystems.Name). Applied
+  // per RENAME ENTRY id, not the polled feed — sibling feeds can carry entries
+  // for other subsystems. Config writes are gated to EXPLICIT multi-MCM
+  // deployments: on a tablet the mcms array is synthesized in memory from the
+  // legacy single-PLC fields, and persisting it would silently flip the
+  // deployment to registry mode (mcmsExplicit=true on next load) — a
+  // boot-behavior change a rename must never cause. Tablets get the DB-side
+  // rename (Subsystems.Name) only, which is what their UI surfaces read.
+  // Best-effort: a config write failure never fails the delta.
+  if (result.subsystemRenames && result.subsystemRenames.length > 0) {
+    try {
+      const { configService } = await import('@/lib/config')
+      const cfg = await configService.getConfig()
+      if (cfg.mcmsExplicit) {
+        for (const r of result.subsystemRenames) {
+          const key = String(r.subsystemId)
+          const entry = (cfg.mcms ?? []).find((m) => m.subsystemId === key)
+          if (entry && entry.name !== r.name) {
+            await configService.updateMcm(key, { name: r.name })
+            console.log(`${mcmTag(r.subsystemId)}[Delta] config.mcms display name for ${r.subsystemId} → '${r.name}'`)
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`${mcmTag(subsystemId)}[Delta] config display-name refresh failed (non-fatal):`, e instanceof Error ? e.message : e)
+    }
+  }
 
   // Nudge browser tabs to refresh the IOs we changed (deletes are reflected on
   // next reload). Coalesced into ONE batch POST rather than one fetch PER

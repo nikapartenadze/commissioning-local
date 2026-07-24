@@ -97,6 +97,14 @@ import { polarityFlagWrites, parsePolarity, type FlagWrite } from '@/lib/vfd-pol
 export interface ValidationRow {
   deviceName: string
   sheetName: string
+  /** Local L2Sheets.id — the sheet IDENTITY. Grouping/gating key by id, not
+   * name: two projects' sheets can share a NAME (the CDW5/TPA5 MCM09/MCM15
+   * collision class) but never a local row id. */
+  sheetId: number
+  /** Owning subsystem (L2Devices.SubsystemId), or null on legacy unstamped
+   * rows. This is the routing key — carried through so writes can never be
+   * routed by device NAME alone across MCMs. */
+  subsystemId: number | null
   /** "Verify Identity" stamped (Step 1). */
   hasIdentity: number
   /** "Motor HP (Field)" filled (Step 2). */
@@ -125,6 +133,13 @@ export interface ValidatedDevice {
   polarityRaw: string | null
   /** Whether "Check Direction" is stamped — gates the no-polarity warning. */
   hasDirection: boolean
+  /**
+   * Owning SubsystemId (stringified L2Devices.SubsystemId), or null/undefined
+   * when the L2 row is a legacy unstamped one. THE routing key in multi-MCM
+   * deployments: a device is only ever written via the client of THIS
+   * subsystem. Optional so hand-built fixtures/tests keep compiling.
+   */
+  subsystemId?: string | null
 }
 
 /**
@@ -540,19 +555,21 @@ function buildFaultedDeviceSet(
  * The polarity cell is folded in via a conditional MAX(... ) aggregate.
  */
 /**
- * The set of VFD/APF sheet NAMES whose template defines a 'Belt Tracked'
- * column. Used to apply the tracking gate on Valid_Direction only to
+ * The set of sheet IDS (local L2Sheets.id) whose template defines a 'Belt
+ * Tracked' column. Used to apply the tracking gate on Valid_Direction only to
  * new-flow templates; sheets without the column keep the legacy behavior.
+ * Keyed by sheet ID, not NAME: sheet names collide across projects (the
+ * CDW5/TPA5 class), and a name-keyed set would apply one project's template
+ * shape to a same-named sheet from another.
  */
-function getSheetsWithBeltTrackedColumn(): Set<string> {
+function getSheetIdsWithBeltTrackedColumn(): Set<number> {
   try {
     const rows = db.prepare(`
-      SELECT DISTINCT s.Name AS sheetName
-      FROM L2Sheets s
-      JOIN L2Columns c ON c.SheetId = s.id
+      SELECT DISTINCT c.SheetId AS sheetId
+      FROM L2Columns c
       WHERE c.Name = '${BELT_TRACKED_COLUMN_NAME}'
-    `).all() as Array<{ sheetName: string }>
-    return new Set(rows.map(r => r.sheetName))
+    `).all() as Array<{ sheetId: number }>
+    return new Set(rows.map(r => r.sheetId))
   } catch (err) {
     console.error('[VfdValidationWriter] Belt-tracked-column query failed:', err)
     return new Set()
@@ -561,8 +578,15 @@ function getSheetsWithBeltTrackedColumn(): Set<string> {
 
 function getValidatedDevices(): ValidatedDevice[] {
   try {
+    // GROUP BY (SubsystemId, SheetId, DeviceName) — NOT (DeviceName, sheet
+    // NAME). The old name-only grouping merged same-named devices across MCMs
+    // (and across same-named sheets from different projects, the CDW5/TPA5
+    // class), so one MCM's wizard progress could earn flags on ANOTHER MCM's
+    // same-named drive. Each (subsystem, sheet, device) row is now its own
+    // ValidatedDevice, routed to its own controller.
     const rows = db.prepare(`
-      SELECT d.DeviceName AS deviceName, s.Name AS sheetName,
+      SELECT d.DeviceName AS deviceName, s.Name AS sheetName, s.id AS sheetId,
+             d.SubsystemId AS subsystemId,
              MAX(CASE WHEN c.Name = 'Verify Identity'  AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasIdentity,
              MAX(CASE WHEN c.Name = 'Motor HP (Field)' AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasMotorHp,
              MAX(CASE WHEN c.Name = 'VFD HP (Field)'   AND TRIM(cv.Value) <> '' THEN 1 ELSE 0 END) AS hasVfdHp,
@@ -575,19 +599,20 @@ function getValidatedDevices(): ValidatedDevice[] {
       JOIN L2CellValues cv ON cv.DeviceId = d.id AND cv.ColumnId = c.id
       WHERE cv.Value IS NOT NULL AND cv.Value <> ''
         AND (UPPER(s.Name) LIKE '%VFD%' OR UPPER(s.Name) LIKE '%APF%')
-      GROUP BY d.DeviceName, s.Name
+      GROUP BY d.SubsystemId, d.SheetId, d.DeviceName
       HAVING hasIdentity = 1 OR (hasMotorHp = 1 AND hasVfdHp = 1) OR hasDirection = 1 OR hasBeltTracked = 1
     `).all() as ValidationRow[]
 
     // Which sheets actually DEFINE a Belt Tracked column — the tracking gate on
     // Valid_Direction applies only to these (legacy sheets keep old behavior).
-    const beltTrackedSheets = getSheetsWithBeltTrackedColumn()
+    const beltTrackedSheetIds = getSheetIdsWithBeltTrackedColumn()
 
     return rows.map(row => ({
       deviceName: row.deviceName,
-      writes: flagsForDevice(row, beltTrackedSheets.has(row.sheetName)),
+      writes: flagsForDevice(row, beltTrackedSheetIds.has(row.sheetId)),
       polarityRaw: row.polarityRaw,
       hasDirection: row.hasDirection === 1,
+      subsystemId: row.subsystemId != null ? String(row.subsystemId) : null,
     }))
   } catch (err) {
     console.error('[VfdValidationWriter] DB query failed:', err)
@@ -597,9 +622,16 @@ function getValidatedDevices(): ValidatedDevice[] {
 
 /**
  * deviceName (uppercased) → owning SubsystemId, derived from the Ios table's
- * NetworkDeviceName column. Used to route each validated VFD's flag writes to
- * the PLC that actually owns the drive in multi-MCM deployments. Devices that
- * don't resolve here keep the legacy behavior (active singleton PLC).
+ * NetworkDeviceName column. FALLBACK routing only — the primary key is the L2
+ * row's own SubsystemId (ValidatedDevice.subsystemId); this map exists for
+ * legacy L2 rows that were never stamped.
+ *
+ * AMBIGUITY-AWARE (2026-07-24): the old version was last-row-wins on a device
+ * name that exists on MULTIPLE MCMs, silently routing one MCM's writes to
+ * whichever subsystem happened to sort last. A name mapping to more than one
+ * distinct SubsystemId is now EXCLUDED from the map entirely — an ambiguous
+ * name is unroutable, and unroutable means DO NOT WRITE (fail closed), never
+ * "write via whichever PLC we happen to hold".
  */
 function getDeviceSubsystemMap(): Map<string, string> {
   try {
@@ -609,12 +641,54 @@ function getDeviceSubsystemMap(): Map<string, string> {
       WHERE NetworkDeviceName IS NOT NULL AND NetworkDeviceName != '' AND SubsystemId IS NOT NULL
     `).all() as Array<{ deviceName: string; subsystemId: number }>
     const map = new Map<string, string>()
-    for (const row of rows) map.set(row.deviceName.toUpperCase(), String(row.subsystemId))
+    const ambiguous = new Set<string>()
+    for (const row of rows) {
+      const key = row.deviceName.toUpperCase()
+      if (ambiguous.has(key)) continue
+      const existing = map.get(key)
+      const sid = String(row.subsystemId)
+      if (existing !== undefined && existing !== sid) {
+        ambiguous.add(key)
+        map.delete(key)
+        continue
+      }
+      map.set(key, sid)
+    }
+    if (ambiguous.size > 0) logAmbiguousNamesOnce(ambiguous)
     return map
   } catch (err) {
     console.error('[VfdValidationWriter] device→subsystem query failed:', err)
     return new Map()
   }
+}
+
+// Log the ambiguous-name / unresolved-device sets only when they CHANGE (same
+// pattern as lastNoPolarityKey) — these are recomputed every pass and would
+// otherwise spam the field log every 5-minute sweep.
+let lastAmbiguousKey = ''
+function logAmbiguousNamesOnce(ambiguous: Set<string>): void {
+  const key = Array.from(ambiguous).sort().join(',')
+  if (key === lastAmbiguousKey) return
+  lastAmbiguousKey = key
+  console.warn(
+    `[VfdValidationWriter] ${ambiguous.size} device name(s) exist on MULTIPLE subsystems and are ` +
+    `EXCLUDED from name-based routing (fail closed): ${Array.from(ambiguous).sort().join(', ')}. ` +
+    'These devices route only via their L2 row\'s SubsystemId stamp; unstamped rows are skipped.',
+  )
+}
+
+let lastUnresolvedKey = ''
+function logUnresolvedOnce(unresolved: string[]): void {
+  const key = unresolved.slice().sort().join(',')
+  if (key === lastUnresolvedKey) return
+  lastUnresolvedKey = key
+  console.warn(
+    `[VfdValidationWriter] ${unresolved.length} validated device(s) SKIPPED — owning subsystem could ` +
+    `not be resolved (no L2 SubsystemId stamp and no unambiguous Ios mapping): ` +
+    `${unresolved.slice().sort().join(', ')}. ` +
+    'Fail closed: flags are NOT written via an unrelated PLC client. Re-pull the subsystem ' +
+    'so its L2 devices are stamped, or fix the Ios NetworkDeviceName mapping.',
+  )
 }
 
 // Devices last reported as "validated but no polarity stamp" — used to log the
@@ -1470,10 +1544,19 @@ export async function runRetractionPass(
   }
   if (nextPending.size === 0) return []
 
-  // Route each pending device to the target that owns it.
+  // Route each pending device to the target that owns it. Device lists are
+  // subsystem-scoped now, so the SAME name can appear under multiple targets
+  // (cross-MCM name collision) — such a name is AMBIGUOUS for a name-keyed
+  // retraction and is skipped (stays pending) rather than unlatched on
+  // whichever controller happened to map last.
   const targetByDevice = new Map<string, WriteTarget>()
+  const ambiguousRetraction = new Set<string>()
   for (const target of targets) {
-    for (const d of target.devices) targetByDevice.set(d.deviceName, target)
+    for (const d of target.devices) {
+      const prev = targetByDevice.get(d.deviceName)
+      if (prev !== undefined && prev !== target) ambiguousRetraction.add(d.deviceName)
+      else targetByDevice.set(d.deviceName, target)
+    }
   }
 
   const now = Date.now()
@@ -1481,6 +1564,16 @@ export async function runRetractionPass(
   const stillPending = new Set(nextPending)
 
   for (const deviceName of Array.from(nextPending).sort()) {
+    if (ambiguousRetraction.has(deviceName)) {
+      logRetractOnce(
+        deviceName,
+        `[VfdValidationWriter] Retraction of ${deviceName} DEFERRED: the name exists on MULTIPLE ` +
+        'connected controllers and the retraction ledger is name-keyed — cannot prove which latch ' +
+        'is owed the unlatch. Stays pending (fail closed).',
+        now,
+      )
+      continue
+    }
     const target = targetByDevice.get(deviceName)
     if (!target) {
       // Owning controller not connected (or the device no longer has any
@@ -1988,10 +2081,17 @@ const realLocalControlDeps: LocalControlDeps = {
 }
 
 /**
- * Route a device to the controller that owns it: the registry MCM for its
- * subsystem, else the target that already lists it among its validated devices,
- * else the legacy active singleton. Undefined = no connected controller owns
- * it this pass; we simply do nothing (and do NOT burn its backoff).
+ * Route a device to the controller that owns it. Undefined = no controller
+ * PROVABLY owns it this pass; we simply do nothing (and do NOT burn its
+ * backoff). FAIL CLOSED (2026-07-24):
+ *   - a KNOWN owner routes ONLY to that owner's target — if it isn't connected
+ *     this pass, the device waits (never a peer, never the singleton);
+ *   - an unknown owner may route via a UNIQUE appearance in one target's
+ *     validated-device list (those lists are subsystem-scoped); a name in
+ *     MULTIPLE lists is ambiguous → unroutable;
+ *   - the legacy active singleton is the fallback ONLY when it is the sole
+ *     target (single-PLC tablet). With MCM-scoped targets present, an
+ *     unmapped device must never be written via an unrelated controller.
  */
 function routeLocalControlDevice(
   deviceName: string,
@@ -2000,11 +2100,13 @@ function routeLocalControlDevice(
 ): WriteTarget | undefined {
   const owner = subsystemByDevice.get(deviceName.toUpperCase())
   if (owner !== undefined) {
-    const byOwner = targets.find(t => t.subsystemId === owner)
-    if (byOwner) return byOwner
+    return targets.find(t => t.subsystemId === owner)
   }
-  const byDeviceList = targets.find(t => t.devices.some(d => d.deviceName === deviceName))
-  if (byDeviceList) return byDeviceList
+  const byDeviceList = targets.filter(t => t.devices.some(d => d.deviceName === deviceName))
+  if (byDeviceList.length === 1) return byDeviceList[0]
+  if (byDeviceList.length > 1) return undefined // ambiguous — fail closed
+  const hasScopedTargets = targets.some(t => t.label !== 'active-plc' && t.subsystemId !== undefined)
+  if (hasScopedTargets) return undefined
   return targets.find(t => t.label === 'active-plc')
 }
 
@@ -2239,42 +2341,10 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
       return
     }
 
-    // ── Partition devices among targets ──────────────────────────────
-    // Registry MCMs own the devices of their subsystem (deviceName →
-    // subsystem via Ios.NetworkDeviceName). Everything else — unmapped
-    // devices, or devices whose owning MCM isn't a connected registry
-    // entry — keeps the legacy behavior and goes through the active
-    // singleton PLC when one is connected.
-    // Hoisted: the local-control reconcile pass routes UNTRACKED devices too,
-    // and those may have no wizard progress at all (so they never appear in any
-    // target's `devices` list) — it needs the same deviceName→subsystem map.
-    let subsystemByDevice = new Map<string, string>()
-    if (mcmTargetById.size === 0) {
-      // Legacy single-PLC deployment: exact pre-multi-MCM behavior.
-      singletonTarget!.devices = devices
-    } else {
-      subsystemByDevice = getDeviceSubsystemMap()
-      let unrouted = 0
-      for (const device of devices) {
-        const owner = subsystemByDevice.get(device.deviceName.toUpperCase())
-        const target = (owner !== undefined ? mcmTargetById.get(owner) : undefined) ?? singletonTarget
-        if (target) target.devices.push(device)
-        else unrouted++
-      }
-      if (unrouted > 0) {
-        console.log(
-          `[VfdValidationWriter] ${unrouted} device(s) not converged this pass — ` +
-          'owning MCM not connected and no active singleton PLC to fall back to',
-        )
-      }
-    }
-
-    // ── Belt-tracking freshness gate (per subsystem) ─────────────────
-    // Before ANY flag write: if this instance has not recently confirmed its
-    // local 'Belt Tracked' truth against the cloud for a subsystem, strip the
-    // belt-tracking-dependent flags from that subsystem's devices. Valid_Map /
-    // Valid_HP are untouched. See the BELT_TRACKING_FRESHNESS_MS block for the
-    // MCM15 incident this exists for.
+    // Resolve the singleton's OWN subsystem from config BEFORE partitioning —
+    // it doubles as a routing key now (a device whose owner IS the active
+    // subsystem may route through the singleton), and the freshness gate below
+    // needs it either way.
     if (singletonTarget && singletonTarget.subsystemId === undefined) {
       // Legacy tablet: the singleton's subsystem comes from config.
       try {
@@ -2284,6 +2354,58 @@ export async function syncValidationFlags(reason: string = 'manual'): Promise<vo
       } catch { /* no config — SSE liveness is then the only freshness leg */ }
     }
 
+    // ── Partition devices among targets ──────────────────────────────
+    // Routing key: (deviceName, subsystemId). The PRIMARY source is the L2
+    // row's own SubsystemId stamp (carried on ValidatedDevice); the Ios
+    // NetworkDeviceName map is only a fallback for legacy unstamped rows, and
+    // it excludes ambiguous names. A device whose owning subsystem cannot be
+    // resolved is SKIPPED — fail closed. The old behavior routed every
+    // unresolved device through the active singleton, so a name collision or
+    // a singleton pointed at an unrelated controller produced WRONG-PLC writes
+    // from an autonomous background writer.
+    // Hoisted: the local-control reconcile pass routes UNTRACKED devices too,
+    // and those may have no wizard progress at all (so they never appear in any
+    // target's `devices` list) — it needs the same deviceName→subsystem map.
+    let subsystemByDevice = new Map<string, string>()
+    if (mcmTargetById.size === 0) {
+      // Legacy single-PLC deployment (no MCMs configured): exact
+      // pre-multi-MCM behavior — the singleton owns everything.
+      singletonTarget!.devices = devices
+    } else {
+      subsystemByDevice = getDeviceSubsystemMap()
+      let unrouted = 0
+      const unresolved: string[] = []
+      for (const device of devices) {
+        // 1) The L2 row's own stamp; 2) unambiguous Ios name mapping.
+        const owner = device.subsystemId
+          ?? subsystemByDevice.get(device.deviceName.toUpperCase())
+        if (owner === undefined || owner === null) {
+          // Owning subsystem unknown — NEVER write via an unrelated client.
+          unresolved.push(device.deviceName)
+          continue
+        }
+        // The singleton is a valid route ONLY when it is the owner's own
+        // controller (the tablet's configured active subsystem).
+        const target = mcmTargetById.get(owner)
+          ?? (singletonTarget && singletonTarget.subsystemId === owner ? singletonTarget : undefined)
+        if (target) target.devices.push(device)
+        else unrouted++
+      }
+      if (unrouted > 0) {
+        console.log(
+          `[VfdValidationWriter] ${unrouted} device(s) not converged this pass — ` +
+          'owning MCM not connected (no cross-controller fallback; fail closed)',
+        )
+      }
+      if (unresolved.length > 0) logUnresolvedOnce(unresolved)
+    }
+
+    // ── Belt-tracking freshness gate (per subsystem) ─────────────────
+    // Before ANY flag write: if this instance has not recently confirmed its
+    // local 'Belt Tracked' truth against the cloud for a subsystem, strip the
+    // belt-tracking-dependent flags from that subsystem's devices. Valid_Map /
+    // Valid_HP are untouched. See the BELT_TRACKING_FRESHNESS_MS block for the
+    // MCM15 incident this exists for.
     const freshBySubsystem = new Map<string, boolean>()
     for (const target of targets) {
       // NOTE: judged for EVERY target, including ones with no validated

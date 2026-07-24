@@ -217,9 +217,18 @@ export function PlcConfigDialog({
     let cancelled = false
     let seq = 0
     let seeded = false
+    // In-flight guard + hard timeout — a slow server must never stack these
+    // 2s ticks or hold a socket indefinitely (socket-starvation hardening).
+    let inFlight = false
+    let abort: AbortController | null = null
     const tick = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+      const controller = new AbortController()
+      abort = controller
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
       try {
-        const res = await authFetch(`${API_ENDPOINTS.configurationLogs}?afterId=${seeded ? seq : 0}`)
+        const res = await authFetch(`${API_ENDPOINTS.configurationLogs}?afterId=${seeded ? seq : 0}`, { signal: controller.signal })
         if (!res.ok || cancelled) return
         const data = await res.json()
         const entries = data.entries || []
@@ -239,10 +248,15 @@ export function PlcConfigDialog({
           seq = e.id
         }
       } catch { /* best-effort — log streaming must never throw */ }
+      finally {
+        clearTimeout(timeoutId)
+        inFlight = false
+        if (abort === controller) abort = null
+      }
     }
     void tick()
     const id = setInterval(tick, 2000)
-    return () => { cancelled = true; clearInterval(id) }
+    return () => { cancelled = true; clearInterval(id); abort?.abort() }
   }, [open, activeTab, isConnecting, isPulling, isDisconnecting])
 
   // Keep the connection badge/buttons HONEST. liveStatus was previously captured
@@ -257,9 +271,18 @@ export function PlcConfigDialog({
   useEffect(() => {
     if (!open || isConnecting || isPulling || isDisconnecting) return
     let cancelled = false
+    // Same hardening as the log tick above: one request at a time, hard
+    // timeout, keep the last-good status on failure.
+    let inFlight = false
+    let abort: AbortController | null = null
     const tick = async () => {
+      if (cancelled || inFlight) return
+      inFlight = true
+      const controller = new AbortController()
+      abort = controller
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
       try {
-        const res = await authFetch(statusEndpoint)
+        const res = await authFetch(statusEndpoint, { signal: controller.signal })
         if (!res.ok || cancelled) return
         const status = await res.json()
         if (cancelled) return
@@ -281,10 +304,15 @@ export function PlcConfigDialog({
           return prev.type === 'success' ? { type: null, message: '' } : prev
         })
       } catch { /* best-effort — status polling must never throw */ }
+      finally {
+        clearTimeout(timeoutId)
+        inFlight = false
+        if (abort === controller) abort = null
+      }
     }
     void tick()
     const id = setInterval(tick, 2500)
-    return () => { cancelled = true; clearInterval(id) }
+    return () => { cancelled = true; clearInterval(id); abort?.abort() }
   }, [open, isConnecting, isPulling, isDisconnecting, statusEndpoint])
 
   const loadActualConfig = async () => {

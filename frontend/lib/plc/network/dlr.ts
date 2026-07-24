@@ -14,7 +14,7 @@
  */
 
 import {
-  plc_tag_create, plc_tag_set_size, plc_tag_set_uint8, writeTagAsync,
+  createRawTagAsync, plc_tag_set_size, plc_tag_set_uint8, writeTagAsync,
   plc_tag_get_size, plc_tag_get_raw_bytes, plc_tag_destroy, PlcTagStatus,
 } from '../libplctag'
 
@@ -138,9 +138,16 @@ async function getDlrAttr(
   gateway: string, path: string, attr: number, timeoutMs: number,
 ): Promise<{ transportOk: boolean; cipStatus: number; value: Buffer }> {
   const attribStr = `protocol=ab_eip&gateway=${gateway}&path=${path}&cpu=logix&name=@raw`
-  const tag = plc_tag_create(attribStr, timeoutMs)
+  // Non-blocking create: the sync plc_tag_create(attrib, timeoutMs) parked the
+  // event loop for the whole session handshake (full timeoutMs on an absent
+  // module). Unlike the sync create, a FAILED async create can still hold a
+  // live handle — always destroy non-negative handles (the finally below).
+  const { handle: tag, status: createStatus } = await createRawTagAsync(attribStr, timeoutMs)
   if (tag < 0) return { transportOk: false, cipStatus: -1, value: Buffer.alloc(0) }
   try {
+    if (createStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+      return { transportOk: false, cipStatus: -1, value: Buffer.alloc(0) }
+    }
     const req = buildDlrRequest(attr)
     plc_tag_set_size(tag, req.length)
     for (let i = 0; i < req.length; i++) plc_tag_set_uint8(tag, i, req[i])

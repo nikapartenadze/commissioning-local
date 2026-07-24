@@ -77,22 +77,45 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   useEffect(() => {
     if (!activeBypass) return
     let active = true
+    let inFlight = false
+    let abort: AbortController | null = null
     const check = async () => {
+      // In-flight guard + hard timeout: a slow server must never stack
+      // requests or hold a socket past 5s (socket-starvation hardening).
+      if (!active || inFlight) return
+      inFlight = true
+      const controller = new AbortController()
+      abort = controller
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
       try {
-        const res = await authFetch('/api/safety/bypass')
+        const params = new URLSearchParams()
+        if (subsystemId) params.set("subsystemId", String(subsystemId))
+        const res = await authFetch(`/api/safety/bypass?${params}`, { signal: controller.signal })
         if (!res.ok || !active) return
         const data = await res.json()
         const tag = activeBypassRef.current?.bssTag
-        const stillHeld = Array.isArray(data.active) && tag != null && data.active.includes(tag)
+        // Scoped match: the server keys bypasses `${subsystemId}:${bssTag}`, so
+        // a same-named BSS tag held on a DIFFERENT MCM must not keep this
+        // overlay up (or tear it down). Match on the owning subsystemId via
+        // `entries`; the bare `active` list stays as the legacy single-MCM path.
+        const stillHeld = subsystemId && Array.isArray(data.entries)
+          ? tag != null && data.entries.some((e: { subsystemId: string | null; bssTag: string }) =>
+              String(e.subsystemId) === String(subsystemId) && e.bssTag === tag)
+          : Array.isArray(data.active) && tag != null && data.active.includes(tag)
         if (!stillHeld && active) {
           setActiveBypass(null)
           setBypassLostNotice(true)
         }
-      } catch { /* transient — try again next tick */ }
+      } catch { /* transient — keep last-known state, try again next tick */ }
+      finally {
+        clearTimeout(timeoutId)
+        inFlight = false
+        if (abort === controller) abort = null
+      }
     }
     const interval = setInterval(check, 2000)
-    return () => { active = false; clearInterval(interval) }
-  }, [activeBypass])
+    return () => { active = false; clearInterval(interval); abort?.abort() }
+  }, [activeBypass, subsystemId])
 
   // Fetch outputs
   useEffect(() => {
@@ -120,18 +143,32 @@ export default function SafetyIoView({ subsystemId }: SafetyIoViewProps) {
   // Poll tag values every 3 seconds
   useEffect(() => {
     let active = true
+    let inFlight = false
+    let abort: AbortController | null = null
     const poll = async () => {
+      // In-flight guard + hard timeout — never stack polls on a slow endpoint
+      // or hold a socket indefinitely; keep last-good values on failure.
+      if (!active || inFlight) return
+      inFlight = true
+      const controller = new AbortController()
+      abort = controller
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
       try {
-        const res = await authFetch('/api/safety/status')
+        const res = await authFetch('/api/safety/status', { signal: controller.signal })
         if (res.ok && active) {
           const data = await res.json()
           if (data.success && data.tags) setTagValues(data.tags)
         }
       } catch {}
+      finally {
+        clearTimeout(timeoutId)
+        inFlight = false
+        if (abort === controller) abort = null
+      }
     }
     poll()
     const interval = setInterval(poll, 3000)
-    return () => { active = false; clearInterval(interval) }
+    return () => { active = false; clearInterval(interval); abort?.abort() }
   }, [])
 
   // Cleanup: stop bypass on unmount

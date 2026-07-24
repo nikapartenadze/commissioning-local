@@ -741,30 +741,36 @@ export class PlcClient extends EventEmitter {
    *
    * dataType: BOOL → int8, INT → int16, REAL → int32 from float32 bits.
    */
-  writeTypedTag(
+  async writeTypedTag(
     tagName: string,
     value: number,
     dataType: PlcScalarType
-  ): { success: boolean; error?: string } {
+  ): Promise<{ success: boolean; error?: string }> {
     if (!this.connectionConfig) return { success: false, error: 'No connection config' };
     if (dataType !== 'BOOL' && dataType !== 'REAL' && dataType !== 'INT' && dataType !== 'DINT') {
       return { success: false, error: `Unsupported dataType: ${dataType}` };
     }
 
-    const handle = createTag({
+    // Non-blocking create/read/write: the sync FFI versions park the whole
+    // event loop for up to the timeout per call (the MCM02-freeze class).
+    // Semantics are otherwise identical — same order, same checks, same
+    // read-back verification.
+    const { handle, status: createStatus } = await createTagAsync({
       gateway: this.connectionConfig.ip,
       path: this.connectionConfig.path,
       name: tagName,
       elemSize: elemSizeFor(dataType),
       elemCount: 1,
-      timeout: this.config.timeout || 5000,
-    });
+    }, this.config.timeout || 5000);
     if (handle < 0) {
       return { success: false, error: `Failed to create tag ${tagName}: ${getStatusMessage(handle)}` };
     }
     try {
+      if (createStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
+        return { success: false, error: `Failed to create tag ${tagName}: ${getStatusMessage(createStatus)}` };
+      }
       // Read first to sync the tag buffer before writing (matches VFD writer).
-      const readStatus = plc_tag_read(handle, 5000);
+      const readStatus = await readTagAsync(handle, 5000);
       if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to read before write: ${getStatusMessage(readStatus)}` };
       }
@@ -778,7 +784,7 @@ export class PlcClient extends EventEmitter {
       if (setStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to set value: ${getStatusMessage(setStatus)}` };
       }
-      const writeStatus = plc_tag_write(handle, 5000);
+      const writeStatus = await writeTagAsync(handle, 5000);
       if (writeStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
         return { success: false, error: `Failed to write tag: ${getStatusMessage(writeStatus)}` };
       }
@@ -791,7 +797,7 @@ export class PlcClient extends EventEmitter {
       // the signature of a data-type mismatch (e.g. REAL bytes interpreted as a
       // DINT) — fail LOUDLY so a garbage speed is never left on a live drive.
       if (dataType !== 'BOOL') {
-        const verifyStatus = plc_tag_read(handle, 5000);
+        const verifyStatus = await readTagAsync(handle, 5000);
         if (verifyStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
           return { success: false, error: `Write verify read failed: ${getStatusMessage(verifyStatus)}` };
         }
@@ -817,40 +823,18 @@ export class PlcClient extends EventEmitter {
   }
 
   /**
-   * Read a single typed tag BY NAME on this client's connection. Relocated
-   * verbatim from app/api/vfd-commissioning/read-tags' readPlcValue.
+   * Read a single typed tag BY NAME on this client's connection. Now ASYNC —
+   * the previous sync createTag + plc_tag_read parked the whole event loop for
+   * up to the timeout per tag (the MCM02-freeze class). Delegates to the
+   * non-blocking batch path with a single-element batch; same temporary-handle
+   * semantics and value decoding as before.
    */
-  readTypedTag(
+  async readTypedTag(
     tagName: string,
     dataType: PlcReadType
-  ): { success: boolean; value?: number | boolean; error?: string } {
-    if (!this.connectionConfig) return { success: false, error: 'No connection config' };
-    const handle = createTag({
-      gateway: this.connectionConfig.ip,
-      path: this.connectionConfig.path,
-      name: tagName,
-      elemSize: elemSizeFor(dataType),
-      elemCount: 1,
-      timeout: this.config.timeout || 5000,
-    });
-    if (handle < 0) return { success: false, error: `Failed to create tag ${tagName}` };
-    try {
-      const readStatus = plc_tag_read(handle, 5000);
-      if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
-        return { success: false, error: getStatusMessage(readStatus) };
-      }
-      let value: number | boolean;
-      if (dataType === 'BOOL') value = plc_tag_get_bit(handle, 0) === 1;
-      else if (dataType === 'SINT') value = plc_tag_get_uint8(handle, 0);
-      else if (dataType === 'REAL') value = plc_tag_get_float32(handle, 0);
-      else if (dataType === 'DINT') value = plc_tag_get_int32(handle, 0);
-      else value = plc_tag_get_int16(handle, 0);
-      return { success: true, value };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    } finally {
-      try { plc_tag_destroy(handle); } catch { /* ignore */ }
-    }
+  ): Promise<{ success: boolean; value?: number | boolean; error?: string }> {
+    const [r] = await this.readTypedTags([{ name: tagName, dataType }]);
+    return { success: r.success, value: r.value, error: r.error };
   }
 
   /**
@@ -1015,11 +999,106 @@ export class PlcClient extends EventEmitter {
   }
 
   /**
+   * ASYNC hammer-write — the non-blocking replacement for hammerWriteTags().
+   * Same semantics: re-write every loop for durationMs so a value pair (e.g.
+   * Override_RVS + RVS) lands in the SAME PLC scan (rung 15 FLL-zeros the CMD
+   * every scan). Differences are transport-only:
+   *   - creates + initial buffer-sync reads use the non-blocking batch helpers
+   *     (identical CIP traffic; nothing is WRITTEN until every create+read
+   *     succeeded, same as the sync version's throw-before-loop);
+   *   - each iteration's writes are still issued SEQUENTIALLY, in the caller's
+   *     writes[] order (ordering is load-bearing for the ONS pairing), via
+   *     writeTagAsync — so the event loop is yielded between round-trips
+   *     instead of parked for the whole ~1 s loop.
+   * The effective write cadence is the same order as before (each write still
+   * completes in one CIP round-trip; completion is noticed within the ~5 ms
+   * status-sweep tick), so the PLC still gets tens of chances per second.
+   */
+  async hammerWriteTagsAsync(
+    deviceName: string,
+    writes: Array<{ field: string; value: number; dataType: PlcScalarType }>,
+    durationMs = 1000
+  ): Promise<{ success: boolean; iterations: number; writes: Array<{ tagPath: string; ok: boolean }>; error?: string }> {
+    if (!this.connectionConfig) return { success: false, iterations: 0, writes: [], error: 'No connection config' };
+    const { ip, path } = this.connectionConfig;
+    const timeout = this.config.timeout || 5000;
+    const handles: { handle: number; field: string; dataType: string; value: number; tagPath: string }[] = [];
+    try {
+      const specs = writes.map((w) => {
+        const isStatus = w.field === 'Speed_FPM' && w.dataType !== 'BOOL';
+        const tagPath = isStatus ? `CBT_${deviceName}.CTRL.STS.${w.field}` : `CBT_${deviceName}.CTRL.CMD.${w.field}`;
+        const elemSize = w.dataType === 'BOOL' ? 1 : (w.dataType === 'REAL' || w.dataType === 'DINT') ? 4 : 2;
+        return { w, tagPath, elemSize };
+      });
+      const created = await createTagsBatchAsync(
+        specs.map((s) => ({ gateway: ip, path, name: s.tagPath, elemSize: s.elemSize, elemCount: 1 })),
+        timeout,
+      );
+      // Collect every live handle FIRST so the finally destroys them even when
+      // a create failed (a failed async create can still hold a live handle).
+      for (let i = 0; i < created.length; i++) {
+        if (created[i].handle >= 0) {
+          handles.push({
+            handle: created[i].handle,
+            field: specs[i].w.field,
+            dataType: specs[i].w.dataType,
+            value: specs[i].w.value,
+            tagPath: specs[i].tagPath,
+          });
+        }
+      }
+      for (let i = 0; i < created.length; i++) {
+        if (created[i].status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          throw new Error(`Failed to create tag ${specs[i].tagPath}: ${getStatusMessage(created[i].status)}`);
+        }
+      }
+      // Initial buffer-sync reads (matches the sync version's per-handle read).
+      const readStatuses = await readTagsBatchAsync(handles.map((h) => h.handle), 5000);
+      for (let i = 0; i < handles.length; i++) {
+        if (readStatuses[i] !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          throw new Error(`Read failed for ${handles[i].tagPath}: ${getStatusMessage(readStatuses[i])}`);
+        }
+      }
+      const start = Date.now();
+      let iterations = 0;
+      let lastError: string | null = null;
+      while (Date.now() - start < durationMs) {
+        for (const h of handles) {
+          if (h.dataType === 'BOOL') plc_tag_set_bit(h.handle, 0, h.value ? 1 : 0);
+          // REAL via int32 bit-pattern / DINT numeric — identical encoding to
+          // hammerWriteTags (both write paths must agree; see writeTypedTag).
+          else if (h.dataType === 'REAL') plc_tag_set_int32(h.handle, 0, floatToInt32Bits(h.value));
+          else if (h.dataType === 'DINT') plc_tag_set_int32(h.handle, 0, Math.round(h.value));
+          else plc_tag_set_int16(h.handle, 0, Math.round(h.value));
+        }
+        let ok = true;
+        for (const h of handles) {
+          const ws = await writeTagAsync(h.handle, 500);
+          if (ws !== PlcTagStatus.PLCTAG_STATUS_OK) { ok = false; lastError = `${h.tagPath}: ${getStatusMessage(ws)}`; }
+        }
+        iterations++;
+        if (!ok) break;
+      }
+      return { success: !lastError, iterations, writes: handles.map((h) => ({ tagPath: h.tagPath, ok: !lastError })), error: lastError || undefined };
+    } catch (error) {
+      return { success: false, iterations: 0, writes: [], error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      for (const h of handles) { try { plc_tag_destroy(h.handle); } catch { /* ignore */ } }
+    }
+  }
+
+  /**
    * Hammer-write a set of CMD tags continuously for durationMs, re-writing every
    * loop so a value pair (e.g. Override_RVS + RVS) lands in the SAME PLC scan
    * (rung 15 FLL-zeros the CMD every scan). Relocated verbatim from
    * app/api/vfd-commissioning/write-tags-batch. Runs in-process (or in the
    * gateway in split mode) so the tight loop stays close to the PLC.
+   *
+   * DEPRECATED — SYNC FFI: this version busy-loops synchronous plc_tag_write
+   * calls and parks the Node event loop for the whole durationMs (plus a sync
+   * 5 s read per handle up front). Kept ONLY for lib/mcm-registry.ts's
+   * hammerWriteTagsForMcmLocal (sync signature, owned elsewhere); every other
+   * caller must use hammerWriteTagsAsync above. Do not add new callers.
    */
   hammerWriteTags(
     deviceName: string,

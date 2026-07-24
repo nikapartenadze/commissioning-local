@@ -151,8 +151,36 @@ export async function POST(req: Request, res: Response) {
   }
 }
 
-export async function GET(_req: Request, res: Response) {
-  // Strip the subsystem prefix for backward-compatible display.
-  const active = Array.from(activeBypass.keys()).map((k) => k.slice(k.indexOf(':') + 1))
-  return res.json({ success: true, active })
+/**
+ * GET /api/safety/bypass[?subsystemId=]
+ *
+ * Active bypass keep-alives. Keys are `${subsystemId|'_'}:${bssTag}`, so the
+ * same BSS tag name on two MCMs is two independent bypasses — without the
+ * subsystemId filter, a client matching by bare tag name sees "BYPASS ACTIVE"
+ * for a same-named tag held on a DIFFERENT MCM (and vice versa).
+ *
+ * With ?subsystemId= : `active` holds only that MCM's bare tag names.
+ * Without it          : legacy shape — every bypass's bare tag name.
+ * `entries` (both cases) carries the scoped key + subsystemId per bypass so
+ * clients can match exactly; `subsystemId` is null for legacy '_' keys.
+ */
+export async function GET(req: Request, res: Response) {
+  const sidParam = req.query.subsystemId
+  const sid = typeof sidParam === 'string' && sidParam.trim() !== '' ? sidParam.trim() : undefined
+
+  const allEntries = Array.from(activeBypass.keys()).map((key) => {
+    const sep = key.indexOf(':')
+    const keySid = key.slice(0, sep)
+    return {
+      key,
+      subsystemId: keySid === '_' ? null : keySid,
+      bssTag: key.slice(sep + 1),
+    }
+  })
+
+  const entries = sid !== undefined
+    ? allEntries.filter((e) => e.subsystemId === sid)
+    : allEntries
+
+  return res.json({ success: true, active: entries.map((e) => e.bssTag), entries })
 }

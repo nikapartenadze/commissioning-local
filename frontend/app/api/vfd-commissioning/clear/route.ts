@@ -6,9 +6,9 @@ import { getPlcClient, getPlcStatus } from '@/lib/plc-client-manager'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { hasMcm } from '@/lib/mcm-registry'
 import {
-  createTag,
-  plc_tag_read,
-  plc_tag_write,
+  createTagAsync,
+  readTagAsync,
+  writeTagAsync,
   plc_tag_destroy,
   plc_tag_set_int8,
   plc_tag_get_bit,
@@ -113,16 +113,21 @@ async function pulseCmdBit(
   timeoutMs: number,
 ): Promise<{ ok: boolean; error?: string }> {
   const tagPath = `CBT_${deviceName}.CTRL.CMD.${field}`
-  const handle = createTag({
-    gateway, path, name: tagPath, elemSize: 1, elemCount: 1, timeout: timeoutMs,
-  })
+  // Non-blocking create/read/write (the sync FFI calls parked the event loop
+  // for up to timeoutMs each). Same one-field-per-call sequencing and the same
+  // read-set-write order. A failed async create can still hold a live handle,
+  // so the finally destroys any non-negative handle.
+  const { handle, status: cs } = await createTagAsync(
+    { gateway, path, name: tagPath, elemSize: 1, elemCount: 1 }, timeoutMs,
+  )
   if (handle < 0) return { ok: false, error: `createTag ${tagPath}: ${getStatusMessage(handle)}` }
   try {
-    const r = plc_tag_read(handle, timeoutMs)
+    if (cs !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `createTag ${tagPath}: ${getStatusMessage(cs)}` }
+    const r = await readTagAsync(handle, timeoutMs)
     if (r !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `read: ${getStatusMessage(r)}` }
     const s = plc_tag_set_int8(handle, 0, 1)
     if (s !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `set: ${getStatusMessage(s)}` }
-    const w = plc_tag_write(handle, timeoutMs)
+    const w = await writeTagAsync(handle, timeoutMs)
     if (w !== PlcTagStatus.PLCTAG_STATUS_OK) return { ok: false, error: `write: ${getStatusMessage(w)}` }
     return { ok: true }
   } finally {
@@ -133,19 +138,20 @@ async function pulseCmdBit(
 // Read one STS member. Returns null when the member does not exist on this AOI
 // revision, or is otherwise unreadable — never throws. null propagates into
 // planClearPlcSequence as "unprovable", which ABORTS.
-function readStsMember(
+async function readStsMember(
   gateway: string,
   path: string,
   tagPath: string,
   kind: 'BOOL' | 'REAL',
   timeoutMs: number,
-): number | null {
-  const handle = createTag({
-    gateway, path, name: tagPath, elemSize: kind === 'REAL' ? 4 : 1, elemCount: 1, timeout: timeoutMs,
-  })
+): Promise<number | null> {
+  const { handle, status: cs } = await createTagAsync(
+    { gateway, path, name: tagPath, elemSize: kind === 'REAL' ? 4 : 1, elemCount: 1 }, timeoutMs,
+  )
   if (handle < 0) return null
   try {
-    if (plc_tag_read(handle, timeoutMs) !== PlcTagStatus.PLCTAG_STATUS_OK) return null
+    if (cs !== PlcTagStatus.PLCTAG_STATUS_OK) return null
+    if (await readTagAsync(handle, timeoutMs) !== PlcTagStatus.PLCTAG_STATUS_OK) return null
     if (kind === 'REAL') {
       const v = plc_tag_get_float32(handle, 0)
       return Number.isFinite(v) ? v : null
@@ -165,17 +171,19 @@ function readStsMember(
 // Build the stopped-proof snapshot on the legacy singleton path, probing BOTH
 // AOI revisions' belt-tracking member names (AOI222: STS.Belt_Tracking_ON;
 // older rev: STS.Track_Belt). A missing member yields null, never a throw.
-function readStsForFfi(
+async function readStsForFfi(
   gateway: string,
   path: string,
   deviceName: string,
   timeoutMs: number,
-): RetractionSts {
+): Promise<RetractionSts> {
   const reads = clearStsReads(deviceName)
-  const results = reads.map(rd => {
-    const value = readStsMember(gateway, path, rd.name, rd.dataType, timeoutMs)
-    return value === null ? { success: false } : { success: true, value }
-  })
+  const results: Array<{ success: boolean; value?: number }> = []
+  // Sequential on purpose — same per-member ordering as before.
+  for (const rd of reads) {
+    const value = await readStsMember(gateway, path, rd.name, rd.dataType, timeoutMs)
+    results.push(value === null ? { success: false } : { success: true, value })
+  }
   return resolveStsFromTypedReads(results)
 }
 
@@ -408,7 +416,7 @@ export async function POST(req: Request, res: Response) {
           const timeoutMs = connectionConfig.timeout || 5000
           const { ip, path } = connectionConfig
           plcSequence = await runClearPlcSequence(
-            readStsForFfi(ip, path, deviceName, timeoutMs),
+            await readStsForFfi(ip, path, deviceName, timeoutMs),
             (field) => pulseCmdBit(ip, path, deviceName, field, timeoutMs),
           )
           plcWrites.push(...plcSequence.writes)

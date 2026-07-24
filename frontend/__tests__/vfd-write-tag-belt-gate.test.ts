@@ -68,6 +68,9 @@ const plcCalls = vi.hoisted(() => ({
 
 vi.mock('@/lib/mcm-registry', () => ({
   hasMcm: (sid: string) => plcCalls.registeredMcms.has(String(sid)),
+  // No embedded client in this suite — the batch route then dispatches through
+  // hammerWriteTagsForMcm (the gateway/registry RPC facade recorded below).
+  getEmbeddedMcmConnection: () => null,
   writeTypedTagsForMcm: async (sid: string, tags: Array<{ name: string; value: number }>) => {
     plcCalls.mcm.push({ sid, tags })
     return { connected: true, results: tags.map(() => ({ success: true })) }
@@ -83,11 +86,13 @@ vi.mock('@/lib/mcm-registry', () => ({
 vi.mock('@/lib/plc-client-manager', () => ({
   getPlcClient: () => ({
     isConnected: true,
+    // The routes now AWAIT these (async FFI conversion); returning plain
+    // objects still works — await on a non-promise resolves immediately.
     writeTypedTag: (tagPath: string, value: number) => {
       plcCalls.singleton.push({ tagPath, value })
       return { success: true }
     },
-    hammerWriteTags: (deviceName: string, writes: Array<{ field: string }>) => {
+    hammerWriteTagsAsync: (deviceName: string, writes: Array<{ field: string }>) => {
       plcCalls.hammer.push({ deviceName, fields: writes.map(w => w.field) })
       return { success: true, iterations: 50, writes: [] }
     },

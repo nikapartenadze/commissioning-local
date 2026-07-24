@@ -95,10 +95,12 @@ export async function POST(req: Request, res: Response) {
       return res.json({ success: true, tagPath })
     }
 
-    // Legacy singleton (single-MCM field tablet). Same FFI, via the client method.
+    // Legacy singleton (single-MCM field tablet). Same FFI semantics, via the
+    // client method — now async/non-blocking (writeTypedTag no longer parks
+    // the event loop for the CIP round-trips).
     const client = getPlcClient()
     if (!client.isConnected) return res.status(503).json({ error: 'PLC not connected' })
-    const r = client.writeTypedTag(tagPath, value, dataType)
+    const r = await client.writeTypedTag(tagPath, value, dataType)
     if (!r.success) return res.status(500).json({ error: r.error })
     return res.json({ success: true, tagPath })
   } catch (error) {

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { configService } from '@/lib/config';
 import { disposeMcm, getMcmStatus } from '@/lib/mcm-registry';
+import { connectConfiguredMcm } from '@/lib/services/mcm-connect';
 
 /**
  * GET /api/mcm/:subsystemId
@@ -52,9 +53,48 @@ export async function PUT(req: Request, res: Response) {
     if (typeof body.path === 'string') patch.path = body.path.trim();
     if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
 
+    const before = await configService.getMcm(subsystemId);
     const updated = await configService.updateMcm(subsystemId, patch);
     const updatedMcm = updated.find((m) => m.subsystemId === subsystemId);
-    return res.json({ success: true, mcm: updatedMcm });
+
+    // Hot-reload the live registry entry. Persisting alone is not enough: a
+    // registered client keeps its OLD ip/path (and its 5s auto-reconnect loop
+    // keeps dialing the OLD address) until restart.
+    let liveAction: 'reconnecting' | 'stale-entry-disposed' | undefined;
+    const connChanged =
+      before && updatedMcm && (updatedMcm.ip !== before.ip || updatedMcm.path !== before.path);
+    if (connChanged) {
+      const live = getMcmStatus(subsystemId);
+      if (live?.connected) {
+        // connectMcm() is idempotent — re-calling on a live entry updates the
+        // stored config and reconnects. Fire-and-forget: a connect can take up
+        // to 30s and the settings dialog must not hang on it.
+        liveAction = 'reconnecting';
+        console.log(
+          `[MCM ${subsystemId}] ip/path changed while connected ` +
+          `(${before.ip} path ${before.path} → ${updatedMcm.ip} path ${updatedMcm.path}) — reconnecting live entry`,
+        );
+        void connectConfiguredMcm(subsystemId).then((r) => {
+          if (r.success) {
+            console.log(`[MCM ${subsystemId}] Reconnected with new config — ${r.tagsSuccessful}/${r.totalTags} tags ok`);
+          } else {
+            console.warn(`[MCM ${subsystemId}] Reconnect with new config failed: ${r.error ?? 'unknown'}`);
+          }
+        });
+      } else if (live) {
+        // Registered but not connected: its auto-reconnect loop is still
+        // chasing the OLD address. Tear the stale client down; do NOT connect
+        // — the operator (or boot auto-connect) connects when ready.
+        liveAction = 'stale-entry-disposed';
+        console.log(
+          `[MCM ${subsystemId}] ip/path changed while disconnected — disposed stale registry entry ` +
+          `(was retrying ${before.ip} path ${before.path}); next connect uses ${updatedMcm.ip} path ${updatedMcm.path}`,
+        );
+        await disposeMcm(subsystemId);
+      }
+    }
+
+    return res.json({ success: true, mcm: updatedMcm, ...(liveAction ? { liveAction } : {}) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Internal server error';
     const status = message.includes('not found') ? 404 : 500;

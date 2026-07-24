@@ -2,7 +2,13 @@ param(
   [Parameter(Mandatory = $true)][string]$InstallerUrl,
   [Parameter(Mandatory = $true)][string]$ExpectedVersion,
   [Parameter(Mandatory = $true)][string]$StatePath,
-  [string]$ServiceName = "CommissioningTool"
+  [string]$ServiceName = "CommissioningTool",
+  # OPTIONAL hex SHA-256 of the installer (from the cloud release manifest or
+  # a pinned update command). When provided, the downloaded file is verified
+  # with Get-FileHash and the install HARD-FAILS on mismatch -- the installer
+  # is never executed. When empty (old cloud without integrity support) the
+  # script warns loudly and proceeds, preserving backward compatibility.
+  [string]$Sha256 = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -95,6 +101,14 @@ function Test-PlcDll {
 # Best-effort Defender path exclusion so the unsigned plctag.dll isn't
 # quarantined on newer Win11 laptops. No-ops under third-party AV; may be
 # refused on org-managed Defender with Tamper Protection.
+#
+# SECURITY FOLLOW-UP: this exclusion exists ONLY because the NSIS installer and
+# plctag.dll are unsigned and trip Defender false positives. It also weakens
+# AV coverage of the install/data dirs, which matters more now that updates
+# can arrive remotely. Once the installer + DLL are code-signed, remove this
+# exclusion (and the re-assert below) -- do NOT remove it before signing, or
+# field updates start failing with quarantined DLLs again (the v2.39.0 class
+# of breakage).
 function Add-DefenderExclusion {
   param([string]$InstallDir, [string]$DataDir)
   try {
@@ -159,6 +173,26 @@ try {
 
   Write-State -Status "downloading" -Message "Downloading installer"
   Invoke-WebRequest -Uri $InstallerUrl -OutFile $installerPath -UseBasicParsing
+
+  # ── Integrity gate ─────────────────────────────────────────────────────────
+  # Verify the download against the expected SHA-256 BEFORE stopping the
+  # service or touching the machine. On mismatch: delete the file, report a
+  # clear error through the state channel (heartbeat picks it up), and abort
+  # -- the installer must never run. The check sits before Stop-Service on
+  # purpose: a failed verification leaves the tool running untouched.
+  if ($Sha256) {
+    Write-State -Status "downloading" -Message "Verifying installer SHA-256"
+    $actualHash = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash
+    if (-not $actualHash.Equals($Sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+      Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
+      $mismatchMsg = ("Installer SHA-256 mismatch - REFUSING to run installer. Expected {0}, downloaded file was {1}. Possible corrupted download or tampered release. The downloaded file has been deleted; nothing was installed." -f $Sha256, $actualHash)
+      throw $mismatchMsg
+    }
+    Write-Host ("SHA-256 verified OK: {0}" -f $actualHash)
+  } else {
+    Write-Host "WARNING: no SHA-256 provided by the update channel - installer integrity NOT verified."
+    Write-Host "WARNING: this is the legacy (pre-integrity) path; upgrade the cloud so /api/releases/latest publishes 'sha256'."
+  }
 
   Write-State -Status "installing" -Message "Stopping service"
   $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue

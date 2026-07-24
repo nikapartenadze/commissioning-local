@@ -40,7 +40,10 @@ export type AuditEventType =
   | 'sync.push.drop' // a pending push was discarded — the recovery-critical case
   | 'sync.push.park' // a pending push was PARKED (cloud-rejected/cap) — kept for attention, not lost
   | 'sync.push.force' // operator force-overwrite: local pushed to cloud past the version gate
-  | 'sync.reconcile.enqueue' // an orphaned local result/comment (cloud-missing, no queue row) was re-enqueued
+  | 'sync.reconcile.enqueue' // an orphaned local result/comment/clear (cloud-missing or cloud-stale, no queue row) was re-enqueued
+  | 'sync.reconcile.unresolved' // reconciler found a local/cloud divergence it could NOT prove safe to resolve (e.g. a deliberate clear vs a cloud result with no recency evidence) — logged only, nothing pushed
+  | 'sync.subsystem.renamed' // cloud renamed a subsystem — local display name updated (Subsystems.Name + config mcms entry)
+  | 'sync.subsystem.cloud-removed' // cloud DELETED a subsystem — ALL local data KEPT, Subsystems row flagged CloudRemoved=1 (tombstone, mirrors Ios.CloudRemoved)
   | 'sync.readjudicate' // one-time backlog sweep released a legacy PARKED row back to the active queue (or closed a settled orphan) — carries the ORIGINAL LastError, which the release clears
 
   | 'sync.diff.push'        // Sync Center Compare: operator queued local result(s) for upload

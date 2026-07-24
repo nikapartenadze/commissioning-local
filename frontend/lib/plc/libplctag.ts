@@ -1053,6 +1053,29 @@ export async function createTagAsync(
 }
 
 /**
+ * createTagAsync for a RAW attribute string (e.g. the `name=@raw` CIP
+ * passthrough tags used by the DLR and Identity readers). Same non-blocking
+ * initiate + waitForStatus pattern as createTagAsync — `plc_tag_create(attrib,
+ * timeout)` with a multi-second timeout parks the WHOLE Node event loop for
+ * the session handshake, which on an unreachable node is the full timeout.
+ *
+ * Same cleanup contract as createTagAsync: on any non-OK status the caller
+ * MUST still plc_tag_destroy() a non-negative handle; a negative handle means
+ * creation failed before a handle existed (the handle value is the error code).
+ */
+export async function createRawTagAsync(
+  attribStr: string,
+  timeoutMs: number = 5000,
+): Promise<{ handle: TagHandle; status: number }> {
+  const handle = plc_tag_create(attribStr, 0); // Non-blocking
+  if (handle < 0) {
+    return { handle, status: handle };
+  }
+  const status = await waitForStatus(handle, timeoutMs);
+  return { handle, status };
+}
+
+/**
  * Batch variant of createTagAsync: initiate every create non-blocking, then
  * resolve all final statuses with ONE shared status-sweep loop (same shape as
  * readTagsBatchAsync — O(1) timers per batch instead of O(tags)).

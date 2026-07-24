@@ -31,6 +31,7 @@ import { configService } from '@/lib/config'
 import { EMBEDDED_REMOTE_URL } from '@/lib/config/types'
 import { auditLog } from '@/lib/logging/recovery-log'
 import { isCloudOwnedColumn } from '@/lib/cloud/column-ownership'
+import { parseDbTimestamp } from '@/lib/cloud/pull-guard'
 
 /** Local Ios row, with the fields a faithful re-push must carry. */
 export interface LocalResultRow {
@@ -50,6 +51,8 @@ export interface CloudIoState {
   result?: string | null
   comments?: string | null
   version?: number
+  /** Cloud result timestamp — recency evidence for the clear re-push diff. */
+  timestamp?: string | null
 }
 
 /** One PendingSync row to create so the push loop re-delivers an orphan. */
@@ -64,7 +67,7 @@ export interface ReconcileEnqueue {
   version: number
   failureMode: string | null
   trade: string | null
-  kind: 'result' | 'comment'
+  kind: 'result' | 'comment' | 'clear'
 }
 
 const isEmpty = (v: string | null | undefined): boolean => v == null || v.trim() === ''
@@ -133,11 +136,132 @@ export function computeReconcileEnqueues(
   return out
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Crash-lost CLEAR re-push (2026-07-24 convergence gap).
+//
+// A deliberate local clear whose PendingSyncs enqueue was lost (crash between
+// the Ios UPDATE and the queue INSERT, legacy queue drop) is INVISIBLE to the
+// orphan diff above: local Result is NULL, so there is nothing "the cloud is
+// missing". Meanwhile the cloud still holds the stale Passed/Failed forever —
+// and the field correctly REFUSES to re-absorb it (protected-clear logic in
+// delta-sync/cloud-sse/pull-guard), so the two sides never converge.
+//
+// This diff closes the loop: when local evidence proves the clear was
+// DELIBERATE (latest TestHistories row is 'Cleared' — same evidence
+// computeAtRiskClears / isProtectedClear use) and PROVABLY NEWER than the
+// cloud's value (parseDbTimestamp on the clear vs the cloud timestamp — the
+// same recency machinery), re-enqueue a 'Cleared' push (the exact op the reset
+// route enqueues) so the normal push loop delivers the clear to the cloud.
+//
+// CONSERVATIVE by design: recency must be PROVEN to push.
+//   - clear has no parseable timestamp → do NOT push (unresolved divergence)
+//   - cloud has no parseable timestamp → do NOT push (unresolved divergence)
+//   - timestamps tie                   → do NOT push (unresolved divergence)
+//   - cloud provably newer            → not our clear to push; normal LWW (the
+//     protected-clear guard also yields there, so the next delta pull resolves
+//     it locally — no log needed)
+// Note this is deliberately STRICTER than the protect direction (which keeps
+// the local clear whenever the cloud is not provably newer): refusing to
+// absorb is reversible; pushing a clear UP erases a cloud value, so it demands
+// positive proof. Unresolved cases are audited, never acted on.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Local clear candidate: Ios.Result empty + its latest TestHistories row. */
+export interface LocalClearCandidateRow {
+  id: number
+  /** Latest TestHistories.Result — must be 'Cleared' to count as deliberate. */
+  lastResult: string | null
+  /** Latest TestHistories.Timestamp — when the operator cleared it. */
+  clearedAt: string | null
+  /** Latest TestHistories.TestedBy — who cleared it. */
+  clearedBy: string | null
+  /** Latest TestHistories.Comments — e.g. "Cleared Passed result". */
+  clearComment: string | null
+}
+
+export interface UnresolvedClearDivergence {
+  ioId: number
+  cloudResult: string
+  reason: 'no-clear-timestamp' | 'no-cloud-timestamp' | 'timestamp-tie'
+}
+
+export interface ClearReconcileDecision {
+  enqueues: ReconcileEnqueue[]
+  /** Divergences with no recency proof — logged as unresolved, NEVER pushed. */
+  unresolved: UnresolvedClearDivergence[]
+}
+
+/**
+ * Pure diff for crash-lost clears. An IO qualifies for a clear re-push only
+ * when ALL of:
+ *   - no PendingSyncs row exists (active or parked) — the queue owns it then;
+ *   - the latest local TestHistories row is a deliberate operator 'Cleared';
+ *   - the cloud holds a non-empty Result for the IO;
+ *   - BOTH timestamps parse AND the clear is STRICTLY newer than the cloud's.
+ * Anything with cloud provably newer is normal last-write-wins (skipped
+ * silently — the pull path resolves it). Anything unprovable is returned in
+ * `unresolved` for logging, never pushed.
+ */
+export function computeClearReenqueues(
+  localCleared: readonly LocalClearCandidateRow[],
+  cloudIos: readonly CloudIoState[],
+  existingPendingIoIds: ReadonlySet<number>,
+): ClearReconcileDecision {
+  const cloudById = new Map<number, CloudIoState>(
+    cloudIos.map((io) => [Number(io.id), io]),
+  )
+
+  const enqueues: ReconcileEnqueue[] = []
+  const unresolved: UnresolvedClearDivergence[] = []
+  for (const row of localCleared) {
+    if (existingPendingIoIds.has(row.id)) continue
+    if (row.lastResult !== 'Cleared') continue // never tested / stale-null — not a deliberate clear
+
+    const cloud = cloudById.get(row.id)
+    if (!cloud || isEmpty(cloud.result)) continue // cloud already clear — converged
+
+    const clearedAtMs = parseDbTimestamp(row.clearedAt)
+    if (!Number.isFinite(clearedAtMs)) {
+      unresolved.push({ ioId: row.id, cloudResult: cloud.result as string, reason: 'no-clear-timestamp' })
+      continue
+    }
+    const cloudTsMs = parseDbTimestamp(cloud.timestamp)
+    if (!Number.isFinite(cloudTsMs)) {
+      unresolved.push({ ioId: row.id, cloudResult: cloud.result as string, reason: 'no-cloud-timestamp' })
+      continue
+    }
+    if (cloudTsMs > clearedAtMs) continue // cloud provably newer — normal LWW, pull resolves it
+    if (cloudTsMs === clearedAtMs) {
+      unresolved.push({ ioId: row.id, cloudResult: cloud.result as string, reason: 'timestamp-tie' })
+      continue
+    }
+
+    // Clear is provably newer than the cloud value → re-push it. Same op shape
+    // the reset route enqueues ('Cleared' + the history comment), based on the
+    // cloud's CURRENT version to maximize first-try acceptance (B7 rebases any
+    // miss, local-wins).
+    enqueues.push({
+      ioId: row.id,
+      testResult: 'Cleared',
+      comments: row.clearComment,
+      inspectorName: row.clearedBy,
+      timestamp: new Date(clearedAtMs).toISOString(),
+      version: Number(cloud.version) || 0,
+      failureMode: null,
+      trade: null,
+      kind: 'clear',
+    })
+  }
+  return { enqueues, unresolved }
+}
+
 export interface ReconcileResult {
   ok: boolean
   subsystemId: number
-  /** Number of orphaned results/comments re-enqueued for push. */
+  /** Number of orphaned results/comments/clears re-enqueued for push. */
   enqueued: number
+  /** Clear divergences found but NOT pushed (no recency proof). */
+  unresolvedClears?: number
   error?: string
 }
 
@@ -197,8 +321,55 @@ export async function reconcileOrphanedResults(subsystemId: number): Promise<Rec
   ).all(subsystemId) as Array<{ IoId: number }>
   const existing = new Set<number>(pendingIds.map((r) => r.IoId))
 
-  const enqueues = computeReconcileEnqueues(local, cloudIos, existing)
-  if (enqueues.length === 0) return { ok: true, subsystemId, enqueued: 0 }
+  const orphanEnqueues = computeReconcileEnqueues(local, cloudIos, existing)
+
+  // Crash-lost CLEARS: locally-empty rows whose latest history entry is a
+  // deliberate operator 'Cleared' but the cloud still holds a stale non-empty
+  // result. The correlated subqueries mirror the pull-guard's atRiskClears
+  // query; the 'Cleared' filter itself lives in computeClearReenqueues.
+  const localCleared = db.prepare(
+    `SELECT i.id AS id,
+       (SELECT th.Result    FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS lastResult,
+       (SELECT th.Timestamp FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS clearedAt,
+       (SELECT th.TestedBy  FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS clearedBy,
+       (SELECT th.Comments  FROM TestHistories th WHERE th.IoId = i.id ORDER BY th.id DESC LIMIT 1) AS clearComment
+     FROM Ios i
+     WHERE i.SubsystemId = ?
+       AND (i.Result IS NULL OR i.Result = '')
+       AND COALESCE(i.CloudRemoved,0) = 0`,
+  ).all(subsystemId) as LocalClearCandidateRow[]
+  const clearDecision = computeClearReenqueues(localCleared, cloudIos, existing)
+
+  // Clears FIRST: an IO can carry both a clear re-push and a comment orphan
+  // (comment survives locally after the result was cleared). Rows drain
+  // oldest-first per IO, so inserting the clear first means the cloud clears
+  // the stale result before the comment op re-lands the field note.
+  const enqueues = [...clearDecision.enqueues, ...orphanEnqueues]
+
+  // Unresolved clear divergences: cloud holds a result the field deliberately
+  // cleared, but recency could not be PROVEN — never pushed, only surfaced.
+  for (const u of clearDecision.unresolved) {
+    console.warn(
+      `[Reconciler] subsystem ${subsystemId}: UNRESOLVED clear divergence for IO ${u.ioId} — ` +
+      `local was deliberately cleared but cloud still holds '${u.cloudResult}' and recency ` +
+      `cannot be established (${u.reason}). Not pushing; resolve via Sync Center Compare.`,
+    )
+    auditLog({
+      type: 'sync.reconcile.unresolved',
+      ioId: u.ioId,
+      subsystemId,
+      result: u.cloudResult,
+      reason: `reconciler: clear divergence unprovable (${u.reason}) — nothing pushed`,
+      detail: { kind: 'clear', cloudResult: u.cloudResult },
+    })
+  }
+
+  if (enqueues.length === 0) {
+    return {
+      ok: true, subsystemId, enqueued: 0,
+      ...(clearDecision.unresolved.length > 0 ? { unresolvedClears: clearDecision.unresolved.length } : {}),
+    }
+  }
 
   const now = new Date().toISOString()
   const ins = insertPendingStmt()
@@ -229,16 +400,21 @@ export async function reconcileOrphanedResults(subsystemId: number): Promise<Rec
       version: e.version,
       result: e.testResult,
       user: e.inspectorName,
-      reason: `reconciler: orphaned ${e.kind} not on cloud — re-enqueued for push`,
+      reason: e.kind === 'clear'
+        ? 'reconciler: crash-lost deliberate clear — cloud still holds the stale result; clear re-enqueued for push'
+        : `reconciler: orphaned ${e.kind} not on cloud — re-enqueued for push`,
       detail: { comments: e.comments, kind: e.kind },
     })
   }
 
   console.warn(
     `[Reconciler] subsystem ${subsystemId}: re-enqueued ${enqueues.length} orphaned ` +
-    `result/comment(s) the cloud was missing (will push on the next cycle)`,
+    `result/comment/clear(s) the cloud was missing or stale on (will push on the next cycle)`,
   )
-  return { ok: true, subsystemId, enqueued: enqueues.length }
+  return {
+    ok: true, subsystemId, enqueued: enqueues.length,
+    ...(clearDecision.unresolved.length > 0 ? { unresolvedClears: clearDecision.unresolved.length } : {}),
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

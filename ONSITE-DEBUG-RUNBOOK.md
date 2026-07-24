@@ -129,6 +129,28 @@ Two SEPARATE systems — never conflate:
 - A missing L2 column **drops** the write (422, no queue row) — it is NOT a queue-stuck/park condition.
 - A PostToolUse hook (`.claude/hooks/migration-reminder.sh`) injects this checklist whenever a schema/migration file is edited.
 
+### DB-perf pass (2026-07-24) — new indexes + one-time L2Columns normalization
+
+All LOCAL (`frontend/lib/db-sqlite.ts`), auto-run on startup, additive + idempotent:
+
+- **New indexes** (`CREATE INDEX IF NOT EXISTS`, created AFTER the ALTER loop because
+  `L2Devices.SubsystemId` is migration-added): `idx_l2sheets_cloudid`,
+  `idx_l2columns_cloudid`, `idx_l2devices_cloudid` (cloud↔local join key — pull-l2
+  upserts, SSE/auto-sync drains, Sync Center), `idx_l2devices_subsystemid` (per-MCM
+  L2 scoping), `idx_ios_networkdevicename` (`/api/network/devices` aggregate).
+- **L2Columns IsEditable/IncludeInProgress normalization is now ONE-TIME**, gated by
+  `SyncMaintenanceFlags` key `l2columns_normalized_v1` — it used to rewrite those
+  flags on every boot, clobbering cloud-pulled column config until the next pull.
+  To force a re-run on a box: delete that flag row.
+- The startup ALTER loop no longer silently swallows every error — non-"duplicate
+  column name" failures log `[DB] MIGRATION-ERROR (startup continues)` with the
+  failing statement. Grep logs for `MIGRATION-ERROR` when a box has schema oddities.
+- **`Subsystems.CloudRemoved` column** (sync-convergence pass, same date): startup
+  ALTER, additive, default 0. Set to 1 when a `caps=subsystem` delta entry reports
+  the subsystem deleted on the cloud — flag only, NO local data is removed (mirrors
+  `Ios.CloudRemoved`). `lib/cloud/delta-sync.ts` also carries a lazy PRAGMA-guarded
+  ensure for DBs that predate this migration.
+
 ### Firmware baseline — per-MCM scoping (2026-07-21)
 
 A **fourth** case worth its own entry, because it is BOTH kinds at once and the

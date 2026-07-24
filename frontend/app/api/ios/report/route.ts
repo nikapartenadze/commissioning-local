@@ -23,12 +23,25 @@ export async function GET(req: Request, res: Response) {
     const failedIos = ios.filter(io => io.Result === 'Failed' || io.Result === 'Fail')
 
     const ioIds = ios.map(io => io.id)
-    let allHistories: TestHistory[] = []
+    const allHistories: TestHistory[] = []
     if (ioIds.length > 0) {
-      const placeholders = ioIds.map(() => '?').join(', ')
-      allHistories = db.prepare(
-        `SELECT * FROM TestHistories WHERE IoId IN (${placeholders}) ORDER BY Timestamp DESC`
-      ).all(...ioIds) as TestHistory[]
+      // Chunked IN(): a single unbounded IN(<every id>) breaks past SQLite's
+      // bound-parameter limit (SQLITE_MAX_VARIABLE_NUMBER, 32,766) on large
+      // subsystems / central boxes. Batch, concatenate, then re-sort globally —
+      // the latest-first order is load-bearing for the failure/latest maps below.
+      const CHUNK = 900
+      for (let i = 0; i < ioIds.length; i += CHUNK) {
+        const chunk = ioIds.slice(i, i + CHUNK)
+        const placeholders = chunk.map(() => '?').join(', ')
+        const rows = db.prepare(
+          `SELECT * FROM TestHistories WHERE IoId IN (${placeholders})`
+        ).all(...chunk) as TestHistory[]
+        allHistories.push(...rows)
+      }
+      // Timestamp is TEXT NOT NULL; string compare matches SQLite's BINARY
+      // text ordering, so this reproduces the old single-query ORDER BY
+      // Timestamp DESC exactly.
+      allHistories.sort((a, b) => (a.Timestamp < b.Timestamp ? 1 : a.Timestamp > b.Timestamp ? -1 : 0))
     }
 
     const failedHistories = allHistories.filter(h => h.Result === 'Failed' || h.Result === 'Fail')

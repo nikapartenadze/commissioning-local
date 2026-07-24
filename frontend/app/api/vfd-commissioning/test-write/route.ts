@@ -1,9 +1,9 @@
 import { Request, Response } from 'express'
 import { getPlcClient, getPlcStatus } from '@/lib/plc-client-manager'
 import {
-  createTag,
-  plc_tag_read,
-  plc_tag_write,
+  createTagAsync,
+  readTagAsync,
+  writeTagAsync,
   plc_tag_destroy,
   plc_tag_set_int8,
   plc_tag_set_int32,
@@ -126,11 +126,13 @@ async function readOneBit(
 ): Promise<{ tagPath: string; value: number | null; rawByte: number | null; error?: string }> {
   let handle = -1
   try {
-    handle = createTag({ gateway, path, name: tagPath, elemSize: 1, elemCount: 1, timeout })
-    if (handle < 0) {
-      return { tagPath, value: null, rawByte: null, error: `createTag=${handle}: ${getStatusMessage(handle)}` }
+    // Non-blocking create/read — the sync FFI calls parked the event loop.
+    const created = await createTagAsync({ gateway, path, name: tagPath, elemSize: 1, elemCount: 1 }, timeout)
+    handle = created.handle
+    if (handle < 0 || created.status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+      return { tagPath, value: null, rawByte: null, error: `createTag=${handle < 0 ? handle : created.status}: ${getStatusMessage(handle < 0 ? handle : created.status)}` }
     }
-    const s = plc_tag_read(handle, 5000)
+    const s = await readTagAsync(handle, 5000)
     if (s !== PlcTagStatus.PLCTAG_STATUS_OK) {
       return { tagPath, value: null, rawByte: null, error: `read=${s}: ${getStatusMessage(s)}` }
     }
@@ -149,13 +151,14 @@ async function writeOneBit(
 ): Promise<{ tagPath: string; success: boolean; readBeforeWrite?: number; error?: string }> {
   let handle = -1
   try {
-    handle = createTag({ gateway, path, name: tagPath, elemSize: 1, elemCount: 1, timeout })
-    if (handle < 0) {
-      return { tagPath, success: false, error: `createTag=${handle}: ${getStatusMessage(handle)}` }
+    const created = await createTagAsync({ gateway, path, name: tagPath, elemSize: 1, elemCount: 1 }, timeout)
+    handle = created.handle
+    if (handle < 0 || created.status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+      return { tagPath, success: false, error: `createTag=${handle < 0 ? handle : created.status}: ${getStatusMessage(handle < 0 ? handle : created.status)}` }
     }
 
     // Read first (sync buffer)
-    const rs = plc_tag_read(handle, 5000)
+    const rs = await readTagAsync(handle, 5000)
     if (rs !== PlcTagStatus.PLCTAG_STATUS_OK) {
       return { tagPath, success: false, error: `read before write=${rs}: ${getStatusMessage(rs)}` }
     }
@@ -168,7 +171,7 @@ async function writeOneBit(
     }
 
     // Write to PLC
-    const ws = plc_tag_write(handle, 5000)
+    const ws = await writeTagAsync(handle, 5000)
     if (ws !== PlcTagStatus.PLCTAG_STATUS_OK) {
       return { tagPath, success: false, readBeforeWrite: before, error: `write=${ws}: ${getStatusMessage(ws)}` }
     }
@@ -189,11 +192,12 @@ async function readOneReal(
 ): Promise<{ tagPath: string; value: number | null; error?: string }> {
   let handle = -1
   try {
-    handle = createTag({ gateway, path, name: tagPath, elemSize: 4, elemCount: 1, timeout })
-    if (handle < 0) {
-      return { tagPath, value: null, error: `createTag=${handle}: ${getStatusMessage(handle)}` }
+    const created = await createTagAsync({ gateway, path, name: tagPath, elemSize: 4, elemCount: 1 }, timeout)
+    handle = created.handle
+    if (handle < 0 || created.status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+      return { tagPath, value: null, error: `createTag=${handle < 0 ? handle : created.status}: ${getStatusMessage(handle < 0 ? handle : created.status)}` }
     }
-    const s = plc_tag_read(handle, 5000)
+    const s = await readTagAsync(handle, 5000)
     if (s !== PlcTagStatus.PLCTAG_STATUS_OK) {
       return { tagPath, value: null, error: `read=${s}: ${getStatusMessage(s)}` }
     }
@@ -238,13 +242,14 @@ export async function GET(req: Request, res: Response) {
     for (const trySize of [6, 8, 12]) {
       let handle = -1
       try {
-        handle = createTag({ gateway, path, name: tagPath, elemSize: trySize, elemCount: 1, timeout })
-        if (handle < 0) {
-          results[trySize] = { error: `createTag=${handle}: ${getStatusMessage(handle)}` }
+        const created = await createTagAsync({ gateway, path, name: tagPath, elemSize: trySize, elemCount: 1 }, timeout)
+        handle = created.handle
+        if (handle < 0 || created.status !== PlcTagStatus.PLCTAG_STATUS_OK) {
+          results[trySize] = { error: `createTag=${handle < 0 ? handle : created.status}: ${getStatusMessage(handle < 0 ? handle : created.status)}` }
           continue
         }
         const actualSize = plc_tag_get_size(handle)
-        const readStatus = plc_tag_read(handle, 5000)
+        const readStatus = await readTagAsync(handle, 5000)
         if (readStatus !== PlcTagStatus.PLCTAG_STATUS_OK) {
           results[trySize] = { error: `read=${readStatus}: ${getStatusMessage(readStatus)}`, actualSize }
           continue

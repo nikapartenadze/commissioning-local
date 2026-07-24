@@ -504,9 +504,19 @@ export default function CommissioningPage() {
       }
     } else if (activeTab === 'estop') {
       let active = true
+      // Same socket-starvation hardening as the network poll above: one
+      // request at a time, hard timeout that hands the socket back, and
+      // last-good stats kept on failure. (Cadence stays a fixed 3s.)
+      let inFlight = false
+      let abort: AbortController | null = null
       const poll = async () => {
+        if (!active || inFlight) return
+        inFlight = true
+        const controller = new AbortController()
+        abort = controller
+        const timeoutId = setTimeout(() => controller.abort(), 5000)
         try {
-          const res = await authFetch(`/api/estop/status?subsystemId=${projectId}`)
+          const res = await authFetch(`/api/estop/status?subsystemId=${projectId}`, { signal: controller.signal })
           if (res.ok && active) {
             const data = await res.json()
             if (data.zones) {
@@ -523,10 +533,15 @@ export default function CommissioningPage() {
             }
           }
         } catch {}
+        finally {
+          clearTimeout(timeoutId)
+          inFlight = false
+          if (abort === controller) abort = null
+        }
       }
       poll()
       const interval = setInterval(poll, 3000)
-      return () => { active = false; clearInterval(interval) }
+      return () => { active = false; clearInterval(interval); abort?.abort() }
     }
   }, [activeTab, projectId])
 

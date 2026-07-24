@@ -5,6 +5,18 @@ import { getPlcTags } from '@/lib/plc-client-manager'
 import { isOutputIo } from '@/lib/io-classification'
 import { getAllTags, getMcmTags, hasAnyMcm, hasMcm } from '@/lib/mcm-registry'
 
+// Module-level prepared statements — compiled once, reused per request (this
+// route used to re-prepare all four on EVERY call; follows the pattern of
+// app/api/l2/cell/route.ts).
+const stmts = {
+  iosBySubsystem: db.prepare('SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC'),
+  iosAll: db.prepare('SELECT * FROM Ios ORDER BY "Order" ASC'),
+  networkDeviceNames: db.prepare('SELECT DISTINCT DeviceName FROM NetworkPorts WHERE DeviceName IS NOT NULL'),
+  subsystemWithProject: db.prepare(
+    'SELECT s.Name as subName, p.Name as projName FROM Subsystems s JOIN Projects p ON s.ProjectId = p.id WHERE s.id = ?'
+  ),
+}
+
 /**
  * GET /api/ios
  * Returns all IOs with current PLC state
@@ -15,9 +27,9 @@ export async function GET(req: Request, res: Response) {
 
     let ios: Io[]
     if (subsystemId) {
-      ios = db.prepare('SELECT * FROM Ios WHERE SubsystemId = ? ORDER BY "Order" ASC').all(parseInt(subsystemId)) as Io[]
+      ios = stmts.iosBySubsystem.all(parseInt(subsystemId)) as Io[]
     } else {
-      ios = db.prepare('SELECT * FROM Ios ORDER BY "Order" ASC').all() as Io[]
+      ios = stmts.iosAll.all() as Io[]
     }
 
     // Multi-MCM: scope tag-state lookup to the requested MCM when known,
@@ -41,7 +53,7 @@ export async function GET(req: Request, res: Response) {
     }
 
     const networkDevices = new Set(
-      (db.prepare('SELECT DISTINCT DeviceName FROM NetworkPorts WHERE DeviceName IS NOT NULL').all() as { DeviceName: string }[])
+      (stmts.networkDeviceNames.all() as { DeviceName: string }[])
         .map(r => r.DeviceName)
     )
 
@@ -62,9 +74,7 @@ export async function GET(req: Request, res: Response) {
     let subsystemName: string | null = null
     const lookupSubId = subsystemId || (ios.length > 0 ? String(ios[0].SubsystemId) : null)
     if (lookupSubId) {
-      const sub = db.prepare(
-        'SELECT s.Name as subName, p.Name as projName FROM Subsystems s JOIN Projects p ON s.ProjectId = p.id WHERE s.id = ?'
-      ).get(parseInt(lookupSubId)) as { subName: string | null; projName: string | null } | undefined
+      const sub = stmts.subsystemWithProject.get(parseInt(lookupSubId)) as { subName: string | null; projName: string | null } | undefined
       if (sub) {
         projectName = sub.projName
         subsystemName = sub.subName

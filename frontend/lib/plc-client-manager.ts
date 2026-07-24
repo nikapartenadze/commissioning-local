@@ -61,6 +61,14 @@ interface PlcGlobalState {
   libraryInitialized: boolean;
   currentConnectionConfig: PlcConnectionConfig | null;
   networkPoller: NetworkPoller | null;
+  /**
+   * Subsystem the singleton is serving (config.subsystemId captured at
+   * connect time, cleared on disconnect/dispose). Used to stamp broadcasts
+   * so multi-MCM-aware WS clients can route/filter them like registry
+   * broadcasts; null → broadcasts stay unstamped-global (legacy clients
+   * with no Subscribe frame receive everything either way).
+   */
+  currentSubsystemId: string | null;
 }
 
 const globalForPlc = globalThis as unknown as {
@@ -74,12 +82,24 @@ if (!globalForPlc.plcState) {
     libraryInitialized: false,
     currentConnectionConfig: null,
     networkPoller: null,
+    currentSubsystemId: null,
   };
 }
 
 // Convenience getters/setters for the global state
 function getState(): PlcGlobalState {
   return globalForPlc.plcState!;
+}
+
+/**
+ * `subsystemId` stamp for singleton broadcasts. Spread into every broadcast
+ * payload; empty when the serving subsystem is genuinely unknown so the
+ * message stays global (server-express shouldDeliver passes unstamped
+ * messages to every client — do not fabricate an id).
+ */
+function sidStamp(): { subsystemId: string } | Record<string, never> {
+  const sid = getState().currentSubsystemId;
+  return sid ? { subsystemId: sid } : {};
 }
 
 // Legacy module-level aliases for backward compatibility
@@ -152,6 +172,7 @@ function setupClientEventListeners(client: PlcClient): void {
     }
     broadcastToWebSocket({
       type: 'UpdateState',
+      ...sidStamp(),
       id: io.id,
       state: newState === 'TRUE',
     });
@@ -161,6 +182,7 @@ function setupClientEventListeners(client: PlcClient): void {
   client.on('tagValueChanged', (event) => {
     broadcastToWebSocket({
       type: 'DeviceFaultChanged',
+      ...sidStamp(),
       tagName: event.name,
       faulted: event.newValue ? true : false,
     });
@@ -180,6 +202,7 @@ function setupClientEventListeners(client: PlcClient): void {
     console.log(`[PlcClientManager] Connection status: ${status}${willReconnect ? ' (will auto-reconnect)' : ''}`);
     broadcastToWebSocket({
       type: 'NetworkStatusChanged',
+      ...sidStamp(),
       moduleName: 'plc',
       status: status,
       reconnecting: willReconnect,
@@ -215,6 +238,7 @@ function setupClientEventListeners(client: PlcClient): void {
       }
       broadcastToWebSocket({
         type: 'TagStatusUpdate',
+        ...sidStamp(),
         totalTags,
         successfulTags,
         failedTags,
@@ -273,6 +297,7 @@ function setupClientEventListeners(client: PlcClient): void {
         if (states.length > 0) {
           broadcastToWebSocket({
             type: 'TagSnapshot',
+            ...sidStamp(),
             states,
             count: states.length,
           });
@@ -308,6 +333,7 @@ function setupClientEventListeners(client: PlcClient): void {
     }
     broadcastToWebSocket({
       type: 'ErrorEvent',
+      ...sidStamp(),
       source: 'plc',
       message: error.message,
       severity: 'error',
@@ -366,12 +392,14 @@ async function startNetworkPoller(): Promise<void> {
   poller.on('snapshot', (snapshot) => {
     broadcastToWebSocket({
       type: 'NetworkDeviceSnapshot',
+      ...sidStamp(),
       snapshot,
     });
   });
   poller.on('ringStatus', (ring) => {
     broadcastToWebSocket({
       type: 'RingStatusUpdate',
+      ...sidStamp(),
       ring,
     });
   });
@@ -462,6 +490,16 @@ export async function connectPlc(config: PlcConnectionConfig): Promise<{
     const client = getPlcClient();
     const state = getState();
     state.currentConnectionConfig = config;
+    // Capture the serving subsystem for broadcast stamping. In legacy mode the
+    // singleton always serves config.subsystemId (the connect routes save it
+    // before calling here). Best-effort: an unreadable config just leaves
+    // broadcasts unstamped-global, never blocks the connect.
+    try {
+      const cfg = await configService.getConfig();
+      state.currentSubsystemId = cfg.subsystemId || null;
+    } catch {
+      state.currentSubsystemId = null;
+    }
     syncState();
 
     // Tear down any existing network poller before (re)connecting. It's bound to
@@ -534,8 +572,11 @@ export async function disconnectPlc(): Promise<{
     }
 
     await stopNetworkPoller();
+    // Clear the stamp only AFTER disconnect so the final 'disconnected'
+    // status broadcast still carries the subsystem it belonged to.
     await state.plcClientInstance.disconnect();
     state.currentConnectionConfig = null;
+    state.currentSubsystemId = null;
     syncState();
 
     return {
@@ -676,6 +717,7 @@ export function disposePlcClient(): void {
     state.plcClientInstance.dispose();
     state.plcClientInstance = null;
     state.currentConnectionConfig = null;
+    state.currentSubsystemId = null;
     syncState();
   }
 }

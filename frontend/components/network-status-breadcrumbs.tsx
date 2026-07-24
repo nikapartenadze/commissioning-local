@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { CheckCircle, XCircle, AlertCircle, Circle, Loader2, Cloud, Server, Cpu, Box, Radio } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { API_ENDPOINTS, authFetch } from "@/lib/api-config"
@@ -48,8 +48,19 @@ export function NetworkStatusBreadcrumbs({ tagName, subsystemId, className }: Ne
   const [chainStatus, setChainStatus] = useState<NetworkChainStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
+  // Socket-starvation hardening (refs, not closure vars — this fetch is shared
+  // by the interval, the WS refresh and the visibility handler): one request at
+  // a time, hard timeout that hands the socket back, last-good data kept on
+  // failure.
+  const inFlightRef = useRef(false)
+  const abortRef = useRef<AbortController | null>(null)
 
   const fetchNetworkStatus = useCallback(async () => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    const controller = new AbortController()
+    abortRef.current = controller
+    const timeoutId = setTimeout(() => controller.abort(), 5000)
     try {
       const params = new URLSearchParams()
       if (tagName) params.set('tagName', tagName)
@@ -57,7 +68,7 @@ export function NetworkStatusBreadcrumbs({ tagName, subsystemId, className }: Ne
       const qs = params.toString()
       const url = qs ? `${API_ENDPOINTS.networkChainStatus}?${qs}` : API_ENDPOINTS.networkChainStatus
 
-      const response = await authFetch(url)
+      const response = await authFetch(url, { signal: controller.signal })
       if (response.ok) {
         const data = await response.json()
         setChainStatus(data)
@@ -65,6 +76,9 @@ export function NetworkStatusBreadcrumbs({ tagName, subsystemId, className }: Ne
     } catch (err) {
       console.error('Error fetching network status:', err)
     } finally {
+      clearTimeout(timeoutId)
+      inFlightRef.current = false
+      if (abortRef.current === controller) abortRef.current = null
       setLoading(false)
     }
   }, [tagName, subsystemId])
@@ -73,7 +87,12 @@ export function NetworkStatusBreadcrumbs({ tagName, subsystemId, className }: Ne
     fetchNetworkStatus()
     // Poll every 5 seconds for live updates
     const interval = setInterval(fetchNetworkStatus, 5000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      abortRef.current?.abort()
+      abortRef.current = null
+      inFlightRef.current = false
+    }
   }, [fetchNetworkStatus])
 
   // Listen for PLC connection changes via WebSocket to trigger immediate refresh

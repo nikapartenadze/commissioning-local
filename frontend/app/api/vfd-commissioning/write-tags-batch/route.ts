@@ -1,5 +1,6 @@
 import { Request, Response } from 'express'
 import { getPlcClient } from '@/lib/plc-client-manager'
+import * as mcmRegistry from '@/lib/mcm-registry'
 import { hammerWriteTagsForMcm, hasMcm, type HammerWrite } from '@/lib/mcm-registry'
 import { judgeBatch } from '../_gate/belt-tracking-gate'
 import { lookupBeltTrackedState } from '../_gate/belt-tracked-lookup'
@@ -71,13 +72,29 @@ export async function POST(req: Request, res: Response) {
     // hasMcm gate (same convention as /api/ios): a legacy single-PLC tablet
     // sends its active subsystemId too — fall through to the singleton, not 503.
     if (subsystemId !== undefined && subsystemId !== null && subsystemId !== '' && hasMcm(String(subsystemId))) {
-      const r = await hammerWriteTagsForMcm(String(subsystemId), deviceName, writes)
-      if (!r.connected) return res.status(503).json({ error: `PLC for MCM ${subsystemId} not connected` })
-      result = r
+      // EMBEDDED registry MCM: hammer through the ASYNC client method so the
+      // ~1 s loop yields the event loop instead of parking it (the app-side
+      // sync hammer served every MCM on the central tool). The typeof guard
+      // keeps older registry mocks/builds without the accessor on the RPC path.
+      let emb: ReturnType<typeof mcmRegistry.getEmbeddedMcmConnection> = null
+      try {
+        emb = typeof mcmRegistry.getEmbeddedMcmConnection === 'function'
+          ? mcmRegistry.getEmbeddedMcmConnection(String(subsystemId))
+          : null
+      } catch { emb = null }
+      if (emb) {
+        result = await emb.client.hammerWriteTagsAsync(deviceName, writes)
+      } else {
+        // PLC_MODE=remote (gateway RPC — non-blocking app-side) or MCM known
+        // but not connected (returns connected:false → 503 below).
+        const r = await hammerWriteTagsForMcm(String(subsystemId), deviceName, writes)
+        if (!r.connected) return res.status(503).json({ error: `PLC for MCM ${subsystemId} not connected` })
+        result = r
+      }
     } else {
       const client = getPlcClient()
       if (!client.isConnected) return res.status(503).json({ error: 'PLC not connected' })
-      result = client.hammerWriteTags(deviceName, writes)
+      result = await client.hammerWriteTagsAsync(deviceName, writes)
     }
 
     console.log(`[VFD WriteTagsBatch] ${deviceName}: ${result.iterations} writes, success=${result.success}`)

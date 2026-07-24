@@ -885,35 +885,51 @@ export default function NetworkTopologyView({ subsystemId }: NetworkTopologyView
   // Page-level WS subscription to the network poller. Runs while the Network
   // page is mounted, so when the operator opens the Diagnostics modal the
   // latest snapshot per device is already cached — modal renders instantly
-  // instead of waiting up to 5 s for the next broadcast.
-  const networkSnapshots = useNetworkSnapshots(true)
+  // instead of waiting up to 5 s for the next broadcast. Scoped to this
+  // route's MCM so a sibling MCM's broadcasts can't overwrite the cache.
+  const networkSnapshots = useNetworkSnapshots(true, subsystemId)
 
   const openDiagnostics = (deviceName?: string) => {
     setDiagnosticsSingleDevice(deviceName)
     setDiagnosticsOpen(true)
   }
 
-  // Poll PLC for network device status tags every 3 seconds
+  // Poll PLC for network device status tags every 3 seconds.
+  // Socket-starvation hardening: /api/network/status can take tens of seconds
+  // on a loaded controller (the "IO grid clears every 2 min" incident) — one
+  // request at a time, hard timeout that hands the socket back, and last-good
+  // tag states kept on failure.
   useEffect(() => {
     if (rings.length === 0) return
     let cancelled = false
+    let inFlight = false
+    let abort: AbortController | null = null
 
     async function pollStatus() {
+      if (cancelled || inFlight) return
+      inFlight = true
+      const controller = new AbortController()
+      abort = controller
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
       try {
         const params = subsystemId ? `?subsystemId=${subsystemId}` : ''
-        const res = await authFetch(`/api/network/status${params}`)
+        const res = await authFetch(`/api/network/status${params}`, { signal: controller.signal })
         const data = await res.json()
         if (!cancelled && data.success && data.tags) {
           setTagStates(data.tags)
         }
       } catch {
-        // Ignore polling errors
+        // Ignore polling errors — keep last-good states
+      } finally {
+        clearTimeout(timeoutId)
+        inFlight = false
+        if (abort === controller) abort = null
       }
     }
 
     pollStatus()
     const interval = setInterval(pollStatus, 3000)
-    return () => { cancelled = true; clearInterval(interval) }
+    return () => { cancelled = true; clearInterval(interval); abort?.abort() }
   }, [rings, subsystemId])
 
   const [refreshing, setRefreshing] = useState(false)

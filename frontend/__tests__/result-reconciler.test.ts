@@ -87,6 +87,117 @@ describe('computeReconcileEnqueues', () => {
   })
 })
 
+// ── Crash-lost CLEAR re-push (2026-07-24 convergence gap) ────────────────────
+// A deliberate local clear whose enqueue was lost leaves the cloud holding the
+// stale Passed/Failed forever while the field refuses to re-absorb it. The
+// reconciler pushes the clear ONLY with positive recency proof; everything
+// unprovable is surfaced as unresolved, never pushed.
+import {
+  computeClearReenqueues,
+  type LocalClearCandidateRow,
+} from '@/lib/cloud/result-reconciler'
+
+const clearRow = (over: Partial<LocalClearCandidateRow> & { id: number }): LocalClearCandidateRow => ({
+  lastResult: 'Cleared',
+  clearedAt: '2026-07-10 10:00:00', // SQLite shape — parsed as UTC
+  clearedBy: 'kev',
+  clearComment: 'Cleared Passed result',
+  ...over,
+})
+
+describe('computeClearReenqueues (crash-lost clears)', () => {
+  it('re-enqueues a Cleared push when the clear is provably newer than the cloud value', () => {
+    const cloud: CloudIoState[] = [
+      { id: 1, result: 'Passed', version: 7, timestamp: '2026-07-09T10:00:00.000Z' },
+    ]
+    const { enqueues, unresolved } = computeClearReenqueues([clearRow({ id: 1 })], cloud, NONE)
+
+    expect(unresolved).toEqual([])
+    expect(enqueues).toHaveLength(1)
+    expect(enqueues[0]).toMatchObject({
+      ioId: 1,
+      testResult: 'Cleared',
+      kind: 'clear',
+      inspectorName: 'kev',
+      comments: 'Cleared Passed result',
+      failureMode: null,
+      trade: null,
+    })
+    // base version = the cloud's CURRENT version (first-try acceptance)
+    expect(enqueues[0].version).toBe(7)
+    // timestamp = the clear instant, normalized to ISO UTC
+    expect(enqueues[0].timestamp).toBe('2026-07-10T10:00:00.000Z')
+  })
+
+  it('does NOT push when the cloud value is provably newer (normal LWW, no unresolved log)', () => {
+    const cloud: CloudIoState[] = [
+      { id: 1, result: 'Passed', version: 7, timestamp: '2026-07-11T10:00:00.000Z' },
+    ]
+    const { enqueues, unresolved } = computeClearReenqueues([clearRow({ id: 1 })], cloud, NONE)
+    expect(enqueues).toEqual([])
+    expect(unresolved).toEqual([])
+  })
+
+  it('UNRESOLVED (never pushed) when the clear has no parseable timestamp', () => {
+    const cloud: CloudIoState[] = [{ id: 1, result: 'Failed', timestamp: '2026-07-09T10:00:00.000Z' }]
+    const { enqueues, unresolved } = computeClearReenqueues(
+      [clearRow({ id: 1, clearedAt: null })], cloud, NONE,
+    )
+    expect(enqueues).toEqual([])
+    expect(unresolved).toEqual([{ ioId: 1, cloudResult: 'Failed', reason: 'no-clear-timestamp' }])
+  })
+
+  it('UNRESOLVED (never pushed) when the cloud value has no parseable timestamp', () => {
+    const cloud: CloudIoState[] = [{ id: 1, result: 'Passed', timestamp: null }]
+    const { enqueues, unresolved } = computeClearReenqueues([clearRow({ id: 1 })], cloud, NONE)
+    expect(enqueues).toEqual([])
+    expect(unresolved).toEqual([{ ioId: 1, cloudResult: 'Passed', reason: 'no-cloud-timestamp' }])
+  })
+
+  it('UNRESOLVED on an exact timestamp tie', () => {
+    const cloud: CloudIoState[] = [
+      { id: 1, result: 'Passed', timestamp: '2026-07-10T10:00:00.000Z' },
+    ]
+    const { enqueues, unresolved } = computeClearReenqueues([clearRow({ id: 1 })], cloud, NONE)
+    expect(enqueues).toEqual([])
+    expect(unresolved).toEqual([{ ioId: 1, cloudResult: 'Passed', reason: 'timestamp-tie' }])
+  })
+
+  it('skips IOs that already have a queue row (active or parked) — the queue owns them', () => {
+    const cloud: CloudIoState[] = [{ id: 1, result: 'Passed', timestamp: '2026-07-09T10:00:00.000Z' }]
+    const { enqueues, unresolved } = computeClearReenqueues([clearRow({ id: 1 })], cloud, new Set([1]))
+    expect(enqueues).toEqual([])
+    expect(unresolved).toEqual([])
+  })
+
+  it('skips rows whose latest history is NOT a deliberate Cleared (never-tested null)', () => {
+    const cloud: CloudIoState[] = [{ id: 1, result: 'Passed', timestamp: '2026-07-09T10:00:00.000Z' }]
+    for (const lastResult of [null, 'Passed', 'Comment Added']) {
+      const { enqueues, unresolved } = computeClearReenqueues(
+        [clearRow({ id: 1, lastResult })], cloud, NONE,
+      )
+      expect(enqueues).toEqual([])
+      expect(unresolved).toEqual([])
+    }
+  })
+
+  it('skips when the cloud is already clear (converged) or the IO is absent from the payload', () => {
+    expect(computeClearReenqueues([clearRow({ id: 1 })], [{ id: 1, result: '' }], NONE).enqueues).toEqual([])
+    expect(computeClearReenqueues([clearRow({ id: 1 })], [{ id: 1, result: null }], NONE).enqueues).toEqual([])
+    expect(computeClearReenqueues([clearRow({ id: 99 })], [], NONE).enqueues).toEqual([])
+  })
+
+  it('handles an ISO clear timestamp and a SQLite-shaped cloud timestamp symmetrically', () => {
+    const { enqueues } = computeClearReenqueues(
+      [clearRow({ id: 1, clearedAt: '2026-07-10T10:00:00.000Z' })],
+      [{ id: 1, result: 'Passed', version: 3, timestamp: '2026-07-09 10:00:00' }],
+      NONE,
+    )
+    expect(enqueues).toHaveLength(1)
+    expect(enqueues[0].version).toBe(3)
+  })
+})
+
 // F9 (2026-07-03 sync audit): FV flavor of the orphan trap — the MCM17 class.
 import { computeL2ReconcileEnqueues, type LocalL2CellRow } from '@/lib/cloud/result-reconciler'
 

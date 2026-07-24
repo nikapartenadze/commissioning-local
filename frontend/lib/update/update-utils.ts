@@ -17,6 +17,11 @@ const DEFAULT_MANIFEST_URL = `${EMBEDDED_REMOTE_URL.replace(/\/$/, '')}/api/rele
 export interface ReleaseManifest {
   version: string
   installerUrl: string
+  /** Lowercase/uppercase hex SHA-256 of the installer at installerUrl.
+   *  Absent/null on clouds that predate integrity verification — the install
+   *  pipeline then WARNS and proceeds (backward compatible). When present it
+   *  is enforced: install-update.ps1 hard-fails on mismatch. */
+  sha256?: string | null
   publishedAt?: string
   notes?: string
   /** Version-lock policy (FV-HARDENING-PLAN.md F7/C3): tools below minVersion

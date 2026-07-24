@@ -27,6 +27,26 @@ export async function POST(req: Request, res: Response) {
       return res.status(400).json({ error: 'Path is required' });
     }
 
+    const currentConfig = await configService.getConfig();
+
+    // ── Multi-MCM fence ─────────────────────────────────────────────────
+    // When config.json explicitly lists MCMs, connections are owned by the
+    // per-MCM registry. This legacy route (a) saves the singleton's global
+    // ip/path/subsystemId over central config and (b) loads EVERY MCM's IOs
+    // (the unfiltered `SELECT ... FROM Ios` below) into one unscoped client
+    // — cross-MCM tag bleed. Refuse before touching config or the singleton;
+    // the fence must run BEFORE saveConfig so a central box's config is
+    // never clobbered by a stray legacy connect. Single-MCM tablets (no
+    // mcms[] in config) fall through unchanged.
+    if (currentConfig.mcmsExplicit) {
+      return res.status(409).json({
+        error:
+          `Legacy connect refused: this is a multi-MCM deployment (${currentConfig.mcms?.length ?? 0} MCM(s) configured). ` +
+          'This route loads ALL MCMs\' IOs into one unscoped PLC client. Use the per-MCM connect ' +
+          '(POST /api/mcm/:subsystemId/plc/connect) instead.',
+      });
+    }
+
     console.log('[Connect API] Starting PLC connection:', { ip: body.ip, path: body.path });
 
     try {
@@ -41,8 +61,6 @@ export async function POST(req: Request, res: Response) {
         error: `Failed to load libplctag: ${libError instanceof Error ? libError.message : String(libError)}`
       });
     }
-
-    const currentConfig = await configService.getConfig();
 
     // Cloud creds resolve SERVER-side: the browser no longer receives the API
     // key (/api/plc/status returns apiKeySet, not the key), so the dialog may

@@ -1091,6 +1091,16 @@ async function startPoller(entry: McmEntry): Promise<void> {
       snapshot,
     });
   });
+  // Stamped ring verdict — mirrors the legacy manager's RingStatusUpdate
+  // broadcast. Without it, scoped clients (useNetworkSnapshots with a
+  // subsystemId) never receive a ring state in multi-MCM mode.
+  poller.on('ringStatus', (ring) => {
+    broadcast({
+      type: 'RingStatusUpdate',
+      subsystemId: entry.subsystemId,
+      ring,
+    });
+  });
 
   entry.networkPoller = poller;
   await poller.start();

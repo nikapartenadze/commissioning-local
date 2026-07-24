@@ -402,6 +402,8 @@ export interface L2CellUpdatedMessage {
  */
 export interface NetworkDeviceSnapshotMessage {
   type: 'NetworkDeviceSnapshot'
+  /** Owning MCM. Absent only on legacy unstamped broadcasts. */
+  subsystemId?: string
   snapshot: {
     tagName: string
     deviceName: string
@@ -477,6 +479,8 @@ export interface VfdTagUpdateMessage {
  */
 export interface RingStatusUpdateMessage {
   type: 'RingStatusUpdate'
+  /** Owning MCM. Absent only on legacy unstamped broadcasts. */
+  subsystemId?: string
   ring: {
     state: 'healthy' | 'degraded' | 'unknown'
     reason: string

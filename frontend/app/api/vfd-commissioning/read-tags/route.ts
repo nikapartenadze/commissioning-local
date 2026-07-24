@@ -41,7 +41,8 @@ interface ReadSpec {
  *
  * Batch reads all CTRL.CMD + CTRL.STS fields for multiple VFD devices. MCM-aware
  * when subsystemId is supplied (one gateway batch RPC); legacy singleton
- * otherwise. The per-tag FFI read now lives in PlcClient.readTypedTag.
+ * otherwise — both paths are now ASYNC BATCH reads (PlcClient.readTypedTags),
+ * so no route-reachable sync FFI remains here.
  */
 export async function POST(req: Request, res: Response) {
   try {
@@ -74,10 +75,12 @@ export async function POST(req: Request, res: Response) {
     } else {
       const client = getPlcClient()
       if (!client.isConnected) return res.status(503).json({ error: 'PLC not connected' })
-      results = reads.map((rd) => {
-        const r = client.readTypedTag(rd.name, rd.dataType)
-        return { name: rd.name, success: r.success, value: r.value, error: r.error }
-      })
+      // ONE async batch for the whole device list. The old per-tag sync
+      // readTypedTag loop (~24 tags x N devices) could park the event loop for
+      // multiple seconds PER TAG on a slow controller (the MCM02-freeze class);
+      // readTypedTags initiates every create/read non-blocking and resolves
+      // them with shared status sweeps. Same per-tag results and decoding.
+      results = await client.readTypedTags(reads)
     }
 
     // Reassemble per-device cmd/sts. A failed read maps to null (matches the

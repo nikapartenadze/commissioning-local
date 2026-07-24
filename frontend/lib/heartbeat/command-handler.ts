@@ -133,14 +133,17 @@ export async function executeCommand(cmd: IncomingCommand): Promise<CommandResul
  * heartbeat carrying the new `version` field.
  */
 async function handleUpdateCommand(cmd: IncomingCommand): Promise<CommandResult> {
-  const payload = (cmd.payload ?? {}) as { version?: unknown; installerUrl?: unknown }
+  const payload = (cmd.payload ?? {}) as { version?: unknown; installerUrl?: unknown; sha256?: unknown }
   // The pipeline itself (platform/script/in-flight checks, manifest fallback,
-  // no-downgrade gate, state stamp, detached spawn) lives in
-  // lib/update/install-launcher.ts — shared with the version-lock "Update now"
-  // route so the two triggers can never drift apart.
+  // URL transport policy, sha256 integrity plumbing, no-downgrade gate, state
+  // stamp, detached spawn) lives in lib/update/install-launcher.ts — shared
+  // with the version-lock "Update now" route so the two triggers can never
+  // drift apart. `sha256` (optional, new clouds only) rides along with a
+  // pinned installerUrl so the ps1 can verify the download before running it.
   const outcome = await launchUpdateInstall({
     installerUrl: typeof payload.installerUrl === 'string' ? payload.installerUrl : undefined,
     version: typeof payload.version === 'string' ? payload.version : undefined,
+    sha256: typeof payload.sha256 === 'string' ? payload.sha256 : undefined,
     trigger: 'cloud update command',
   })
   // NOTE: 'done' is a LAUNCH ACK (or a clean already-up-to-date no-op), not

@@ -118,6 +118,11 @@ try {
     // re-queued (the discard→reconcile→404→orphan loop). Cleared back to 0 when
     // the IO reappears in a cloud delta (device restored). NULL/0 = live.
     'ALTER TABLE Ios ADD COLUMN CloudRemoved INTEGER DEFAULT 0',
+    // Subsystem-level cloud tombstone (2026-07-24): set when a caps=subsystem
+    // delta entry reports the subsystem DELETED on the cloud. NO local data is
+    // removed — flag only, mirrors Ios.CloudRemoved. delta-sync.ts also has a
+    // lazy PRAGMA-guarded ensure for DBs that predate this startup migration.
+    'ALTER TABLE Subsystems ADD COLUMN CloudRemoved INTEGER NOT NULL DEFAULT 0',
     // Cloud-owned planned date ("YYYY-MM-DD" stored verbatim, 2026-07-20):
     // PMs schedule IOs in the cloud; electricians filter/sort the local grid
     // by it. READ-ONLY on the field side — applied directly by pull/delta
@@ -231,7 +236,17 @@ try {
     'ALTER TABLE Users ADD COLUMN MustChangePin INTEGER NOT NULL DEFAULT 0',
   ]
   for (const sql of migrations) {
-    try { db.exec(sql) } catch { /* column already exists */ }
+    try { db.exec(sql) } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // "duplicate column name" is the EXPECTED no-op on an already-migrated DB
+      // and stays silent. Anything else (disk I/O error, malformed database,
+      // locked file, typo'd SQL) used to be swallowed here too, hiding real
+      // failures. Log it LOUDLY but keep booting — this runs on every startup
+      // on real field tablets, and a latent error must not brick boot.
+      if (!/duplicate column name/i.test(msg)) {
+        console.error(`[DB] MIGRATION-ERROR (startup continues): "${sql}" failed: ${msg}`)
+      }
+    }
   }
 
   // E-Stop dual safety verification — widen EStopEpcChecks' UNIQUE key to
@@ -447,23 +462,58 @@ try {
               END;
       END`)
   } catch (e) { console.warn('[DB] coalesce trigger/index setup failed:', e) }
+  // L2Columns InputType/IsSystem/IsEditable/IncludeInProgress backfill —
+  // ONE-TIME (2026-07-24). These UPDATEs used to run unconditionally on EVERY
+  // startup, forcibly rewriting IsEditable/IncludeInProgress and clobbering
+  // cloud-pulled column config until the next pull re-stamped it. Gated by a
+  // durable SyncMaintenanceFlags row (the same one-time mechanism as
+  // backlog_readjudication_v1) so it runs exactly once per database — the
+  // stamp is written only after all four UPDATEs succeed, so a failed run
+  // retries on the next boot. Non-destructive: pure backfill of derived
+  // presentation flags, never touches cell values.
   try {
-    db.exec(`
-      UPDATE L2Columns
-      SET InputType = CASE
-        WHEN COALESCE(NULLIF(InputType, ''), '') <> '' THEN InputType
-        WHEN ColumnType = 'check' THEN 'pass_fail'
-        WHEN ColumnType = 'number' THEN 'number'
-        WHEN ColumnType = 'readonly' THEN 'readonly'
-        ELSE 'text'
-      END
-    `)
-    db.exec(`UPDATE L2Columns SET IsSystem = CASE WHEN ColumnType = 'readonly' THEN 1 ELSE COALESCE(IsSystem, 0) END`)
-    db.exec(`UPDATE L2Columns SET IsEditable = CASE WHEN COALESCE(InputType, ColumnType) = 'readonly' THEN 0 ELSE 1 END`)
-    db.exec(`UPDATE L2Columns SET IncludeInProgress = CASE WHEN ColumnType = 'check' THEN 1 ELSE COALESCE(IncludeInProgress, 0) END`)
-  } catch { /* non-critical */ }
+    const l2Normalized = db
+      .prepare("SELECT Value FROM SyncMaintenanceFlags WHERE Key = 'l2columns_normalized_v1'") // gitleaks:allow — migration flag name, not a credential
+      .get()
+    if (!l2Normalized) {
+      db.exec(`
+        UPDATE L2Columns
+        SET InputType = CASE
+          WHEN COALESCE(NULLIF(InputType, ''), '') <> '' THEN InputType
+          WHEN ColumnType = 'check' THEN 'pass_fail'
+          WHEN ColumnType = 'number' THEN 'number'
+          WHEN ColumnType = 'readonly' THEN 'readonly'
+          ELSE 'text'
+        END
+      `)
+      db.exec(`UPDATE L2Columns SET IsSystem = CASE WHEN ColumnType = 'readonly' THEN 1 ELSE COALESCE(IsSystem, 0) END`)
+      db.exec(`UPDATE L2Columns SET IsEditable = CASE WHEN COALESCE(InputType, ColumnType) = 'readonly' THEN 0 ELSE 1 END`)
+      db.exec(`UPDATE L2Columns SET IncludeInProgress = CASE WHEN ColumnType = 'check' THEN 1 ELSE COALESCE(IncludeInProgress, 0) END`)
+      db.prepare(
+        "INSERT OR REPLACE INTO SyncMaintenanceFlags (Key, Value, UpdatedAt) VALUES ('l2columns_normalized_v1', datetime('now'), datetime('now'))",
+      ).run()
+      console.log('[DB] L2Columns one-time normalization applied (l2columns_normalized_v1)')
+    }
+  } catch (e) { console.warn('[DB] L2Columns one-time normalization skipped:', (e as Error).message) }
   // Indexes for L2 query performance
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_l2cells_device_column ON L2CellValues(DeviceId, ColumnId)') } catch { /* already exists */ }
+  // Perf indexes (2026-07-24). Created HERE — AFTER the ALTER-migration loop —
+  // and NOT inside initializeSchema()'s giant exec: L2Devices.SubsystemId is a
+  // migration-added column, and an index referencing it inside that exec would
+  // throw "no such column" on an upgrading DB and silently skip every statement
+  // after it (the exact idx_approvedfirmware_scope hazard documented above).
+  // All additive + idempotent (CREATE INDEX IF NOT EXISTS).
+  try {
+    // CloudId is the cloud↔local join key: pull-l2's per-row upsert lookups
+    // (O(N²) without these), SSE delta lookups, auto-sync drains, Sync Center.
+    db.exec('CREATE INDEX IF NOT EXISTS idx_l2sheets_cloudid ON L2Sheets(CloudId)')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_l2columns_cloudid ON L2Columns(CloudId)')
+    db.exec('CREATE INDEX IF NOT EXISTS idx_l2devices_cloudid ON L2Devices(CloudId)')
+    // Per-MCM L2 device scoping (pull-l2 guard/prune, FV grid) filters on it.
+    db.exec('CREATE INDEX IF NOT EXISTS idx_l2devices_subsystemid ON L2Devices(SubsystemId)')
+    // /api/network/devices GROUP BY + per-device aggregates.
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ios_networkdevicename ON Ios(NetworkDeviceName)')
+  } catch (e) { console.error('[DB] perf index creation failed:', (e as Error).message) }
   // Update query planner statistics (deferred to avoid blocking startup)
   setTimeout(() => {
     try { db.pragma('analysis_limit = 400'); db.exec('ANALYZE') } catch { /* non-critical */ }
